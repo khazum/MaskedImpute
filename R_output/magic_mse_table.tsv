@@ -1,0 +1,5 @@
+dataset	mse	mse_dropout	mse_biozero	mse_non_dropout	n_total	n_dropout	n_biozero	n_non_dropout	error
+dataset_2_types_equal	NA	NA	NA	NA	92300	36914	7279	48107	Python is not available to reticulate. Set MAGIC_PYTHON (or RETICULATE_PYTHON) to a Python executable with 'magic-impute' installed.
+dataset_3_types_unequal	NA	NA	NA	NA	92600	33394	7662	51544	Python is not available to reticulate. Set MAGIC_PYTHON (or RETICULATE_PYTHON) to a Python executable with 'magic-impute' installed.
+dataset_4_types_rare	NA	NA	NA	NA	93200	50349	8182	34669	Python is not available to reticulate. Set MAGIC_PYTHON (or RETICULATE_PYTHON) to a Python executable with 'magic-impute' installed.
+dataset_multibatch_dropout	NA	NA	NA	NA	291600	145828	36313	109459	Python is not available to reticulate. Set MAGIC_PYTHON (or RETICULATE_PYTHON) to a Python executable with 'magic-impute' installed.

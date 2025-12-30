@@ -11,8 +11,8 @@
 # MSEs are computed in the same log2(1+normalized) space as experiment2.py,
 # comparing imputed values to the dataset's `logTrueCounts`.
 #
-# Note: By default this script does NOT install missing R packages.
-# Set `AUTO_INSTALL_PACKAGES=1` to enable BiocManager/install.packages calls.
+# Note: This script does NOT install missing R packages.
+# See install_imputation_libraries.R for dependency installation.
 
 stopf <- function(fmt, ...) stop(sprintf(fmt, ...), call. = FALSE)
 
@@ -30,27 +30,45 @@ if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
 options(repos = c(CRAN = "https://cran.rstudio.com/"))
 
-auto_install <- tolower(Sys.getenv("AUTO_INSTALL_PACKAGES", unset = "0")) %in% c("1", "true", "yes")
+bioc_install_hint <- function(pkg) {
+  sprintf(
+    "Install via Bioconductor:\nif (!require(\"BiocManager\", quietly = TRUE)) install.packages(\"BiocManager\")\nBiocManager::install(\"%s\")",
+    pkg
+  )
+}
 
-ensure_pkg <- function(pkg, bioc = TRUE) {
+cran_install_hint <- function(pkg) {
+  sprintf("Install from CRAN:\ninstall.packages(\"%s\")", pkg)
+}
+
+require_pkg <- function(pkg, source = "cran") {
   if (requireNamespace(pkg, quietly = TRUE)) return(invisible(TRUE))
-  if (!auto_install) stopf("Missing required package '%s'. Install it (or set AUTO_INSTALL_PACKAGES=1).", pkg)
-  if (!requireNamespace("BiocManager", quietly = TRUE)) {
-    install.packages("BiocManager", quiet = FALSE)
-  }
-  if (bioc) {
-    BiocManager::install(pkg, ask = FALSE, update = FALSE)
-  } else {
-    install.packages(pkg, quiet = FALSE)
-  }
-  if (!requireNamespace(pkg, quietly = TRUE)) stopf("Missing required package '%s'.", pkg)
-  invisible(TRUE)
+  hint <- switch(
+    source,
+    bioc = bioc_install_hint(pkg),
+    cran = cran_install_hint(pkg),
+    base = "This package should be available with base R.",
+    ""
+  )
+  stopf("Missing required package '%s'. %s", pkg, hint)
+}
+
+load_pkg <- function(pkg) {
+  suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+}
+
+report_error <- function(dataset, method, err_msg) {
+  cat(sprintf("ERROR [%s/%s]: %s\n", dataset, method, err_msg))
 }
 
 # Core R/Bioc packages (method-specific deps are checked per method)
-required_pkgs <- c("SingleCellExperiment", "Matrix", "parallel")
-invisible(lapply(required_pkgs, ensure_pkg))
-invisible(lapply(required_pkgs, function(pkg) suppressPackageStartupMessages(library(pkg, character.only = TRUE))))
+core_pkgs <- list(
+  list(name = "SingleCellExperiment", source = "bioc"),
+  list(name = "Matrix", source = "cran"),
+  list(name = "parallel", source = "base")
+)
+invisible(lapply(core_pkgs, function(p) require_pkg(p$name, p$source)))
+invisible(lapply(core_pkgs, function(p) load_pkg(p$name)))
 
 save_imputed <- function(dataset_name, data, method) {
   filename <- file.path(output_dir, paste0(dataset_name, "_", method, ".rds"))
@@ -98,7 +116,16 @@ compute_mse_metrics <- function(log_imp, log_true, log_obs) {
 
 run_magic_logcounts <- function(logcounts_mat) {
   if (!requireNamespace("reticulate", quietly = TRUE)) {
-    stopf("MAGIC requires the R package 'reticulate' (install.packages('reticulate')).")
+    stopf(
+      "MAGIC requires the R package 'reticulate'. %s",
+      cran_install_hint("reticulate")
+    )
+  }
+  if (!requireNamespace("Rmagic", quietly = TRUE)) {
+    stopf(
+      "MAGIC requires the R package 'Rmagic'. %s",
+      cran_install_hint("Rmagic")
+    )
   }
   suppressPackageStartupMessages(library(reticulate))
 
@@ -108,12 +135,16 @@ run_magic_logcounts <- function(logcounts_mat) {
   }
 
   if (!reticulate::py_available(initialize = FALSE)) {
-    stopf("Python is not available to reticulate. Set MAGIC_PYTHON (or RETICULATE_PYTHON) to a Python executable with 'magic-impute' installed.")
+    stopf(
+      "Python is not available to reticulate. Set MAGIC_PYTHON (or RETICULATE_PYTHON) to a Python executable with 'magic-impute' installed. Install with: pip install --user magic-impute"
+    )
   }
 
   magic <- reticulate::import("magic", delay_load = FALSE)
   if (is.null(magic$MAGIC)) {
-    stopf("Python module 'magic' found but has no MAGIC class; install the KrishnaswamyLab MAGIC ('magic-impute').")
+    stopf(
+      "Python module 'magic' found but has no MAGIC class; install the KrishnaswamyLab MAGIC ('magic-impute') with: pip install --user magic-impute"
+    )
   }
 
   op <- tryCatch(
@@ -222,7 +253,7 @@ for (input_file in input_files) {
   # --- SAVER ---
   saver_row <- tryCatch({
     cat("Running SAVER...\n")
-    ensure_pkg("SAVER")
+    require_pkg("SAVER", "cran")
     saver_imp <- SAVER::saver(counts_f, ncores = ncores)
     save_imputed(dataset_name, saver_imp$estimate, "saver")
     log_imp <- normalize_counts_to_logcounts(saver_imp$estimate, denom_noisy, med_noisy)
@@ -234,6 +265,8 @@ for (input_file in input_files) {
       stringsAsFactors = FALSE
     )
   }, error = function(e) {
+    err_msg <- conditionMessage(e)
+    report_error(dataset_name, "saver", err_msg)
     data.frame(
       dataset = dataset_name,
       method = "saver",
@@ -245,7 +278,7 @@ for (input_file in input_files) {
       n_dropout = n_dropout,
       n_biozero = n_biozero,
       n_non_dropout = n_non_dropout,
-      error = conditionMessage(e),
+      error = err_msg,
       stringsAsFactors = FALSE
     )
   })
@@ -254,7 +287,8 @@ for (input_file in input_files) {
   # --- ccImpute ---
   cc_row <- tryCatch({
     cat("Running ccImpute...\n")
-    ensure_pkg("ccImpute")
+    require_pkg("ccImpute", "bioc")
+    require_pkg("BiocParallel", "bioc")
 
     n_groups <- NA_integer_
     if (!is.null(colData(sce)$Group)) n_groups <- length(unique(colData(sce)$Group))
@@ -281,6 +315,8 @@ for (input_file in input_files) {
       stringsAsFactors = FALSE
     )
   }, error = function(e) {
+    err_msg <- conditionMessage(e)
+    report_error(dataset_name, "ccimpute", err_msg)
     data.frame(
       dataset = dataset_name,
       method = "ccimpute",
@@ -292,7 +328,7 @@ for (input_file in input_files) {
       n_dropout = n_dropout,
       n_biozero = n_biozero,
       n_non_dropout = n_non_dropout,
-      error = conditionMessage(e),
+      error = err_msg,
       stringsAsFactors = FALSE
     )
   })
@@ -311,6 +347,8 @@ for (input_file in input_files) {
       stringsAsFactors = FALSE
     )
   }, error = function(e) {
+    err_msg <- conditionMessage(e)
+    report_error(dataset_name, "magic", err_msg)
     data.frame(
       dataset = dataset_name,
       method = "magic",
@@ -322,7 +360,7 @@ for (input_file in input_files) {
       n_dropout = n_dropout,
       n_biozero = n_biozero,
       n_non_dropout = n_non_dropout,
-      error = conditionMessage(e),
+      error = err_msg,
       stringsAsFactors = FALSE
     )
   })

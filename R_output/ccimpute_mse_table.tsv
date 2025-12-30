@@ -1,0 +1,5 @@
+dataset	mse	mse_dropout	mse_biozero	mse_non_dropout	n_total	n_dropout	n_biozero	n_non_dropout	error
+dataset_2_types_equal	NA	NA	NA	NA	92300	36914	7279	48107	Missing required package 'ccImpute'. Install it (or set AUTO_INSTALL_PACKAGES=1).
+dataset_3_types_unequal	NA	NA	NA	NA	92600	33394	7662	51544	Missing required package 'ccImpute'. Install it (or set AUTO_INSTALL_PACKAGES=1).
+dataset_4_types_rare	NA	NA	NA	NA	93200	50349	8182	34669	Missing required package 'ccImpute'. Install it (or set AUTO_INSTALL_PACKAGES=1).
+dataset_multibatch_dropout	NA	NA	NA	NA	291600	145828	36313	109459	Missing required package 'ccImpute'. Install it (or set AUTO_INSTALL_PACKAGES=1).
