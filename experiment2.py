@@ -429,11 +429,14 @@ def _masked_mse(diff: np.ndarray, mask: np.ndarray) -> float:
     return float(np.mean((diff[mask]) ** 2))
 
 
+EPSILON = 1e-6
+
+
 def mse_breakdown(log_true: np.ndarray, pred: np.ndarray, log_obs: np.ndarray) -> Dict[str, float]:
     diff = log_true - pred
-    mask_nonzero = log_true > 0.0
-    mask_biozero = log_true == 0.0
-    mask_dropout = (log_true > 0.0) & (log_obs <= 0.0)
+    mask_nonzero = (log_true > EPSILON) & (log_obs > EPSILON)
+    mask_biozero = log_true <= EPSILON
+    mask_dropout = (log_true > EPSILON) & (log_obs <= EPSILON)
     return {
         "mse": float(np.mean(diff ** 2)),
         "mse_nonzero": _masked_mse(diff, mask_nonzero),
@@ -547,9 +550,9 @@ def main():
             continue
 
         # --- Static masks / labels (log2(1+norm) scale) ---
-        mask_nonzero = log_true > 0.0
-        mask_biozero = log_true == 0.0
-        mask_dropout = (log_true > 0.0) & (logcounts <= 0.0)
+        mask_nonzero = (log_true > EPSILON) & (logcounts > EPSILON)
+        mask_biozero = log_true <= EPSILON
+        mask_dropout = (log_true > EPSILON) & (logcounts <= EPSILON)
 
         n_total = int(log_true.size)
         n_nonzero = int(mask_nonzero.sum())

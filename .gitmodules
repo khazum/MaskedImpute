@@ -1,0 +1,6 @@
+[submodule "AutoClass"]
+	path = AutoClass
+	url = https://github.com/datapplab/AutoClass.git
+[submodule "MAGIC"]
+	path = MAGIC
+	url = https://github.com/KrishnaswamyLab/MAGIC.git
