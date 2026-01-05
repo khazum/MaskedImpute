@@ -18,7 +18,10 @@ from typing import Dict, Tuple, Optional, Union, List
 import subprocess
 import tempfile
 import numpy as np
-import pandas as pd
+try:
+    import pandas as pd
+except Exception:
+    pd = None
 import traceback
 import warnings
 import sys
@@ -27,7 +30,7 @@ import os
 # Handle optional Keras/TensorFlow imports and configuration
 try:
     # Minimize TensorFlow logging noise
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2' 
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
     if 'TF_ENABLE_ONEDNN_OPTS' not in os.environ:
         os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
     import tensorflow as tf
@@ -36,7 +39,7 @@ try:
     # Optimization: disable traceback filtering if keras is available
     if hasattr(keras.config, 'disable_traceback_filtering'):
         keras.config.disable_traceback_filtering()
-except ImportError:
+except Exception:
     pass # Keras/TensorFlow are optional
 
 # Optional heavy deps isolated to features that use them
@@ -66,6 +69,8 @@ def load_sce(path: Path, need_perfect: bool = True) -> Tuple[np.ndarray, Optiona
     """
     if read_rds is None:
         raise RuntimeError("rds2py is not installed or not importable.")
+    if pd is None:
+        raise RuntimeError("pandas is required for load_sce but is not importable.")
     
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
