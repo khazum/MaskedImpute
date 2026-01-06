@@ -574,4 +574,25 @@ Added a supervised zero‑scale calibrator in mask_impute8.py that fits per‑ge
   2. Point at a different dataset folder to verify generalization.
 
 
+================================================================================================
+• Created mask_impute14.py by stripping the blend step and replacing the single‑component pruning with exhaustive combo scoring over zero_iso, dropout_iso, and constrained_zero while keeping
+  keep_positive (and hard_zero_bio) always on. The script now writes a combo score table with avg_mse/avg_bz for all 8 combinations.
+
+  Results from running on synthetic_datasets_small/:
+
+  - Best combo: zero_iso+dropout_iso+constrained_zero with avg_mse=0.697960 and avg_bz=0.069912.
+  - Output table: results_small14/mask_impute14_combo_scores.tsv.
+
+  Run command:
+
+  python mask_impute14.py synthetic_datasets_small results_small14
+
+  Files changed/added:
+
+  - mask_impute14.py
+
+  If you want to go further:
+
+  1. Add hard_zero_bio as a fourth toggle in the combo grid to see if any tradeoff improves.
+  2. Run with a different --seed to check stability of the combo ranking.
 
