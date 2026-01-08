@@ -25,29 +25,21 @@ cat(sprintf("Output directory: %s\n", OUT_DIR))
 
 # --- 2) Helper Functions ---
 
-# Modified: Normalize 'counts' using size factors from 'counts' (Real world scenario)
-#           Normalize 'TrueCounts' using size factors from 'TrueCounts' (Ideal scenario)
+# Modified: Normalize both 'counts' and 'TrueCounts' using a fixed scale factor (10,000)
 apply_normalization <- function(sce) {
   stopifnot("TrueCounts" %in% assayNames(sce), "counts" %in% assayNames(sce))
-  
+  norm_factor <- 10000
+
   # --- A. Normalize Noisy Counts (Using counts-derived factors) ---
   lib.noisy <- colSums(assay(sce, "counts"))
   denom.noisy <- ifelse(lib.noisy > 0, lib.noisy, 1)
-  med.noisy <- stats::median(lib.noisy[lib.noisy > 0])
-  if (!is.finite(med.noisy) || med.noisy <= 0) med.noisy <- 1
-  
-  noisy_norm <- t(t(assay(sce, "counts")) / denom.noisy * med.noisy)
+  noisy_norm <- t(t(assay(sce, "counts")) / denom.noisy * norm_factor)
   assay(sce, "logcounts") <- log2(1 + noisy_norm)
   
   # --- B. Normalize True Counts (Using TrueCounts-derived factors) ---
-  # We normalize TrueCounts by its own depth so it remains comparable in magnitude 
-  # to the normalized counts (assuming similar median depths).
   lib.true <- colSums(assay(sce, "TrueCounts"))
   denom.true <- ifelse(lib.true > 0, lib.true, 1)
-  med.true <- stats::median(lib.true[lib.true > 0])
-  if (!is.finite(med.true) || med.true <= 0) med.true <- 1
-  
-  perfect_norm <- t(t(assay(sce, "TrueCounts")) / denom.true * med.true)
+  perfect_norm <- t(t(assay(sce, "TrueCounts")) / denom.true * norm_factor)
   assay(sce, "logTrueCounts") <- log2(1 + perfect_norm)
   
   return(sce)
