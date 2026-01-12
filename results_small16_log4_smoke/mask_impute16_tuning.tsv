@@ -1,2 +1,0 @@
-config_id	proxy_mix	proxy_drop_gamma	proxy_drop_scale	proxy_blend	thr_drop	post_p_bio_temp	post_p_bio_bias	p_bio_mix	avg_rmse	avg_bz_rmse	score
-1	1.0	0.7	1.2	0.0	0.95	2.0	0.0	0.6	0.9200501109777428	0.5621165634982134	1.0221416189870847

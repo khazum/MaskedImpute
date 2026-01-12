@@ -1,0 +1,4 @@
+config_id	zero_iso_weight	dropout_iso_weight	constrained_zero_scale	renorm_imputed	p_bio_temp	p_bio_bias	thr_drop	p_bio_nz_scale	post_log_quantile	cell_scale_alpha	sf_dropout_alpha	proxy_calib_shrink	proxy_bio_weight	proxy_drop_weight	proxy_impute_alpha	proxy_impute_gamma	proxy_mean_mode	proxy_calib_min_points	proxy_pu_weight	bio_soft_gamma	proxy_calib_mode	impute_mode	impute_blend_alpha	avg_mse	avg_bz_mse	score
+1	0.0	0.0	False	False	1.0	0.5	0.98	0.0	0.0	0.0	0.0	0.0	0.5	0.5	0.5	2.0	knn	20	0.0	0.0	labeled	ae	0.0	1.4530526877202337	0.0166790777782869	0.7432054216384038
+2	0.0	0.0	False	False	1.0	0.5	0.98	0.0	0.0	0.0	0.0	0.0	0.5	0.5	0.5	2.0	knn	20	0.0	0.0	labeled	ae	0.5	1.4530526877202337	0.0166790777782869	0.7432054216384038
+3	0.0	0.0	False	False	1.0	0.5	0.98	0.0	0.0	0.0	0.0	0.0	0.5	0.5	0.5	2.0	knn	20	0.0	0.0	labeled	ae	1.0	1.4530526877202337	0.0166790777782869	0.7432054216384038

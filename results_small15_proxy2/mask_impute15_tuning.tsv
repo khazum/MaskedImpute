@@ -1,2 +1,0 @@
-config_id	proxy_mix	proxy_drop_gamma	proxy_drop_scale	zero_iso_weight	dropout_iso_weight	constrained_zero_scale	p_bio_temp	p_bio_bias	thr_drop	p_bio_nz_scale	post_log_quantile	proxy_calib_shrink	proxy_bio_weight	proxy_impute_alpha	proxy_mean_mode	proxy_calib_min_points	avg_rmse	avg_bz_rmse	score
-1	0.5	1.0	1.0	0.0	0.0	False	1.0	0.0	0.9	0.0	0.0	0.0	1.0	1.0	all	20	1.5882513243874576	1.4699029598732172	2.264028622066946

@@ -6,6 +6,13 @@ run_imputation.py
 Runs multiple imputation methods (MAGIC, legacy DCA, AutoClass) on
 SingleCellExperiment .rds files and reports MSEs in log2(1+normalized) space
 vs. logTrueCounts, matching experiment2.py dataset conventions.
+
+Required Python packages: rds2py, numpy.
+Method-specific dependencies: magic-impute (MAGIC), pandas + DCA CLI (DCA bridge),
+and AutoClass with its Python requirements (e.g., tensorflow).
+
+Normalization for imputed counts uses the dataset's TrueCounts-derived library
+sizes and shared scale factor (median TrueCounts library size).
 """
 
 from __future__ import annotations
@@ -27,10 +34,9 @@ try:
     from rds2py import read_rds
 except Exception as exc:  # pragma: no cover - import error surfaced for user
     raise SystemExit(
-        "Failed to import rds2py in this Python.\n"
+        "Failed to import rds2py in this Python. See script header for requirements.\n"
         f"Python: {sys.executable}\n"
         f"Error: {exc}\n"
-        f"Try: {sys.executable} -m pip install --no-user rds2py"
     ) from exc
 
 EPSILON = 1e-6
@@ -44,46 +50,97 @@ def _masked_mse(diff: np.ndarray, mask: np.ndarray) -> float:
     return float(np.mean((diff[mask]) ** 2))
 
 
-def compute_mse_metrics(log_imp: np.ndarray, log_true: np.ndarray, log_obs: np.ndarray) -> Dict[str, float]:
-    diff = log_true - log_imp
-    mask_biozero = log_true <= EPSILON
-    mask_dropout = (log_true > EPSILON) & (log_obs <= EPSILON)
-    mask_non_zero = (log_true > EPSILON) & (log_obs > EPSILON)
+def compute_masks(log_true: np.ndarray, log_obs: np.ndarray) -> Dict[str, np.ndarray]:
     return {
-        "mse": float(np.mean(diff ** 2)),
-        "mse_dropout": _masked_mse(diff, mask_dropout),
-        "mse_biozero": _masked_mse(diff, mask_biozero),
-        "mse_non_zero": _masked_mse(diff, mask_non_zero),
-        "n_total": int(diff.size),
-        "n_dropout": int(mask_dropout.sum()),
-        "n_biozero": int(mask_biozero.sum()),
-        "n_non_zero": int(mask_non_zero.sum()),
+        "biozero": log_true <= EPSILON,
+        "dropout": (log_true > EPSILON) & (log_obs <= EPSILON),
+        "non_zero": (log_true > EPSILON) & (log_obs > EPSILON),
     }
 
 
-def compute_mask_counts(log_true: np.ndarray, log_obs: np.ndarray) -> Dict[str, int]:
-    mask_biozero = log_true <= EPSILON
-    mask_dropout = (log_true > EPSILON) & (log_obs <= EPSILON)
-    mask_non_zero = (log_true > EPSILON) & (log_obs > EPSILON)
+def compute_mse_metrics(
+    log_imp: np.ndarray, log_true: np.ndarray, masks: Dict[str, np.ndarray]
+) -> Dict[str, float]:
+    if log_imp.shape != log_true.shape:
+        raise ValueError(f"log_imp shape {log_imp.shape} does not match log_true {log_true.shape}.")
+    if masks["biozero"].shape != log_true.shape:
+        raise ValueError("Mask shape does not match log_true.")
+    diff = log_true - log_imp
     return {
-        "n_total": int(log_true.size),
-        "n_dropout": int(mask_dropout.sum()),
-        "n_biozero": int(mask_biozero.sum()),
-        "n_non_zero": int(mask_non_zero.sum()),
+        "mse": float(np.mean(diff ** 2)),
+        "mse_dropout": _masked_mse(diff, masks["dropout"]),
+        "mse_biozero": _masked_mse(diff, masks["biozero"]),
+        "mse_non_zero": _masked_mse(diff, masks["non_zero"]),
+        "n_total": int(diff.size),
+        "n_dropout": int(masks["dropout"].sum()),
+        "n_biozero": int(masks["biozero"].sum()),
+        "n_non_zero": int(masks["non_zero"].sum()),
+    }
+
+
+def compute_mask_counts(masks: Dict[str, np.ndarray]) -> Dict[str, int]:
+    return {
+        "n_total": int(masks["biozero"].size),
+        "n_dropout": int(masks["dropout"].sum()),
+        "n_biozero": int(masks["biozero"].sum()),
+        "n_non_zero": int(masks["non_zero"].sum()),
     }
 
 
 def normalize_counts_to_logcounts(
     counts_mat: np.ndarray,
-    denom_noisy: np.ndarray,
-    med_noisy: float,
+    denom_true: np.ndarray,
+    scale_factor: float,
 ) -> np.ndarray:
+    """Normalize counts to log2(1+normalized) using TrueCounts scaling."""
     x = np.asarray(counts_mat, dtype=np.float64)
     x = np.clip(x, 0.0, None)
-    denom = np.asarray(denom_noisy, dtype=np.float64)
+    denom = np.asarray(denom_true, dtype=np.float64)
     denom = np.where(denom > 0.0, denom, 1.0)
-    norm = (x.T / denom).T * float(med_noisy)
+    if denom.shape[0] != x.shape[0]:
+        raise ValueError(f"Normalization size mismatch: denom {denom.shape[0]} vs counts {x.shape[0]}.")
+    norm = (x / denom[:, None]) * float(scale_factor)
     return np.log2(1.0 + norm).astype(np.float32)
+
+
+def _get_coldata_column(sce, name: str) -> Optional[np.ndarray]:
+    coldata = getattr(sce, "column_data", None)
+    if coldata is None:
+        return None
+    try:
+        if hasattr(coldata, "column"):
+            return np.asarray(coldata.column(name))
+        return np.asarray(coldata[name])
+    except Exception:
+        return None
+
+
+def get_normalization_info(sce) -> Dict[str, np.ndarray]:
+    """Return TrueCounts-based library sizes and shared scale factor."""
+    lib_true = _get_coldata_column(sce, "libSizeTrueCounts")
+    if lib_true is None:
+        try:
+            lib_true = np.sum(sce.assay("TrueCounts"), axis=0)
+        except Exception as exc:
+            raise RuntimeError("Missing TrueCounts or libSizeTrueCounts for normalization.") from exc
+
+    lib_true = np.asarray(lib_true, dtype=np.float64)
+    denom_true = np.where(lib_true > 0.0, lib_true, 1.0)
+
+    scale_vals = _get_coldata_column(sce, "scaleFactorTrueCounts")
+    scale_factor = None
+    if scale_vals is not None:
+        scale_vals = np.asarray(scale_vals, dtype=np.float64)
+        scale_vals = scale_vals[np.isfinite(scale_vals) & (scale_vals > 0.0)]
+        if scale_vals.size:
+            scale_factor = float(scale_vals[0])
+    if scale_factor is None:
+        finite = lib_true[lib_true > 0.0]
+        scale_factor = float(np.median(finite)) if finite.size else 1.0
+    if not np.isfinite(scale_factor) or scale_factor <= 0.0:
+        scale_factor = 1.0
+
+    return {"denom_true": denom_true, "scale_factor": scale_factor}
 
 
 def load_dataset(path: str) -> Optional[Dict[str, np.ndarray]]:
@@ -92,13 +149,11 @@ def load_dataset(path: str) -> Optional[Dict[str, np.ndarray]]:
         raise TypeError(f"Unsupported RDS object (expected SingleCellExperiment): {type(sce)}")
 
     logcounts = sce.assay("logcounts").T.astype("float32")
-    keep = np.sum(logcounts > EPSILON, axis=0) >= 2
-    logcounts = logcounts[:, keep]
 
     log_true = None
     for assay_name in ("logTrueCounts", "perfect_logcounts"):
         try:
-            log_true = sce.assay(assay_name).T[:, keep].astype("float32")
+            log_true = sce.assay(assay_name).T.astype("float32")
             break
         except Exception:
             continue
@@ -109,11 +164,26 @@ def load_dataset(path: str) -> Optional[Dict[str, np.ndarray]]:
     counts = None
     try:
         counts = sce.assay("counts").T.astype("float32")
-        counts = counts[:, keep]
     except Exception:
         counts = None
 
-    return {"logcounts": logcounts, "log_true": log_true, "counts": counts}
+    norm_info = get_normalization_info(sce)
+
+    if logcounts.shape != log_true.shape:
+        raise ValueError(f"Assay shape mismatch: logcounts {logcounts.shape} vs logTrueCounts {log_true.shape}.")
+    if counts is not None and counts.shape != logcounts.shape:
+        raise ValueError(f"Assay shape mismatch: counts {counts.shape} vs logcounts {logcounts.shape}.")
+    if norm_info["denom_true"].shape[0] != logcounts.shape[0]:
+        raise ValueError(
+            f"Normalization size mismatch: denom_true {norm_info['denom_true'].shape[0]} vs cells {logcounts.shape[0]}."
+        )
+
+    return {
+        "logcounts": logcounts,
+        "log_true": log_true,
+        "counts": counts,
+        "norm": norm_info,
+    }
 
 
 def collect_rds_files(input_path: str) -> List[Path]:
@@ -132,10 +202,9 @@ def _import_magic():
         import magic
     except Exception as exc:  # pragma: no cover - import error surfaced for user
         raise SystemExit(
-            "Failed to import magic-impute in this Python.\n"
+            "Failed to import magic-impute in this Python. See script header for requirements.\n"
             f"Python: {sys.executable}\n"
             f"Error: {exc}\n"
-            f"Try: {sys.executable} -m pip install --no-user magic-impute"
         ) from exc
 
     if not hasattr(magic, "MAGIC"):  # pragma: no cover - defensive check
@@ -143,9 +212,7 @@ def _import_magic():
         raise SystemExit(
             "Imported a module named 'magic' but it does not provide MAGIC.\n"
             f"Loaded from: {magic_path}\n"
-            "This usually means python-magic (libmagic) is shadowing magic-impute.\n"
-            f"Fix: {sys.executable} -m pip uninstall -y python-magic && "
-            f"{sys.executable} -m pip install --no-user magic-impute"
+            "This usually means python-magic (libmagic) is shadowing magic-impute."
         )
 
     return magic
@@ -168,10 +235,9 @@ def _import_pandas():
         import pandas as pd
     except Exception as exc:  # pragma: no cover - import error surfaced for user
         raise SystemExit(
-            "Failed to import pandas (required for DCA bridge).\n"
+            "Failed to import pandas (required for DCA bridge). See script header for requirements.\n"
             f"Python: {sys.executable}\n"
             f"Error: {exc}\n"
-            f"Try: {sys.executable} -m pip install --no-user pandas"
         ) from exc
     return pd
 
@@ -564,17 +630,9 @@ def main() -> None:
         logcounts = dataset["logcounts"]
         log_true = dataset["log_true"]
         counts = dataset["counts"]
-        mask_counts = compute_mask_counts(log_true, logcounts)
-
-        lib_noisy = None
-        denom_noisy = None
-        med_noisy = None
-        if counts is not None:
-            lib_noisy = counts.sum(axis=1)
-            denom_noisy = np.where(lib_noisy > 0, lib_noisy, 1.0)
-            med_noisy = float(np.median(lib_noisy[lib_noisy > 0])) if np.any(lib_noisy > 0) else 1.0
-            if not np.isfinite(med_noisy) or med_noisy <= 0:
-                med_noisy = 1.0
+        norm_info = dataset["norm"]
+        masks = compute_masks(log_true, logcounts)
+        mask_counts = compute_mask_counts(masks)
 
         for method in methods:
             print(f"  -> {method}")
@@ -601,7 +659,9 @@ def main() -> None:
                             ridge=args.dca_ridge,
                             verbose=args.dca_verbose,
                         )
-                        log_imp = normalize_counts_to_logcounts(counts_imp, denom_noisy, med_noisy)
+                        log_imp = normalize_counts_to_logcounts(
+                            counts_imp, norm_info["denom_true"], norm_info["scale_factor"]
+                        )
                     elif method == "autoclass":
                         log_imp = run_autoclass(logcounts, args.autoclass_dir, autoclass_kwargs)
                     else:
@@ -613,7 +673,7 @@ def main() -> None:
                             f"{ds_name}: {method} output shape {log_imp.shape} does not match logTrueCounts {log_true.shape}"
                         )
 
-                    metrics_runs.append(compute_mse_metrics(log_imp, log_true, logcounts))
+                    metrics_runs.append(compute_mse_metrics(log_imp, log_true, masks))
                     runtimes.append(runtime)
                 except Exception as exc:
                     error_msg = str(exc)

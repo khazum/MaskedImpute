@@ -15,7 +15,7 @@ The best configuration is the top row (config_id 1) in:
 - `results_small12_ae2/mask_impute12_mse_table.tsv` (per-dataset metrics)
 
 Selection was done by `mask_impute12.py` using a grid search on
-`synthetic_datasets_small/`. The objective used for selection was:
+`synthetic_datasets/`. The objective used for selection was:
 
 ```
 objective = avg_bz + (lambda_mse * avg_mse)

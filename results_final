@@ -1,0 +1,10 @@
+Balanced (results_splat17_balanced_grid/masked_imputation17_tuning.tsv)
+
+  - best balanced score: p_bio_temp=1.5, p_bio_bias=0.5, proxy_drop_weight=0.3
+    avg_mse=0.7419909239, avg_bz_mse=0.1361534018, score=0.5071488637
+
+  Non‑balanced (results_splat17_mse_grid/masked_imputation17_tuning.tsv)
+
+  - best avg_mse: p_bio_temp=2.0, p_bio_bias=-1.0, proxy_drop_weight=0.5
+    avg_mse=0.4800379053, avg_bz_mse=0.4654148519, score=0.7054338045
+

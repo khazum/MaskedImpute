@@ -1,4 +1,4 @@
-   Ran: python mask_impute5.py synthetic_datasets_small results_small6 --max-evals 60 --target-mse 0.75 --target-biozero 0.25
+   Ran: python mask_impute5.py synthetic_datasets results_small6 --max-evals 60 --target-mse 0.75 --target-biozero 0.25
 
   - Achieved targets: avg MSE 0.661250, avg biozero MSE 0.210034
   - Best config (key pieces): p_zero=0.0, p_nz=0.2, noise_max=0.5, hidden=[128,64], bottleneck=64, epochs=100, lr=5e-4, bio_reg_weight=1.0, post_threshold=0.0, post_gene_quantile=0.1,
@@ -54,13 +54,13 @@ Added a supervised zero‑scale calibrator in mask_impute8.py that fits per‑ge
   imputation; this runs after the zero‑threshold step. I also wired the new parameters through tuning/output and tightened the default zero‑scale grids around the ranges that actually hit
   the targets.
 
-  On synthetic_datasets_small, the best run now meets both thresholds and clears the ≥5% improvement requirement via biozero:
+  On synthetic_datasets, the best run now meets both thresholds and clears the ≥5% improvement requirement via biozero:
 
   - avg_mse=0.658401 and avg_bz=0.190786 in results_small8_zero_scale8/mask_impute8_mse_table.tsv (≈9% BZ improvement vs 0.210034).
 
   Best‑known run command (exact reproduction):
 
-  python mask_impute8.py synthetic_datasets_small results_small8_zero_scale8 \
+  python mask_impute8.py synthetic_datasets results_small8_zero_scale8 \
     --max-evals 1 --lambda-mse 0.5 \
     --thr-drop-grid 0.9 --disp-mode-grid estimate --disp-const-grid 0.05 --use-cell-factor-grid true \
     --tau-dispersion-grid 20 --tau-group-dispersion-grid 20 --tau-dropout-grid 50 \
@@ -108,7 +108,7 @@ Added a supervised zero‑scale calibrator in mask_impute8.py that fits per‑ge
 
   Run command used for the best result:
 
-  python mask_impute9.py synthetic_datasets_small results_small9_czero_grid3 \
+  python mask_impute9.py synthetic_datasets results_small9_czero_grid3 \
     --max-evals 1 \
     --constrained-zero-scale --constrained-zero-max-mse-inc 0.027 \
     --thr-drop-grid 0.9 \
@@ -246,7 +246,7 @@ Added a supervised zero‑scale calibrator in mask_impute8.py that fits per‑ge
 
   Run command (repro for the passing config selection):
 
-  python mask_impute10.py synthetic_datasets_small results_small10_iso2_target \
+  python mask_impute10.py synthetic_datasets results_small10_iso2_target \
     --max-evals 10 \
     --target-mse 0.6649 --target-biozero 0.1439 \
     --constrained-zero-scale --constrained-zero-max-mse-inc 0.01 \
@@ -394,7 +394,7 @@ Added a supervised zero‑scale calibrator in mask_impute8.py that fits per‑ge
 
   Run Command
 
-  python mask_impute11.py synthetic_datasets_small results_small11_iso1 \
+  python mask_impute11.py synthetic_datasets results_small11_iso1 \
     --max-evals 9 \
     --target-mse 0.6657 --target-biozero 0.1096 \
     --constrained-zero-scale --constrained-zero-max-mse-inc 0.01 \
@@ -558,7 +558,7 @@ Added a supervised zero‑scale calibrator in mask_impute8.py that fits per‑ge
   - Full reproduction is written to results_small13/mask_impute13_mse_table.tsv and pruned output to results_small13/mask_impute13_pruned_mse_table.tsv; contribution details are in
     results_small13/mask_impute13_component_scores.tsv.
 
-  Run results (synthetic_datasets_small)
+  Run results (synthetic_datasets)
 
   - Full (replicated) avg_mse=0.638699, avg_bz=0.085472 in results_small13/mask_impute13_mse_table.tsv.
   - Pruned avg_mse=0.642774, avg_bz=0.082425 in results_small13/mask_impute13_pruned_mse_table.tsv.
@@ -566,7 +566,7 @@ Added a supervised zero‑scale calibrator in mask_impute8.py that fits per‑ge
 
   Command used
 
-  python mask_impute13.py synthetic_datasets_small results_small13
+  python mask_impute13.py synthetic_datasets results_small13
 
   If you want to iterate further:
 
@@ -578,14 +578,14 @@ Added a supervised zero‑scale calibrator in mask_impute8.py that fits per‑ge
 • Created mask_impute14.py by stripping the blend step and replacing the single‑component pruning with exhaustive combo scoring over zero_iso, dropout_iso, and constrained_zero while keeping
   keep_positive (and hard_zero_bio) always on. The script now writes a combo score table with avg_mse/avg_bz for all 8 combinations.
 
-  Results from running on synthetic_datasets_small/:
+  Results from running on synthetic_datasets/:
 
   - Best combo: zero_iso+dropout_iso+constrained_zero with avg_mse=0.697960 and avg_bz=0.069912.
   - Output table: results_small14/mask_impute14_combo_scores.tsv.
 
   Run command:
 
-  python mask_impute14.py synthetic_datasets_small results_small14
+  python mask_impute14.py synthetic_datasets results_small14
 
   Files changed/added:
 
