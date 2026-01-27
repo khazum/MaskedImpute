@@ -9,7 +9,8 @@
 
 # --- 1) Configuration & Setup ---
 OUT_DIR <- "rds_splat_output"
-CELL_COUNTS <- c(1000, 10000)
+#CELL_COUNTS <- c(1000, 5000, 10000, 15000, 20000, 25000, 30000)
+CELL_COUNTS <- c(100)
 N_GENES <- 1100
 MIN_CELLS_EXPRESSED <- 3
 SEED <- 42

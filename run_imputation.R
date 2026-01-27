@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # run_imputation.R
-# Usage: Rscript run_imputation.R <input_rds_file_or_dir> <output_dir> [ncores] [n_repeats]
+# Usage: Rscript run_imputation.R <input_rds_file_or_dir> <output_dir> [ncores] [n_repeats] [methods]
 #
 # Runs SAVER and ccImpute on each input dataset and reports:
 #   - overall MSE
@@ -20,7 +20,7 @@ stopf <- function(fmt, ...) stop(sprintf(fmt, ...), call. = FALSE)
 
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) < 2) {
-  stopf("Usage: Rscript run_imputation.R <input_rds_file_or_dir> <output_dir> [ncores] [n_repeats]")
+  stopf("Usage: Rscript run_imputation.R <input_rds_file_or_dir> <output_dir> [ncores] [n_repeats] [methods]")
 }
 
 input_path <- args[1]
@@ -29,6 +29,7 @@ ncores <- if (length(args) >= 3) as.integer(args[3]) else parallel::detectCores(
 if (is.na(ncores) || ncores < 1) ncores <- 1
 n_repeats <- if (length(args) >= 4) as.integer(args[4]) else 10L
 if (is.na(n_repeats) || n_repeats < 1) n_repeats <- 1L
+methods_arg <- if (length(args) >= 5) args[5] else "all"
 
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
@@ -56,10 +57,16 @@ save_imputed <- function(dataset_name, data, method) {
   cat(sprintf("  [%s] Saved imputed matrix to %s\n", method, filename))
 }
 
-# Extract TrueCounts-based library sizes and shared scale factor.
+# Extract TrueCounts-based library sizes, size factors, and shared scale factor.
 get_normalization_info <- function(sce) {
-  if ("libSizeTrueCounts" %in% colnames(colData(sce))) {
-    lib_true <- colData(sce)$libSizeTrueCounts
+  coldata <- colData(sce)
+  md_norm <- metadata(sce)$normalization
+
+  lib_true <- NULL
+  if ("libSizeTrueCounts" %in% colnames(coldata)) {
+    lib_true <- as.numeric(coldata$libSizeTrueCounts)
+  } else if (!is.null(md_norm$library_sizes)) {
+    lib_true <- as.numeric(md_norm$library_sizes)
   } else if ("TrueCounts" %in% assayNames(sce)) {
     lib_true <- colSums(assay(sce, "TrueCounts"))
   } else {
@@ -71,17 +78,50 @@ get_normalization_info <- function(sce) {
   }
 
   scale_factor <- NA_real_
-  if ("scaleFactorTrueCounts" %in% colnames(colData(sce))) {
-    scale_vals <- unique(as.numeric(colData(sce)$scaleFactorTrueCounts))
+  if ("scaleFactorTrueCounts" %in% colnames(coldata)) {
+    scale_vals <- unique(as.numeric(coldata$scaleFactorTrueCounts))
     scale_vals <- scale_vals[is.finite(scale_vals) & scale_vals > 0]
     if (length(scale_vals) > 0) scale_factor <- scale_vals[1]
+  }
+  if (!is.finite(scale_factor) || scale_factor <= 0) {
+    if (!is.null(md_norm$scale_factor)) {
+      scale_factor <- as.numeric(md_norm$scale_factor)[1]
+    }
   }
   if (!is.finite(scale_factor) || scale_factor <= 0) {
     scale_factor <- stats::median(lib_true[lib_true > 0])
   }
   if (!is.finite(scale_factor) || scale_factor <= 0) scale_factor <- 1
 
-  list(lib_true = lib_true, scale_factor = scale_factor)
+  size_factor <- NULL
+  if ("sizeFactorTrueCounts" %in% colnames(coldata)) {
+    size_factor <- as.numeric(coldata$sizeFactorTrueCounts)
+  } else if ("sizeFactorsTrueCounts" %in% colnames(coldata)) {
+    size_factor <- as.numeric(coldata$sizeFactorsTrueCounts)
+  } else if (!is.null(md_norm$size_factors)) {
+    size_factor <- as.numeric(md_norm$size_factors)
+  }
+  if (is.null(size_factor)) {
+    size_factor <- lib_true / scale_factor
+  }
+  if (length(size_factor) != ncol(sce)) {
+    stopf("sizeFactorTrueCounts length (%d) does not match number of cells (%d).",
+          length(size_factor), ncol(sce))
+  }
+  size_factor <- as.numeric(size_factor)
+
+  list(lib_true = lib_true, scale_factor = scale_factor, size_factor = size_factor)
+}
+
+# Convert counts to log2(1+normalized) using TrueCounts size factors.
+normalize_counts_to_logcounts <- function(counts, size_factor) {
+  counts <- as.matrix(counts)
+  if (ncol(counts) != length(size_factor)) {
+    stopf("Size factor length (%d) does not match number of cells (%d).",
+          length(size_factor), ncol(counts))
+  }
+  denom <- ifelse(is.finite(size_factor) & size_factor > 0, size_factor, 1)
+  log2(1 + t(t(counts) / denom))
 }
 
 # Precompute masks for dropout and biological zero stratification.
@@ -206,7 +246,7 @@ if (dir.exists(input_path)) {
 }
 if (length(input_files) == 0) stopf("No .rds files found under: %s", input_path)
 
-methods <- c("baseline", "saver", "ccimpute")
+methods <- parse_methods(methods_arg)
 all_results <- list()
 
 for (input_file in input_files) {
@@ -230,8 +270,7 @@ for (input_file in input_files) {
   }
 
   norm_info <- get_normalization_info(sce)
-  scale_factor <- norm_info$scale_factor
-  lib_true <- as.numeric(norm_info$lib_true)
+  size_factor_true <- as.numeric(norm_info$size_factor)
 
   masks <- compute_masks(log_true, log_obs)
   n_total <- length(log_true)
@@ -239,186 +278,196 @@ for (input_file in input_files) {
   n_biozero <- sum(masks$biozero)
   n_non_zero <- sum(masks$non_zero)
 
-  # --- Baseline (no imputation) ---
-  cat(sprintf("Running baseline (no imputation) x%d...\n", n_repeats))
-  baseline_metrics <- list()
-  baseline_runtimes <- numeric()
-  baseline_err <- NA_character_
-  for (i in seq_len(n_repeats)) {
-    t0 <- proc.time()
-    res <- tryCatch({
-      log_imp <- log_obs
-      compute_mse_metrics(log_imp, log_true, masks)
-    }, error = function(e) {
-      baseline_err <<- conditionMessage(e)
-      report_error(dataset_name, "baseline", baseline_err)
-      NULL
-    })
-    elapsed <- (proc.time() - t0)["elapsed"]
-    if (is.null(res)) break
-    baseline_metrics[[length(baseline_metrics) + 1]] <- res
-    baseline_runtimes <- c(baseline_runtimes, elapsed)
-  }
-  baseline_row <- data.frame(
-    dataset = dataset_name,
-    method = "baseline",
-    summarize_repeats(
-      baseline_metrics,
-      baseline_runtimes,
-      n_total,
-      n_dropout,
-      n_biozero,
-      n_non_zero,
-      baseline_err
-    ),
-    stringsAsFactors = FALSE
-  )
-  all_results[[length(all_results) + 1]] <- baseline_row
-
-  # --- SAVER ---
-  cat(sprintf("Running SAVER x%d...\n", n_repeats))
-  require_pkg("SAVER")
-  # SAVER drops zero-count cells internally; pre-filter and align normalization.
-  lib_obs <- Matrix::colSums(counts)
-  nonzero_cells <- lib_obs > 0
-  if (!all(nonzero_cells)) {
-    cat(sprintf("  [saver] Dropping %d zero-expression cells.\n", sum(!nonzero_cells)))
-  }
-  valid_lib <- is.finite(lib_true) & lib_true > 0
-  if (!all(valid_lib)) {
-    cat(sprintf("  [saver] Dropping %d cells with invalid TrueCounts library sizes.\n", sum(!valid_lib)))
-  }
-  saver_cells <- nonzero_cells & valid_lib
-  counts_saver <- Matrix::Matrix(counts[, saver_cells, drop = FALSE], sparse = TRUE)
-  if (ncol(counts_saver) < 2 || nrow(counts_saver) < 1) {
-    saver_err <- "Insufficient cells or genes after filtering."
-    report_error(dataset_name, "saver", saver_err)
-    saver_metrics <- list()
-    saver_runtimes <- numeric()
-  } else {
-    mean_obs <- mean(lib_obs[saver_cells])
-    if (!is.finite(mean_obs) || mean_obs <= 0) mean_obs <- 1
-    scale_adj <- (lib_obs[saver_cells] / mean_obs) * (scale_factor / lib_true[saver_cells])
-    # If no predictor genes pass SAVER's mean threshold, fall back to null model.
-    use_null_model <- all(Matrix::rowMeans(counts_saver) < 0.1)
-    if (use_null_model) {
-      cat("  [saver] Using null model (no predictor genes above mean threshold).\n")
-    }
-
-    saver_ncores <- ncores
-    if (saver_ncores > 1) {
-      message("SAVER can be unstable with ncores > 1; using ncores = 1.")
-      saver_ncores <- 1
-    }
-    saver_metrics <- list()
-    saver_runtimes <- numeric()
-    saver_err <- NA_character_
+  if ("baseline" %in% methods) {
+    # --- Baseline (no imputation) ---
+    cat(sprintf("Running baseline (no imputation) x%d...\n", n_repeats))
+    baseline_metrics <- list()
+    baseline_runtimes <- numeric()
+    baseline_err <- NA_character_
     for (i in seq_len(n_repeats)) {
-      attempt_null_model <- use_null_model
-      repeat {
-        t0 <- proc.time()
-        res <- tryCatch({
-          saver_imp <- SAVER::saver(
-            counts_saver,
-            ncores = saver_ncores,
-            null.model = attempt_null_model
-          )
-          saver_est <- as.matrix(saver_imp$estimate)
-          saver_est_scaled <- sweep(saver_est, 2, scale_adj, "*")
-          saver_est_full <- matrix(0, nrow = nrow(counts), ncol = ncol(counts), dimnames = dimnames(counts))
-          saver_est_full[, saver_cells] <- saver_est_scaled
-          if (i == 1) save_imputed(dataset_name, saver_est_full, "saver")
-
-          log_imp <- log_obs
-          log_imp[, saver_cells] <- log2(1 + saver_est_scaled)
-          compute_mse_metrics(log_imp, log_true, masks)
-        }, error = function(e) {
-          saver_err <<- conditionMessage(e)
-          report_error(dataset_name, "saver", saver_err)
-          NULL
-        })
-        elapsed <- (proc.time() - t0)["elapsed"]
-        if (is.null(res) && !attempt_null_model) {
-          cat("  [saver] Retrying with null model due to error.\n")
-          attempt_null_model <- TRUE
-          next
-        }
-        break
-      }
+      t0 <- proc.time()
+      res <- tryCatch({
+        log_imp <- log_obs
+        compute_mse_metrics(log_imp, log_true, masks)
+      }, error = function(e) {
+        baseline_err <<- conditionMessage(e)
+        report_error(dataset_name, "baseline", baseline_err)
+        NULL
+      })
+      elapsed <- (proc.time() - t0)["elapsed"]
       if (is.null(res)) break
-      use_null_model <- attempt_null_model
-      saver_metrics[[length(saver_metrics) + 1]] <- res
-      saver_runtimes <- c(saver_runtimes, elapsed)
+      baseline_metrics[[length(baseline_metrics) + 1]] <- res
+      baseline_runtimes <- c(baseline_runtimes, elapsed)
     }
-  }
-  saver_row <- data.frame(
-    dataset = dataset_name,
-    method = "saver",
-    summarize_repeats(
-      saver_metrics,
-      saver_runtimes,
-      n_total,
-      n_dropout,
-      n_biozero,
-      n_non_zero,
-      saver_err
-    ),
-    stringsAsFactors = FALSE
-  )
-  all_results[[length(all_results) + 1]] <- saver_row
-
-  # --- ccImpute ---
-  cat(sprintf("Running ccImpute x%d...\n", n_repeats))
-  require_pkg("ccImpute")
-  require_pkg("BiocParallel")
-
-  n_groups <- NA_integer_
-  if (!is.null(colData(sce)$Group)) n_groups <- length(unique(colData(sce)$Group))
-  if (!is.finite(n_groups) || n_groups < 2) n_groups <- 2
-
-  bpp <- BiocParallel::SerialParam()
-  if (ncores > 1) {
-    bpp <- tryCatch(
-      BiocParallel::MulticoreParam(workers = ncores),
-      error = function(e) BiocParallel::SerialParam()
+    baseline_row <- data.frame(
+      dataset = dataset_name,
+      method = "baseline",
+      summarize_repeats(
+        baseline_metrics,
+        baseline_runtimes,
+        n_total,
+        n_dropout,
+        n_biozero,
+        n_non_zero,
+        baseline_err
+      ),
+      stringsAsFactors = FALSE
     )
+    all_results[[length(all_results) + 1]] <- baseline_row
   }
 
-  cc_metrics <- list()
-  cc_runtimes <- numeric()
-  cc_err <- NA_character_
-  for (i in seq_len(n_repeats)) {
-    t0 <- proc.time()
-    res <- tryCatch({
-      cc_obj <- ccImpute::ccImpute(sce, k = n_groups, verbose = FALSE, BPPARAM = bpp)
-      log_imp <- assay(cc_obj, "imputed")
-      if (i == 1) save_imputed(dataset_name, log_imp, "ccimpute")
-      compute_mse_metrics(log_imp, log_true, masks)
-    }, error = function(e) {
-      cc_err <<- conditionMessage(e)
-      report_error(dataset_name, "ccimpute", cc_err)
-      NULL
-    })
-    elapsed <- (proc.time() - t0)["elapsed"]
-    if (is.null(res)) break
-    cc_metrics[[length(cc_metrics) + 1]] <- res
-    cc_runtimes <- c(cc_runtimes, elapsed)
+  if ("saver" %in% methods) {
+    # --- SAVER ---
+    cat(sprintf("Running SAVER x%d...\n", n_repeats))
+    require_pkg("SAVER")
+    # SAVER drops zero-count cells internally; pre-filter and align normalization.
+    lib_obs <- Matrix::colSums(counts)
+    nonzero_cells <- lib_obs > 0
+    if (!all(nonzero_cells)) {
+      cat(sprintf("  [saver] Dropping %d zero-expression cells.\n", sum(!nonzero_cells)))
+    }
+    valid_sf <- is.finite(size_factor_true) & size_factor_true > 0
+    if (!all(valid_sf)) {
+      cat(sprintf("  [saver] Dropping %d cells with invalid TrueCounts size factors.\n", sum(!valid_sf)))
+    }
+    saver_cells <- nonzero_cells & valid_sf
+    counts_saver <- Matrix::Matrix(counts[, saver_cells, drop = FALSE], sparse = TRUE)
+    if (ncol(counts_saver) < 2 || nrow(counts_saver) < 1) {
+      saver_err <- "Insufficient cells or genes after filtering."
+      report_error(dataset_name, "saver", saver_err)
+      saver_metrics <- list()
+      saver_runtimes <- numeric()
+    } else {
+      mean_obs <- mean(lib_obs[saver_cells])
+      if (!is.finite(mean_obs) || mean_obs <= 0) mean_obs <- 1
+      size_factor_obs <- lib_obs[saver_cells] / mean_obs
+      # If no predictor genes pass SAVER's mean threshold, fall back to null model.
+      use_null_model <- all(Matrix::rowMeans(counts_saver) < 0.1)
+      if (use_null_model) {
+        cat("  [saver] Using null model (no predictor genes above mean threshold).\n")
+      }
+
+      saver_ncores <- ncores
+      if (saver_ncores > 1) {
+        message("SAVER can be unstable with ncores > 1; using ncores = 1.")
+        saver_ncores <- 1
+      }
+      saver_metrics <- list()
+      saver_runtimes <- numeric()
+      saver_err <- NA_character_
+      for (i in seq_len(n_repeats)) {
+        attempt_null_model <- use_null_model
+        repeat {
+          t0 <- proc.time()
+          res <- tryCatch({
+            saver_imp <- SAVER::saver(
+              counts_saver,
+              ncores = saver_ncores,
+              null.model = attempt_null_model
+            )
+            saver_est <- as.matrix(saver_imp$estimate)
+            saver_counts <- sweep(saver_est, 2, size_factor_obs, "*")
+            saver_norm <- sweep(saver_counts, 2, size_factor_true[saver_cells], "/")
+            saver_est_full <- matrix(0, nrow = nrow(counts), ncol = ncol(counts), dimnames = dimnames(counts))
+            saver_est_full[, saver_cells] <- saver_norm
+            if (i == 1) save_imputed(dataset_name, saver_est_full, "saver")
+
+            log_imp <- log_obs
+            log_imp[, saver_cells] <- normalize_counts_to_logcounts(
+              saver_counts,
+              size_factor_true[saver_cells]
+            )
+            compute_mse_metrics(log_imp, log_true, masks)
+          }, error = function(e) {
+            saver_err <<- conditionMessage(e)
+            report_error(dataset_name, "saver", saver_err)
+            NULL
+          })
+          elapsed <- (proc.time() - t0)["elapsed"]
+          if (is.null(res) && !attempt_null_model) {
+            cat("  [saver] Retrying with null model due to error.\n")
+            attempt_null_model <- TRUE
+            next
+          }
+          break
+        }
+        if (is.null(res)) break
+        use_null_model <- attempt_null_model
+        saver_metrics[[length(saver_metrics) + 1]] <- res
+        saver_runtimes <- c(saver_runtimes, elapsed)
+      }
+    }
+    saver_row <- data.frame(
+      dataset = dataset_name,
+      method = "saver",
+      summarize_repeats(
+        saver_metrics,
+        saver_runtimes,
+        n_total,
+        n_dropout,
+        n_biozero,
+        n_non_zero,
+        saver_err
+      ),
+      stringsAsFactors = FALSE
+    )
+    all_results[[length(all_results) + 1]] <- saver_row
   }
-  cc_row <- data.frame(
-    dataset = dataset_name,
-    method = "ccimpute",
-    summarize_repeats(
-      cc_metrics,
-      cc_runtimes,
-      n_total,
-      n_dropout,
-      n_biozero,
-      n_non_zero,
-      cc_err
-    ),
-    stringsAsFactors = FALSE
-  )
-  all_results[[length(all_results) + 1]] <- cc_row
+
+  if ("ccimpute" %in% methods) {
+    # --- ccImpute ---
+    cat(sprintf("Running ccImpute x%d...\n", n_repeats))
+    require_pkg("ccImpute")
+    require_pkg("BiocParallel")
+
+    n_groups <- NA_integer_
+    if (!is.null(colData(sce)$Group)) n_groups <- length(unique(colData(sce)$Group))
+    if (!is.finite(n_groups) || n_groups < 2) n_groups <- 2
+
+    bpp <- BiocParallel::SerialParam()
+    if (ncores > 1) {
+      bpp <- tryCatch(
+        BiocParallel::MulticoreParam(workers = ncores),
+        error = function(e) BiocParallel::SerialParam()
+      )
+    }
+
+    cc_metrics <- list()
+    cc_runtimes <- numeric()
+    cc_err <- NA_character_
+    for (i in seq_len(n_repeats)) {
+      t0 <- proc.time()
+      res <- tryCatch({
+        cc_obj <- ccImpute::ccImpute(sce, k = n_groups, verbose = FALSE, BPPARAM = bpp)
+        log_imp <- assay(cc_obj, "imputed")
+        if (i == 1) save_imputed(dataset_name, log_imp, "ccimpute")
+        compute_mse_metrics(log_imp, log_true, masks)
+      }, error = function(e) {
+        cc_err <<- conditionMessage(e)
+        report_error(dataset_name, "ccimpute", cc_err)
+        NULL
+      })
+      elapsed <- (proc.time() - t0)["elapsed"]
+      if (is.null(res)) break
+      cc_metrics[[length(cc_metrics) + 1]] <- res
+      cc_runtimes <- c(cc_runtimes, elapsed)
+    }
+    cc_row <- data.frame(
+      dataset = dataset_name,
+      method = "ccimpute",
+      summarize_repeats(
+        cc_metrics,
+        cc_runtimes,
+        n_total,
+        n_dropout,
+        n_biozero,
+        n_non_zero,
+        cc_err
+      ),
+      stringsAsFactors = FALSE
+    )
+    all_results[[length(all_results) + 1]] <- cc_row
+  }
 
 }
 
@@ -431,3 +480,17 @@ for (m in methods) {
 }
 
 cat("\nDone.\n")
+parse_methods <- function(raw) {
+  if (is.null(raw) || !nzchar(raw) || tolower(raw) == "all") {
+    return(c("baseline", "saver", "ccimpute"))
+  }
+  methods <- tolower(unlist(strsplit(raw, ",")))
+  methods <- methods[nzchar(methods)]
+  allowed <- c("baseline", "saver", "ccimpute")
+  unknown <- setdiff(methods, allowed)
+  if (length(unknown) > 0) {
+    stopf("Unknown methods: %s. Allowed: %s or 'all'.",
+          paste(unknown, collapse = ", "), paste(allowed, collapse = ", "))
+  }
+  unique(methods)
+}

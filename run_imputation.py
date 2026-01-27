@@ -11,8 +11,8 @@ Required Python packages: rds2py, numpy.
 Method-specific dependencies: magic-impute (MAGIC), pandas + DCA CLI (DCA bridge),
 and AutoClass with its Python requirements (e.g., tensorflow).
 
-Normalization for imputed counts uses the dataset's TrueCounts-derived library
-sizes and shared scale factor (median TrueCounts library size).
+Normalization for imputed counts uses the dataset's TrueCounts-derived size
+factors (libSizeTrueCounts/scaleFactorTrueCounts or stored sizeFactor values).
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ except Exception as exc:  # pragma: no cover - import error surfaced for user
     ) from exc
 
 EPSILON = 1e-6
-METHODS = ("magic", "dca", "autoclass")
+METHODS = ("magic", "dca", "autoclass", "low_mse", "balanced_mse")
 
 
 def _masked_mse(diff: np.ndarray, mask: np.ndarray) -> float:
@@ -89,17 +89,16 @@ def compute_mask_counts(masks: Dict[str, np.ndarray]) -> Dict[str, int]:
 
 def normalize_counts_to_logcounts(
     counts_mat: np.ndarray,
-    denom_true: np.ndarray,
-    scale_factor: float,
+    size_factors: np.ndarray,
 ) -> np.ndarray:
-    """Normalize counts to log2(1+normalized) using TrueCounts scaling."""
+    """Normalize counts to log2(1+normalized) using TrueCounts size factors."""
     x = np.asarray(counts_mat, dtype=np.float64)
     x = np.clip(x, 0.0, None)
-    denom = np.asarray(denom_true, dtype=np.float64)
-    denom = np.where(denom > 0.0, denom, 1.0)
-    if denom.shape[0] != x.shape[0]:
-        raise ValueError(f"Normalization size mismatch: denom {denom.shape[0]} vs counts {x.shape[0]}.")
-    norm = (x / denom[:, None]) * float(scale_factor)
+    sf = np.asarray(size_factors, dtype=np.float64)
+    sf = np.where(sf > 0.0, sf, 1.0)
+    if sf.shape[0] != x.shape[0]:
+        raise ValueError(f"Normalization size mismatch: size_factors {sf.shape[0]} vs counts {x.shape[0]}.")
+    norm = x / sf[:, None]
     return np.log2(1.0 + norm).astype(np.float32)
 
 
@@ -115,9 +114,22 @@ def _get_coldata_column(sce, name: str) -> Optional[np.ndarray]:
         return None
 
 
+def _get_metadata_normalization(sce) -> Dict[str, object]:
+    md = getattr(sce, "metadata", None)
+    if isinstance(md, dict):
+        norm = md.get("normalization")
+        if isinstance(norm, dict):
+            return norm
+    return {}
+
+
 def get_normalization_info(sce) -> Dict[str, np.ndarray]:
-    """Return TrueCounts-based library sizes and shared scale factor."""
+    """Return TrueCounts-based library sizes, size factors, and scale factor."""
+    md_norm = _get_metadata_normalization(sce)
+
     lib_true = _get_coldata_column(sce, "libSizeTrueCounts")
+    if lib_true is None and md_norm.get("library_sizes") is not None:
+        lib_true = md_norm.get("library_sizes")
     if lib_true is None:
         try:
             lib_true = np.sum(sce.assay("TrueCounts"), axis=0)
@@ -125,7 +137,6 @@ def get_normalization_info(sce) -> Dict[str, np.ndarray]:
             raise RuntimeError("Missing TrueCounts or libSizeTrueCounts for normalization.") from exc
 
     lib_true = np.asarray(lib_true, dtype=np.float64)
-    denom_true = np.where(lib_true > 0.0, lib_true, 1.0)
 
     scale_vals = _get_coldata_column(sce, "scaleFactorTrueCounts")
     scale_factor = None
@@ -134,13 +145,35 @@ def get_normalization_info(sce) -> Dict[str, np.ndarray]:
         scale_vals = scale_vals[np.isfinite(scale_vals) & (scale_vals > 0.0)]
         if scale_vals.size:
             scale_factor = float(scale_vals[0])
+    if scale_factor is None and md_norm.get("scale_factor") is not None:
+        try:
+            scale_factor = float(md_norm.get("scale_factor"))
+        except Exception:
+            scale_factor = None
     if scale_factor is None:
         finite = lib_true[lib_true > 0.0]
         scale_factor = float(np.median(finite)) if finite.size else 1.0
     if not np.isfinite(scale_factor) or scale_factor <= 0.0:
         scale_factor = 1.0
 
-    return {"denom_true": denom_true, "scale_factor": scale_factor}
+    size_factors = None
+    for key in ("sizeFactorTrueCounts", "sizeFactorsTrueCounts"):
+        size_factors = _get_coldata_column(sce, key)
+        if size_factors is not None:
+            break
+    if size_factors is None and md_norm.get("size_factors") is not None:
+        size_factors = md_norm.get("size_factors")
+    if size_factors is None:
+        size_factors = lib_true / scale_factor
+
+    size_factors = np.asarray(size_factors, dtype=np.float64)
+    size_factors = np.where(np.isfinite(size_factors) & (size_factors > 0.0), size_factors, 1.0)
+
+    return {
+        "lib_true": lib_true,
+        "scale_factor": scale_factor,
+        "size_factors": size_factors,
+    }
 
 
 def load_dataset(path: str) -> Optional[Dict[str, np.ndarray]]:
@@ -173,9 +206,9 @@ def load_dataset(path: str) -> Optional[Dict[str, np.ndarray]]:
         raise ValueError(f"Assay shape mismatch: logcounts {logcounts.shape} vs logTrueCounts {log_true.shape}.")
     if counts is not None and counts.shape != logcounts.shape:
         raise ValueError(f"Assay shape mismatch: counts {counts.shape} vs logcounts {logcounts.shape}.")
-    if norm_info["denom_true"].shape[0] != logcounts.shape[0]:
+    if norm_info["size_factors"].shape[0] != logcounts.shape[0]:
         raise ValueError(
-            f"Normalization size mismatch: denom_true {norm_info['denom_true'].shape[0]} vs cells {logcounts.shape[0]}."
+            f"Normalization size mismatch: size_factors {norm_info['size_factors'].shape[0]} vs cells {logcounts.shape[0]}."
         )
 
     return {
@@ -508,9 +541,85 @@ def run_autoclass(logcounts: np.ndarray, autoclass_dir: Optional[str], autoclass
     return out.astype(np.float32)
 
 
-def parse_methods(raw: str) -> List[str]:
+def _import_masked26():
+    try:
+        import masked_imputation26 as mi26
+    except Exception as exc:  # pragma: no cover - import error surfaced for user
+        raise SystemExit(
+            "Failed to import masked_imputation26. Ensure dependencies (torch, numpy) are available.\n"
+            f"Python: {sys.executable}\n"
+            f"Error: {exc}\n"
+        ) from exc
+    return mi26
+
+
+def _counts_obs_from_logcounts(logcounts: np.ndarray, counts: Optional[np.ndarray]) -> np.ndarray:
+    if counts is None:
+        return np.clip(np.expm1(logcounts * np.log(2.0)), 0.0, None).astype(np.float32)
+    return np.clip(counts, 0.0, None).astype(np.float32)
+
+
+def _cell_zero_norm(zeros_obs: np.ndarray) -> np.ndarray:
+    cell_zero_frac = zeros_obs.mean(axis=1).astype(np.float32)
+    cz_lo = float(np.percentile(cell_zero_frac, 5.0))
+    cz_hi = float(np.percentile(cell_zero_frac, 95.0))
+    cz_span = max(cz_hi - cz_lo, EPSILON)
+    return np.clip((cell_zero_frac - cz_lo) / cz_span, 0.0, 1.0).astype(np.float32)
+
+
+def run_masked26(
+    logcounts: np.ndarray,
+    counts: Optional[np.ndarray],
+    *,
+    bio_reg_weight: float,
+    seed: int,
+) -> np.ndarray:
+    import torch
+
+    mi26 = _import_masked26()
+    device = torch.device("cuda")
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested for masked_imputation26 but not available.")
+
+    counts_obs = _counts_obs_from_logcounts(logcounts, counts)
+    zeros_obs = counts_obs <= 0.0
+    counts_max = counts_obs.max(axis=0)
+    cell_zero_norm = _cell_zero_norm(zeros_obs)
+
+    mi26.AE_PARAMS["bio_reg_weight"] = float(bio_reg_weight)
+    mi26.set_seed(int(seed))
+    p_bio = mi26.splat_cellaware_bio_prob(
+        counts=counts_obs,
+        zeros_obs=zeros_obs,
+        disp_mode=mi26.BIO_PARAMS["disp_mode"],
+        use_cell_factor=mi26.BIO_PARAMS["use_cell_factor"],
+    )
+    if float(mi26.BIO_PARAMS["cell_zero_weight"]) > 0.0:
+        cell_w = np.clip(
+            float(mi26.BIO_PARAMS["cell_zero_weight"]) * cell_zero_norm, 0.0, 1.0
+        )
+        p_bio = p_bio * (1.0 - cell_w[:, None])
+
+    log_recon = mi26.train_autoencoder_reconstruct(
+        logcounts=logcounts,
+        counts_max=counts_max,
+        p_bio=p_bio,
+        device=device,
+        fast_mode=True,
+        amp_enabled=True,
+        compile_enabled=True,
+        fast_batch_mult=2,
+        num_workers=2,
+    )
+
+    log_imputed = log_recon.copy()
+    log_imputed[~zeros_obs] = logcounts[~zeros_obs]
+    return log_imputed
+
+
+def parse_methods(raw: Optional[str]) -> List[str]:
     if not raw:
-        return ["magic"]
+        return list(METHODS)
     if raw.lower() == "all":
         return list(METHODS)
     methods = [m.strip().lower() for m in raw.split(",") if m.strip()]
@@ -556,8 +665,14 @@ def main() -> None:
     parser.add_argument("output_dir", help="Output directory for <method>_mse_table.tsv")
     parser.add_argument(
         "--methods",
-        default="all",
-        help="Comma-separated list (magic,dca,autoclass) or 'all'.",
+        default=None,
+        help="Comma-separated list (magic,dca,autoclass,low_mse,balanced_mse) or 'all'.",
+    )
+    parser.add_argument(
+        "methods_arg",
+        nargs="?",
+        default=None,
+        help="Optional methods list (magic,dca,autoclass,low_mse,balanced_mse) or 'all'.",
     )
     parser.add_argument("--n-jobs", type=int, default=1, help="MAGIC n_jobs value")
     parser.add_argument("--n-repeat", type=int, default=10, help="Number of repeats per method.")
@@ -611,7 +726,8 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-    methods = parse_methods(args.methods)
+    raw_methods = args.methods if args.methods is not None else args.methods_arg
+    methods = parse_methods(raw_methods)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -660,10 +776,18 @@ def main() -> None:
                             verbose=args.dca_verbose,
                         )
                         log_imp = normalize_counts_to_logcounts(
-                            counts_imp, norm_info["denom_true"], norm_info["scale_factor"]
+                            counts_imp, norm_info["size_factors"]
                         )
                     elif method == "autoclass":
                         log_imp = run_autoclass(logcounts, args.autoclass_dir, autoclass_kwargs)
+                    elif method in ("low_mse", "balanced_mse"):
+                        bio_reg = 0.0 if method == "low_mse" else 1.0
+                        log_imp = run_masked26(
+                            logcounts,
+                            counts,
+                            bio_reg_weight=bio_reg,
+                            seed=42 + rep,
+                        )
                     else:
                         raise RuntimeError(f"Unsupported method: {method}")
                     runtime = time.perf_counter() - t0
