@@ -3,7 +3,8 @@
 # Installs R dependencies for run_imputation.R.
 
 options(repos = c(CRAN = "https://cran.rstudio.com/"))
-
+Sys.setenv(MAKEFLAGS = "-j20")
+options(Ncpus=20)
 install_cran <- function(pkgs) {
   for (pkg in pkgs) {
     if (!requireNamespace(pkg, quietly = TRUE)) {

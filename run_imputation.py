@@ -678,7 +678,7 @@ def main() -> None:
     parser.add_argument("--n-repeat", type=int, default=10, help="Number of repeats per method.")
 
     g_dca = parser.add_argument_group("DCA Options")
-    g_dca.add_argument("--dca-bin", type=str, default="/home/marcinmaleclocal/miniconda3/envs/dca_env/bin/dca")
+    g_dca.add_argument("--dca-bin", type=str, default="/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca")
     g_dca.add_argument(
         "--dca-ae-type",
         type=str,

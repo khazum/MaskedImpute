@@ -9,8 +9,8 @@
 
 # --- 1) Configuration & Setup ---
 OUT_DIR <- "rds_splat_output"
-#CELL_COUNTS <- c(1000, 5000, 10000, 15000, 20000, 25000, 30000)
-CELL_COUNTS <- c(100)
+CELL_COUNTS <- c(1000, 5000, 10000, 15000, 20000, 25000, 30000)
+#CELL_COUNTS <- c(100)
 N_GENES <- 1100
 MIN_CELLS_EXPRESSED <- 3
 SEED <- 42
@@ -26,8 +26,8 @@ load_pkg <- function(pkg) {
   suppressPackageStartupMessages(library(pkg, character.only = TRUE))
 }
 
-required_pkgs <- c("splatter", "SingleCellExperiment", "scater", "ggplot2", "cowplot",
-                   "Rtsne", "Matrix", "ragg")
+required_pkgs <- c("splatter", "SingleCellExperiment")#, "scater", "ggplot2", "cowplot",
+#                   "Rtsne", "Matrix", "ragg")
 invisible(lapply(required_pkgs, require_pkg))
 invisible(lapply(required_pkgs, load_pkg))
 
@@ -230,17 +230,17 @@ for (sim_id in names(sim_configs)) {
     sce <- apply_normalization(sce)
     
     # 4. Dimensionality reduction (t-SNE only).
-    sce <- run_tsne(sce)
+#    sce <- run_tsne(sce)
     
-    # 5. Visualize.
-    sub_str <- sprintf("Cells: %d | Batches: %d | Drop: %s | Mid: %s | Shp: %s | Genes: %d",
-                       cell_count, n_batches, dropout_type,
-                       paste(round(current_mid, 2), collapse=","), 
-                       paste(round(current_shape, 2), collapse=","),
-                       nrow(sce))
+#    # 5. Visualize.
+#    sub_str <- sprintf("Cells: %d | Batches: %d | Drop: %s | Mid: %s | Shp: %s | Genes: %d",
+#                       cell_count, n_batches, dropout_type,
+#                       paste(round(current_mid, 2), collapse=","), 
+#                       paste(round(current_shape, 2), collapse=","),
+#                       nrow(sce))
     
-    save_dimred_plot(sce, "TSNE", file.path(cell_dir, paste0(sim_id, "_TSNE.png")), 
-                     paste("t-SNE:", config$name), sub_str)
+#    save_dimred_plot(sce, "TSNE", file.path(cell_dir, paste0(sim_id, "_TSNE.png")), 
+#                     paste("t-SNE:", config$name), sub_str)
     
     # 6. Prepare for save (dense assays + integer Dropout).
     sce <- coerce_assays_to_dense(sce)

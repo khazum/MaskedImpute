@@ -51,6 +51,21 @@ core_pkgs <- c("SingleCellExperiment", "Matrix", "parallel")
 invisible(lapply(core_pkgs, require_pkg))
 invisible(lapply(core_pkgs, load_pkg))
 
+parse_methods <- function(raw) {
+  if (is.null(raw) || !nzchar(raw) || tolower(raw) == "all") {
+    return(c("baseline", "saver", "ccimpute"))
+  }
+  methods <- tolower(unlist(strsplit(raw, ",")))
+  methods <- methods[nzchar(methods)]
+  allowed <- c("baseline", "saver", "ccimpute")
+  unknown <- setdiff(methods, allowed)
+  if (length(unknown) > 0) {
+    stopf("Unknown methods: %s. Allowed: %s or 'all'.",
+          paste(unknown, collapse = ", "), paste(allowed, collapse = ", "))
+  }
+  unique(methods)
+}
+
 save_imputed <- function(dataset_name, data, method) {
   filename <- file.path(output_dir, paste0(dataset_name, "_", method, ".rds"))
   saveRDS(as.matrix(data), filename)
@@ -480,17 +495,3 @@ for (m in methods) {
 }
 
 cat("\nDone.\n")
-parse_methods <- function(raw) {
-  if (is.null(raw) || !nzchar(raw) || tolower(raw) == "all") {
-    return(c("baseline", "saver", "ccimpute"))
-  }
-  methods <- tolower(unlist(strsplit(raw, ",")))
-  methods <- methods[nzchar(methods)]
-  allowed <- c("baseline", "saver", "ccimpute")
-  unknown <- setdiff(methods, allowed)
-  if (length(unknown) > 0) {
-    stopf("Unknown methods: %s. Allowed: %s or 'all'.",
-          paste(unknown, collapse = ", "), paste(allowed, collapse = ", "))
-  }
-  unique(methods)
-}
