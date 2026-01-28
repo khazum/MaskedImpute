@@ -305,7 +305,10 @@ def run_dca(
     ridge: Optional[float],
     verbose: bool,
 ) -> np.ndarray:
-    if dca_bin is None or not os.path.exists(dca_bin):
+    if dca_bin is None:
+        raise RuntimeError("DCA binary not provided.")
+    dca_bin = str(Path(dca_bin).expanduser())
+    if not os.path.exists(dca_bin):
         raise RuntimeError(f"DCA binary not found at: {dca_bin}")
 
     pd = _import_pandas()
@@ -678,7 +681,7 @@ def main() -> None:
     parser.add_argument("--n-repeat", type=int, default=10, help="Number of repeats per method.")
 
     g_dca = parser.add_argument_group("DCA Options")
-    g_dca.add_argument("--dca-bin", type=str, default="/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca")
+    g_dca.add_argument("--dca-bin", type=str, default="~/miniconda3/envs/dca_env/bin/dca")
     g_dca.add_argument(
         "--dca-ae-type",
         type=str,

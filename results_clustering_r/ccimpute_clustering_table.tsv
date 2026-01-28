@@ -1,0 +1,6 @@
+dataset	method	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	error	n_cells	n_genes	label_source
+blakeley	ccimpute	0.3388	0	1	0	1	0	1	0	0.1138	0.00684430014277909	10	NA	30	477	cell_type1
+darmanis	ccimpute	0.2732	0	0.9145	0	0.8805	0	0.9429	0	1.1911	0.250611895611965	10	NA	420	380	cell_type1
+li	ccimpute	0.4362	0	0.7878	0	0.9191	0	0.8717	0	1.6757	0.203424050801385	10	NA	561	460	cell_type1
+pollen	ccimpute	0.3846	0	0.9076	0	0.9313	0	0.9231	0	0.5565	0.147448861191487	10	NA	299	446	cell_type1
+usoskin	ccimpute	0.2648	0	0.9633	0	0.9359	0	0.9823	0	2.7736	0.441689986805731	10	NA	622	410	cell_type1

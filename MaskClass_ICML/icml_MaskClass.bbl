@@ -1,0 +1,142 @@
+\begin{thebibliography}{17}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Blakeley et~al.(2015)Blakeley, Fogarty, del Valle, Wamaitha, Hu,
+  Elder, Snell, Christie, Robson, and Niakan]{blakeley2015defining}
+Blakeley, P., Fogarty, N. M.~E., del Valle, I., Wamaitha, S.~E., Hu, T.~X.,
+  Elder, K., Snell, P., Christie, L., Robson, P., and Niakan, K.~K.
+\newblock Defining the three cell lineages of the human blastocyst by
+  single-cell {RNA}-seq.
+\newblock \emph{Development}, 142\penalty0 (18):\penalty0 3151--3165, 2015.
+
+\bibitem[Darmanis et~al.(2015)Darmanis, Sloan, Zhang, Duh, Caneda, Shuer,
+  Hayden~Gephart, Barres, and Quake]{darmanis2015survey}
+Darmanis, S., Sloan, S.~A., Zhang, Y., Duh, M., Caneda, C., Shuer, L.~M.,
+  Hayden~Gephart, M.~G., Barres, B.~A., and Quake, S.~R.
+\newblock A survey of human brain transcriptome diversity at the single cell
+  level.
+\newblock \emph{Proceedings of the National Academy of Sciences}, 112\penalty0
+  (23):\penalty0 7285--7290, 2015.
+
+\bibitem[Eraslan et~al.(2019)Eraslan, Simon, Mircea, Mueller, and
+  Theis]{Eraslan2019DCA}
+Eraslan, G., Simon, L.~M., Mircea, M., Mueller, N.~S., and Theis, F.~J.
+\newblock Single-cell rna-seq denoising using a deep count autoencoder.
+\newblock \emph{Nature Communications}, 10:\penalty0 390, 2019.
+\newblock \doi{10.1038/s41467-018-07931-2}.
+
+\bibitem[Huang et~al.(2018)Huang, Wang, Torre, Dueck, Shaffer, Bonasio, Murray,
+  Raj, Li, and Zhang]{Huang2018SAVER}
+Huang, M., Wang, J., Torre, E., Dueck, H., Shaffer, S., Bonasio, R., Murray,
+  J.~I., Raj, A., Li, M., and Zhang, N.~R.
+\newblock Saver: gene expression recovery for single-cell rna sequencing.
+\newblock \emph{Nature Methods}, 15\penalty0 (7):\penalty0 539--542, 2018.
+\newblock \doi{10.1038/s41592-018-0033-z}.
+
+\bibitem[Jiang et~al.(2022)Jiang, Sun, Song, and
+  Li]{Jiang2022ZeroInflationReview}
+Jiang, R., Sun, T., Song, D., and Li, J.~J.
+\newblock Statistics or biology: the zero-inflation controversy about scrna-seq
+  data.
+\newblock \emph{Genome Biology}, 23\penalty0 (1):\penalty0 31, 2022.
+\newblock \doi{10.1186/s13059-022-02601-5}.
+
+\bibitem[Kiselev et~al.(2017)Kiselev, Kirschner, Schaub, Andrews, Yiu, Chandra,
+  Natarajan, Reik, Barahona, Green, and Hemberg]{Kiselev2017SC3}
+Kiselev, V.~Y., Kirschner, K., Schaub, M.~T., Andrews, T., Yiu, A., Chandra,
+  T., Natarajan, K.~N., Reik, W., Barahona, M., Green, A.~R., and Hemberg, M.
+\newblock Sc3: consensus clustering of single-cell rna-seq data.
+\newblock \emph{Nature Methods}, 14\penalty0 (5):\penalty0 483--486, 2017.
+\newblock \doi{10.1038/nmeth.4236}.
+
+\bibitem[Li et~al.(2017)Li, Courtois, Sengupta, Tan, Chen, Goh, Kong, Chua,
+  Hon, Tan, et~al.]{li2017reference}
+Li, H., Courtois, E.~T., Sengupta, D., Tan, Y., Chen, K.~H., Goh, J. J.~L.,
+  Kong, S.~L., Chua, C., Hon, L.~K., Tan, W.~S., et~al.
+\newblock Reference component analysis of single-cell transcriptomes elucidates
+  cellular heterogeneity in human colorectal tumors.
+\newblock \emph{Nature genetics}, 49\penalty0 (5):\penalty0 708--718, 2017.
+
+\bibitem[Li et~al.(2022)Li, Brouwer, and Luo]{Li2022AutoClass}
+Li, H., Brouwer, C.~R., and Luo, W.
+\newblock A universal deep neural network for in-depth cleaning of single-cell
+  rna-seq data.
+\newblock \emph{Nature Communications}, 13:\penalty0 1901, 2022.
+\newblock \doi{10.1038/s41467-022-29576-y}.
+
+\bibitem[Li \& Li(2018)Li and Li]{Li2018scImpute}
+Li, W.~V. and Li, J.~J.
+\newblock An accurate and robust imputation method \textit{scImpute} for
+  single-cell rna-seq data.
+\newblock \emph{Nature Communications}, 9:\penalty0 997, 2018.
+\newblock \doi{10.1038/s41467-018-03405-7}.
+
+\bibitem[Lun et~al.(2016)Lun, McCarthy, and Marioni]{lun2016step}
+Lun, A.~T., McCarthy, D.~J., and Marioni, J.~C.
+\newblock A step-by-step workflow for low-level analysis of single-cell rna-seq
+  data with bioconductor.
+\newblock \emph{F1000Research}, 5:\penalty0 2122, 2016.
+
+\bibitem[Malec et~al.(2022)Malec, Kurban, and Dalkilic]{Malec2022ccImpute}
+Malec, M., Kurban, H., and Dalkilic, M.
+\newblock ccimpute: an accurate and scalable consensus clustering based
+  algorithm to impute dropout events in the single-cell rna-seq data.
+\newblock \emph{BMC Bioinformatics}, 23:\penalty0 291, 2022.
+\newblock \doi{10.1186/s12859-022-04814-8}.
+
+\bibitem[Pollen et~al.(2014)Pollen, Nowakowski, Chen, Retallack,
+  Sandoval-Espinosa, Nicholas, Shuga, Liu, Oldham, Diaz, et~al.]{pollen2014low}
+Pollen, A.~A., Nowakowski, T.~J., Chen, J., Retallack, H., Sandoval-Espinosa,
+  C., Nicholas, C.~R., Shuga, J., Liu, S.~J., Oldham, M.~C., Diaz, A.~A.,
+  et~al.
+\newblock Low-coverage single-cell {mRNA} sequencing reveals cellular
+  heterogeneity and activated signaling pathways in developing cerebral cortex.
+\newblock \emph{Nature Biotechnology}, 32\penalty0 (10):\penalty0 1053--1058,
+  2014.
+
+\bibitem[Svensson(2020)]{Svensson2020NotZI}
+Svensson, V.
+\newblock Droplet scrna-seq is not zero-inflated.
+\newblock \emph{Nature Biotechnology}, 38\penalty0 (2):\penalty0 147--150,
+  2020.
+\newblock \doi{10.1038/s41587-019-0379-5}.
+
+\bibitem[Usoskin et~al.(2015)Usoskin, Furlan, Islam, Abdo, Lönnerberg, Lou,
+  Hjerling-Leffler, Haeggström, Kharchenko, Kharchenko,
+  et~al.]{usoskin2015unbiased}
+Usoskin, D., Furlan, A., Islam, S., Abdo, H., Lönnerberg, P., Lou, D.,
+  Hjerling-Leffler, J., Haeggström, J., Kharchenko, O., Kharchenko, P.~V.,
+  et~al.
+\newblock Unbiased classification of sensory neuron types by large-scale
+  single-cell {RNA} sequencing.
+\newblock \emph{Nature Neuroscience}, 18\penalty0 (1):\penalty0 145--153, 2015.
+
+\bibitem[van Dijk et~al.(2018)van Dijk, Sharma, Nainys, Yim, Kathail, Carr,
+  Burdziak, Moon, Chaffer, Pattabiraman, Bierie, Mazutis, Wolf, Krishnaswamy,
+  and Pe\'{e}r]{vanDijk2018MAGIC}
+van Dijk, D., Sharma, R., Nainys, J., Yim, K., Kathail, P., Carr, A.~J.,
+  Burdziak, C., Moon, K.~R., Chaffer, C.~L., Pattabiraman, D., Bierie, B.,
+  Mazutis, L., Wolf, G., Krishnaswamy, S., and Pe\'{e}r, D.
+\newblock Recovering gene interactions from single-cell data using data
+  diffusion.
+\newblock \emph{Cell}, 174\penalty0 (3):\penalty0 716--729.e27, 2018.
+\newblock \doi{10.1016/j.cell.2018.05.061}.
+
+\bibitem[Zappia et~al.(2017)Zappia, Phipson, and Oshlack]{zappia2017splatter}
+Zappia, L., Phipson, B., and Oshlack, A.
+\newblock Splatter: simulation of single-cell rna sequencing data.
+\newblock \emph{Genome biology}, 18\penalty0 (1):\penalty0 174, 2017.
+
+\bibitem[Zheng et~al.(2017)Zheng, Terry, Belgrader, Ryvkin, Bent, Wilson,
+  Ziraldo, Wheeler, McDermott, Zhu, and {others}]{Zheng2017TenX}
+Zheng, G. X.~Y., Terry, J.~M., Belgrader, P., Ryvkin, P., Bent, Z.~W., Wilson,
+  R., Ziraldo, S.~B., Wheeler, T.~D., McDermott, G.~P., Zhu, J., and {others}.
+\newblock Massively parallel digital transcriptional profiling of single cells.
+\newblock \emph{Nature Communications}, 8:\penalty0 14049, 2017.
+\newblock \doi{10.1038/ncomms14049}.
+
+\end{thebibliography}

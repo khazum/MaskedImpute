@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="520" viewBox="0 0 1200 520">
+  <defs>
+    <style>
+      .box { fill: #ffffff; stroke: #111111; stroke-width: 1.5; }
+      .box-soft { fill: #f7f7f7; stroke: #111111; stroke-width: 1.2; }
+      .text { font-family: Helvetica, Arial, sans-serif; font-size: 16px; fill: #111111; }
+      .small { font-size: 13px; }
+      .title { font-size: 18px; font-weight: 600; }
+      .arrow { stroke: #111111; stroke-width: 1.5; fill: none; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#111111" />
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="40" y="40" class="text title">MaskImpute overview (high-level)</text>
+
+  <!-- Main pipeline boxes -->
+  <rect x="40" y="90" rx="8" ry="8" width="180" height="70" class="box" />
+  <text x="60" y="120" class="text">Input logcounts</text>
+  <text x="85" y="142" class="text">X</text>
+
+  <rect x="250" y="90" rx="8" ry="8" width="180" height="70" class="box" />
+  <text x="282" y="120" class="text">Robust scaling</text>
+  <text x="292" y="142" class="text small">clip + z-score + min-max</text>
+
+  <rect x="460" y="90" rx="8" ry="8" width="190" height="70" class="box" />
+  <text x="495" y="120" class="text">Mask &amp; corrupt</text>
+  <text x="478" y="142" class="text small">p_zero, p_nonzero, noise</text>
+
+  <rect x="680" y="90" rx="8" ry="8" width="190" height="70" class="box" />
+  <text x="735" y="120" class="text">Autoencoder</text>
+  <text x="700" y="142" class="text small">encoder → bottleneck → decoder</text>
+
+  <rect x="900" y="90" rx="8" ry="8" width="200" height="70" class="box" />
+  <text x="920" y="120" class="text">Reconstructed logcounts</text>
+  <text x="995" y="142" class="text">X̂</text>
+
+  <rect x="900" y="190" rx="8" ry="8" width="200" height="60" class="box" />
+  <text x="920" y="218" class="text">Keep observed nonzeros</text>
+  <text x="945" y="240" class="text small">(final imputed logcounts)</text>
+
+  <!-- Biozero estimation branch -->
+  <rect x="40" y="210" rx="8" ry="8" width="180" height="60" class="box-soft" />
+  <text x="55" y="240" class="text">Counts from logcounts</text>
+
+  <rect x="250" y="210" rx="8" ry="8" width="220" height="70" class="box-soft" />
+  <text x="268" y="238" class="text">Biozero estimation</text>
+  <text x="265" y="260" class="text small">ZI-NB + cell sparsity shrinkage</text>
+
+  <rect x="500" y="215" rx="8" ry="8" width="120" height="60" class="box-soft" />
+  <text x="525" y="245" class="text">p_bio</text>
+
+  <!-- Loss box -->
+  <rect x="680" y="210" rx="8" ry="8" width="230" height="80" class="box-soft" />
+  <text x="700" y="238" class="text">Loss</text>
+  <text x="690" y="260" class="text small">masked MSE + γ · L_bio</text>
+  <text x="690" y="280" class="text small">γ=0 (low_mse), γ=1 (balanced)</text>
+
+  <!-- Arrows main pipeline -->
+  <line x1="220" y1="125" x2="250" y2="125" class="arrow" marker-end="url(#arrowhead)" />
+  <line x1="430" y1="125" x2="460" y2="125" class="arrow" marker-end="url(#arrowhead)" />
+  <line x1="650" y1="125" x2="680" y2="125" class="arrow" marker-end="url(#arrowhead)" />
+  <line x1="870" y1="125" x2="900" y2="125" class="arrow" marker-end="url(#arrowhead)" />
+  <line x1="1000" y1="160" x2="1000" y2="190" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- Biozero branch arrows -->
+  <line x1="130" y1="160" x2="130" y2="210" class="arrow" marker-end="url(#arrowhead)" />
+  <line x1="220" y1="240" x2="250" y2="240" class="arrow" marker-end="url(#arrowhead)" />
+  <line x1="470" y1="245" x2="500" y2="245" class="arrow" marker-end="url(#arrowhead)" />
+  <line x1="620" y1="245" x2="680" y2="245" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- Loss to AE -->
+  <line x1="795" y1="210" x2="795" y2="160" class="arrow" marker-end="url(#arrowhead)" />
+
+  <!-- Caption -->
+  <text x="40" y="500" class="text small">Figure: High-level MaskImpute pipeline. Biozero estimates inform the loss; γ controls low_mse vs balanced_mse.</text>
+</svg>

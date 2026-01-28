@@ -1,0 +1,6 @@
+dataset	n_cells	n_genes	label_source	ASW	ARI	NMI	PS
+blakeley	30	477	cell_type1	0.2508	1	1	1
+darmanis	420	380	cell_type1	0.2162	0.6912	0.796	0.8762
+li	561	460	cell_type1	0.3781	0.9002	0.9251	0.9358
+pollen	299	446	cell_type1	0.4407	0.9031	0.9281	0.9231
+usoskin	622	410	cell_type1	0.2436	0.872	0.8278	0.9293

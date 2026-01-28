@@ -1,0 +1,67 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{Zheng2017TenX}
+\citation{Svensson2020NotZI,Jiang2022ZeroInflationReview}
+\citation{vanDijk2018MAGIC}
+\citation{Huang2018SAVER}
+\citation{Li2018scImpute}
+\citation{Eraslan2019DCA}
+\citation{Malec2022ccImpute}
+\citation{Li2022AutoClass}
+\citation{Eraslan2019DCA}
+\citation{Li2018scImpute,Malec2022ccImpute}
+\citation{Malec2022ccImpute,Jiang2022ZeroInflationReview}
+\citation{Eraslan2019DCA,Svensson2020NotZI}
+\citation{Kiselev2017SC3}
+\citation{Zheng2017TenX,Huang2018SAVER,Jiang2022ZeroInflationReview}
+\citation{blakeley2015defining}
+\citation{pollen2014low}
+\citation{darmanis2015survey}
+\citation{usoskin2015unbiased}
+\citation{li2017reference}
+\newlabel{sec:methods}{{2}{2}{}{section.2}{}}
+\newlabel{sec:methods@cref}{{[section][2][]2}{[1][2][]2}}
+\citation{lun2016step}
+\citation{blakeley2015defining}
+\citation{li2017reference}
+\citation{pollen2014low}
+\citation{darmanis2015survey}
+\citation{usoskin2015unbiased}
+\citation{zappia2017splatter}
+\newlabel{sec:scaling}{{2.4}{3}{}{subsection.2.4}{}}
+\newlabel{sec:scaling@cref}{{[subsection][4][2]2.4}{[1][3][]3}}
+\newlabel{sec:masking}{{2.5}{3}{}{subsection.2.5}{}}
+\newlabel{sec:masking@cref}{{[subsection][5][2]2.5}{[1][3][]3}}
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:datasets}{{1}{4}{Summary of the experimental scRNA-seq datasets used for benchmarking. $N$ denotes the number of samples (cells), $M$ the initial number of features (genes) prior to preprocessing, and $K$ the number of distinct cell clusters reported in the original study. Datasets are available at: \ccimputedatasetslink }{table.caption.1}{}}
+\newlabel{tab:datasets@cref}{{[table][1][]1}{[1][3][]4}}
+\newlabel{sec:biozero}{{2.6}{4}{}{subsection.2.6}{}}
+\newlabel{sec:biozero@cref}{{[subsection][6][2]2.6}{[1][4][]4}}
+\newlabel{sec:evaluation}{{2.8}{4}{}{subsection.2.8}{}}
+\newlabel{sec:evaluation@cref}{{[subsection][8][2]2.8}{[1][4][]4}}
+\newlabel{fig:maskimpute_pipeline}{{1}{5}{\textbf {MaskClass overview.} Starting from logcounts $\mathbf {X}_{\log }$ and counts $\mathbf {C}$, we estimate a biozero probability $p_{\mathrm {bio}}(i,j)$ for observed zeros. During self-supervised training, non-zeros are masked at a fixed rate, while zeros are masked with probability proportional to $p_{\mathrm {bio}}$; masked zeros are corrupted by injecting noise and masked non-zeros are replaced by zero in the scaled space. A symmetric autoencoder reconstructs the scaled matrix, and parameters are learned by minimizing a weighted masked reconstruction loss plus an optional biozero regularizer (enabled in MaskClass$_{\mathrm {balanced}}$)}{figure.caption.2}{}}
+\newlabel{fig:maskimpute_pipeline@cref}{{[figure][1][]1}{[1][5][]5}}
+\newlabel{alg:maskclass}{{1}{5}{MaskClass training and imputation}{algorithm.1}{}}
+\newlabel{alg:maskclass@cref}{{[algorithm][1][]1}{[1][5][]5}}
+\bibdata{references}
+\bibcite{blakeley2015defining}{{1}{2015}{{Blakeley et~al.}}{{Blakeley, Fogarty, del Valle, Wamaitha, Hu, Elder, Snell, Christie, Robson, and Niakan}}}
+\bibcite{darmanis2015survey}{{2}{2015}{{Darmanis et~al.}}{{Darmanis, Sloan, Zhang, Duh, Caneda, Shuer, Hayden~Gephart, Barres, and Quake}}}
+\bibcite{Eraslan2019DCA}{{3}{2019}{{Eraslan et~al.}}{{Eraslan, Simon, Mircea, Mueller, and Theis}}}
+\bibcite{Huang2018SAVER}{{4}{2018}{{Huang et~al.}}{{Huang, Wang, Torre, Dueck, Shaffer, Bonasio, Murray, Raj, Li, and Zhang}}}
+\bibcite{Jiang2022ZeroInflationReview}{{5}{2022}{{Jiang et~al.}}{{Jiang, Sun, Song, and Li}}}
+\bibcite{Kiselev2017SC3}{{6}{2017}{{Kiselev et~al.}}{{Kiselev, Kirschner, Schaub, Andrews, Yiu, Chandra, Natarajan, Reik, Barahona, Green, and Hemberg}}}
+\bibcite{li2017reference}{{7}{2017}{{Li et~al.}}{{Li, Courtois, Sengupta, Tan, Chen, Goh, Kong, Chua, Hon, Tan, et~al.}}}
+\bibcite{Li2022AutoClass}{{8}{2022}{{Li et~al.}}{{Li, Brouwer, and Luo}}}
+\bibcite{Li2018scImpute}{{9}{2018}{{Li \& Li}}{{Li and Li}}}
+\bibcite{lun2016step}{{10}{2016}{{Lun et~al.}}{{Lun, McCarthy, and Marioni}}}
+\bibcite{Malec2022ccImpute}{{11}{2022}{{Malec et~al.}}{{Malec, Kurban, and Dalkilic}}}
+\bibcite{pollen2014low}{{12}{2014}{{Pollen et~al.}}{{Pollen, Nowakowski, Chen, Retallack, Sandoval-Espinosa, Nicholas, Shuga, Liu, Oldham, Diaz, et~al.}}}
+\bibcite{Svensson2020NotZI}{{13}{2020}{{Svensson}}{{}}}
+\bibcite{usoskin2015unbiased}{{14}{2015}{{Usoskin et~al.}}{{Usoskin, Furlan, Islam, Abdo, Lönnerberg, Lou, Hjerling-Leffler, Haeggström, Kharchenko, Kharchenko, et~al.}}}
+\bibcite{vanDijk2018MAGIC}{{15}{2018}{{van Dijk et~al.}}{{van Dijk, Sharma, Nainys, Yim, Kathail, Carr, Burdziak, Moon, Chaffer, Pattabiraman, Bierie, Mazutis, Wolf, Krishnaswamy, and Pe\'{e}r}}}
+\bibcite{zappia2017splatter}{{16}{2017}{{Zappia et~al.}}{{Zappia, Phipson, and Oshlack}}}
+\bibcite{Zheng2017TenX}{{17}{2017}{{Zheng et~al.}}{{Zheng, Terry, Belgrader, Ryvkin, Bent, Wilson, Ziraldo, Wheeler, McDermott, Zhu, and {others}}}}
+\bibstyle{icml2026}
+\gdef \@abspage@last{6}

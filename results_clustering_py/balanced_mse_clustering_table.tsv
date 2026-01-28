@@ -1,0 +1,6 @@
+dataset	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	n_cells	n_genes	label_source	error
+blakeley_top1000hvg	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	30	1000	cell_type1	method failed
+darmanis_top1000hvg	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	420	1000	cell_type1	method failed
+li_top1000hvg	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	561	1000	cell_type1	method failed
+pollen_top1000hvg	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	299	1000	cell_type1	method failed
+usoskin_top1000hvg	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	622	1000	cell_type1	method failed
