@@ -1,0 +1,16 @@
+Processing baseline cells_15000...
+
+=== dataset_2_types_equal ===
+Running baseline (no imputation) x5...
+
+=== dataset_3_types_unequal ===
+Running baseline (no imputation) x5...
+
+=== dataset_4_types_rare ===
+Running baseline (no imputation) x5...
+
+=== dataset_multibatch_dropout ===
+Running baseline (no imputation) x5...
+Wrote results_imputation_r/baseline/cells_15000/baseline_mse_table.tsv
+
+Done.

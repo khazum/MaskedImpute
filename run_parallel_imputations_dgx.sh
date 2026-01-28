@@ -20,7 +20,7 @@ fi
 BASE_DIR="${BASE_DIR:-synthetic_datasets/rds_splat_output}"
 OUT_R="${OUT_R:-results_imputation_r}"
 OUT_PY="${OUT_PY:-results_imputation_py}"
-SIZES=(${SIZES:-1000 5000 10000 15000 20000 25000})
+SIZES=(${SIZES:-50000 75000 100000})
 LOG_DIR="logs_parallel_runs"
 
 mkdir -p "$LOG_DIR"
