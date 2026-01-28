@@ -1,0 +1,131 @@
+Processing ccimpute cells_1000...
+
+=== dataset_2_types_equal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_1000/dataset_2_types_equal_ccimpute.rds
+
+=== dataset_3_types_unequal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_1000/dataset_3_types_unequal_ccimpute.rds
+
+=== dataset_4_types_rare ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_1000/dataset_4_types_rare_ccimpute.rds
+
+=== dataset_multibatch_dropout ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_1000/dataset_multibatch_dropout_ccimpute.rds
+Wrote results_imputation_r/ccimpute/cells_1000/ccimpute_mse_table.tsv
+
+Done.
+Processing ccimpute cells_5000...
+
+=== dataset_2_types_equal ===
+Running ccImpute x10...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_5000/dataset_2_types_equal_ccimpute.rds
+
+=== dataset_3_types_unequal ===
+Running ccImpute x10...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_5000/dataset_3_types_unequal_ccimpute.rds
+
+=== dataset_4_types_rare ===
+Running ccImpute x10...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_5000/dataset_4_types_rare_ccimpute.rds
+
+=== dataset_multibatch_dropout ===
+Running ccImpute x10...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_5000/dataset_multibatch_dropout_ccimpute.rds
+Wrote results_imputation_r/ccimpute/cells_5000/ccimpute_mse_table.tsv
+
+Done.
+Processing ccimpute cells_10000...
+
+=== dataset_2_types_equal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_10000/dataset_2_types_equal_ccimpute.rds
+
+=== dataset_3_types_unequal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_10000/dataset_3_types_unequal_ccimpute.rds
+
+=== dataset_4_types_rare ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_10000/dataset_4_types_rare_ccimpute.rds
+
+=== dataset_multibatch_dropout ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_10000/dataset_multibatch_dropout_ccimpute.rds
+Wrote results_imputation_r/ccimpute/cells_10000/ccimpute_mse_table.tsv
+
+Done.
+Processing ccimpute cells_15000...
+
+=== dataset_2_types_equal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_15000/dataset_2_types_equal_ccimpute.rds
+
+=== dataset_3_types_unequal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_15000/dataset_3_types_unequal_ccimpute.rds
+
+=== dataset_4_types_rare ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_15000/dataset_4_types_rare_ccimpute.rds
+
+=== dataset_multibatch_dropout ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_15000/dataset_multibatch_dropout_ccimpute.rds
+Wrote results_imputation_r/ccimpute/cells_15000/ccimpute_mse_table.tsv
+
+Done.
+Processing ccimpute cells_20000...
+
+=== dataset_2_types_equal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_20000/dataset_2_types_equal_ccimpute.rds
+
+=== dataset_3_types_unequal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_20000/dataset_3_types_unequal_ccimpute.rds
+
+=== dataset_4_types_rare ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_20000/dataset_4_types_rare_ccimpute.rds
+
+=== dataset_multibatch_dropout ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_20000/dataset_multibatch_dropout_ccimpute.rds
+Wrote results_imputation_r/ccimpute/cells_20000/ccimpute_mse_table.tsv
+
+Done.
+Processing ccimpute cells_25000...
+
+=== dataset_2_types_equal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_25000/dataset_2_types_equal_ccimpute.rds
+
+=== dataset_3_types_unequal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_25000/dataset_3_types_unequal_ccimpute.rds
+
+=== dataset_4_types_rare ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_25000/dataset_4_types_rare_ccimpute.rds
+
+=== dataset_multibatch_dropout ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_25000/dataset_multibatch_dropout_ccimpute.rds
+Wrote results_imputation_r/ccimpute/cells_25000/ccimpute_mse_table.tsv
+
+Done.
+Processing ccimpute cells_50000...
+
+=== dataset_2_types_equal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_50000/dataset_2_types_equal_ccimpute.rds
+
+=== dataset_3_types_unequal ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_50000/dataset_3_types_unequal_ccimpute.rds
+
+=== dataset_4_types_rare ===

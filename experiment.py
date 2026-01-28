@@ -94,7 +94,7 @@ def load_dataset(path: str, need_labels: bool, need_perfect: bool) -> Tuple[np.n
     perfect_logcounts = None
     if need_perfect:
         try:
-            perfect_logcounts = sce.assay("logTrueCounts").T[:, keep].astype("float32")
+            perfect_logcounts = sce.assay("perfect_logcounts").T[:, keep].astype("float32")
         except Exception:
             perfect_logcounts = None
 
@@ -422,7 +422,7 @@ def main():
     p.add_argument("--zero-threshold", type=float, default=1e-4, help="Logcounts ≤ thr treated as zero.")
 
     p.add_argument("--log-base", type=float, default=2.0)
-    p.add_argument("--biozero-mode", type=str, choices=["off", "hard", "soft", "oracle"], default="hard")
+    p.add_argument("--biozero-mode", type=str, choices=["off", "hard", "soft", "oracle"], default="off")
     p.add_argument("--biozero-thresh", type=float, default=0.5)
     p.add_argument("--biozero-disp", type=str, choices=["fixed", "estimate"], default="estimate", dest="biozero_disp")
     p.add_argument("--biozero-disp-const", type=float, default=0.1, dest="biozero_disp_const")

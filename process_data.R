@@ -2,9 +2,9 @@
 
 # Description:
 # This script processes a directory of SingleCellExperiment (SCE) objects stored as .rds files.
-# For each SCE object, it filters genes expressed in at least 3 cells, performs
-# library-size normalization using the median library size, applies a log2(1 + x)
-# transform, and selects a specified number of highly variable genes (HVGs).
+# For each SCE object, it filters genes expressed in at least 3 cells, computes
+# deconvolution size factors with scran, applies log-normalization, and selects
+# a specified number of highly variable genes (HVGs).
 # The resulting subsetted SCE object is saved to an output directory.
 #
 # Author: Gemini
@@ -17,7 +17,7 @@ suppressPackageStartupMessages(library(scran))
 suppressPackageStartupMessages(library(SingleCellExperiment))
 
 # --- Define Command-Line Arguments ---
-parser <- ArgumentParser(description = "Normalize and find HVGs in SingleCellExperiment objects using median library-size normalization.")
+parser <- ArgumentParser(description = "Normalize and find HVGs in SingleCellExperiment objects using scran deconvolution size factors.")
 
 parser$add_argument("-i", "--input_dir", type = "character", required = TRUE,
                     help = "Path to the directory containing input RDS files.")
@@ -73,8 +73,8 @@ for (file_path in rds_files) {
         next
     }
 
-    # --- Normalization ---
-    message("  -> Performing library-size normalization and log2(1+x) transform...")
+    # --- Filtering ---
+    message("  -> Filtering genes expressed in at least 3 cells...")
     if (!"counts" %in% assayNames(sce)) {
         stop("The SCE object does not contain a 'counts' assay.")
     }
@@ -87,23 +87,33 @@ for (file_path in rds_files) {
     }
     sce <- sce[keep_genes, ]
     counts_mat <- counts(sce)
+
+    # --- Normalization ---
+    message("  -> Computing size factors with scran deconvolution...")
     lib_sizes <- colSums(counts_mat)
     if (any(lib_sizes <= 0)) {
         stop("Found non-positive library sizes; cannot normalize.")
     }
-    scale_factor <- stats::median(lib_sizes)
-    size_factor <- lib_sizes / scale_factor
-    # cell-wise normalization on counts (genes x cells), then log2(1 + x)
-    norm_counts <- t(t(counts_mat) / lib_sizes) * scale_factor
+    clusters <- scran::quickCluster(sce, min.mean = 0.1)
+    sce <- scran::computeSumFactors(sce, clusters = clusters)
+    size_factors <- sizeFactors(sce)
+    if (any(!is.finite(size_factors) | size_factors <= 0)) {
+        stop("Invalid size factors computed; cannot normalize.")
+    }
+
+    message("  -> Applying log-normalization...")
+    # Normalize counts by size factors, then log2(1 + x)
+    norm_counts <- t(t(counts_mat) / size_factors)
     assay(sce, "logcounts", withDimnames = FALSE) <- log2(norm_counts + 1)
     # Store normalization metadata (counts-derived) for downstream tools
     colData(sce)$libSizeTrueCounts <- lib_sizes
-    colData(sce)$scaleFactorTrueCounts <- scale_factor
-    colData(sce)$sizeFactorTrueCounts <- size_factor
+    colData(sce)$sizeFactorTrueCounts <- size_factors
     metadata(sce)$normalization <- list(
+      method = "scran::computeSumFactors",
       library_sizes = lib_sizes,
-      scale_factor = scale_factor,
-      size_factors = size_factor
+      size_factors = size_factors,
+      log_base = 2,
+      pseudo_count = 1
     )
     message("  -> Normalization complete.")
 

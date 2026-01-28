@@ -439,10 +439,15 @@ for (input_file in input_files) {
     if (!is.null(colData(sce)$Group)) n_groups <- length(unique(colData(sce)$Group))
     if (!is.finite(n_groups) || n_groups < 2) n_groups <- 2
 
+    cc_ncores <- min(ncores, 8)
+    if (ncores > 8) {
+      message(sprintf("ccImpute is capped at 8 cores; using %d instead of %d.", cc_ncores, ncores))
+    }
+
     bpp <- BiocParallel::SerialParam()
-    if (ncores > 1) {
+    if (cc_ncores > 1) {
       bpp <- tryCatch(
-        BiocParallel::MulticoreParam(workers = ncores),
+        BiocParallel::MulticoreParam(workers = cc_ncores),
         error = function(e) BiocParallel::SerialParam()
       )
     }

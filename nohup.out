@@ -1,0 +1,28 @@
+CPU threads per job: 8
+GPU threads per job: 8
+MAGIC jobs: 8
+Repeats (R): 1
+Starting parallel runs on caa0dgx02...
+Monitor progress with: tail -f logs_parallel_runs/*.log
+Started [R/baseline] (NUMA 0) - logging to logs_parallel_runs/r_baseline.log
+Started [R/saver] (NUMA 1) - logging to logs_parallel_runs/r_saver.log
+Started [R/ccimpute] (NUMA 1) - logging to logs_parallel_runs/r_ccimpute.log
+Started [PY/magic] (CPU-only, NUMA 0) - logging to logs_parallel_runs/py_cpu_magic.log
+Started [PY/dca] (GPU 0, NUMA 0) - logging to logs_parallel_runs/py_gpu_dca.log
+Started [PY/autoclass] (GPU 1, NUMA 1) - logging to logs_parallel_runs/py_gpu_autoclass.log
+Started [PY/low_mse] (GPU 2, NUMA 0) - logging to logs_parallel_runs/py_gpu_low_mse.log
+Started [PY/balanced_mse] (GPU 3, NUMA 1) - logging to logs_parallel_runs/py_gpu_balanced_mse.log
+CPU threads per job: 8
+GPU threads per job: 8
+MAGIC jobs: 8
+Repeats (default): 1
+Starting parallel runs on caa0dgx02...
+Monitor progress with: tail -f logs_parallel_runs/*.log
+Started [R/baseline] (NUMA 0) - logging to logs_parallel_runs/r_baseline.log
+Started [R/saver] (NUMA 1) - logging to logs_parallel_runs/r_saver.log
+Started [R/ccimpute] (NUMA 1) - logging to logs_parallel_runs/r_ccimpute.log
+Started [PY/magic] (CPU-only, NUMA 0) - logging to logs_parallel_runs/py_cpu_magic.log
+Started [PY/dca] (GPU 0, NUMA 0) - logging to logs_parallel_runs/py_gpu_dca.log
+Started [PY/autoclass] (GPU 1, NUMA 1) - logging to logs_parallel_runs/py_gpu_autoclass.log
+Started [PY/low_mse] (GPU 2, NUMA 0) - logging to logs_parallel_runs/py_gpu_low_mse.log
+Started [PY/balanced_mse] (GPU 3, NUMA 1) - logging to logs_parallel_runs/py_gpu_balanced_mse.log
