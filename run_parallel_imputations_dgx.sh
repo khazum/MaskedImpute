@@ -38,6 +38,20 @@ repeats_for_size() {
   fi
 }
 
+repeats_for_method_size() {
+  local method="$1"
+  local size="$2"
+
+  case "${method}" in
+    balanced_mse|low_mse)
+      echo 5
+      ;;
+    *)
+      repeats_for_size "${size}"
+      ;;
+  esac
+}
+
 numa_node_for_method() {
   case "$1" in
     baseline|magic|dca|low_mse)
@@ -55,7 +69,7 @@ numa_node_for_method() {
 gpu_for_method() {
   case "$1" in
     dca)
-      echo 0
+      echo 4
       ;;
     autoclass)
       echo 1
@@ -90,7 +104,7 @@ run_r_method() {
       mkdir -p "${out_dir}"
       echo "Processing ${method} cells_${size}..."
       local repeats
-      repeats="$(repeats_for_size "${size}")"
+      repeats="$(repeats_for_method_size "${method}" "${size}")"
 
       if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
         CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
@@ -125,7 +139,7 @@ run_py_cpu_method() {
       mkdir -p "${out_dir}"
       echo "Processing ${method} cells_${size}..."
       local repeats
-      repeats="$(repeats_for_size "${size}")"
+      repeats="$(repeats_for_method_size "${method}" "${size}")"
 
       if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
         CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
@@ -161,7 +175,7 @@ run_py_gpu_method() {
       mkdir -p "${out_dir}"
       echo "Processing ${method} cells_${size}..."
       local repeats
-      repeats="$(repeats_for_size "${size}")"
+      repeats="$(repeats_for_method_size "${method}" "${size}")"
 
       local -a extra_args=()
       if [[ "${method}" == "dca" ]]; then

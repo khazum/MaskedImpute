@@ -3,25 +3,31 @@ Processing experiment datasets from datasets...
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 --- Dataset: blakeley_top1000hvg ---
   -> experiment
-    ASW=0.3021 ARI=0.9133 NMI=0.9117 PS=0.9333
+    ARI=0.3117 NMI=0.3767 PS=0.6933
 
 --- Dataset: darmanis_top1000hvg ---
   -> experiment
-    ASW=0.2640 ARI=0.6623 NMI=0.7841 PS=0.8738
+    ARI=0.6176 NMI=0.7796 PS=0.8638
 
 --- Dataset: deng_top1000hvg ---
   -> experiment
-    ASW=0.3586 ARI=0.5143 NMI=0.7650 PS=0.8336
+    ARI=0.6201 NMI=0.6923 PS=0.7888
 
 --- Dataset: pollen_top1000hvg ---
   -> experiment
-    ASW=0.5172 ARI=0.9283 NMI=0.9357 PS=0.9438
+    ARI=0.6997 NMI=0.8148 PS=0.7472
 
 --- Dataset: usoskin_top1000hvg ---
   -> experiment
-    ASW=0.2346 ARI=0.7894 NMI=0.7479 PS=0.8836
+    ARI=0.8878 NMI=0.8639 PS=0.9328
 Saved results_clustering_py/experiment/experiment_clustering_table.tsv
 Finished [PY/experiment]
