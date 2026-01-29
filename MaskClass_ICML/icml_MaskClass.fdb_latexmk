@@ -1,13 +1,13 @@
 # Fdb version 4
-["bibtex icml_MaskClass"] 1769658034.00975 "icml_MaskClass.aux" "icml_MaskClass.bbl" "icml_MaskClass" 1769658038.99712 0
+["bibtex icml_MaskClass"] 1769658762.45736 "icml_MaskClass.aux" "icml_MaskClass.bbl" "icml_MaskClass" 1769658767.94285 0
   "./icml2026.bst" 1769558790 27147 88eb4aed280e585571f8eac50f39a681 ""
   "./references.bib" 1769573881.42138 7006 06c03bbdd7a5037bbddb1959c69ec334 ""
-  "icml_MaskClass.aux" 1769658038.69381 6114 b2afaf9d7f0abf51ac850d52623f72d1 "pdflatex"
+  "icml_MaskClass.aux" 1769658767.62928 6058 73f00d10a47ed3c60f591fe67d67c823 "pdflatex"
   (generated)
   "icml_MaskClass.bbl"
   "icml_MaskClass.blg"
   (rewritten before read)
-["pdflatex"] 1769658034.1144 "icml_MaskClass.tex" "icml_MaskClass.pdf" "icml_MaskClass" 1769658038.99734 0
+["pdflatex"] 1769658762.57103 "icml_MaskClass.tex" "icml_MaskClass.pdf" "icml_MaskClass" 1769658767.94306 0
   "/etc/texmf/web2c/texmf.cnf" 1765653553.94638 475 c0e671620eb5563b2130f56340a5fde8 ""
   "/usr/share/texlive/texmf-dist/fonts/enc/dvips/base/8r.enc" 1165713224 4850 80dc9bab7f31fb78a000ccfed0e27cab ""
   "/usr/share/texlive/texmf-dist/fonts/map/fontname/texfonts.map" 1577235249 3524 cb3e574dea2d1052e39280babc910dc8 ""
@@ -93,7 +93,6 @@
   "/usr/share/texlive/texmf-dist/tex/latex/base/article.cls" 1705352648 20144 147463a6a579f4597269ef9565205cfe ""
   "/usr/share/texlive/texmf-dist/tex/latex/base/atbegshi-ltx.sty" 1705352648 3045 273c666a54e60b9f730964f431a56c1b ""
   "/usr/share/texlive/texmf-dist/tex/latex/base/atveryend-ltx.sty" 1705352648 2462 6bc53756156dbd71c1ad550d30a3b93f ""
-  "/usr/share/texlive/texmf-dist/tex/latex/base/fixltx2e.sty" 1705352648 15509 4696b735c8b9272cae2e1d1f959380c9 ""
   "/usr/share/texlive/texmf-dist/tex/latex/base/ifthen.sty" 1705352648 5319 2b738d02ce36ada6dcdd9534940db0ee ""
   "/usr/share/texlive/texmf-dist/tex/latex/base/size10.clo" 1705352648 8448 dbc0dbf4156c0bb9ba01a1c685d3bad0 ""
   "/usr/share/texlive/texmf-dist/tex/latex/booktabs/booktabs.sty" 1579038678 6078 f1cb470c9199e7110a27851508ed7a5c ""
@@ -101,7 +100,6 @@
   "/usr/share/texlive/texmf-dist/tex/latex/caption/caption3.sty" 1696191071 72619 ee90b6612147680fd73c3b1406a74245 ""
   "/usr/share/texlive/texmf-dist/tex/latex/caption/subcaption.sty" 1690576852 12494 0c0cdb824278a4d51cefeb2e79901315 ""
   "/usr/share/texlive/texmf-dist/tex/latex/cleveref/cleveref.sty" 1525128982 329481 7fc6b003158402a4c694bc0a1b729308 ""
-  "/usr/share/texlive/texmf-dist/tex/latex/dblfloatfix/dblfloatfix.sty" 1359502469 7429 c8f2321c9dcd3421eb76564b0d179fe3 ""
   "/usr/share/texlive/texmf-dist/tex/latex/enumitem/enumitem.sty" 1561238569 51697 f8f08183cd2080d9d18a41432d651dfb ""
   "/usr/share/texlive/texmf-dist/tex/latex/epstopdf-pkg/epstopdf-base.sty" 1579991033 13886 d1306dcf79a944f6988e688c1785f9ce ""
   "/usr/share/texlive/texmf-dist/tex/latex/eso-pic/eso-pic.sty" 1683144721 11876 6ef493863ae0d7a984706973240c2237 ""
@@ -158,10 +156,10 @@
   "figures/maskimpute_pipeline.png" 1769577267.41869 1674719 ebb23fd9e4930898f6d226dcae0b8bad ""
   "figures/mse_5000_bars.pdf" 1769657237.70389 21703 62cc72416d65c6cd2ec86cbdc50091cd ""
   "icml2026.sty" 1769558790 27344 8c96f291f57623e81d0a232c8de55616 ""
-  "icml_MaskClass.aux" 1769658038.69381 6114 b2afaf9d7f0abf51ac850d52623f72d1 "pdflatex"
-  "icml_MaskClass.bbl" 1769658034.10884 7080 4ae4d8a97ba861cbf854787323458761 "bibtex icml_MaskClass"
-  "icml_MaskClass.out" 1769658034.70284 0 d41d8cd98f00b204e9800998ecf8427e "pdflatex"
-  "icml_MaskClass.tex" 1769658023.94493 36928 5b0aeec9f0f3fc5b53e7f3d35052309a ""
+  "icml_MaskClass.aux" 1769658767.62928 6058 73f00d10a47ed3c60f591fe67d67c823 "pdflatex"
+  "icml_MaskClass.bbl" 1769658762.56533 7080 4ae4d8a97ba861cbf854787323458761 "bibtex icml_MaskClass"
+  "icml_MaskClass.out" 1769658763.18132 0 d41d8cd98f00b204e9800998ecf8427e "pdflatex"
+  "icml_MaskClass.tex" 1769658719.39774 36393 cc3d5082b2ded3a674c4b7b957853c13 ""
   (generated)
   "icml_MaskClass.aux"
   "icml_MaskClass.log"

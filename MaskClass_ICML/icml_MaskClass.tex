@@ -7,7 +7,6 @@
 \usepackage{graphicx}
 \usepackage{subcaption}
 \usepackage{booktabs} % for professional tables
-\usepackage{dblfloatfix} % allow bottom placement of two-column floats
 
 % hyperref makes hyperlinks in the resulting PDF.
 % If your build breaks (sometimes temporarily if a hyperlink spans a page)
@@ -316,12 +315,7 @@ s_{0j}&=[\mathrm{scale}(\mathbf{0})]_j.
 \end{aligned}
 \]
 We minimize the combined objective
-$\mathcal{L}=\mathcal{L}_{\mathrm{mask}}+\gamma\,\mathcal{L}_{\mathrm{bio}}$.
-
-\paragraph{MaskClass$_{\mathrm{best}}$ vs.\ MaskClass$_{\mathrm{balanced}}$.}
-MaskClass$_{\mathrm{best}}$ sets $\gamma=0$, while
-MaskClass$_{\mathrm{balanced}}$ sets $\gamma=1$; all other parameters are
-identical.
+$\mathcal{L}=\mathcal{L}_{\mathrm{mask}}+\mathcal{L}_{\mathrm{bio}}$.
 
 \subsection{Biozero Probability Estimation}
 \label{sec:biozero}
@@ -372,6 +366,22 @@ for 300 epochs on GPU; random seeds are fixed for reproducibility. We employ a
 transductive setting: the model is trained on the full observed dataset to
 reconstruct masked entries, with no held-out set for the reconstruction task.
 
+\begin{figure*}[t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/maskimpute_pipeline.png}
+    \caption{\textbf{MaskClass overview.} Starting from logcounts
+    $\mathbf{X}_{\log}$ and counts $\mathbf{C}$, we estimate a biozero
+    probability $p_{\mathrm{bio}}(i,j)$ for observed zeros.
+    During self-supervised training, non-zeros are masked at a fixed rate,
+    while zeros are masked with probability proportional to $p_{\mathrm{bio}}$;
+    masked zeros are corrupted by injecting noise and masked non-zeros are
+    replaced by zero in the scaled space.
+    A symmetric autoencoder reconstructs the scaled matrix, and parameters are
+    learned by minimizing a weighted masked reconstruction loss plus a biozero
+    regularizer.}
+    \label{fig:maskimpute_pipeline}
+\end{figure*}
+
 \subsection{Evaluation Metrics}
 \label{sec:evaluation}
 \paragraph{(i) Denoising accuracy (mean squared error; MSE).}
@@ -417,23 +427,7 @@ Figure~\ref{fig:maskimpute_pipeline} provides a high-level view of the MaskClass
 pipeline, from biozero probability estimation to masked corruption and
 reconstruction. Algorithm~\ref{alg:maskclass} (Algorithm~1) gives the complete
 training and imputation procedure, including mask sampling, corruption, and the
-loss minimized by MaskClass$_{\mathrm{best}}$ and
-MaskClass$_{\mathrm{balanced}}$.
-\begin{figure*}[b]
-    \centering
-    \includegraphics[width=\textwidth]{figures/maskimpute_pipeline.png}
-    \caption{\textbf{MaskClass overview.} Starting from logcounts
-    $\mathbf{X}_{\log}$ and counts $\mathbf{C}$, we estimate a biozero
-    probability $p_{\mathrm{bio}}(i,j)$ for observed zeros.
-    During self-supervised training, non-zeros are masked at a fixed rate,
-    while zeros are masked with probability proportional to $p_{\mathrm{bio}}$;
-    masked zeros are corrupted by injecting noise and masked non-zeros are
-    replaced by zero in the scaled space.
-    A symmetric autoencoder reconstructs the scaled matrix, and parameters are
-    learned by minimizing a weighted masked reconstruction loss plus an optional
-    biozero regularizer (enabled in MaskClass$_{\mathrm{balanced}}$).}
-    \label{fig:maskimpute_pipeline}
-\end{figure*}
+loss minimized by MaskClass.
 
 \begin{algorithm}[H]
 \caption{MaskClass training and imputation.}
@@ -442,7 +436,7 @@ MaskClass$_{\mathrm{balanced}}$.
 \raggedright
 \STATE \textbf{Input:} logcounts $\mathbf{X}_{\log}$, counts $\mathbf{C}$,
 scaler $\mathrm{scale}/\mathrm{invscale}$, and hyperparameters
-$p_{\mathrm{zero}},p_{\mathrm{nonzero}},\nu,\alpha,\gamma$, and epochs $E$.
+$p_{\mathrm{zero}},p_{\mathrm{nonzero}},\nu,\alpha$, and epochs $E$.
 \STATE Compute biozero probabilities $p_{\mathrm{bio}}(i,j)$ from counts
 via the model in Section~\ref{sec:biozero}.
 \STATE Compute $z_i=\frac{1}{G}\left|\{j: c_{ij}=0\}\right|$ and set
@@ -459,8 +453,7 @@ $\tilde{x}_{ij}=\log_2(1+\eta_{ij}c^{\max}_j)$ with
 $\eta_{ij}\sim\mathrm{Uniform}(0,\nu)$ and $c^{\max}_j=\max_i c_{ij}$, then
 $\tilde{s}_{ij}\leftarrow\mathrm{scale}(\tilde{x}_{ij})$.
 \STATE Forward pass: $\hat{\mathbf{s}}_i=g_\phi(f_\theta(\tilde{\mathbf{s}}_i))$.
-\STATE Minimize $\mathcal{L}=\mathcal{L}_{\mathrm{mask}}+\gamma\mathcal{L}_{\mathrm{bio}}$
-(MaskClass$_{\mathrm{best}}$: $\gamma=0$; MaskClass$_{\mathrm{balanced}}$: $\gamma=1$).
+\STATE Minimize $\mathcal{L}=\mathcal{L}_{\mathrm{mask}}+\mathcal{L}_{\mathrm{bio}}$.
 \ENDFOR
 \ENDFOR
 \STATE Reconstruct $\mathbf{X}'_{\log}\leftarrow\mathrm{invscale}(\hat{\mathbf{S}})$ and keep observed non-zeros fixed.
@@ -484,8 +477,8 @@ We evaluate denoising accuracy on the four Splatter simulations described in
 Section~\ref{sec:synthetic_data} with $N=5{,}000$ cells, comparing reconstructed logcounts
 $\mathbf{X}'_{\log}$ against the synthetic ground truth
 $\mathbf{X}^{\star}_{\log}$ (Section~\ref{sec:evaluation}). Unless stated
-otherwise, \textbf{MaskClass} refers to the balanced configuration
-(MaskClass$_{\mathrm{balanced}}$; $\gamma{=}1$). Table~\ref{tab:mse_5000}
+otherwise, \textbf{MaskClass} denotes our full model with the biozero
+regularizer. Table~\ref{tab:mse_5000}
 summarizes mean squared error (MSE), with parenthesized values reporting
 dropout-MSE over entries that are observed as zero but non-zero in the ground
 truth. MaskClass achieves the lowest MSE across all scenarios, outperforming
