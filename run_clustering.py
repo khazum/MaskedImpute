@@ -4,8 +4,9 @@ run_clustering.py
 ----------------
 
 Run clustering evaluation (ARI, NMI, Purity, ASW) on SingleCellExperiment .rds
-files for multiple imputation methods. Methods mirror run_imputation.py:
-magic, dca, autoclass, low_mse, balanced_mse.
+files for multiple imputation methods. Methods mirror run_imputation.py and
+add the experiment autoencoder: magic, dca, autoclass, low_mse, balanced_mse,
+experiment.
 
 Procedure (per method):
 - impute (or baseline) to obtain logcounts
@@ -22,6 +23,8 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
+from clustering_eval import evaluate_clustering
 
 try:
     from rds2py import read_rds
@@ -41,94 +44,7 @@ except Exception as exc:  # pragma: no cover
 
 import torch
 
-METHODS = ("magic", "dca", "autoclass", "low_mse", "balanced_mse")
-
-def _contingency_matrix(y_true: np.ndarray, y_pred: np.ndarray) -> np.ndarray:
-    _, y_true = np.unique(y_true, return_inverse=True)
-    _, y_pred = np.unique(y_pred, return_inverse=True)
-    m = np.zeros((y_true.max() + 1, y_pred.max() + 1), dtype=np.int64)
-    for i in range(y_true.size):
-        m[y_true[i], y_pred[i]] += 1
-    return m
-
-
-def _purity_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    m = _contingency_matrix(y_true, y_pred)
-    return float(np.sum(np.max(m, axis=0)) / np.sum(m)) if m.size else float("nan")
-
-
-def _adjusted_rand_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    m = _contingency_matrix(y_true, y_pred)
-    n = m.sum()
-    if n < 2:
-        return float("nan")
-    def comb2(x: np.ndarray) -> np.ndarray:
-        return x * (x - 1) / 2
-    sum_comb = comb2(m).sum()
-    a = m.sum(axis=1)
-    b = m.sum(axis=0)
-    sum_a = comb2(a).sum()
-    sum_b = comb2(b).sum()
-    expected = sum_a * sum_b / comb2(np.array([n]))[0]
-    max_index = 0.5 * (sum_a + sum_b) - expected
-    if max_index == 0:
-        return 0.0
-    return float((sum_comb - expected) / max_index)
-
-
-def _normalized_mutual_info(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    m = _contingency_matrix(y_true, y_pred).astype(float)
-    n = m.sum()
-    if n == 0:
-        return float("nan")
-    p_ij = m / n
-    p_i = p_ij.sum(axis=1, keepdims=True)
-    p_j = p_ij.sum(axis=0, keepdims=True)
-    denom = p_i @ p_j
-    nz = (p_ij > 0) & (denom > 0)
-    I = np.sum(p_ij[nz] * np.log(p_ij[nz] / denom[nz]))
-    H_i = -np.sum(p_i[p_i > 0] * np.log(p_i[p_i > 0]))
-    H_j = -np.sum(p_j[p_j > 0] * np.log(p_j[p_j > 0]))
-    if (H_i + H_j) == 0:
-        return 1.0
-    return float(2 * I / (H_i + H_j))
-
-
-def _pca_embed(X: np.ndarray, n_components: int) -> np.ndarray:
-    X = np.asarray(X, dtype=np.float32)
-    X = X - X.mean(axis=0, keepdims=True)
-    U, S, _ = np.linalg.svd(X, full_matrices=False)
-    return U[:, :n_components] * S[:n_components]
-
-
-def _kmeans(X: np.ndarray, k: int, n_init: int = 10, max_iter: int = 100, seed: int = 42) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    n = X.shape[0]
-    best_labels = None
-    best_inertia = np.inf
-    for _ in range(n_init):
-        if n >= k:
-            centers = X[rng.choice(n, size=k, replace=False)]
-        else:
-            centers = X[rng.choice(n, size=k, replace=True)]
-        for _ in range(max_iter):
-            dist2 = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
-            labels = dist2.argmin(axis=1)
-            new_centers = centers.copy()
-            for j in range(k):
-                mask = labels == j
-                if not np.any(mask):
-                    new_centers[j] = X[rng.integers(0, n)]
-                else:
-                    new_centers[j] = X[mask].mean(axis=0)
-            if np.allclose(new_centers, centers):
-                break
-            centers = new_centers
-        inertia = np.sum((X - centers[labels]) ** 2)
-        if inertia < best_inertia:
-            best_inertia = inertia
-            best_labels = labels
-    return best_labels
+METHODS = ("magic", "dca", "autoclass", "low_mse", "balanced_mse", "experiment")
 
 
 def _counts_obs_from_logcounts(logcounts: np.ndarray, counts: Optional[np.ndarray]) -> np.ndarray:
@@ -191,51 +107,6 @@ def _run_masked26_clustering(
 
     # NOTE: for clustering we do NOT preserve observed nonzeros
     return log_recon.astype(np.float32, copy=False)
-
-
-def _silhouette_score(X: np.ndarray, labels: np.ndarray) -> float:
-    n = X.shape[0]
-    uniq = np.unique(labels)
-    if len(uniq) < 2 or len(uniq) >= n:
-        return float("nan")
-    sq = np.sum(X * X, axis=1, keepdims=True)
-    dist2 = sq + sq.T - 2.0 * (X @ X.T)
-    dist = np.sqrt(np.maximum(dist2, 0.0))
-    sil = np.zeros(n, dtype=np.float32)
-    for i in range(n):
-        same = labels == labels[i]
-        if same.sum() <= 1:
-            a = 0.0
-        else:
-            a = dist[i, same].sum() / (same.sum() - 1)
-        b = np.inf
-        for cl in uniq:
-            if cl == labels[i]:
-                continue
-            mask = labels == cl
-            if mask.sum() == 0:
-                continue
-            b = min(b, dist[i, mask].mean())
-        if not np.isfinite(b):
-            sil[i] = 0.0
-        else:
-            denom = max(a, b)
-            sil[i] = 0.0 if denom == 0 else (b - a) / denom
-    return float(sil.mean())
-
-
-def evaluate_clustering(imputed_data: np.ndarray, true_labels: np.ndarray) -> Dict[str, float]:
-    n, d = imputed_data.shape
-    n_components = max(1, min(50, n, d))
-    emb = _pca_embed(np.nan_to_num(imputed_data), n_components)
-    k = max(2, len(np.unique(true_labels)))
-    cl = _kmeans(emb, k, n_init=10, max_iter=100, seed=42)
-    return {
-        "ASW": round(_silhouette_score(emb, cl), 4),
-        "ARI": round(_adjusted_rand_score(true_labels, cl), 4),
-        "NMI": round(_normalized_mutual_info(true_labels, cl), 4),
-        "PS": round(_purity_score(true_labels, cl), 4),
-    }
 
 
 LABEL_KEYS = ("cell_type1", "labels", "Group", "label")
@@ -341,6 +212,13 @@ def _run_method(
             return _run_masked26_clustering(logcounts, counts, bio_reg_weight=0.0, seed=seed)
         if method == "balanced_mse":
             return _run_masked26_clustering(logcounts, counts, bio_reg_weight=1.0, seed=seed)
+        if method == "experiment":
+            try:
+                import experiment as exp
+            except Exception as exc:
+                raise RuntimeError(f"Failed to import experiment.py: {exc}") from exc
+            exp_kwargs = dict(getattr(args, "experiment_kwargs", {}) or {})
+            return exp.run_experiment_imputation(logcounts, seed=seed, **exp_kwargs)
     except BaseException as exc:
         raise RuntimeError(str(exc)) from exc
     raise ValueError(f"Unknown method: {method}")
@@ -362,13 +240,13 @@ def main() -> int:
     parser.add_argument(
         "--methods",
         default=None,
-        help="Comma-separated list (magic,dca,autoclass,low_mse,balanced_mse) or 'all'.",
+        help="Comma-separated list (magic,dca,autoclass,low_mse,balanced_mse,experiment) or 'all'.",
     )
     parser.add_argument(
         "methods_arg",
         nargs="?",
         default=None,
-        help="Optional methods list (magic,dca,autoclass,low_mse,balanced_mse) or 'all'.",
+        help="Optional methods list (magic,dca,autoclass,low_mse,balanced_mse,experiment) or 'all'.",
     )
     parser.add_argument("--n-jobs", type=int, default=1, help="MAGIC n_jobs value")
     parser.add_argument("--n-repeat", type=int, default=5, help="Number of repeats per method")
@@ -385,6 +263,13 @@ def main() -> int:
     g_ac.add_argument("--autoclass-dir", default="AutoClass", help="Path to AutoClass repo (optional)")
     g_ac.add_argument("--autoclass-kwargs", default="", help="Comma-separated key=value overrides")
 
+    g_exp = parser.add_argument_group("Experiment Options")
+    g_exp.add_argument(
+        "--experiment-kwargs",
+        default="",
+        help="Comma-separated key=value overrides for experiment method (e.g., epochs=50,bottleneck=16,masked_denoise=true).",
+    )
+
     parser.add_argument("--verbose", action="store_true", help="Verbose method output (e.g., DCA)")
     args = parser.parse_args()
 
@@ -400,6 +285,10 @@ def main() -> int:
         args.autoclass_kwargs = imp._parse_kv_pairs(args.autoclass_kwargs)
     except Exception as exc:
         raise SystemExit(f"Invalid --autoclass-kwargs: {exc}") from exc
+    try:
+        args.experiment_kwargs = imp._parse_kv_pairs(args.experiment_kwargs)
+    except Exception as exc:
+        raise SystemExit(f"Invalid --experiment-kwargs: {exc}") from exc
 
     method_rows: Dict[str, List[Dict[str, object]]] = {m: [] for m in methods}
 

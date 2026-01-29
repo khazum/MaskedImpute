@@ -310,6 +310,8 @@ def run_dca(
     dca_bin = str(Path(dca_bin).expanduser())
     if not os.path.exists(dca_bin):
         raise RuntimeError(f"DCA binary not found at: {dca_bin}")
+    cuda_env = os.environ.get("CUDA_VISIBLE_DEVICES") or "<unset>"
+    print(f"[DCA] CUDA_VISIBLE_DEVICES={cuda_env} dca_bin={dca_bin}")
 
     pd = _import_pandas()
     C = np.rint(np.asarray(counts)).astype(np.int32, copy=False)

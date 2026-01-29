@@ -15,6 +15,7 @@
 suppressPackageStartupMessages(library(argparse))
 suppressPackageStartupMessages(library(scran))
 suppressPackageStartupMessages(library(SingleCellExperiment))
+suppressPackageStartupMessages(library(BiocSingular))
 
 # --- Define Command-Line Arguments ---
 parser <- ArgumentParser(description = "Normalize and find HVGs in SingleCellExperiment objects using scran deconvolution size factors.")
@@ -91,10 +92,37 @@ for (file_path in rds_files) {
     # --- Normalization ---
     message("  -> Computing size factors with scran deconvolution...")
     lib_sizes <- colSums(counts_mat)
-    if (any(lib_sizes <= 0)) {
-        stop("Found non-positive library sizes; cannot normalize.")
+    zero_cells <- lib_sizes <= 0
+    if (any(zero_cells)) {
+        message(sprintf("  -> Dropping %d cells with zero library size.", sum(zero_cells)))
+        sce <- sce[, !zero_cells, drop = FALSE]
+        counts_mat <- counts(sce)
+        lib_sizes <- colSums(counts_mat)
     }
-    clusters <- scran::quickCluster(sce, min.mean = 0.1)
+    if (ncol(sce) < 2) {
+        stop("Too few cells after filtering; cannot normalize.")
+    }
+
+    n_cells <- ncol(sce)
+    n_genes <- nrow(sce)
+    min_dim <- min(n_cells, n_genes)
+    min_cluster_size <- min(100L, max(2L, floor(n_cells / 2L)))
+
+    clusters <- NULL
+    if (n_cells >= 10 && min_dim >= 3) {
+        d_pca <- min(50L, max(1L, min_dim - 1L))
+        bsparam <- if (min_dim < 200L) BiocSingular::ExactParam() else BiocSingular::IrlbaParam()
+        clusters <- scran::quickCluster(
+            sce,
+            min.mean = 0.1,
+            min.size = min_cluster_size,
+            d = d_pca,
+            BSPARAM = bsparam
+        )
+    } else {
+        message("  -> Skipping quickCluster (too few cells/genes); using single cluster.")
+        clusters <- factor(rep(1L, n_cells))
+    }
     sce <- scran::computeSumFactors(sce, clusters = clusters)
     size_factors <- sizeFactors(sce)
     if (any(!is.finite(size_factors) | size_factors <= 0)) {
@@ -106,21 +134,28 @@ for (file_path in rds_files) {
     norm_counts <- t(t(counts_mat) / size_factors)
     assay(sce, "logcounts", withDimnames = FALSE) <- log2(norm_counts + 1)
     # Store normalization metadata (counts-derived) for downstream tools
+    scale_factor <- stats::median(lib_sizes[lib_sizes > 0])
     colData(sce)$libSizeTrueCounts <- lib_sizes
     colData(sce)$sizeFactorTrueCounts <- size_factors
+    colData(sce)$scaleFactorTrueCounts <- scale_factor
     metadata(sce)$normalization <- list(
       method = "scran::computeSumFactors",
       library_sizes = lib_sizes,
       size_factors = size_factors,
+      scale_factor = scale_factor,
       log_base = 2,
       pseudo_count = 1
     )
     message("  -> Normalization complete.")
 
     # --- Highly Variable Gene (HVG) Selection ---
-    message(paste("  -> Modeling gene variance to find top", args$n_genes, "HVGs..."))
+    n_hvg <- min(args$n_genes, nrow(sce))
+    if (n_hvg < args$n_genes) {
+        message(sprintf("  -> Requested %d HVGs but only %d genes available; using %d.", args$n_genes, nrow(sce), n_hvg))
+    }
+    message(paste("  -> Modeling gene variance to find top", n_hvg, "HVGs..."))
     gene_var <- modelGeneVar(sce)
-    top_hvgs <- getTopHVGs(gene_var, n = args$n_genes)
+    top_hvgs <- getTopHVGs(gene_var, n = n_hvg)
     message("  -> HVG selection complete.")
 
     # --- Subsetting and Saving ---

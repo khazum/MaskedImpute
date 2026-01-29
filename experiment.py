@@ -13,33 +13,53 @@ from torch.utils.data import TensorDataset, DataLoader
 
 from rds2py import read_rds  # must expose read_rds(path) -> SCE-like object
 
-# ---- Clustering metrics (prefer repo function; else reproducible fallback)
-try:
-    from utils.evaluation import evaluate_clustering  # ASW, ARI, NMI, PS (Purity)
-except Exception:  # lightweight, reproducible fallback
+# ---- Clustering metrics (prefer shared implementation)
+def _sklearn_evaluate_clustering(imputed_data: np.ndarray, true_labels: np.ndarray) -> Dict[str, float]:
     from sklearn.cluster import KMeans
     from sklearn.decomposition import PCA
     from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, silhouette_score
     from sklearn.metrics.cluster import contingency_matrix
-    import pandas as pd
 
     def _purity_score(y_true, y_pred) -> float:
         m = contingency_matrix(y_true, y_pred)
         return float(np.sum(np.max(m, axis=0)) / np.sum(m))
 
-    def evaluate_clustering(imputed_data: np.ndarray, true_labels: np.ndarray) -> "pd.DataFrame":
-        n, d = imputed_data.shape
-        # Safe for very small n/d
-        n_components = max(1, min(50, n, d))
-        emb = PCA(n_components=n_components).fit_transform(np.nan_to_num(imputed_data))
-        k = max(2, len(np.unique(true_labels)))
-        km = KMeans(n_clusters=k, init="k-means++", n_init=10, random_state=42).fit(emb)
-        cl = km.labels_
-        asw = silhouette_score(emb, cl) if 2 <= len(np.unique(cl)) < n else np.nan
-        ari = adjusted_rand_score(true_labels, cl)
-        nmi = normalized_mutual_info_score(true_labels, cl)
-        ps = _purity_score(true_labels, cl)
-        return pd.DataFrame({"ASW": [round(asw, 4)], "ARI": [round(ari, 4)], "NMI": [round(nmi, 4)], "PS": [round(ps, 4)]})
+    n, d = imputed_data.shape
+    n_components = max(1, min(50, n, d))
+    emb = PCA(n_components=n_components).fit_transform(np.nan_to_num(imputed_data))
+    k = max(2, len(np.unique(true_labels)))
+    km = KMeans(n_clusters=k, init="k-means++", n_init=10, random_state=42).fit(emb)
+    cl = km.labels_
+    asw = silhouette_score(emb, cl) if 2 <= len(np.unique(cl)) < n else np.nan
+    ari = adjusted_rand_score(true_labels, cl)
+    nmi = normalized_mutual_info_score(true_labels, cl)
+    ps = _purity_score(true_labels, cl)
+    return {"ASW": round(asw, 4), "ARI": round(ari, 4), "NMI": round(nmi, 4), "PS": round(ps, 4)}
+
+
+try:
+    from clustering_eval import evaluate_clustering as _base_evaluate_clustering
+except Exception:
+    try:
+        from utils.evaluation import evaluate_clustering as _base_evaluate_clustering
+    except Exception:
+        _base_evaluate_clustering = _sklearn_evaluate_clustering
+
+
+def evaluate_clustering(imputed_data: np.ndarray, true_labels: np.ndarray) -> Dict[str, float]:
+    res = _base_evaluate_clustering(imputed_data, true_labels)
+    if isinstance(res, dict):
+        return {k: float(res.get(k, np.nan)) for k in ("ASW", "ARI", "NMI", "PS")}
+    if hasattr(res, "iloc"):
+        row = res.iloc[0].to_dict()
+    elif hasattr(res, "to_dict"):
+        row = res.to_dict()
+    else:
+        try:
+            row = dict(res)
+        except Exception:
+            row = {}
+    return {k: float(row.get(k, np.nan)) for k in ("ASW", "ARI", "NMI", "PS")}
 
 
 # ---- Scalers
@@ -240,10 +260,40 @@ def _frac(mask_true: np.ndarray, mask_cond: np.ndarray) -> float:
     return float(100.0 * (mask_true & mask_cond).sum() / n)
 
 
-# ---- Train & evaluate single dataset
-def train_and_eval_single(
-    X: np.ndarray, X_gt: Optional[np.ndarray], labels: Optional[np.ndarray], args, device: torch.device, dataset_name: str
-) -> Dict[str, float]:
+EXPERIMENT_DEFAULTS: Dict[str, object] = {
+    "hidden": "64",
+    "bottleneck": 32,
+    "epochs": 100,
+    "batch_size": 32,
+    "lr": 1e-3,
+    "weight_decay": 0.0,
+    "scale_input": "on",
+    "masked_denoise": False,
+    "md_p_zero": 0.10,
+    "md_p_nonzero": 0.30,
+    "md_fill": "mean",
+    "md_fill_zeroes": None,
+    "md_fill_nonzero": None,
+    "md_noise_std": 0.3,
+    "zero_threshold": 1e-4,
+    "log_base": 2.0,
+    "biozero_mode": "off",
+    "biozero_thresh": 0.5,
+    "biozero_disp": "estimate",
+    "biozero_disp_const": 0.1,
+    "biozero_cell_factor": False,
+    "device": None,
+}
+
+
+def _train_reconstruct(
+    X: np.ndarray,
+    X_gt: Optional[np.ndarray],
+    args,
+    device: torch.device,
+    dataset_name: str,
+    verbose: bool = True,
+) -> np.ndarray:
     scaler = (RobustZThenMinMaxToNeg1Pos1().fit(X) if args.scale_input == "on" else IdentityScaler().fit(X))
     Xs = scaler.transform(X).astype(np.float32)
     feat_mean_for_fill = Xs.mean(axis=0).astype(np.float32)
@@ -255,7 +305,8 @@ def train_and_eval_single(
         if X_gt is None:
             raise RuntimeError("--biozero-mode oracle requires 'perfect_logcounts'.")
         likely_bio_zero = (zeros_total * (X_gt <= thr)).astype(np.float32)
-        print("[BioZero] ORACLE: using perfect_logcounts.")
+        if verbose:
+            print("[BioZero] ORACLE: using perfect_logcounts.")
     else:
         bio_post = estimate_biozero_posterior_matrix(
             X_log=X, zero_thr=thr, log_base=float(args.log_base),
@@ -274,12 +325,12 @@ def train_and_eval_single(
     Zall = torch.tensor(zeros_total, dtype=torch.float32)
     tr_loader = DataLoader(TensorDataset(Xtr, Zbio, Zall), batch_size=args.batch_size, shuffle=True, drop_last=False)
 
-    print(f"Dataset '{dataset_name}': {X.shape[0]} cells × {X.shape[1]} genes.")
-    print("Scaled to [-1,1]." if args.scale_input == "on" else "[Input scaling OFF] raw logcounts to model.")
-
-    kept, allz = float(likely_bio_zero.sum()), float(zeros_total.sum())
-    pct = (100.0 * kept / max(allz, 1.0))
-    print(f"[BioZero] {kept:.0f}/{allz:.0f} zeros ({pct:.1f}%) flagged as biological (mode={args.biozero_mode}).")
+    if verbose:
+        print(f"Dataset '{dataset_name}': {X.shape[0]} cells × {X.shape[1]} genes.")
+        print("Scaled to [-1,1]." if args.scale_input == "on" else "[Input scaling OFF] raw logcounts to model.")
+        kept, allz = float(likely_bio_zero.sum()), float(zeros_total.sum())
+        pct = (100.0 * kept / max(allz, 1.0))
+        print(f"[BioZero] {kept:.0f}/{allz:.0f} zeros ({pct:.1f}%) flagged as biological (mode={args.biozero_mode}).")
 
     hidden = [int(h) for h in args.hidden.split(",")] if args.hidden else []
     model = AE(input_dim=X.shape[1], hidden=hidden, bottleneck=int(args.bottleneck)).to(device)
@@ -322,10 +373,59 @@ def train_and_eval_single(
             recon_np = model(xb).cpu().numpy()
             recon_list.append(scaler.inverse_transform(recon_np))
     recon_all = np.vstack(recon_list)  # reconstruction in logcounts space
+    return recon_all
+
+
+def run_experiment_imputation(
+    logcounts: np.ndarray,
+    *,
+    seed: int = 42,
+    **overrides: object,
+) -> np.ndarray:
+    cfg = dict(EXPERIMENT_DEFAULTS)
+    for key, value in overrides.items():
+        if key not in cfg:
+            raise ValueError(f"Unknown experiment parameter '{key}'. Allowed: {', '.join(sorted(cfg.keys()))}")
+        cfg[key] = value
+
+    device_req = cfg.pop("device")
+    if device_req is None:
+        device_req = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(str(device_req))
+
+    np.random.seed(int(seed))
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+
+    args = argparse.Namespace(**cfg)
+    return _train_reconstruct(
+        X=np.asarray(logcounts, dtype=np.float32),
+        X_gt=None,
+        args=args,
+        device=device,
+        dataset_name="experiment",
+        verbose=False,
+    )
+
+
+# ---- Train & evaluate single dataset
+def train_and_eval_single(
+    X: np.ndarray, X_gt: Optional[np.ndarray], labels: Optional[np.ndarray], args, device: torch.device, dataset_name: str
+) -> Dict[str, float]:
+    recon_all = _train_reconstruct(
+        X=X,
+        X_gt=X_gt,
+        args=args,
+        device=device,
+        dataset_name=dataset_name,
+        verbose=True,
+    )
 
     if args.mode == "MSE":
         if X_gt is None:
             raise RuntimeError("MSE mode requires 'perfect_logcounts' in the dataset.")
+        thr = float(args.zero_threshold)
         # Masks
         gt_bio = (X_gt <= thr)            # GT biological zeros
         gt_non = ~gt_bio                  # GT nonzeros
@@ -374,8 +474,7 @@ def train_and_eval_single(
     else:  # CLUST
         if labels is None:
             raise RuntimeError("CLUST mode requires labels.")
-        df = evaluate_clustering(recon_all, labels)
-        row = df.iloc[0].to_dict()
+        row = evaluate_clustering(recon_all, labels)
         return {k: float(row.get(k, np.nan)) for k in ("ASW", "ARI", "NMI", "PS")} | {"dataset": dataset_name}
 
 

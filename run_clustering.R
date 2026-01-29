@@ -2,8 +2,9 @@
 # run_clustering.R
 # Usage: Rscript run_clustering.R <input_rds_file_or_dir> <output_dir> [ncores] [n_repeats] [methods]
 #
-# Methods: baseline, saver, ccimpute
-# For each dataset/method, compute clustering metrics on logcounts:
+# Methods: baseline, saver, ccimpute, experiment
+# For each dataset/method, compute clustering metrics on logcounts
+# using shared Python clustering (PCA + k-means) for fair comparison:
 #   ASW, ARI, NMI, Purity (PS)
 
 stopf <- function(fmt, ...) stop(sprintf(fmt, ...), call. = FALSE)
@@ -32,19 +33,50 @@ load_pkg <- function(pkg) {
   suppressPackageStartupMessages(library(pkg, character.only = TRUE))
 }
 
-core_pkgs <- c("SingleCellExperiment", "Matrix", "parallel")
+core_pkgs <- c("SingleCellExperiment", "Matrix", "parallel", "reticulate")
 invisible(lapply(core_pkgs, require_pkg))
 invisible(lapply(core_pkgs, load_pkg))
 
 has_cluster <- requireNamespace("cluster", quietly = TRUE)
 
+py_clust <- NULL
+py_exp <- NULL
+
+init_python_clustering <- function() {
+  if (!is.null(py_clust)) return(invisible(py_clust))
+  py_bin <- Sys.getenv("MASKEDIMPUTE_PYTHON")
+  if (nzchar(py_bin)) {
+    reticulate::use_python(py_bin, required = TRUE)
+  }
+  proj_root <- normalizePath(getwd())
+  reticulate::py_run_string(sprintf("import sys; sys.path.insert(0, r'%s')", proj_root))
+  if (!reticulate::py_module_available("numpy")) {
+    stopf("Python env missing numpy. Set MASKEDIMPUTE_PYTHON to a Python with numpy.")
+  }
+  py_clust <<- tryCatch(
+    reticulate::import("clustering_eval", delay_load = FALSE),
+    error = function(e) stopf("Failed to import clustering_eval via reticulate: %s", conditionMessage(e))
+  )
+  invisible(py_clust)
+}
+
+get_python_experiment <- function() {
+  init_python_clustering()
+  if (!is.null(py_exp)) return(py_exp)
+  py_exp <<- tryCatch(
+    reticulate::import("experiment", delay_load = FALSE, convert = FALSE),
+    error = function(e) stopf("Failed to import experiment.py via reticulate: %s", conditionMessage(e))
+  )
+  py_exp
+}
+
 parse_methods <- function(raw) {
   if (is.null(raw) || !nzchar(raw) || tolower(raw) == "all") {
-    return(c("baseline", "saver", "ccimpute"))
+    return(c("baseline", "saver", "ccimpute", "experiment"))
   }
   methods <- tolower(unlist(strsplit(raw, ",")))
   methods <- methods[nzchar(methods)]
-  allowed <- c("baseline", "saver", "ccimpute")
+  allowed <- c("baseline", "saver", "ccimpute", "experiment")
   unknown <- setdiff(methods, allowed)
   if (length(unknown) > 0) {
     stopf("Unknown methods: %s. Allowed: %s or 'all'.",
@@ -125,20 +157,20 @@ compute_asw <- function(emb, clusters) {
 }
 
 evaluate_clustering <- function(log_imp, labels) {
-  n <- nrow(log_imp)
-  d <- ncol(log_imp)
-  n_components <- max(1, min(50, n, d))
-  pca <- stats::prcomp(log_imp, center = TRUE, scale. = FALSE, rank. = n_components)
-  emb <- pca$x
-  k <- max(2, length(unique(labels)))
-  set.seed(42)
-  km <- stats::kmeans(emb, centers = k, nstart = 10)
-  cl <- km$cluster
+  clust <- init_python_clustering()
+  lab_vec <- if (is.factor(labels)) as.character(labels) else as.vector(labels)
+  if (!reticulate::is_py_object(log_imp)) {
+    log_imp <- as.matrix(log_imp)
+  }
+  res <- tryCatch(
+    clust$evaluate_clustering(log_imp, lab_vec),
+    error = function(e) stopf("Python clustering failed: %s", conditionMessage(e))
+  )
   data.frame(
-    ASW = round(compute_asw(emb, cl), 4),
-    ARI = round(adjusted_rand_index(labels, cl), 4),
-    NMI = round(normalized_mutual_info(labels, cl), 4),
-    PS  = round(purity_score(labels, cl), 4),
+    ASW = as.numeric(res$ASW),
+    ARI = as.numeric(res$ARI),
+    NMI = as.numeric(res$NMI),
+    PS  = as.numeric(res$PS),
     stringsAsFactors = FALSE
   )
 }
@@ -419,6 +451,41 @@ for (path in files) {
       stringsAsFactors = FALSE
     )
     all_results[[length(all_results) + 1]] <- cc_row
+  }
+
+  if ("experiment" %in% methods) {
+    cat(sprintf("Running experiment x%d...\n", n_repeats))
+    exp_mod <- get_python_experiment()
+    exp_metrics <- list()
+    exp_runtimes <- numeric()
+    exp_err <- NA_character_
+    for (i in seq_len(n_repeats)) {
+      t0 <- proc.time()
+      res <- tryCatch({
+        seed_val <- 42L + (i - 1L)
+        log_imp <- exp_mod$run_experiment_imputation(t(logcounts), seed = seed_val)
+        df <- evaluate_clustering(log_imp, labels)
+        df
+      }, error = function(e) {
+        exp_err <<- conditionMessage(e)
+        cat(sprintf("ERROR [%s/experiment]: %s\n", dataset_name, exp_err))
+        NULL
+      })
+      elapsed <- (proc.time() - t0)["elapsed"]
+      if (is.null(res)) break
+      exp_metrics[[length(exp_metrics) + 1]] <- res
+      exp_runtimes <- c(exp_runtimes, elapsed)
+    }
+    exp_row <- data.frame(
+      dataset = dataset_name,
+      method = "experiment",
+      summarize_repeats(exp_metrics, exp_runtimes, exp_err),
+      n_cells = n_cells,
+      n_genes = n_genes,
+      label_source = lab_info$source,
+      stringsAsFactors = FALSE
+    )
+    all_results[[length(all_results) + 1]] <- exp_row
   }
 }
 
