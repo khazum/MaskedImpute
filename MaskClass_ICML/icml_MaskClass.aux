@@ -30,6 +30,8 @@
 \citation{darmanis2015survey}
 \citation{usoskin2015unbiased}
 \citation{zappia2017splatter}
+\newlabel{sec:synthetic_data}{{2.2}{3}{}{subsection.2.2}{}}
+\newlabel{sec:synthetic_data@cref}{{[subsection][2][2]2.2}{[1][3][]3}}
 \newlabel{sec:scaling}{{2.4}{3}{}{subsection.2.4}{}}
 \newlabel{sec:scaling@cref}{{[subsection][4][2]2.4}{[1][3][]3}}
 \newlabel{sec:masking}{{2.5}{3}{}{subsection.2.5}{}}
@@ -41,10 +43,18 @@
 \newlabel{sec:biozero@cref}{{[subsection][6][2]2.6}{[1][4][]4}}
 \newlabel{sec:evaluation}{{2.8}{4}{}{subsection.2.8}{}}
 \newlabel{sec:evaluation@cref}{{[subsection][8][2]2.8}{[1][4][]4}}
-\newlabel{fig:maskimpute_pipeline}{{1}{5}{\textbf {MaskClass overview.} Starting from logcounts $\mathbf {X}_{\log }$ and counts $\mathbf {C}$, we estimate a biozero probability $p_{\mathrm {bio}}(i,j)$ for observed zeros. During self-supervised training, non-zeros are masked at a fixed rate, while zeros are masked with probability proportional to $p_{\mathrm {bio}}$; masked zeros are corrupted by injecting noise and masked non-zeros are replaced by zero in the scaled space. A symmetric autoencoder reconstructs the scaled matrix, and parameters are learned by minimizing a weighted masked reconstruction loss plus an optional biozero regularizer (enabled in MaskClass$_{\mathrm {balanced}}$)}{figure.caption.2}{}}
-\newlabel{fig:maskimpute_pipeline@cref}{{[figure][1][]1}{[1][5][]5}}
 \newlabel{alg:maskclass}{{1}{5}{MaskClass training and imputation}{algorithm.1}{}}
 \newlabel{alg:maskclass@cref}{{[algorithm][1][]1}{[1][5][]5}}
+\newlabel{sec:experiments}{{3}{6}{}{section.3}{}}
+\newlabel{sec:experiments@cref}{{[section][3][]3}{[1][6][]6}}
+\newlabel{sec:denoising_results}{{3.1}{6}{}{subsection.3.1}{}}
+\newlabel{sec:denoising_results@cref}{{[subsection][1][3]3.1}{[1][6][]6}}
+\newlabel{fig:maskimpute_pipeline}{{1}{6}{\textbf {MaskClass overview.} Starting from logcounts $\mathbf {X}_{\log }$ and counts $\mathbf {C}$, we estimate a biozero probability $p_{\mathrm {bio}}(i,j)$ for observed zeros. During self-supervised training, non-zeros are masked at a fixed rate, while zeros are masked with probability proportional to $p_{\mathrm {bio}}$; masked zeros are corrupted by injecting noise and masked non-zeros are replaced by zero in the scaled space. A symmetric autoencoder reconstructs the scaled matrix, and parameters are learned by minimizing a weighted masked reconstruction loss plus an optional biozero regularizer (enabled in MaskClass$_{\mathrm {balanced}}$)}{figure.caption.2}{}}
+\newlabel{fig:maskimpute_pipeline@cref}{{[figure][1][]1}{[1][5][]6}}
+\newlabel{tab:mse_5000}{{2}{7}{Denoising accuracy (MSE) on synthetic data with $N=5{,}000$ cells. Values are mean (and $\pm $ std when non-zero) across repeats; parenthesized values report dropout-MSE. Lower is better}{table.caption.3}{}}
+\newlabel{tab:mse_5000@cref}{{[table][2][]2}{[1][6][]7}}
+\newlabel{fig:mse_5000_bars}{{2}{7}{Bar plots (mean $\pm $ std) of denoising error components on synthetic data with $N=5{,}000$ cells. We report overall MSE, dropout-MSE over entries with $x_{ij}=0$ and $x^{\star }_{ij}>0$, and biozero-MSE over entries with $x^{\star }_{ij}=0$. Lower is better}{figure.caption.4}{}}
+\newlabel{fig:mse_5000_bars@cref}{{[figure][2][]2}{[1][6][]7}}
 \bibdata{references}
 \bibcite{blakeley2015defining}{{1}{2015}{{Blakeley et~al.}}{{Blakeley, Fogarty, del Valle, Wamaitha, Hu, Elder, Snell, Christie, Robson, and Niakan}}}
 \bibcite{darmanis2015survey}{{2}{2015}{{Darmanis et~al.}}{{Darmanis, Sloan, Zhang, Duh, Caneda, Shuer, Hayden~Gephart, Barres, and Quake}}}
@@ -64,4 +74,4 @@
 \bibcite{zappia2017splatter}{{16}{2017}{{Zappia et~al.}}{{Zappia, Phipson, and Oshlack}}}
 \bibcite{Zheng2017TenX}{{17}{2017}{{Zheng et~al.}}{{Zheng, Terry, Belgrader, Ryvkin, Bent, Wilson, Ziraldo, Wheeler, McDermott, Zhu, and {others}}}}
 \bibstyle{icml2026}
-\gdef \@abspage@last{6}
+\gdef \@abspage@last{9}

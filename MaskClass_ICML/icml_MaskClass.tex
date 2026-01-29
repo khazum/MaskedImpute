@@ -7,6 +7,7 @@
 \usepackage{graphicx}
 \usepackage{subcaption}
 \usepackage{booktabs} % for professional tables
+\usepackage{dblfloatfix} % allow bottom placement of two-column floats
 
 % hyperref makes hyperlinks in the resulting PDF.
 % If your build breaks (sometimes temporarily if a hyperlink spans a page)
@@ -195,6 +196,7 @@ Usoskin & 622 & 19,532 & 4 & Mouse lumbar & \cite{usoskin2015unbiased} \\
 \end{table*}
 
 \subsection{Synthetic Data Generation}
+\label{sec:synthetic_data}
 To assess the imputation accuracy against a known ground truth, we generated four synthetic datasets using the \textit{splatter} R package (v1.32.0)~\cite{zappia2017splatter}. Each simulation generated $M=1{,}100$ genes, and the probability of differential expression (likelihood of gene expression differing between cell groups) was set to $0.1$ (\texttt{de.prob = 0.1}).
 
 To simulate technical noise, dropout midpoints and shapes were randomized per group or batch. We sampled
@@ -380,8 +382,9 @@ $\mathbf{X}'_{\log}$ to $\mathbf{X}^{\star}_{\log}$ and report
 \]
 We additionally report biozero-MSE over entries with $x^\star_{ij}=0$ and
 dropout-MSE over entries with $x_{ij}=0$ and $x^\star_{ij}>0$. Each experiment
-was repeated 10 times with different random seeds; we report mean and standard
-deviation.
+was repeated multiple times with different random seeds (10 repeats for
+baselines; 5 repeats for MaskClass due to GPU budget); we report mean and
+standard deviation.
 
 \paragraph{(ii) Runtime scaling.}
 To evaluate scalability, we ran each method on each synthetic cell count
@@ -416,9 +419,9 @@ reconstruction. Algorithm~\ref{alg:maskclass} (Algorithm~1) gives the complete
 training and imputation procedure, including mask sampling, corruption, and the
 loss minimized by MaskClass$_{\mathrm{best}}$ and
 MaskClass$_{\mathrm{balanced}}$.
-\begin{figure}[H]
+\begin{figure*}[b]
     \centering
-    \includegraphics[width=\columnwidth]{figures/maskimpute_pipeline.png}
+    \includegraphics[width=\textwidth]{figures/maskimpute_pipeline.png}
     \caption{\textbf{MaskClass overview.} Starting from logcounts
     $\mathbf{X}_{\log}$ and counts $\mathbf{C}$, we estimate a biozero
     probability $p_{\mathrm{bio}}(i,j)$ for observed zeros.
@@ -430,7 +433,7 @@ MaskClass$_{\mathrm{balanced}}$.
     learned by minimizing a weighted masked reconstruction loss plus an optional
     biozero regularizer (enabled in MaskClass$_{\mathrm{balanced}}$).}
     \label{fig:maskimpute_pipeline}
-\end{figure}
+\end{figure*}
 
 \begin{algorithm}[H]
 \caption{MaskClass training and imputation.}
@@ -471,6 +474,58 @@ $\tilde{s}_{ij}\leftarrow\mathrm{scale}(\tilde{x}_{ij})$.
   identity mapping. Robust scaling constrains dynamic range and stabilizes
   optimization, while inverse scaling restores original log‑count units for
   evaluation.
+
+\section{Experiments and Results}
+\label{sec:experiments}
+
+\subsection{Denoising Accuracy on Synthetic Data ($N=5{,}000$)}
+\label{sec:denoising_results}
+We evaluate denoising accuracy on the four Splatter simulations described in
+Section~\ref{sec:synthetic_data} with $N=5{,}000$ cells, comparing reconstructed logcounts
+$\mathbf{X}'_{\log}$ against the synthetic ground truth
+$\mathbf{X}^{\star}_{\log}$ (Section~\ref{sec:evaluation}). Unless stated
+otherwise, \textbf{MaskClass} refers to the balanced configuration
+(MaskClass$_{\mathrm{balanced}}$; $\gamma{=}1$). Table~\ref{tab:mse_5000}
+summarizes mean squared error (MSE), with parenthesized values reporting
+dropout-MSE over entries that are observed as zero but non-zero in the ground
+truth. MaskClass achieves the lowest MSE across all scenarios, outperforming
+the strongest baseline (DCA) by 43--60\% in overall MSE and 20--49\% in
+dropout-MSE. Figure~\ref{fig:mse_5000_bars} visualizes all three error
+components (overall, dropout, and biozero). While MaskClass yields the best
+overall and dropout-MSE, more conservative methods achieve lower biozero-MSE
+(e.g., Baseline trivially attains zero biozero-MSE by leaving zeros unchanged),
+highlighting a trade-off between recovering dropouts and preserving true zeros.
+
+\begin{table*}[t]
+\caption{Denoising accuracy (MSE) on synthetic data with $N=5{,}000$ cells.
+Values are mean (and $\pm$ std when non-zero) across repeats; parenthesized
+values report dropout-MSE. Lower is better.}
+\label{tab:mse_5000}
+\centering
+\footnotesize
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Method} & \textbf{Sim-Equal} & \textbf{Sim-Unequal} & \textbf{Sim-Rare} & \textbf{Sim-Batch} \\
+\midrule
+Baseline & \shortstack{6.955\\ (14.009)} & \shortstack{6.799\\ (14.128)} & \shortstack{7.596\\ (15.234)} & \shortstack{6.857\\ (14.399)} \\
+MAGIC & \shortstack{4.372 $\pm$ 0.002\\ (6.198 $\pm$ 0.002)} & \shortstack{4.083 $\pm$ 0.002\\ (5.584 $\pm$ 0.002)} & \shortstack{4.454 $\pm$ 0.002\\ (5.965 $\pm$ 0.002)} & \shortstack{3.932 $\pm$ 0.001\\ (5.263 $\pm$ 0.001)} \\
+AutoClass & \shortstack{4.545 $\pm$ 0.026\\ (6.445 $\pm$ 0.020)} & \shortstack{4.253 $\pm$ 0.016\\ (5.850 $\pm$ 0.020)} & \shortstack{4.722 $\pm$ 0.025\\ (6.251 $\pm$ 0.033)} & \shortstack{4.124 $\pm$ 0.020\\ (5.605 $\pm$ 0.026)} \\
+ccImpute & \shortstack{4.759\\ (9.582)} & \shortstack{4.755 $\pm$ 0.007\\ (9.869 $\pm$ 0.014)} & \shortstack{4.296 $\pm$ 0.024\\ (8.614 $\pm$ 0.047)} & \shortstack{4.174 $\pm$ 0.005\\ (8.763 $\pm$ 0.010)} \\
+DCA & \shortstack{1.755 $\pm$ 0.016\\ (2.715 $\pm$ 0.021)} & \shortstack{1.498 $\pm$ 0.010\\ (2.212 $\pm$ 0.015)} & \shortstack{1.712 $\pm$ 0.010\\ (2.602 $\pm$ 0.019)} & \shortstack{1.376 $\pm$ 0.006\\ (2.005 $\pm$ 0.008)} \\
+\textbf{MaskClass} & \textbf{\shortstack{0.728 $\pm$ 0.017\\ (1.417 $\pm$ 0.036)}} & \textbf{\shortstack{0.630 $\pm$ 0.012\\ (1.254 $\pm$ 0.026)}} & \textbf{\shortstack{0.688 $\pm$ 0.005\\ (1.323 $\pm$ 0.009)}} & \textbf{\shortstack{0.788 $\pm$ 0.013\\ (1.600 $\pm$ 0.029)}} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/mse_5000_bars.pdf}
+\caption{Bar plots (mean $\pm$ std) of denoising error components on synthetic
+data with $N=5{,}000$ cells. We report overall MSE, dropout-MSE over
+entries with $x_{ij}=0$ and $x^{\star}_{ij}>0$, and biozero-MSE over entries
+with $x^{\star}_{ij}=0$. Lower is better.}
+\label{fig:mse_5000_bars}
+\end{figure*}
 
 \section*{Software and Data}
 
