@@ -297,17 +297,30 @@ def _tsne_embed(
     if n < 2:
         return X.astype(np.float32, copy=False)
     perp = _tsne_perplexity(n) if perplexity is None else float(perplexity)
-    tsne = TSNE(
-        n_components=2,
-        perplexity=perp,
-        early_exaggeration=early_exaggeration,
-        learning_rate=learning_rate,
-        max_iter=max_iter,
-        metric="euclidean",
-        init="random",
-        method="barnes_hut",
-        random_state=int(seed),
-    )
+    try:
+        tsne = TSNE(
+            n_components=2,
+            perplexity=perp,
+            early_exaggeration=early_exaggeration,
+            learning_rate=learning_rate,
+            max_iter=max_iter,
+            metric="euclidean",
+            init="random",
+            method="barnes_hut",
+            random_state=int(seed),
+        )
+    except TypeError:
+        tsne = TSNE(
+            n_components=2,
+            perplexity=perp,
+            early_exaggeration=early_exaggeration,
+            learning_rate=learning_rate,
+            n_iter=max_iter,
+            metric="euclidean",
+            init="random",
+            method="barnes_hut",
+            random_state=int(seed),
+        )
     return tsne.fit_transform(X)
 
 
