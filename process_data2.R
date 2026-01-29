@@ -1,17 +1,14 @@
 #!/usr/bin/env Rscript
 
 # Description:
-# This script processes a directory of SingleCellExperiment (SCE) objects.
-# For each SCE, it filters genes expressed in at least 3 cells, computes
-# library-size normalization with median scaling, stores normalization metadata,
-# and selects the top N marker genes that best distinguish cell types based on
+# This script processes a directory of pre-normalized SingleCellExperiment (SCE) objects.
+# For each SCE, it selects the top N marker genes that best distinguish cell types based on
 # existing labels in colData. The resulting subsetted SCE object is saved to an output directory.
 
 # --- Load required libraries ---
 suppressPackageStartupMessages(library(argparse))
 suppressPackageStartupMessages(library(scran))
 suppressPackageStartupMessages(library(SingleCellExperiment))
-suppressPackageStartupMessages(library(Matrix))
 
 # --- Define Command-Line Arguments ---
 parser <- ArgumentParser(description = "Find marker genes in pre-normalized SingleCellExperiment objects.")
@@ -69,55 +66,86 @@ for (file_path in rds_files) {
         next
     }
     
-    if (!"counts" %in% assayNames(sce)) {
-        warning(paste("Skipping", base_name, "- missing counts assay."))
-        next
+    message("  -> Ensuring size factor metadata for DCA/clustering...")
+    coldata <- colData(sce)
+    md_norm <- metadata(sce)$normalization
+    if (is.null(md_norm)) {
+        md_norm <- list()
     }
 
-    message("  -> Filtering genes expressed in at least 3 cells...")
-    counts_mat <- counts(sce)
-    expressed_cells <- Matrix::rowSums(counts_mat > 0)
-    keep_genes <- expressed_cells >= 3
-    if (!any(keep_genes)) {
-        warning(paste("Skipping", base_name, "- no genes expressed in >=3 cells."))
-        next
-    }
-    sce <- sce[keep_genes, ]
-    counts_mat <- counts(sce)
-
-    message("  -> Library-size normalization with median scaling...")
-    lib_sizes <- Matrix::colSums(counts_mat)
-    zero_cells <- lib_sizes <= 0
-    if (any(zero_cells)) {
-        message(sprintf("  -> Dropping %d cells with zero library size.", sum(zero_cells)))
-        sce <- sce[, !zero_cells, drop = FALSE]
-        counts_mat <- counts(sce)
-        lib_sizes <- Matrix::colSums(counts_mat)
-    }
-    if (ncol(sce) < 2) {
-        warning(paste("Skipping", base_name, "- too few cells after filtering."))
-        next
+    lib_sizes <- NULL
+    if ("libSizeTrueCounts" %in% colnames(coldata)) {
+        lib_sizes <- as.numeric(coldata$libSizeTrueCounts)
+    } else if (!is.null(md_norm$library_sizes)) {
+        lib_sizes <- as.numeric(md_norm$library_sizes)
+    } else if ("counts" %in% assayNames(sce)) {
+        lib_sizes <- Matrix::colSums(counts(sce))
+    } else if ("TrueCounts" %in% assayNames(sce)) {
+        lib_sizes <- Matrix::colSums(assay(sce, "TrueCounts"))
     }
 
-    scale_factor <- stats::median(lib_sizes[lib_sizes > 0])
-    if (!is.finite(scale_factor) || scale_factor <= 0) scale_factor <- 1
-    size_factors <- lib_sizes / scale_factor
-    size_factors[!is.finite(size_factors) | size_factors <= 0] <- 1
+    scale_factor <- NULL
+    if ("scaleFactorTrueCounts" %in% colnames(coldata)) {
+        scale_vals <- unique(as.numeric(coldata$scaleFactorTrueCounts))
+        scale_vals <- scale_vals[is.finite(scale_vals) & scale_vals > 0]
+        if (length(scale_vals) > 0) {
+            scale_factor <- scale_vals[1]
+        }
+    }
+    if (is.null(scale_factor) && !is.null(md_norm$scale_factor)) {
+        scale_factor <- as.numeric(md_norm$scale_factor)[1]
+    }
+    if (is.null(scale_factor) || !is.finite(scale_factor) || scale_factor <= 0) {
+        scale_factor <- 100000
+    }
 
-    norm_counts <- t(t(counts_mat) / size_factors)
-    assay(sce, "logcounts", withDimnames = FALSE) <- log2(norm_counts + 1)
-    # Store normalization metadata (counts-derived) for downstream tools
-    colData(sce)$libSizeTrueCounts <- lib_sizes
-    colData(sce)$sizeFactorTrueCounts <- size_factors
-    colData(sce)$scaleFactorTrueCounts <- scale_factor
-    metadata(sce)$normalization <- list(
-      method = "library_size_median",
-      library_sizes = lib_sizes,
-      size_factors = size_factors,
-      scale_factor = scale_factor,
-      log_base = 2,
-      pseudo_count = 1
-    )
+    size_factors <- NULL
+    if ("sizeFactorTrueCounts" %in% colnames(coldata)) {
+        size_factors <- as.numeric(coldata$sizeFactorTrueCounts)
+    } else if ("sizeFactorsTrueCounts" %in% colnames(coldata)) {
+        size_factors <- as.numeric(coldata$sizeFactorsTrueCounts)
+    } else if (!is.null(md_norm$size_factors)) {
+        size_factors <- as.numeric(md_norm$size_factors)
+    } else if (!is.null(lib_sizes)) {
+        size_factors <- lib_sizes / scale_factor
+    }
+
+    if (!is.null(lib_sizes) && length(lib_sizes) != ncol(sce)) {
+        stop(sprintf("libSizeTrueCounts length (%d) does not match number of cells (%d).",
+                     length(lib_sizes), ncol(sce)))
+    }
+    if (!is.null(size_factors) && length(size_factors) != ncol(sce)) {
+        stop(sprintf("sizeFactorTrueCounts length (%d) does not match number of cells (%d).",
+                     length(size_factors), ncol(sce)))
+    }
+
+    if (!"libSizeTrueCounts" %in% colnames(coldata) && !is.null(lib_sizes)) {
+        colData(sce)$libSizeTrueCounts <- lib_sizes
+    }
+    if (!"scaleFactorTrueCounts" %in% colnames(coldata)) {
+        colData(sce)$scaleFactorTrueCounts <- scale_factor
+    }
+    if (!"sizeFactorTrueCounts" %in% colnames(coldata) && !is.null(size_factors)) {
+        colData(sce)$sizeFactorTrueCounts <- size_factors
+    }
+
+    if (is.null(md_norm$method)) {
+        md_norm$method <- "library_size"
+    }
+    if (!is.null(lib_sizes)) {
+        md_norm$library_sizes <- lib_sizes
+    }
+    if (!is.null(size_factors)) {
+        md_norm$size_factors <- size_factors
+    }
+    md_norm$scale_factor <- scale_factor
+    if (is.null(md_norm$log_base)) {
+        md_norm$log_base <- 2
+    }
+    if (is.null(md_norm$pseudo_count)) {
+        md_norm$pseudo_count <- 1
+    }
+    metadata(sce)$normalization <- md_norm
 
     n_top_genes <- args$n_genes
 
