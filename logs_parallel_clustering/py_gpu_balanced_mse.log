@@ -5,9 +5,25 @@ Processing balanced_mse datasets from datasets...
   if not hasattr(np, "object"):
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+--- Dataset: blakeley_top1000markers ---
+  -> balanced_mse
+    ASW=0.6752 ARI=0.8879 NMI=0.9335 PS=0.9600
+
+--- Dataset: darmanis_top1000markers ---
+  -> balanced_mse
+    ASW=0.5095 ARI=0.8495 NMI=0.8611 PS=0.9233
+
+--- Dataset: deng_top1000markers ---
+  -> balanced_mse
+    ASW=0.6953 ARI=0.8849 NMI=0.8731 PS=0.8925
+
+--- Dataset: pollen_top1000markers ---
+  -> balanced_mse
+    ASW=0.6677 ARI=0.8834 NMI=0.9081 PS=0.9164
+
+--- Dataset: usoskin_top1000markers ---
+  -> balanced_mse
+    ASW=0.4377 ARI=0.8561 NMI=0.8199 PS=0.9244
+Saved results_clustering_py/balanced_mse/balanced_mse_clustering_table.tsv
+Finished [PY/balanced_mse]

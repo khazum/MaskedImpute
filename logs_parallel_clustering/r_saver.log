@@ -1,100 +1,146 @@
 Processing saver datasets from datasets...
 
-=== blakeley_top1000hvg ===
+=== blakeley_top1000markers ===
 Running saver x5...
 1000 genes, 30 cells
 Running SAVER with 1 worker(s)
 Calculating predictions for 1000 genes using 1000 genes and 30 cells...
-Start time: 2026-01-28 21:56:24.783527
+Start time: 2026-01-28 23:44:35.450042
 Estimating finish time...
-Finished 8/1000 genes. Approximate finish time: 2026-01-28 21:56:47.22559
+Finished 8/1000 genes. Approximate finish time: 2026-01-28 23:44:59.967004
 Calculating max cor cutoff...
-Finished 100/1000 genes. Approximate finish time: 2026-01-28 21:56:36.283841
+Finished 100/1000 genes. Approximate finish time: 2026-01-28 23:44:47.539785
 Calculating lambda coefficients...
-Finished 218/1000 genes. Approximate finish time: 2026-01-28 21:56:36.028814
+Finished 232/1000 genes. Approximate finish time: 2026-01-28 23:44:45.832458
 Predicting remaining genes...
-Finished 414/1000 genes. Approximate finish time: 2026-01-28 21:56:36.566484
+Finished 424/1000 genes. Approximate finish time: 2026-01-28 23:44:46.803607
 Predicting remaining genes...
 Done!
-Finish time: 2026-01-28 21:56:36.698936
-Total time: 11.91527 secs
+Finish time: 2026-01-28 23:44:46.744848
+Total time: 11.29465 secs
 1000 genes, 30 cells
 Running SAVER with 1 worker(s)
 Calculating predictions for 1000 genes using 1000 genes and 30 cells...
-Start time: 2026-01-28 21:56:46.635112
+Start time: 2026-01-28 23:44:54.677119
 Estimating finish time...
-Finished 8/1000 genes. Approximate finish time: 2026-01-28 21:56:55.577204
+Finished 8/1000 genes. Approximate finish time: 2026-01-28 23:45:05.316206
 Calculating max cor cutoff...
-Finished 100/1000 genes. Approximate finish time: 2026-01-28 21:56:57.715658
+Finished 100/1000 genes. Approximate finish time: 2026-01-28 23:45:05.512077
 Calculating lambda coefficients...
-Finished 234/1000 genes. Approximate finish time: 2026-01-28 21:56:58.185039
+Finished 236/1000 genes. Approximate finish time: 2026-01-28 23:45:06.692338
 Predicting remaining genes...
-Finished 426/1000 genes. Approximate finish time: 2026-01-28 21:56:58.799724
+Finished 427/1000 genes. Approximate finish time: 2026-01-28 23:45:07.556329
 Predicting remaining genes...
 Done!
-Finish time: 2026-01-28 21:56:58.880731
-Total time: 12.24546 secs
+Finish time: 2026-01-28 23:45:07.461657
+Total time: 12.78439 secs
 1000 genes, 30 cells
 Running SAVER with 1 worker(s)
 Calculating predictions for 1000 genes using 1000 genes and 30 cells...
-Start time: 2026-01-28 21:56:59.263743
+Start time: 2026-01-28 23:45:07.491675
 Estimating finish time...
-Finished 8/1000 genes. Approximate finish time: 2026-01-28 21:57:08.012933
+Finished 8/1000 genes. Approximate finish time: 2026-01-28 23:45:16.447166
 Calculating max cor cutoff...
-Finished 100/1000 genes. Approximate finish time: 2026-01-28 21:57:10.167694
+Finished 100/1000 genes. Approximate finish time: 2026-01-28 23:45:18.518185
 Calculating lambda coefficients...
-Finished 227/1000 genes. Approximate finish time: 2026-01-28 21:57:09.955779
+Finished 236/1000 genes. Approximate finish time: 2026-01-28 23:45:18.296918
 Predicting remaining genes...
-Finished 421/1000 genes. Approximate finish time: 2026-01-28 21:57:10.737266
+Finished 427/1000 genes. Approximate finish time: 2026-01-28 23:45:19.101693
 Predicting remaining genes...
 Done!
-Finish time: 2026-01-28 21:57:10.775668
-Total time: 11.51178 secs
+Finish time: 2026-01-28 23:45:19.088314
+Total time: 11.59648 secs
 1000 genes, 30 cells
 Running SAVER with 1 worker(s)
 Calculating predictions for 1000 genes using 1000 genes and 30 cells...
-Start time: 2026-01-28 21:57:11.106583
+Start time: 2026-01-28 23:45:19.104886
 Estimating finish time...
-Finished 8/1000 genes. Approximate finish time: 2026-01-28 21:57:19.812078
+Finished 8/1000 genes. Approximate finish time: 2026-01-28 23:45:28.793285
 Calculating max cor cutoff...
-Finished 100/1000 genes. Approximate finish time: 2026-01-28 21:57:21.287154
+Finished 100/1000 genes. Approximate finish time: 2026-01-28 23:45:30.832536
 Calculating lambda coefficients...
-Finished 229/1000 genes. Approximate finish time: 2026-01-28 21:57:21.418394
+Finished 236/1000 genes. Approximate finish time: 2026-01-28 23:45:30.140297
 Predicting remaining genes...
-Finished 422/1000 genes. Approximate finish time: 2026-01-28 21:57:22.046436
+Finished 427/1000 genes. Approximate finish time: 2026-01-28 23:45:30.948723
 Predicting remaining genes...
 Done!
-Finish time: 2026-01-28 21:57:21.987486
-Total time: 10.88076 secs
+Finish time: 2026-01-28 23:45:30.89809
+Total time: 11.79305 secs
 1000 genes, 30 cells
 Running SAVER with 1 worker(s)
 Calculating predictions for 1000 genes using 1000 genes and 30 cells...
-Start time: 2026-01-28 21:57:22.322955
+Start time: 2026-01-28 23:45:30.912942
 Estimating finish time...
-Finished 8/1000 genes. Approximate finish time: 2026-01-28 21:57:31.217295
+Finished 8/1000 genes. Approximate finish time: 2026-01-28 23:45:39.816473
 Calculating max cor cutoff...
-Finished 100/1000 genes. Approximate finish time: 2026-01-28 21:57:33.471086
+Finished 100/1000 genes. Approximate finish time: 2026-01-28 23:45:42.374645
 Calculating lambda coefficients...
-Finished 222/1000 genes. Approximate finish time: 2026-01-28 21:57:32.816853
+Finished 236/1000 genes. Approximate finish time: 2026-01-28 23:45:42.388668
 Predicting remaining genes...
-Finished 417/1000 genes. Approximate finish time: 2026-01-28 21:57:33.776286
+Finished 427/1000 genes. Approximate finish time: 2026-01-28 23:45:43.184802
 Predicting remaining genes...
 Done!
-Finish time: 2026-01-28 21:57:34.209359
-Total time: 11.88627 secs
+Finish time: 2026-01-28 23:45:43.079788
+Total time: 12.16671 secs
 
-=== darmanis_top1000hvg ===
+=== darmanis_top1000markers ===
 Running saver x5...
 1000 genes, 420 cells
 Running SAVER with 1 worker(s)
 Calculating predictions for 1000 genes using 1000 genes and 420 cells...
-Start time: 2026-01-28 21:57:34.753412
+Start time: 2026-01-28 23:45:43.199873
 Estimating finish time...
-Finished 8/1000 genes. Approximate finish time: 2026-01-28 21:59:03.345969
+Finished 8/1000 genes. Approximate finish time: 2026-01-28 23:47:08.560309
 Calculating max cor cutoff...
-Finished 100/1000 genes. Approximate finish time: 2026-01-28 21:59:12.185696
+Finished 100/1000 genes. Approximate finish time: 2026-01-28 23:47:22.975228
 Calculating lambda coefficients...
-Finished 215/1000 genes. Approximate finish time: 2026-01-28 21:59:04.904906
+Finished 206/1000 genes. Approximate finish time: 2026-01-28 23:47:22.338644
 Predicting remaining genes...
-Finished 412/1000 genes. Approximate finish time: 2026-01-28 21:59:03.767037
+Finished 405/1000 genes. Approximate finish time: 2026-01-28 23:47:21.076986
 Predicting remaining genes...
+Done!
+Finish time: 2026-01-28 23:47:21.112234
+Total time: 1.63187 mins
+1000 genes, 420 cells
+Running SAVER with 1 worker(s)
+Calculating predictions for 1000 genes using 1000 genes and 420 cells...
+Start time: 2026-01-28 23:47:21.325668
+Estimating finish time...
+Finished 8/1000 genes. Approximate finish time: 2026-01-28 23:48:51.346727
+Calculating max cor cutoff...
+Finished 100/1000 genes. Approximate finish time: 2026-01-28 23:48:59.451565
+Calculating lambda coefficients...
+Finished 209/1000 genes. Approximate finish time: 2026-01-28 23:48:58.107213
+Predicting remaining genes...
+Finished 407/1000 genes. Approximate finish time: 2026-01-28 23:48:57.163231
+Predicting remaining genes...
+Done!
+Finish time: 2026-01-28 23:48:55.901282
+Total time: 1.576257 mins
+1000 genes, 420 cells
+Running SAVER with 1 worker(s)
+Calculating predictions for 1000 genes using 1000 genes and 420 cells...
+Start time: 2026-01-28 23:48:56.114021
+Estimating finish time...
+Finished 8/1000 genes. Approximate finish time: 2026-01-28 23:50:31.077881
+Calculating max cor cutoff...
+Finished 100/1000 genes. Approximate finish time: 2026-01-28 23:50:35.519437
+Calculating lambda coefficients...
+Finished 209/1000 genes. Approximate finish time: 2026-01-28 23:50:36.566584
+Predicting remaining genes...
+Finished 407/1000 genes. Approximate finish time: 2026-01-28 23:50:33.295732
+Predicting remaining genes...
+Done!
+Finish time: 2026-01-28 23:50:34.865494
+Total time: 1.645855 mins
+1000 genes, 420 cells
+Running SAVER with 1 worker(s)
+Calculating predictions for 1000 genes using 1000 genes and 420 cells...
+Start time: 2026-01-28 23:50:35.055785
+Estimating finish time...
+Finished 8/1000 genes. Approximate finish time: 2026-01-28 23:52:06.343446
+Calculating max cor cutoff...
+Finished 100/1000 genes. Approximate finish time: 2026-01-28 23:52:13.016679
+Calculating lambda coefficients...
+
+Execution halted

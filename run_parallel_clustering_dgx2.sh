@@ -53,10 +53,10 @@ numa_node_for_method() {
 gpu_for_method() {
   case "$1" in
     dca)
-      echo 0
+      echo 1
       ;;
     autoclass)
-      echo 1
+      echo 0
       ;;
     low_mse)
       echo 2

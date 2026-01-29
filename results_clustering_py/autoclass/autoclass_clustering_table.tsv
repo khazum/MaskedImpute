@@ -1,6 +1,6 @@
-dataset	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	n_cells	n_genes	label_source	error
-blakeley_top1000hvg	0.051640000000000005	0.06770689034359798	0.14107999999999998	0.056323946949765516	0.57334	0.036505725578325376	40.96843886375427	5.147447704068509	5	30	1000	cell_type1	
-darmanis_top1000hvg	0.6153799999999999	0.005402036652967106	0.7699400000000001	0.003816804946548854	0.8614200000000001	0.0020079840636817456	44.47442173957825	3.144499068363622	5	420	1000	cell_type1	
-deng_top1000hvg	0.48525999999999997	0.12863859451968526	0.64236	0.11778727860002541	0.76566	0.09040488371763993	38.13847589492798	1.6659755275432804	5	268	1000	cell_type1	
-pollen_top1000hvg	0.73338	0.10265842391153294	0.8156400000000001	0.07174366174095104	0.7779400000000001	0.07474237753777974	50.58228559494019	2.364691220234923	5	299	1000	cell_type1	
-usoskin_top1000hvg	0.8866999999999999	0.04077983570344539	0.85154	0.031016334406244718	0.94276	0.019231822586536086	40.417991924285886	3.1660669537469612	5	622	1000	cell_type1	
+dataset	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	n_cells	n_genes	label_source	error
+blakeley_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	30	1000	cell_type1	cudaSetDevice() on GPU:0 failed. Status: out of memory
+darmanis_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	420	1000	cell_type1	cudaSetDevice() on GPU:0 failed. Status: out of memory
+deng_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	268	1000	cell_type1	cudaSetDevice() on GPU:0 failed. Status: out of memory
+pollen_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	299	1000	cell_type1	cudaSetDevice() on GPU:0 failed. Status: out of memory
+usoskin_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	622	1000	cell_type1	cudaSetDevice() on GPU:0 failed. Status: out of memory

@@ -5,79 +5,56 @@ Processing autoclass datasets from datasets...
   if not hasattr(np, "object"):
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
-I0000 00:00:1769655389.684470 3716024 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 78752 MB memory:  -> device: 0, name: NVIDIA H100 80GB HBM3, pci bus id: 0000:43:00.0, compute capability: 9.0
-E0000 00:00:1769655390.693067 3718942 ptx_compiler_helpers.cc:88] *** WARNING *** Invoking ptxas with version 12.1.105, which corresponds to a CUDA version <=12.6.2. CUDA versions 12.x.y up to and including 12.6.2 miscompile certain edge cases around clamping.
-Please upgrade to CUDA 12.6.3 or newer.
-I0000 00:00:1769655394.973547 3718627 device_compiler.h:196] Compiled cluster using XLA!  This line is logged at most once for the lifetime of the process.
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
+  super()._check_params_vs_input(X, default_n_init=10)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
+  super()._check_params_vs_input(X, default_n_init=10)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
+  super()._check_params_vs_input(X, default_n_init=10)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
+  super()._check_params_vs_input(X, default_n_init=10)
 
---- Dataset: blakeley_top1000hvg ---
+--- Dataset: blakeley_top1000markers ---
   -> autoclass
 30 cells and 1000 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 1s/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 1s/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 1s/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 1s/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 1s/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 1s/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 45.67117714881897
-30 cells and 1000 genes
+    [ERROR] autoclass: cudaSetDevice() on GPU:0 failed. Status: out of memory
+
+--- Dataset: darmanis_top1000markers ---
+  -> autoclass
+420 cells and 1000 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 485ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 503ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-WARNING:tensorflow:5 out of the last 5 calls to <function TensorFlowTrainer.make_predict_function.<locals>.one_step_on_data_distributed at 0x7fcdb8542480> triggered tf.function retracing. Tracing is expensive and the excessive number of tracings could be due to (1) creating @tf.function repeatedly in a loop, (2) passing tensors with different shapes, (3) passing Python objects instead of tensors. For (1), please define your @tf.function outside of the loop. For (2), @tf.function has reduce_retracing=True option that can avoid unnecessary retracing. For (3), please refer to https://www.tensorflow.org/guide/function#controlling_retracing and https://www.tensorflow.org/api_docs/python/tf/function for  more details.
-n_cluster = 9...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 446ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 464ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-WARNING:tensorflow:6 out of the last 6 calls to <function TensorFlowTrainer.make_predict_function.<locals>.one_step_on_data_distributed at 0x7fcd183699e0> triggered tf.function retracing. Tracing is expensive and the excessive number of tracings could be due to (1) creating @tf.function repeatedly in a loop, (2) passing tensors with different shapes, (3) passing Python objects instead of tensors. For (1), please define your @tf.function outside of the loop. For (2), @tf.function has reduce_retracing=True option that can avoid unnecessary retracing. For (3), please refer to https://www.tensorflow.org/guide/function#controlling_retracing and https://www.tensorflow.org/api_docs/python/tf/function for  more details.
-n_cluster = 10...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 417ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 436ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 25.22677493095398
-30 cells and 1000 genes
+    [ERROR] autoclass: cudaSetDevice() on GPU:0 failed. Status: out of memory
+
+--- Dataset: deng_top1000markers ---
+  -> autoclass
+268 cells and 1000 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 401ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 420ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 441ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 460ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 420ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 437ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 32.475208044052124
-30 cells and 1000 genes
+    [ERROR] autoclass: cudaSetDevice() on GPU:0 failed. Status: out of memory
+
+--- Dataset: pollen_top1000markers ---
+  -> autoclass
+299 cells and 1000 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 402ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 419ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 446ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 464ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 422ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 440ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 36.684876918792725
-30 cells and 1000 genes
+    [ERROR] autoclass: cudaSetDevice() on GPU:0 failed. Status: out of memory
+
+--- Dataset: usoskin_top1000markers ---
+  -> autoclass
+622 cells and 1000 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 411ms/step[1m1/1[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 430ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
+    [ERROR] autoclass: cudaSetDevice() on GPU:0 failed. Status: out of memory
+Saved results_clustering_py/autoclass/autoclass_clustering_table.tsv
+Finished [PY/autoclass]

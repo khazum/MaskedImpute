@@ -5,3 +5,54 @@ Processing dca datasets from datasets...
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+--- Dataset: blakeley_top1000markers ---
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    ASW=0.5634 ARI=1.0000 NMI=1.0000 PS=1.0000
+
+--- Dataset: darmanis_top1000markers ---
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    ASW=0.5468 ARI=0.9474 NMI=0.9234 PS=0.9633
+
+--- Dataset: deng_top1000markers ---
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    ASW=0.5643 ARI=0.7783 NMI=0.8340 PS=0.9104
+
+--- Dataset: pollen_top1000markers ---
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    ASW=0.7371 ARI=0.9389 NMI=0.9449 PS=0.9485
+
+--- Dataset: usoskin_top1000markers ---
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    ASW=0.4360 ARI=0.9103 NMI=0.8950 PS=0.9485
+Saved results_clustering_py/dca/dca_clustering_table.tsv
+Finished [PY/dca]

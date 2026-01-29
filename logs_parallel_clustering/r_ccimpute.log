@@ -1,18 +1,18 @@
 Processing ccimpute datasets from datasets...
 
-=== blakeley_top1000hvg ===
+=== blakeley_top1000markers ===
 Running ccImpute x5...
 
-=== darmanis_top1000hvg ===
+=== darmanis_top1000markers ===
 Running ccImpute x5...
 
-=== deng_top1000hvg ===
+=== deng_top1000markers ===
 Running ccImpute x5...
 
-=== pollen_top1000hvg ===
+=== pollen_top1000markers ===
 Running ccImpute x5...
 
-=== usoskin_top1000hvg ===
+=== usoskin_top1000markers ===
 Running ccImpute x5...
 Wrote results_clustering_r/ccimpute/ccimpute_clustering_table.tsv
 

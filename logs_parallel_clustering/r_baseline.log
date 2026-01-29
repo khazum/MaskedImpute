@@ -1,18 +1,18 @@
 Processing baseline datasets from datasets...
 
-=== blakeley_top1000hvg ===
+=== blakeley_top1000markers ===
 Running baseline x5...
 
-=== darmanis_top1000hvg ===
+=== darmanis_top1000markers ===
 Running baseline x5...
 
-=== deng_top1000hvg ===
+=== deng_top1000markers ===
 Running baseline x5...
 
-=== pollen_top1000hvg ===
+=== pollen_top1000markers ===
 Running baseline x5...
 
-=== usoskin_top1000hvg ===
+=== usoskin_top1000markers ===
 Running baseline x5...
 Wrote results_clustering_r/baseline/baseline_clustering_table.tsv
 
