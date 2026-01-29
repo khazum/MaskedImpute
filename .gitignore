@@ -28,4 +28,5 @@ build/
 dist/
 
 # Data outputs
+results_imputation_r/**/*.rds
 synthetic_datasets/rds_splat_output/

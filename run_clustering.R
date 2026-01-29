@@ -370,7 +370,7 @@ for (path in files) {
         for (i in seq_len(n_repeats)) {
           t0 <- proc.time()
           res <- tryCatch({
-            saver_imp <- SAVER::saver(counts_saver, ncores = 1, verbose = FALSE)
+            saver_imp <- SAVER::saver(counts_saver, ncores = 1)
             saver_est <- as.matrix(saver_imp$estimate)
             saver_counts <- sweep(saver_est, 2, size_factor_obs, "*")
             log_imp <- logcounts
