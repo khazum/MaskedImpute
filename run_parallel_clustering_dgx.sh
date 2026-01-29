@@ -12,10 +12,9 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "magic311" ]]; then
   fi
 fi
 
-BASE_DIR="${BASE_DIR:-synthetic_datasets/rds_splat_output}"
+DATA_DIR="${DATA_DIR:-datasets}"
 OUT_R="${OUT_R:-results_clustering_r}"
 OUT_PY="${OUT_PY:-results_clustering_py}"
-SIZES=(${SIZES:-1000 5000 10000 15000 20000 25000 50000 75000 100000})
 LOG_DIR="${LOG_DIR:-logs_parallel_clustering}"
 
 mkdir -p "$LOG_DIR"
@@ -33,14 +32,6 @@ echo "GPU threads per job: $GPU_THREADS"
 echo "MAGIC jobs: $MAGIC_JOBS"
 echo "ccImpute cores (R): $CCIMPUTE_CORES"
 echo "Repeats (default): $NREPEATS"
-
-repeats_for_size() {
-  if [[ "$1" == "5000" ]]; then
-    echo 10
-  else
-    echo "${NREPEATS}"
-  fi
-}
 
 numa_node_for_method() {
   case "$1" in
@@ -88,29 +79,20 @@ run_r_method() {
   echo "Started [R/${method}] (NUMA ${numa_node:-none}, cores ${ncores}) - logging to $log_file"
 
   (
-    for size in "${SIZES[@]}"; do
-      local in_dir="${BASE_DIR}/cells_${size}"
-      if [[ ! -d "${in_dir}" ]]; then
-        echo "Skipping missing dataset folder: ${in_dir}"
-        continue
-      fi
-      local out_dir="${OUT_R}/${method}/cells_${size}"
-      mkdir -p "${out_dir}"
-      echo "Processing ${method} cells_${size}..."
-      local repeats
-      repeats="$(repeats_for_size "${size}")"
+    local out_dir="${OUT_R}/${method}"
+    mkdir -p "${out_dir}"
+    echo "Processing ${method} datasets from ${DATA_DIR}..."
 
-      if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
-        CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${ncores}" MKL_NUM_THREADS="${ncores}" \
-          OPENBLAS_NUM_THREADS="${ncores}" NUMEXPR_NUM_THREADS="${ncores}" \
-          numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
-          Rscript run_clustering.R "${in_dir}" "${out_dir}" "${ncores}" "${repeats}" "${method}"
-      else
-        CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${ncores}" MKL_NUM_THREADS="${ncores}" \
-          OPENBLAS_NUM_THREADS="${ncores}" NUMEXPR_NUM_THREADS="${ncores}" \
-          Rscript run_clustering.R "${in_dir}" "${out_dir}" "${ncores}" "${repeats}" "${method}"
-      fi
-    done
+    if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
+      CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${ncores}" MKL_NUM_THREADS="${ncores}" \
+        OPENBLAS_NUM_THREADS="${ncores}" NUMEXPR_NUM_THREADS="${ncores}" \
+        numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
+        Rscript run_clustering.R "${DATA_DIR}" "${out_dir}" "${ncores}" "${NREPEATS}" "${method}"
+    else
+      CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${ncores}" MKL_NUM_THREADS="${ncores}" \
+        OPENBLAS_NUM_THREADS="${ncores}" NUMEXPR_NUM_THREADS="${ncores}" \
+        Rscript run_clustering.R "${DATA_DIR}" "${out_dir}" "${ncores}" "${NREPEATS}" "${method}"
+    fi
     echo "Finished [R/${method}]"
   ) > "$log_file" 2>&1 &
 }
@@ -123,29 +105,20 @@ run_py_cpu_method() {
   echo "Started [PY/${method}] (CPU-only, NUMA ${numa_node:-none}) - logging to $log_file"
 
   (
-    for size in "${SIZES[@]}"; do
-      local in_dir="${BASE_DIR}/cells_${size}"
-      if [[ ! -d "${in_dir}" ]]; then
-        echo "Skipping missing dataset folder: ${in_dir}"
-        continue
-      fi
-      local out_dir="${OUT_PY}/${method}/cells_${size}"
-      mkdir -p "${out_dir}"
-      echo "Processing ${method} cells_${size}..."
-      local repeats
-      repeats="$(repeats_for_size "${size}")"
+    local out_dir="${OUT_PY}/${method}"
+    mkdir -p "${out_dir}"
+    echo "Processing ${method} datasets from ${DATA_DIR}..."
 
-      if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
-        CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
-          OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
-          numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
-          python run_clustering.py "${in_dir}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${repeats}"
-      else
-        CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
-          OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
-          python run_clustering.py "${in_dir}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${repeats}"
-      fi
-    done
+    if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
+      CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
+        OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
+        numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
+        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}"
+    else
+      CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
+        OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
+        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}"
+    fi
     echo "Finished [PY/${method}]"
   ) > "$log_file" 2>&1 &
 }
@@ -159,34 +132,25 @@ run_py_gpu_method() {
   echo "Started [PY/${method}] (GPU ${gpu}, NUMA ${numa_node:-none}) - logging to $log_file"
 
   (
-    for size in "${SIZES[@]}"; do
-      local in_dir="${BASE_DIR}/cells_${size}"
-      if [[ ! -d "${in_dir}" ]]; then
-        echo "Skipping missing dataset folder: ${in_dir}"
-        continue
-      fi
-      local out_dir="${OUT_PY}/${method}/cells_${size}"
-      mkdir -p "${out_dir}"
-      echo "Processing ${method} cells_${size}..."
-      local repeats
-      repeats="$(repeats_for_size "${size}")"
+    local out_dir="${OUT_PY}/${method}"
+    mkdir -p "${out_dir}"
+    echo "Processing ${method} datasets from ${DATA_DIR}..."
 
-      local -a extra_args=()
-      if [[ "${method}" == "dca" ]]; then
-        extra_args+=(--dca-threads "${GPU_THREADS}")
-      fi
+    local -a extra_args=()
+    if [[ "${method}" == "dca" ]]; then
+      extra_args+=(--dca-threads "${GPU_THREADS}")
+    fi
 
-      if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
-        CUDA_VISIBLE_DEVICES="${gpu}" OMP_NUM_THREADS="${GPU_THREADS}" MKL_NUM_THREADS="${GPU_THREADS}" \
-          OPENBLAS_NUM_THREADS="${GPU_THREADS}" NUMEXPR_NUM_THREADS="${GPU_THREADS}" TORCH_NUM_THREADS="${GPU_THREADS}" \
-          numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
-          python run_clustering.py "${in_dir}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${repeats}"
-      else
-        CUDA_VISIBLE_DEVICES="${gpu}" OMP_NUM_THREADS="${GPU_THREADS}" MKL_NUM_THREADS="${GPU_THREADS}" \
-          OPENBLAS_NUM_THREADS="${GPU_THREADS}" NUMEXPR_NUM_THREADS="${GPU_THREADS}" TORCH_NUM_THREADS="${GPU_THREADS}" \
-          python run_clustering.py "${in_dir}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${repeats}"
-      fi
-    done
+    if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
+      CUDA_VISIBLE_DEVICES="${gpu}" OMP_NUM_THREADS="${GPU_THREADS}" MKL_NUM_THREADS="${GPU_THREADS}" \
+        OPENBLAS_NUM_THREADS="${GPU_THREADS}" NUMEXPR_NUM_THREADS="${GPU_THREADS}" TORCH_NUM_THREADS="${GPU_THREADS}" \
+        numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
+        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${NREPEATS}"
+    else
+      CUDA_VISIBLE_DEVICES="${gpu}" OMP_NUM_THREADS="${GPU_THREADS}" MKL_NUM_THREADS="${GPU_THREADS}" \
+        OPENBLAS_NUM_THREADS="${GPU_THREADS}" NUMEXPR_NUM_THREADS="${GPU_THREADS}" TORCH_NUM_THREADS="${GPU_THREADS}" \
+        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${NREPEATS}"
+    fi
     echo "Finished [PY/${method}]"
   ) > "$log_file" 2>&1 &
 }
