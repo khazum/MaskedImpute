@@ -17,7 +17,7 @@ Processing dca datasets from datasets...
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-    ASW=0.5634 ARI=1.0000 NMI=1.0000 PS=1.0000
+    ASW=0.4514 ARI=0.9562 NMI=0.9642 PS=0.9867
 
 --- Dataset: darmanis_top1000markers ---
   -> dca
@@ -26,7 +26,7 @@ Processing dca datasets from datasets...
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-    ASW=0.5468 ARI=0.9474 NMI=0.9234 PS=0.9633
+    ASW=0.5575 ARI=0.9264 NMI=0.9071 PS=0.9543
 
 --- Dataset: deng_top1000markers ---
   -> dca
@@ -35,7 +35,7 @@ Processing dca datasets from datasets...
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-    ASW=0.5643 ARI=0.7783 NMI=0.8340 PS=0.9104
+    ASW=0.5788 ARI=0.6234 NMI=0.8019 PS=0.8515
 
 --- Dataset: pollen_top1000markers ---
   -> dca
@@ -44,7 +44,7 @@ Processing dca datasets from datasets...
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-    ASW=0.7371 ARI=0.9389 NMI=0.9449 PS=0.9485
+    ASW=0.7328 ARI=0.9177 NMI=0.9347 PS=0.9291
 
 --- Dataset: usoskin_top1000markers ---
   -> dca
@@ -53,6 +53,6 @@ Processing dca datasets from datasets...
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 [DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-    ASW=0.4360 ARI=0.9103 NMI=0.8950 PS=0.9485
+    ASW=0.4302 ARI=0.9142 NMI=0.8959 PS=0.9521
 Saved results_clustering_py/dca/dca_clustering_table.tsv
 Finished [PY/dca]

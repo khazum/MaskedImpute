@@ -170,3 +170,12 @@ Running ccImpute x1...
 
 === dataset_4_types_rare ===
 Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_100000/dataset_4_types_rare_ccimpute.rds
+
+=== dataset_multibatch_dropout ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_100000/dataset_multibatch_dropout_ccimpute.rds
+Wrote results_imputation_r/ccimpute/cells_100000/ccimpute_mse_table.tsv
+
+Done.
+Finished [R/ccimpute]

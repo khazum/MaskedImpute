@@ -5,3 +5,25 @@ Processing low_mse datasets from datasets...
   if not hasattr(np, "object"):
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+--- Dataset: blakeley_top1000markers ---
+  -> low_mse
+    ASW=0.6189 ARI=1.0000 NMI=1.0000 PS=1.0000
+
+--- Dataset: darmanis_top1000markers ---
+  -> low_mse
+    ASW=0.4335 ARI=0.8943 NMI=0.8709 PS=0.9353
+
+--- Dataset: deng_top1000markers ---
+  -> low_mse
+    ASW=0.5782 ARI=0.6154 NMI=0.8027 PS=0.8530
+
+--- Dataset: pollen_top1000markers ---
+  -> low_mse
+    ASW=0.5703 ARI=0.8160 NMI=0.8660 PS=0.8709
+
+--- Dataset: usoskin_top1000markers ---
+  -> low_mse
+    ASW=0.4068 ARI=0.4259 NMI=0.5407 PS=0.7353
+Saved results_clustering_py/low_mse/low_mse_clustering_table.tsv
+Finished [PY/low_mse]
