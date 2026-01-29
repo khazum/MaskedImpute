@@ -4,7 +4,7 @@
 #
 # Methods: baseline, saver, ccimpute, experiment
 # For each dataset/method, compute clustering metrics on logcounts
-# using shared Python clustering (t-SNE + k-means) for fair comparison:
+# using shared Python clustering (PCA -> t-SNE + k-means) for fair comparison:
 #   ARI, NMI, Purity (PS)
 
 stopf <- function(fmt, ...) stop(sprintf(fmt, ...), call. = FALSE)
@@ -21,6 +21,8 @@ if (is.na(ncores) || ncores < 1) ncores <- 1
 n_repeats <- if (length(args) >= 4) as.integer(args[4]) else 5L
 if (is.na(n_repeats) || n_repeats < 1) n_repeats <- 1L
 methods_arg <- if (length(args) >= 5) args[5] else "all"
+PCA_DIM <- as.integer(Sys.getenv("PCA_DIM", "50"))
+if (is.na(PCA_DIM) || PCA_DIM < 1L) PCA_DIM <- 50L
 
 if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
 
@@ -115,7 +117,12 @@ evaluate_clustering <- function(log_imp, labels, seed = 42L) {
     log_imp <- as.matrix(log_imp)
   }
   res <- tryCatch(
-    clust$evaluate_clustering_tsne(log_imp, lab_vec, seed = as.integer(seed)),
+    clust$evaluate_clustering_tsne(
+      log_imp,
+      lab_vec,
+      seed = as.integer(seed),
+      pca_n_components = as.integer(PCA_DIM)
+    ),
     error = function(e) stopf("Python clustering failed: %s", conditionMessage(e))
   )
   data.frame(

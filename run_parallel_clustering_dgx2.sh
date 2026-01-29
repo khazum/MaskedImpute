@@ -24,6 +24,8 @@ GPU_THREADS="${GPU_THREADS:-8}"
 NREPEATS="${NREPEATS:-5}"
 MAGIC_JOBS="${MAGIC_JOBS:-$CPU_THREADS}"
 CCIMPUTE_CORES="${CCIMPUTE_CORES:-8}"
+PCA_DIM="${PCA_DIM:-50}"
+export PCA_DIM
 
 export MASKEDIMPUTE_PYTHON="$(command -v python)"
 
@@ -32,6 +34,7 @@ echo "GPU threads per job: $GPU_THREADS"
 echo "MAGIC jobs: $MAGIC_JOBS"
 echo "ccImpute cores (R): $CCIMPUTE_CORES"
 echo "Repeats (default): $NREPEATS"
+echo "PCA dims before t-SNE: $PCA_DIM"
 
 numa_node_for_method() {
   case "$1" in
@@ -113,11 +116,11 @@ run_py_cpu_method() {
       CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
         OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
         numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
-        python run_clustering2.py "${DATA_DIR}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}"
+        python run_clustering2.py "${DATA_DIR}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}" --pca-dim "${PCA_DIM}"
     else
       CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
         OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
-        python run_clustering2.py "${DATA_DIR}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}"
+        python run_clustering2.py "${DATA_DIR}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}" --pca-dim "${PCA_DIM}"
     fi
     echo "Finished [PY/${method}]"
   ) > "$log_file" 2>&1 &
@@ -145,11 +148,11 @@ run_py_gpu_method() {
       CUDA_VISIBLE_DEVICES="${gpu}" OMP_NUM_THREADS="${GPU_THREADS}" MKL_NUM_THREADS="${GPU_THREADS}" \
         OPENBLAS_NUM_THREADS="${GPU_THREADS}" NUMEXPR_NUM_THREADS="${GPU_THREADS}" TORCH_NUM_THREADS="${GPU_THREADS}" \
         numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
-        python run_clustering2.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${NREPEATS}"
+        python run_clustering2.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${NREPEATS}" --pca-dim "${PCA_DIM}"
     else
       CUDA_VISIBLE_DEVICES="${gpu}" OMP_NUM_THREADS="${GPU_THREADS}" MKL_NUM_THREADS="${GPU_THREADS}" \
         OPENBLAS_NUM_THREADS="${GPU_THREADS}" NUMEXPR_NUM_THREADS="${GPU_THREADS}" TORCH_NUM_THREADS="${GPU_THREADS}" \
-        python run_clustering2.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${NREPEATS}"
+        python run_clustering2.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${NREPEATS}" --pca-dim "${PCA_DIM}"
     fi
     echo "Finished [PY/${method}]"
   ) > "$log_file" 2>&1 &

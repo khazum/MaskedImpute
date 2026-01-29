@@ -10,7 +10,8 @@ experiment.
 
 Procedure (per method):
 - impute (or baseline) to obtain logcounts
-- t-SNE to 2 dimensions (scanpy-style defaults)
+- PCA to 50 dimensions (or fewer if limited by data)
+- t-SNE to 2 dimensions (scanpy-style defaults; perplexity capped at floor(N/3))
 - k-means with k = number of unique labels (min 2), random init, 1000 restarts
 - metrics: ARI, NMI, Purity
 """
@@ -23,6 +24,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
 try:
@@ -275,13 +277,39 @@ def _normalized_mutual_info(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(2 * I / (H_i + H_j))
 
 
+def _pca_reduce(X: np.ndarray, *, n_components: int = 50, seed: int = 0) -> np.ndarray:
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim != 2:
+        return X
+    n_samples, n_features = X.shape
+    if n_samples < 2 or n_features < 2:
+        return X
+    target = int(n_components)
+    if target < 1:
+        return X
+    max_components = min(target, n_samples - 1, n_features)
+    if max_components >= n_features or max_components < 1:
+        return X
+    pca = PCA(n_components=max_components, svd_solver="randomized", random_state=int(seed))
+    return pca.fit_transform(X).astype(np.float32, copy=False)
+
+
 def _tsne_perplexity(n_samples: int, base: float = 30.0) -> float:
-    if n_samples <= 2:
+    if n_samples < 3:
         return 1.0
-    perp = min(float(base), n_samples - 1e-3)
-    if perp < 5.0 and n_samples >= 6:
-        perp = 5.0
+    max_perp = int(n_samples // 3)
+    perp = min(float(base), float(max_perp))
     return max(1.0, perp)
+
+
+def _ensure_2d_embedding(X: np.ndarray) -> np.ndarray:
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim == 1:
+        X = X[:, None]
+    if X.shape[1] >= 2:
+        return X[:, :2].astype(np.float32, copy=False)
+    pad = np.zeros((X.shape[0], 2 - X.shape[1]), dtype=X.dtype)
+    return np.concatenate([X, pad], axis=1)
 
 
 def _tsne_embed(
@@ -294,9 +322,10 @@ def _tsne_embed(
     max_iter: int = 1000,
 ) -> np.ndarray:
     n = X.shape[0]
-    if n < 2:
-        return X.astype(np.float32, copy=False)
-    perp = _tsne_perplexity(n) if perplexity is None else float(perplexity)
+    if n < 3:
+        return _ensure_2d_embedding(X)
+    base = 30.0 if perplexity is None else float(perplexity)
+    perp = _tsne_perplexity(n, base=base)
     try:
         tsne = TSNE(
             n_components=2,
@@ -368,6 +397,7 @@ def evaluate_clustering_tsne(
     seed: int = 42,
     n_init: int = 1000,
     max_iter: int = 100,
+    pca_n_components: int = 50,
 ) -> Dict[str, float]:
     X = np.asarray(imputed_data, dtype=np.float32)
     X = np.nan_to_num(X)
@@ -379,7 +409,8 @@ def evaluate_clustering_tsne(
         k = max(2, len(np.unique(y)))
     if n < 2:
         return {"ARI": float("nan"), "NMI": float("nan"), "PS": float("nan")}
-    emb = _tsne_embed(X, seed=seed)
+    X_pca = _pca_reduce(X, n_components=pca_n_components, seed=seed)
+    emb = _tsne_embed(X_pca, seed=seed)
     cl = _kmeans_random(emb, int(k), n_init=n_init, max_iter=max_iter, seed=seed)
     return {
         "ARI": round(_adjusted_rand_score(y, cl), 4),
@@ -414,6 +445,7 @@ def main() -> int:
     )
     parser.add_argument("--n-jobs", type=int, default=1, help="MAGIC n_jobs value")
     parser.add_argument("--n-repeat", type=int, default=5, help="Number of repeats per method")
+    parser.add_argument("--pca-dim", type=int, default=50, help="PCA dimensions before t-SNE (default: 50)")
 
     g_dca = parser.add_argument_group("DCA Options")
     g_dca.add_argument("--dca-bin", default="~/miniconda3/envs/dca_env/bin/dca", help="Path to DCA binary (for DCA method)")
@@ -475,7 +507,12 @@ def main() -> int:
                 t0 = time.time()
                 try:
                     log_imp = _run_method(method, logcounts, counts, norm, args, seed)
-                    res = evaluate_clustering_tsne(log_imp, labels, seed=seed)
+                    res = evaluate_clustering_tsne(
+                        log_imp,
+                        labels,
+                        seed=seed,
+                        pca_n_components=args.pca_dim,
+                    )
                     metrics_list.append(res)
                 except Exception as exc:
                     err_msg = str(exc)
