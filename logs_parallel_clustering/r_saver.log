@@ -1,0 +1,25 @@
+Processing saver datasets from datasets...
+
+=== blakeley_top1000hvg ===
+Running saver x5...
+ERROR [blakeley_top1000hvg/saver]: unused argument (verbose = FALSE)
+
+=== darmanis_top1000hvg ===
+Running saver x5...
+ERROR [darmanis_top1000hvg/saver]: unused argument (verbose = FALSE)
+
+=== deng_top1000hvg ===
+Running saver x5...
+ERROR [deng_top1000hvg/saver]: unused argument (verbose = FALSE)
+
+=== pollen_top1000hvg ===
+Running saver x5...
+ERROR [pollen_top1000hvg/saver]: unused argument (verbose = FALSE)
+
+=== usoskin_top1000hvg ===
+Running saver x5...
+ERROR [usoskin_top1000hvg/saver]: unused argument (verbose = FALSE)
+Wrote results_clustering_r/saver/saver_clustering_table.tsv
+
+Done.
+Finished [R/saver]

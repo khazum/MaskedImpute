@@ -1,0 +1,20 @@
+Processing baseline datasets from datasets...
+
+=== blakeley_top1000hvg ===
+Running baseline x5...
+
+=== darmanis_top1000hvg ===
+Running baseline x5...
+
+=== deng_top1000hvg ===
+Running baseline x5...
+
+=== pollen_top1000hvg ===
+Running baseline x5...
+
+=== usoskin_top1000hvg ===
+Running baseline x5...
+Wrote results_clustering_r/baseline/baseline_clustering_table.tsv
+
+Done.
+Finished [R/baseline]

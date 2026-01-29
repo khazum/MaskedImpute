@@ -114,18 +114,3 @@ Running ccImpute x1...
 
 === dataset_multibatch_dropout ===
 Running ccImpute x1...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_25000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_25000/ccimpute_mse_table.tsv
-
-Done.
-Processing ccimpute cells_50000...
-
-=== dataset_2_types_equal ===
-Running ccImpute x1...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_50000/dataset_2_types_equal_ccimpute.rds
-
-=== dataset_3_types_unequal ===
-Running ccImpute x1...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_50000/dataset_3_types_unequal_ccimpute.rds
-
-=== dataset_4_types_rare ===

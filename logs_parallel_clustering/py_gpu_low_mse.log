@@ -1,0 +1,29 @@
+Processing low_mse datasets from datasets...
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+--- Dataset: blakeley_top1000hvg ---
+  -> low_mse
+    ASW=0.4205 ARI=0.7065 NMI=0.7012 PS=0.7933
+
+--- Dataset: darmanis_top1000hvg ---
+  -> low_mse
+    ASW=0.3437 ARI=0.7446 NMI=0.8035 PS=0.8995
+
+--- Dataset: deng_top1000hvg ---
+  -> low_mse
+    ASW=0.5929 ARI=0.5649 NMI=0.8026 PS=0.8582
+
+--- Dataset: pollen_top1000hvg ---
+  -> low_mse
+    ASW=0.5290 ARI=0.7681 NMI=0.8375 PS=0.8402
+
+--- Dataset: usoskin_top1000hvg ---
+  -> low_mse
+    ASW=0.3972 ARI=0.3675 NMI=0.5048 PS=0.7003
+Saved results_clustering_py/low_mse/low_mse_clustering_table.tsv
+Finished [PY/low_mse]

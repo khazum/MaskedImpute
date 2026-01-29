@@ -1,0 +1,6 @@
+dataset	method	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	error	n_cells	n_genes	label_source
+blakeley_top1000hvg	ccimpute	0.2262	0	1	0	1	0	1	0	1.5934	3.36060237159947	5	NA	30	1000	cell_type1
+darmanis_top1000hvg	ccimpute	0.242	0	0.8243	0	0.8374	0	0.9167	0	0.6836	0.232487203948949	5	NA	420	1000	cell_type1
+deng_top1000hvg	ccimpute	0.1999	0	0.4873	0	0.7294	0	0.806	0	0.3204	0.0125419296760909	5	NA	268	1000	cell_type1
+pollen_top1000hvg	ccimpute	0.47026	0.00679175971306407	0.93006	0.00350542436803304	0.93968	0.00230043474152175	0.9231	0	0.4944	0.240801370427994	5	NA	299	1000	cell_type1
+usoskin_top1000hvg	ccimpute	0.2421	0	0.9437	0	0.9059	0	0.9662	0	1.0216	0.0168908259123105	5	NA	622	1000	cell_type1

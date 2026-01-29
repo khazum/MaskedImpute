@@ -10,39 +10,23 @@ Processing dca cells_1000...
 
 === dataset_2_types_equal ===
   -> dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 
 === dataset_3_types_unequal ===
   -> dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 
 === dataset_4_types_rare ===
   -> dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 
 === dataset_multibatch_dropout ===
   -> dca
+[DCA] CUDA_VISIBLE_DEVICES=0 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
 Wrote results_imputation_py/dca/cells_1000/dca_mse_table.tsv
 Processing dca cells_5000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-
-=== dataset_2_types_equal ===
-  -> dca
-
-=== dataset_3_types_unequal ===
-  -> dca
-
-=== dataset_4_types_rare ===
-  -> dca
-
-=== dataset_multibatch_dropout ===
-  -> dca
-Wrote results_imputation_py/dca/cells_5000/dca_mse_table.tsv
-Processing dca cells_10000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other

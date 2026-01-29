@@ -1,0 +1,6 @@
+dataset	method	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	error	n_cells	n_genes	label_source
+blakeley_top1000hvg	saver	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	0	unused argument (verbose = FALSE)	30	1000	cell_type1
+darmanis_top1000hvg	saver	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	0	unused argument (verbose = FALSE)	420	1000	cell_type1
+deng_top1000hvg	saver	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	0	unused argument (verbose = FALSE)	268	1000	cell_type1
+pollen_top1000hvg	saver	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	0	unused argument (verbose = FALSE)	299	1000	cell_type1
+usoskin_top1000hvg	saver	NA	NA	NA	NA	NA	NA	NA	NA	NA	NA	0	unused argument (verbose = FALSE)	622	1000	cell_type1

@@ -6,86 +6,86 @@ Processing autoclass cells_1000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
-I0000 00:00:1769640239.172315 3515775 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 78752 MB memory:  -> device: 0, name: NVIDIA H100 80GB HBM3, pci bus id: 0000:43:00.0, compute capability: 9.0
-E0000 00:00:1769640240.163648 3516811 ptx_compiler_helpers.cc:88] *** WARNING *** Invoking ptxas with version 12.1.105, which corresponds to a CUDA version <=12.6.2. CUDA versions 12.x.y up to and including 12.6.2 miscompile certain edge cases around clamping.
+I0000 00:00:1769647495.154840 1568312 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 915 MB memory:  -> device: 0, name: NVIDIA H100 80GB HBM3, pci bus id: 0000:43:00.0, compute capability: 9.0
+E0000 00:00:1769647495.367726 1579774 ptx_compiler_helpers.cc:88] *** WARNING *** Invoking ptxas with version 12.1.105, which corresponds to a CUDA version <=12.6.2. CUDA versions 12.x.y up to and including 12.6.2 miscompile certain edge cases around clamping.
 Please upgrade to CUDA 12.6.3 or newer.
-I0000 00:00:1769640243.663749 3516717 device_compiler.h:196] Compiled cluster using XLA!  This line is logged at most once for the lifetime of the process.
+I0000 00:00:1769647498.879202 1579506 device_compiler.h:196] Compiled cluster using XLA!  This line is logged at most once for the lifetime of the process.
 
 === dataset_2_types_equal ===
   -> autoclass
 1000 cells and 1066 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m7s[0m 254ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 12ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 13ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m9s[0m 302ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 13ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 14ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 285ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 13ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 14ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 267ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 14ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 14ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m9s[0m 301ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 12ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 13ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 268ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 12ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 13ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 46.785311222076416
+escape time is: 43.647584199905396
 
 === dataset_3_types_unequal ===
   -> autoclass
 1000 cells and 1065 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 262ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 13ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 13ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m13s[0m 434ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 14ms/step  [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 14ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 267ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 9ms/step  [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 10ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 281ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 9ms/step  [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 10ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m9s[0m 318ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 11ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 13ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m9s[0m 292ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 10ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 11ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 40.99762558937073
+escape time is: 42.62281107902527
 
 === dataset_4_types_rare ===
   -> autoclass
 1000 cells and 1073 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 272ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 13ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 14ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m9s[0m 291ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 13ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 13ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 286ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 14ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 15ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 273ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 13ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 14ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 270ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 13ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 13ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m10s[0m 334ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 16ms/step  [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 16ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 39.64766526222229
+escape time is: 45.23380732536316
 
 === dataset_multibatch_dropout ===
   -> autoclass
 1000 cells and 1072 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m12s[0m 388ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 12ms/step  [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 13ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 265ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 11ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 11ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 264ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 9ms/step  [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 10ms/step
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m10s[0m 338ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 11ms/step  [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 12ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 284ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 11ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 11ms/step
-escape time is: 46.95833206176758
+[1m 1/32[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m8s[0m 270ms/step[1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 10ms/step [1m32/32[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 11ms/step
+escape time is: 45.21391749382019
 Wrote results_imputation_py/autoclass/cells_1000/autoclass_mse_table.tsv
 Processing autoclass cells_5000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
@@ -95,716 +95,496 @@ Processing autoclass cells_5000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
-I0000 00:00:1769640423.096935 3842585 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 78752 MB memory:  -> device: 0, name: NVIDIA H100 80GB HBM3, pci bus id: 0000:43:00.0, compute capability: 9.0
-E0000 00:00:1769640424.094792 3843096 ptx_compiler_helpers.cc:88] *** WARNING *** Invoking ptxas with version 12.1.105, which corresponds to a CUDA version <=12.6.2. CUDA versions 12.x.y up to and including 12.6.2 miscompile certain edge cases around clamping.
+I0000 00:00:1769647682.605287 2071802 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 911 MB memory:  -> device: 0, name: NVIDIA H100 80GB HBM3, pci bus id: 0000:43:00.0, compute capability: 9.0
+E0000 00:00:1769647682.809280 2083967 ptx_compiler_helpers.cc:88] *** WARNING *** Invoking ptxas with version 12.1.105, which corresponds to a CUDA version <=12.6.2. CUDA versions 12.x.y up to and including 12.6.2 miscompile certain edge cases around clamping.
 Please upgrade to CUDA 12.6.3 or newer.
-I0000 00:00:1769640427.495505 3843084 device_compiler.h:196] Compiled cluster using XLA!  This line is logged at most once for the lifetime of the process.
+I0000 00:00:1769647686.289745 2083773 device_compiler.h:196] Compiled cluster using XLA!  This line is logged at most once for the lifetime of the process.
 
 === dataset_2_types_equal ===
   -> autoclass
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:01[0m 393ms/step[1m107/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 473us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 259ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 512us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 287ms/step[1m 69/157[0m [32m━━━━━━━━[0m[37m━━━━━━━━━━━━[0m [1m0s[0m 738us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 260ms/step[1m 39/157[0m [32m━━━━[0m[37m━━━━━━━━━━━━━━━━[0m [1m0s[0m 1ms/step   [1m119/157[0m [32m━━━━━━━━━━━━━━━[0m[37m━━━━━[0m [1m0s[0m 850us/step[1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m49s[0m 320ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 507us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 269ms/step[1m 86/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 590us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 61.61471652984619
+escape time is: 66.98993587493896
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:00[0m 389ms/step[1m110/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 461us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 261ms/step[1m 79/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 645us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 273ms/step[1m110/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 460us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 258ms/step[1m 85/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 602us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 281ms/step[1m 92/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 553us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 4ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 4ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 294ms/step[1m 56/157[0m [32m━━━━━━━[0m[37m━━━━━━━━━━━━━[0m [1m0s[0m 913us/step [1m141/157[0m [32m━━━━━━━━━━━━━━━━━[0m[37m━━━[0m [1m0s[0m 718us/step[1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 4ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 4ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 50.55087757110596
+escape time is: 54.16297221183777
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:01[0m 392ms/step[1m 95/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 537us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 256ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 513us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 281ms/step[1m111/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 455us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 259ms/step[1m 88/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 575us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m52s[0m 334ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 569us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 272ms/step[1m 55/157[0m [32m━━━━━━━[0m[37m━━━━━━━━━━━━━[0m [1m0s[0m 936us/step [1m152/157[0m [32m━━━━━━━━━━━━━━━━━━━[0m[37m━[0m [1m0s[0m 666us/step[1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.23698687553406
+escape time is: 53.754923820495605
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:10[0m 454ms/step[1m 95/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 534us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m53s[0m 341ms/step[1m 60/157[0m [32m━━━━━━━[0m[37m━━━━━━━━━━━━━[0m [1m0s[0m 852us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 265ms/step[1m110/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 462us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 258ms/step[1m 65/157[0m [32m━━━━━━━━[0m[37m━━━━━━━━━━━━[0m [1m0s[0m 787us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m47s[0m 307ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 484us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 4ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 4ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 282ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 516us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 4ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 4ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.56092715263367
+escape time is: 54.17082667350769
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:01[0m 396ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 482us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 252ms/step[1m 81/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 630us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 266ms/step[1m118/157[0m [32m━━━━━━━━━━━━━━━[0m[37m━━━━━[0m [1m0s[0m 428us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 246ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 482us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 254ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 484us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 263ms/step[1m108/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 469us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 49.31779384613037
+escape time is: 47.925281047821045
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:03[0m 404ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 512us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 263ms/step[1m 84/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 605us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 281ms/step[1m102/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 496us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 247ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 494us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 261ms/step[1m116/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 436us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 262ms/step[1m108/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 469us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 49.972485303878784
+escape time is: 48.34904170036316
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:02[0m 400ms/step[1m111/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 456us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:05[0m 419ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 572us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 279ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 578us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 273ms/step[1m 73/157[0m [32m━━━━━━━━━[0m[37m━━━━━━━━━━━[0m [1m0s[0m 701us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 259ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 516us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 262ms/step[1m107/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 472us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.71959042549133
+escape time is: 50.861950635910034
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:01[0m 393ms/step[1m106/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 477us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 275ms/step[1m 97/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 522us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 275ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 575us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 252ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 516us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 258ms/step[1m 90/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 566us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 267ms/step[1m117/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 434us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 49.079345703125
+escape time is: 51.78207492828369
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:01[0m 392ms/step[1m108/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 470us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 266ms/step[1m 97/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 523us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:09[0m 442ms/step[1m102/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 497us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 279ms/step[1m 95/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 534us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 257ms/step[1m106/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 478us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 261ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 481us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 50.58477592468262
+escape time is: 47.62807083129883
 5000 cells and 1091 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:03[0m 405ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 494us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 268ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 508us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:00[0m 388ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 501us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 289ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 492us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 257ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 481us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 262ms/step[1m111/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 458us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 50.96374988555908
+escape time is: 49.4670786857605
 
 === dataset_3_types_unequal ===
   -> autoclass
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m52s[0m 339ms/step[1m107/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 473us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m49s[0m 320ms/step[1m109/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 463us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 279ms/step[1m 93/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 546us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m53s[0m 340ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 493us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 4ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 4ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:03[0m 405ms/step[1m 86/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 591us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 270ms/step[1m102/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 496us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 55.393747091293335
+escape time is: 56.01441836357117
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m46s[0m 300ms/step[1m106/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 479us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 258ms/step[1m109/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 464us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 268ms/step[1m113/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 447us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 267ms/step[1m110/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 460us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:05[0m 423ms/step[1m102/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 495us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 279ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 483us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 51.4294216632843
+escape time is: 49.16611409187317
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 294ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 511us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 264ms/step[1m 78/157[0m [32m━━━━━━━━━[0m[37m━━━━━━━━━━━[0m [1m0s[0m 655us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m48s[0m 313ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 511us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 277ms/step[1m 96/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 527us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:03[0m 406ms/step[1m102/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 498us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 293ms/step[1m108/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 470us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.77632117271423
+escape time is: 48.74839234352112
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 282ms/step[1m115/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 441us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 250ms/step[1m115/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 439us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:07[0m 431ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 519us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 287ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 503us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:05[0m 417ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 505us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 274ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 570us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.47999858856201
+escape time is: 48.30641436576843
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 287ms/step[1m110/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 461us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 250ms/step[1m 91/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 558us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m54s[0m 347ms/step[1m109/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 467us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 272ms/step[1m107/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 473us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:04[0m 416ms/step[1m107/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 473us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:06[0m 425ms/step[1m 93/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 546us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.69047236442566
+escape time is: 49.9502112865448
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 289ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 502us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 285ms/step[1m 88/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 575us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 278ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 520us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 281ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 519us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:04[0m 411ms/step[1m 96/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 527us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 273ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 506us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 50.744985580444336
+escape time is: 51.374449491500854
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 286ms/step[1m104/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 489us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 258ms/step[1m102/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 495us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 266ms/step[1m106/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 478us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 271ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 493us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:20[0m 517ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 502us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 261ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 569us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 49.02454495429993
+escape time is: 48.13186717033386
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m47s[0m 302ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 510us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 287ms/step[1m 83/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 617us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 276ms/step[1m 96/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 528us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 281ms/step[1m 84/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 606us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:05[0m 422ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 502us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 272ms/step[1m 96/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 530us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.753615856170654
+escape time is: 48.824188232421875
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 293ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 493us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 274ms/step[1m102/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 499us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 269ms/step[1m106/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 476us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 281ms/step[1m 97/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 522us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:01[0m 395ms/step[1m106/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 478us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 267ms/step[1m117/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 433us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 47.24970269203186
+escape time is: 47.36667323112488
 5000 cells and 1089 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 287ms/step[1m113/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 449us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m54s[0m 346ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 493us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:06[0m 429ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 485us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 274ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 513us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:04[0m 414ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 501us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 277ms/step[1m 96/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 530us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 49.97710561752319
+escape time is: 49.44058156013489
 
 === dataset_4_types_rare ===
   -> autoclass
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 269ms/step[1m102/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 497us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 276ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 572us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 282ms/step[1m 96/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 530us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 268ms/step[1m 78/157[0m [32m━━━━━━━━━[0m[37m━━━━━━━━━━━[0m [1m0s[0m 652us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 4ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 4ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m37s[0m 240ms/step[1m104/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 487us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 280ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 493us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 59.158864974975586
+escape time is: 58.497190952301025
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 256ms/step[1m108/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 471us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m47s[0m 305ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 483us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 270ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 482us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 264ms/step[1m108/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 470us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m37s[0m 241ms/step[1m104/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 487us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 273ms/step[1m115/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 441us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 46.32814288139343
+escape time is: 49.07145357131958
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 255ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 515us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 266ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 482us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 277ms/step[1m 95/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 534us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 273ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 515us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 279ms/step[1m 97/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 524us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 286ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 483us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 49.88703012466431
+escape time is: 48.71317172050476
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 254ms/step[1m105/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 482us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 273ms/step[1m 97/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 522us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 279ms/step[1m109/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 464us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 265ms/step[1m109/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 466us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m37s[0m 238ms/step[1m109/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 463us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 284ms/step[1m106/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 478us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.01158332824707
+escape time is: 49.062607765197754
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 265ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 516us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 9ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m2s[0m 9ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 262ms/step[1m 92/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 550us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:12[0m 464ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 511us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 273ms/step[1m 91/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 559us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 259ms/step[1m 94/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 540us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:00[0m 386ms/step[1m 93/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 547us/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 52.69717311859131
+escape time is: 51.56801390647888
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 260ms/step[1m 97/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 522us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 291ms/step[1m 86/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 594us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 285ms/step[1m 97/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 523us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 264ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 570us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 249ms/step[1m107/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 472us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m59s[0m 382ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 518us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 50.30142259597778
+escape time is: 50.574949979782104
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m53s[0m 341ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 493us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 269ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 518us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 281ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 503us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 269ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 493us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m37s[0m 240ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 510us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m55s[0m 358ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 509us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.21179556846619
+escape time is: 47.64072060585022
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 269ms/step[1m102/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 495us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 265ms/step[1m109/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 466us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 283ms/step[1m 97/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 521us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m51s[0m 328ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 502us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 250ms/step[1m106/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 478us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 291ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 509us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 51.174816608428955
+escape time is: 50.94023942947388
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 256ms/step[1m 94/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 540us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 277ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 511us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 277ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 492us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 267ms/step[1m 92/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 552us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 245ms/step[1m 82/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 620us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 288ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 502us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 49.86434054374695
+escape time is: 50.923864126205444
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 251ms/step[1m 98/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 518us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 265ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 506us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 261ms/step[1m115/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 439us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 273ms/step[1m106/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 478us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 247ms/step[1m 94/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 541us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m49s[0m 318ms/step[1m 84/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 603us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 48.86939215660095
+escape time is: 50.700714111328125
 
 === dataset_multibatch_dropout ===
   -> autoclass
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 266ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 501us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m57s[0m 370ms/step[1m 94/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 541us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 293ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 570us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m48s[0m 312ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 506us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
 n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 258ms/step[1m 89/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 569us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m47s[0m 305ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 507us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 56.71401619911194
+escape time is: 54.52278971672058
 5000 cells and 1094 genes
 number of clusters in pre-clustering:[8, 9, 10]
 n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 261ms/step[1m112/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 452us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
+[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m56s[0m 360ms/step[1m 90/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 565us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
   super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 268ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 507us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 255ms/step[1m 93/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 544us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 62.83191537857056
-5000 cells and 1094 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 248ms/step[1m 80/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 634us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 267ms/step[1m107/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 474us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m37s[0m 241ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 492us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 64.21035766601562
-5000 cells and 1094 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 256ms/step[1m104/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 489us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 280ms/step[1m 95/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 535us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 249ms/step[1m 96/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 529us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 56.576045751571655
-5000 cells and 1094 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m44s[0m 284ms/step[1m 90/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 566us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 277ms/step[1m101/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 501us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 250ms/step[1m 95/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 533us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 72.62332844734192
-5000 cells and 1094 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 265ms/step[1m103/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 491us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 269ms/step[1m 94/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 540us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 251ms/step[1m115/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 441us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 66.93599057197571
-5000 cells and 1094 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 255ms/step[1m116/157[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 437us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m42s[0m 272ms/step[1m 95/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 532us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m37s[0m 242ms/step[1m 79/157[0m [32m━━━━━━━━━━[0m[37m━━━━━━━━━━[0m [1m0s[0m 644us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 55.29468393325806
-5000 cells and 1094 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 248ms/step[1m109/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 466us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 278ms/step[1m100/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 507us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m39s[0m 254ms/step[1m 91/157[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 559us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 52.6318473815918
-5000 cells and 1094 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m38s[0m 248ms/step[1m104/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 486us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m41s[0m 267ms/step[1m107/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 475us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m37s[0m 240ms/step[1m104/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 487us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 51.76388597488403
-5000 cells and 1094 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m45s[0m 289ms/step[1m108/157[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 471us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m43s[0m 279ms/step[1m 97/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 522us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/157[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m40s[0m 257ms/step[1m 99/157[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 513us/step [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 3ms/step  [1m157/157[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 3ms/step
-escape time is: 63.53259229660034
-Wrote results_imputation_py/autoclass/cells_5000/autoclass_mse_table.tsv
-Processing autoclass cells_10000...
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
-  if not hasattr(np, "object"):
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
-I0000 00:00:1769642565.516768 2125160 gpu_device.cc:2020] Created device /job:localhost/replica:0/task:0/device:GPU:0 with 78752 MB memory:  -> device: 0, name: NVIDIA H100 80GB HBM3, pci bus id: 0000:43:00.0, compute capability: 9.0
-E0000 00:00:1769642566.622023 2125529 ptx_compiler_helpers.cc:88] *** WARNING *** Invoking ptxas with version 12.1.105, which corresponds to a CUDA version <=12.6.2. CUDA versions 12.x.y up to and including 12.6.2 miscompile certain edge cases around clamping.
-Please upgrade to CUDA 12.6.3 or newer.
-I0000 00:00:1769642570.235504 2125509 device_compiler.h:196] Compiled cluster using XLA!  This line is logged at most once for the lifetime of the process.
-
-=== dataset_2_types_equal ===
-  -> autoclass
-10000 cells and 1095 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:24[0m 271ms/step[1m102/313[0m [32m━━━━━━[0m[37m━━━━━━━━━━━━━━[0m [1m0s[0m 496us/step  [1m223/313[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 452us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:23[0m 266ms/step[1m107/313[0m [32m━━━━━━[0m[37m━━━━━━━━━━━━━━[0m [1m0s[0m 475us/step  [1m234/313[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 431us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:38[0m 314ms/step[1m 90/313[0m [32m━━━━━[0m[37m━━━━━━━━━━━━━━━[0m [1m0s[0m 562us/step  [1m200/313[0m [32m━━━━━━━━━━━━[0m[37m━━━━━━━━[0m [1m0s[0m 503us/step[1m306/313[0m [32m━━━━━━━━━━━━━━━━━━━[0m[37m━[0m [1m0s[0m 494us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 78.34250378608704
-
-=== dataset_3_types_unequal ===
-  -> autoclass
-10000 cells and 1094 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:42[0m 329ms/step[1m 63/313[0m [32m━━━━[0m[37m━━━━━━━━━━━━━━━━[0m [1m0s[0m 807us/step  [1m142/313[0m [32m━━━━━━━━━[0m[37m━━━━━━━━━━━[0m [1m0s[0m 712us/step[1m218/313[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 696us/step[1m298/313[0m [32m━━━━━━━━━━━━━━━━━━━[0m[37m━[0m [1m0s[0m 679us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:25[0m 273ms/step[1m112/313[0m [32m━━━━━━━[0m[37m━━━━━━━━━━━━━[0m [1m0s[0m 451us/step  [1m242/313[0m [32m━━━━━━━━━━━━━━━[0m[37m━━━━━[0m [1m0s[0m 417us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 1ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 1ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:24[0m 270ms/step[1m102/313[0m [32m━━━━━━[0m[37m━━━━━━━━━━━━━━[0m [1m0s[0m 498us/step  [1m225/313[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 448us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 1ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 1ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 70.35254406929016
-
-=== dataset_4_types_rare ===
-  -> autoclass
-10000 cells and 1096 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:18[0m 252ms/step[1m104/313[0m [32m━━━━━━[0m[37m━━━━━━━━━━━━━━[0m [1m0s[0m 486us/step  [1m231/313[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 435us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:21[0m 261ms/step[1m113/313[0m [32m━━━━━━━[0m[37m━━━━━━━━━━━━━[0m [1m0s[0m 450us/step  [1m239/313[0m [32m━━━━━━━━━━━━━━━[0m[37m━━━━━[0m [1m0s[0m 422us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 1ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 1ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:28[0m 285ms/step[1m103/313[0m [32m━━━━━━[0m[37m━━━━━━━━━━━━━━[0m [1m0s[0m 494us/step  [1m229/313[0m [32m━━━━━━━━━━━━━━[0m[37m━━━━━━[0m [1m0s[0m 440us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-escape time is: 71.85893607139587
-
-=== dataset_multibatch_dropout ===
-  -> autoclass
-10000 cells and 1097 genes
-number of clusters in pre-clustering:[8, 9, 10]
-n_cluster = 8...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:17[0m 247ms/step[1m 88/313[0m [32m━━━━━[0m[37m━━━━━━━━━━━━━━━[0m [1m0s[0m 576us/step  [1m186/313[0m [32m━━━━━━━━━━━[0m[37m━━━━━━━━━[0m [1m0s[0m 542us/step[1m285/313[0m [32m━━━━━━━━━━━━━━━━━━[0m[37m━━[0m [1m0s[0m 529us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 9...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:33[0m 299ms/step[1m 96/313[0m [32m━━━━━━[0m[37m━━━━━━━━━━━━━━[0m [1m0s[0m 530us/step  [1m215/313[0m [32m━━━━━━━━━━━━━[0m[37m━━━━━━━[0m [1m0s[0m 470us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 1ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 1ms/step
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_kmeans.py:1416: FutureWarning: The default value of `n_init` will change from 10 to 'auto' in 1.4. Set the value of `n_init` explicitly to suppress the warning
-  super()._check_params_vs_input(X, default_n_init=10)
-n_cluster = 10...
-[1m  1/313[0m [37m━━━━━━━━━━━━━━━━━━━━[0m [1m1:23[0m 267ms/step[1m111/313[0m [32m━━━━━━━[0m[37m━━━━━━━━━━━━━[0m [1m0s[0m 455us/step  [1m244/313[0m [32m━━━━━━━━━━━━━━━[0m[37m━━━━━[0m [1m0s[0m 413us/step[1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m0s[0m 2ms/step  [1m313/313[0m [32m━━━━━━━━━━━━━━━━━━━━[0m[37m[0m [1m1s[0m 2ms/step
-escape time is: 89.11213231086731
-Wrote results_imputation_py/autoclass/cells_10000/autoclass_mse_table.tsv
-Processing autoclass cells_15000...
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)

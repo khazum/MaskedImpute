@@ -126,5 +126,20 @@ Running baseline (no imputation) x1...
 Wrote results_imputation_r/baseline/cells_75000/baseline_mse_table.tsv
 
 Done.
-Skipping missing dataset folder: synthetic_datasets/rds_splat_output/cells_100000
+Processing baseline cells_100000...
+
+=== dataset_2_types_equal ===
+Running baseline (no imputation) x1...
+
+=== dataset_3_types_unequal ===
+Running baseline (no imputation) x1...
+
+=== dataset_4_types_rare ===
+Running baseline (no imputation) x1...
+
+=== dataset_multibatch_dropout ===
+Running baseline (no imputation) x1...
+Wrote results_imputation_r/baseline/cells_100000/baseline_mse_table.tsv
+
+Done.
 Finished [R/baseline]
