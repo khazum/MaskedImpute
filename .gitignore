@@ -28,5 +28,4 @@ build/
 dist/
 
 # Data outputs
-*.rds
-*.RDS
+synthetic_datasets/rds_splat_output/
