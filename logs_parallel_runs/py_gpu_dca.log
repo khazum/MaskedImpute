@@ -3,269 +3,881 @@ Processing dca cells_1000...
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 === dataset_2_types_equal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:01:28.013028: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_3_types_unequal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:01:35.878146: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_4_types_rare ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:01:40.727509: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_multibatch_dropout ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:01:45.236231: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 Wrote results_imputation_py/dca/cells_1000/dca_mse_table.tsv
 Processing dca cells_5000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 === dataset_2_types_equal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:01:52.775475: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_3_types_unequal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:01:59.932313: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_4_types_rare ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:02:06.485340: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_multibatch_dropout ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
-[DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:02:13.058321: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 Wrote results_imputation_py/dca/cells_5000/dca_mse_table.tsv
 Processing dca cells_10000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 === dataset_2_types_equal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:02:23.492193: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_3_types_unequal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:02:33.210867: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_4_types_rare ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:02:42.736516: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_multibatch_dropout ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:02:52.611774: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 Wrote results_imputation_py/dca/cells_10000/dca_mse_table.tsv
 Processing dca cells_15000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 === dataset_2_types_equal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:03:06.311998: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_3_types_unequal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:03:19.465241: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_4_types_rare ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:03:32.661685: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_multibatch_dropout ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:03:45.733350: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 Wrote results_imputation_py/dca/cells_15000/dca_mse_table.tsv
 Processing dca cells_20000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 === dataset_2_types_equal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:04:03.229695: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_3_types_unequal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:04:19.849669: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_4_types_rare ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:04:36.870108: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_multibatch_dropout ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:04:53.419517: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 Wrote results_imputation_py/dca/cells_20000/dca_mse_table.tsv
 Processing dca cells_25000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 === dataset_2_types_equal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:05:14.794696: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_3_types_unequal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:05:35.393317: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_4_types_rare ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:05:56.534358: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_multibatch_dropout ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:06:17.073281: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 Wrote results_imputation_py/dca/cells_25000/dca_mse_table.tsv
 Processing dca cells_50000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 === dataset_2_types_equal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:07:03.867654: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_3_types_unequal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:07:49.318599: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_4_types_rare ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:08:34.234480: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_multibatch_dropout ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:09:19.608642: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 Wrote results_imputation_py/dca/cells_50000/dca_mse_table.tsv
 Processing dca cells_75000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 === dataset_2_types_equal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:10:52.820289: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_3_types_unequal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:12:20.596124: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_4_types_rare ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:13:48.943194: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_multibatch_dropout ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:15:17.160374: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 Wrote results_imputation_py/dca/cells_75000/dca_mse_table.tsv
 Processing dca cells_100000...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
-/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
-  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
 === dataset_2_types_equal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:17:23.431392: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_3_types_unequal ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:19:18.753329: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_4_types_rare ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:21:16.026059: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 
 === dataset_multibatch_dropout ===
   -> dca
 [DCA] CUDA_VISIBLE_DEVICES=4 dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    [ERROR] dca failed: DCA Bridge failed:
+2026-02-03 15:23:14.057776: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
 Wrote results_imputation_py/dca/cells_100000/dca_mse_table.tsv
 Finished [PY/dca]

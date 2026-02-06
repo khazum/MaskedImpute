@@ -1,0 +1,6 @@
+dataset	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	n_cells	n_genes	label_source	error
+blakeley_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	30	935	cell_type1	CUDA requested for masked_imputation26 but not available.
+darmanis_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	420	1000	cell_type1	CUDA requested for masked_imputation26 but not available.
+deng_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	268	1000	cell_type1	CUDA requested for masked_imputation26 but not available.
+pollen_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	299	1000	cell_type1	CUDA requested for masked_imputation26 but not available.
+usoskin_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	622	1000	cell_type1	CUDA requested for masked_imputation26 but not available.

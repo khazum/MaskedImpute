@@ -1,0 +1,37 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/sklearn/cluster/_spectral.py:688: UserWarning: The spectral clustering API has changed. ``fit``now constructs an affinity matrix from data. To use a custom affinity matrix, set ``affinity=precomputed``.
+  warnings.warn(
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+
+--- Dataset: blakeley_top1000markers ---
+  -> balanced_mse
+    [ERROR] balanced_mse: Expected n_neighbors <= n_samples,  but n_samples = 30, n_neighbors = 50
+
+--- Dataset: darmanis_top1000markers ---
+  -> balanced_mse
+    ASW=0.3641 ARI=0.5621 NMI=0.7329 PS=0.8436
+
+--- Dataset: deng_top1000markers ---
+  -> balanced_mse
+    ASW=0.3388 ARI=0.4099 NMI=0.6678 PS=0.8445
+
+--- Dataset: pollen_top1000markers ---
+  -> balanced_mse
+    ASW=0.7024 ARI=0.8997 NMI=0.9064 PS=0.9075
+
+--- Dataset: usoskin_top1000markers ---
+  -> balanced_mse
+    ASW=0.3707 ARI=0.9175 NMI=0.8772 PS=0.9550
+Saved results_clustering_py/balanced_mse_grid14/spec_k50/balanced_mse_clustering_table.tsv
+

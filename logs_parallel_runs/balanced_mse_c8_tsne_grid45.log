@@ -1,0 +1,33 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+--- Dataset: blakeley_top1000markers ---
+  -> balanced_mse
+    ASW=0.9809 ARI=1.0000 NMI=1.0000 PS=1.0000
+
+--- Dataset: darmanis_top1000markers ---
+  -> balanced_mse
+    ASW=0.4956 ARI=0.6690 NMI=0.7812 PS=0.8667
+
+--- Dataset: deng_top1000markers ---
+  -> balanced_mse
+    ASW=0.5053 ARI=0.4074 NMI=0.6326 PS=0.7910
+
+--- Dataset: pollen_top1000markers ---
+  -> balanced_mse
+    ASW=0.6832 ARI=0.7889 NMI=0.8920 PS=0.8863
+
+--- Dataset: usoskin_top1000markers ---
+  -> balanced_mse
+    ASW=0.4530 ARI=0.7306 NMI=0.7215 PS=0.8103
+Saved results_clustering_py/balanced_mse_grid45/c8_tsne/balanced_mse_clustering_table.tsv

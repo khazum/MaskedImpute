@@ -1,0 +1,30 @@
+{
+  "model_params": {
+    "hidden": [
+      256,
+      128
+    ],
+    "bottleneck": 64,
+    "batch_size": 128,
+    "weight_decay": 7.5e-05,
+    "dropout": 0.05
+  },
+  "ae_params": {
+    "epochs": 400,
+    "lr": 0.0001,
+    "p_zero": 0.015,
+    "p_nz": 0.4,
+    "noise_max": 0.23,
+    "loss_bio_weight": 2.0,
+    "loss_nz_weight": 1.0
+  },
+  "scaler_params": {
+    "p_low": 2.0,
+    "p_high": 99.5
+  },
+  "bio_params": {
+    "disp_mode": "estimate",
+    "use_cell_factor": true,
+    "cell_zero_weight": 0.25
+  }
+}

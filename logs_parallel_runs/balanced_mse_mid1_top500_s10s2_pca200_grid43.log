@@ -1,0 +1,29 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/torch/cuda/__init__.py:184: UserWarning: CUDA initialization: Unexpected error from cudaGetDeviceCount(). Did you run some cuda functions before calling NumCudaDevices() that might have already set an error? Error 304: OS call failed or operation not supported on this OS (Triggered internally at /pytorch/c10/cuda/CUDAFunctions.cpp:119.)
+  return torch._C._cuda_getDeviceCount() > 0
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+--- Dataset: blakeley_top1000markers ---
+  -> balanced_mse
+    [ERROR] balanced_mse: CUDA requested for masked_imputation26 but not available.
+
+--- Dataset: darmanis_top1000markers ---
+  -> balanced_mse
+    [ERROR] balanced_mse: CUDA requested for masked_imputation26 but not available.
+
+--- Dataset: deng_top1000markers ---
+  -> balanced_mse
+    [ERROR] balanced_mse: CUDA requested for masked_imputation26 but not available.
+
+--- Dataset: pollen_top1000markers ---
+  -> balanced_mse
+    [ERROR] balanced_mse: CUDA requested for masked_imputation26 but not available.
+
+--- Dataset: usoskin_top1000markers ---
+  -> balanced_mse
+    [ERROR] balanced_mse: CUDA requested for masked_imputation26 but not available.
+Saved results_clustering_py/balanced_mse_grid43/mid1_top500_s10s2_pca200/balanced_mse_clustering_table.tsv

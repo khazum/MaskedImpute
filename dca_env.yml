@@ -5,7 +5,6 @@ channels:
 dependencies:
   - _libgcc_mutex=0.1=conda_forge
   - _openmp_mutex=4.5=2_gnu
-  - _tflow_select=2.3.0=mkl
   - aiohttp=3.7.4.post0=py37h5e8e339_1
   - anndata=0.7.8=py37h89c1867_1
   - astor=0.8.1=pyh9f0ad1d_0
@@ -56,8 +55,6 @@ dependencies:
   - importlib_metadata=4.11.4=hd8ed1ab_0
   - joblib=1.3.2=pyhd8ed1ab_0
   - jpeg=9e=h0b41bf4_3
-  - keras=2.4.3=pyhd8ed1ab_0
-  - keras-preprocessing=1.1.2=pyhd8ed1ab_0
   - kernel-headers_linux-64=5.14.0=he073ed8_2
   - keyutils=1.6.3=hb9d3cd8_0
   - kiwisolver=1.4.4=py37h7cecad7_0
@@ -178,8 +175,6 @@ dependencies:
   - tensorboard=2.11.2=pyhd8ed1ab_0
   - tensorboard-data-server=0.6.1=py37h52d8a92_0
   - tensorboard-plugin-wit=1.8.1=pyhd8ed1ab_0
-  - tensorflow=2.4.1=mkl_py37h2d14ff2_0
-  - tensorflow-base=2.4.1=mkl_py37h43e0292_0
   - threadpoolctl=3.1.0=pyh8a188c0_0
   - tk=8.6.13=noxft_ha0e22de_103
   - tqdm=4.67.1=pyhd8ed1ab_0
@@ -214,6 +209,8 @@ dependencies:
       - greenlet==3.1.1
       - grpcio==1.32.0
       - hyperopt==0.2.7
+      - keras==2.4.3
+      - keras-preprocessing==1.1.2
       - kopt==0.1.0
       - markdown-it-py==2.2.0
       - mdurl==0.1.2
@@ -229,6 +226,7 @@ dependencies:
       - six==1.15.0
       - sqlalchemy==2.0.45
       - summarizedexperiment==0.3.7
+      - tensorflow==2.4.1
       - tensorflow-estimator==2.4.0
       - termcolor==1.1.0
       - tomli==2.0.1

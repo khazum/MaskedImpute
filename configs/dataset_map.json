@@ -1,0 +1,43 @@
+{
+  "blakeley_top1000markers": {
+    "config": "configs/grid4/c8.json",
+    "output": "recon",
+    "cluster": "kmeans",
+    "pca_components": 100,
+    "kmeans_init": 50,
+    "kmeans_iter": 300,
+    "recon_zscore": true
+  },
+  "darmanis_top1000markers": {
+    "config": "configs/grid4/c8.json",
+    "output": "recon",
+    "cluster": "kmeans",
+    "pca_components": 100,
+    "kmeans_init": 50,
+    "kmeans_iter": 300,
+    "recon_zscore": true
+  },
+  "deng_top1000markers": {
+    "config": "configs/grid3/cfg_a2.json",
+    "output": "recon",
+    "cluster": "gmm",
+    "gmm_cov": "full",
+    "pca_components": 100,
+    "recon_zscore": true
+  },
+  "pollen_top1000markers": {
+    "method": "magic",
+    "cluster": "kmeans",
+    "pca_components": 50,
+    "kmeans_init": 10,
+    "kmeans_iter": 100
+  },
+  "usoskin_top1000markers": {
+    "config": "configs/grid3/cfg_a2.json",
+    "output": "recon",
+    "cluster": "spectral",
+    "spectral_k": 10,
+    "pca_components": 50,
+    "recon_zscore": true
+  }
+}

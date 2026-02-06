@@ -1,5 +1,77 @@
 dataset	mse	mse_std	mse_dropout	mse_dropout_std	mse_biozero	mse_biozero_std	mse_non_zero	mse_non_zero_std	runtime_sec	runtime_sec_std	n_repeats	n_total	n_dropout	n_biozero	n_non_zero	error
-dataset_2_types_equal	1.7215375900268555	0.0	2.644622325897217	0.0	0.15150831639766693	0.0	1.0658701658248901	0.0	141.22978892800165	0.0	1	10950000	5432695	1528220	3989085	
-dataset_3_types_unequal	1.4557114839553833	0.0	2.130204916000366	0.0	0.16768181324005127	0.0	1.0834529399871826	0.0	116.34390539600281	0.0	1	10940000	5229749	1530688	4179563	
-dataset_4_types_rare	1.6596014499664307	0.0	2.5062880516052246	0.0	0.1934138387441635	0.0	1.0665082931518555	0.0	173.73822146398015	0.0	1	10960000	5449791	1541869	3968340	
-dataset_multibatch_dropout	1.3470033407211304	0.0	1.9468817710876465	0.0	0.16695290803909302	0.0	1.040945291519165	0.0	84.8795151290251	0.0	1	10970000	5215158	1564255	4190587	
+dataset_2_types_equal	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	10950000	5432695	1528220	3989085	DCA Bridge failed:
+2026-02-03 15:02:23.492193: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
+dataset_3_types_unequal	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	10940000	5229749	1530688	4179563	DCA Bridge failed:
+2026-02-03 15:02:33.210867: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
+dataset_4_types_rare	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	10960000	5449791	1541869	3968340	DCA Bridge failed:
+2026-02-03 15:02:42.736516: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+
+dataset_multibatch_dropout	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	10970000	5215158	1564255	4190587	DCA Bridge failed:
+2026-02-03 15:02:52.611774: I tensorflow/stream_executor/platform/default/dso_loader.cc:49] Successfully opened dynamic library libcudart.so.11.0
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca", line 8, in <module>
+    sys.exit(main())
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/__main__.py", line 152, in main
+    from . import train
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/train.py", line 25, in <module>
+    from .hyper import hyper
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/dca/hyper.py", line 6, in <module>
+    from kopt import CompileFN, test_fn
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/__init__.py", line 10, in <module>
+    from . import hyopt
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/hyopt.py", line 13, in <module>
+    from kopt.config import db_host, db_port, save_dir
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/lib/python3.7/site-packages/kopt/config.py", line 60, in <module>
+    _config = yaml.load(open(_config_path))
+TypeError: load() missing 1 required positional argument: 'Loader'
+

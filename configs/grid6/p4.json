@@ -1,0 +1,1 @@
+{"model_params":{"hidden":[128,64,32],"bottleneck":8,"batch_size":96,"weight_decay":0.0002,"dropout":0.2},"ae_params":{"epochs":600,"lr":0.0002,"p_zero":0.03,"p_nz":0.6,"noise_max":0.2,"loss_bio_weight":2.0,"loss_nz_weight":1.0},"scaler_params":{"p_low":0.5,"p_high":99.5},"bio_params":{"disp_mode":"estimate","use_cell_factor":true,"cell_zero_weight":0.25}}

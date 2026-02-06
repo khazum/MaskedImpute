@@ -1,0 +1,6 @@
+dataset	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	n_cells	n_genes	label_source	error
+blakeley_top1000markers	0.9809	0.0	1.0	0.0	1.0	0.0	1.0	0.0	12.4441978931427	0.0	1	30	935	cell_type1	
+darmanis_top1000markers	0.4956	0.0	0.669	0.0	0.7812	0.0	0.8667	0.0	4.411586761474609	0.0	1	420	1000	cell_type1	
+deng_top1000markers	0.5053	0.0	0.4074	0.0	0.6326	0.0	0.791	0.0	4.1702375411987305	0.0	1	268	1000	cell_type1	
+pollen_top1000markers	0.6832	0.0	0.7889	0.0	0.892	0.0	0.8863	0.0	4.22370719909668	0.0	1	299	1000	cell_type1	
+usoskin_top1000markers	0.453	0.0	0.7306	0.0	0.7215	0.0	0.8103	0.0	6.340961933135986	0.0	1	622	1000	cell_type1	

@@ -1,0 +1,30 @@
+[start] cfg_a on GPU 0
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+
+--- Dataset: blakeley_top1000markers ---
+  -> balanced_mse
+    ASW=0.5402 ARI=0.4713 NMI=0.6757 PS=0.8000
+
+--- Dataset: darmanis_top1000markers ---
+  -> balanced_mse
+    ASW=0.5045 ARI=0.8653 NMI=0.8622 PS=0.9333
+
+--- Dataset: deng_top1000markers ---
+  -> balanced_mse
+    ASW=0.6858 ARI=0.8540 NMI=0.8678 PS=0.8495
+
+--- Dataset: pollen_top1000markers ---
+  -> balanced_mse
+    ASW=0.5724 ARI=0.8662 NMI=0.9063 PS=0.9086
+
+--- Dataset: usoskin_top1000markers ---
+  -> balanced_mse
+    ASW=0.5042 ARI=0.8312 NMI=0.7922 PS=0.9089
+Saved results_clustering_py/balanced_mse_grid/cfg_a/balanced_mse_clustering_table.tsv
+

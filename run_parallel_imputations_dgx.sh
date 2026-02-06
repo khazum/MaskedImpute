@@ -22,13 +22,17 @@ mkdir -p "$LOG_DIR"
 
 CPU_THREADS="${CPU_THREADS:-8}"
 GPU_THREADS="${GPU_THREADS:-8}"
-NREPEATS="${NREPEATS:-1}"
+NREPEATS="${NREPEATS:-5}"
 MAGIC_JOBS="${MAGIC_JOBS:-$CPU_THREADS}"
+DCA_BIN="${DCA_BIN:-}"
 
 echo "CPU threads per job: $CPU_THREADS"
 echo "GPU threads per job: $GPU_THREADS"
 echo "MAGIC jobs: $MAGIC_JOBS"
 echo "Repeats (default): $NREPEATS"
+if [[ -n "${DCA_BIN}" ]]; then
+  echo "DCA binary override: ${DCA_BIN}"
+fi
 
 repeats_for_size() {
   if [[ "$1" == "5000" ]]; then
@@ -177,10 +181,13 @@ run_py_gpu_method() {
       local repeats
       repeats="$(repeats_for_method_size "${method}" "${size}")"
 
-      local -a extra_args=()
-      if [[ "${method}" == "dca" ]]; then
-        extra_args+=(--dca-threads "${GPU_THREADS}")
+    local -a extra_args=()
+    if [[ "${method}" == "dca" ]]; then
+      extra_args+=(--dca-threads "${GPU_THREADS}")
+      if [[ -n "${DCA_BIN}" ]]; then
+        extra_args+=(--dca-bin "${DCA_BIN}")
       fi
+    fi
 
       if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
         CUDA_VISIBLE_DEVICES="${gpu}" OMP_NUM_THREADS="${GPU_THREADS}" MKL_NUM_THREADS="${GPU_THREADS}" \

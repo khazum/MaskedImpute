@@ -1,0 +1,50 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+
+--- Dataset: blakeley_top1000markers ---
+  -> balanced_mse
+    ASW=0.5673 ARI=1.0000 NMI=1.0000 PS=1.0000
+
+--- Dataset: darmanis_top1000markers ---
+  -> balanced_mse
+    ASW=0.4506 ARI=0.8101 NMI=0.8423 PS=0.9072
+
+--- Dataset: deng_top1000markers ---
+  -> balanced_mse
+    ASW=0.5161 ARI=0.5810 NMI=0.7881 PS=0.8507
+
+--- Dataset: pollen_top1000markers ---
+  -> balanced_mse
+    ASW=0.6694 ARI=0.9172 NMI=0.9346 PS=0.9487
+
+--- Dataset: usoskin_top1000markers ---
+  -> balanced_mse
+    ASW=0.3666 ARI=0.9063 NMI=0.8633 PS=0.9496
+Saved results_clustering_py/balanced_mse_grid2/cfg_b/balanced_mse_clustering_table.tsv
+
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+
+=== dataset_2_types_equal ===
+  -> balanced_mse
+
+=== dataset_3_types_unequal ===
+  -> balanced_mse
+
+=== dataset_4_types_rare ===
+  -> balanced_mse
+
+=== dataset_multibatch_dropout ===
+  -> balanced_mse
+Wrote results_imputation_py/balanced_mse/cells_1000_grid2/cfg_b/balanced_mse_mse_table.tsv
+

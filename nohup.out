@@ -85,3 +85,157 @@ Started [PY/low_mse] (GPU 2, NUMA 0) - logging to logs_parallel_clustering/py_gp
 Started [PY/balanced_mse] (GPU 3, NUMA 1) - logging to logs_parallel_clustering/py_gpu_balanced_mse.log
 Started [PY/experiment] (GPU 4, NUMA 0) - logging to logs_parallel_clustering/py_gpu_experiment.log
 All clustering runs complete.
+CPU threads per job: 8
+GPU threads per job: 8
+MAGIC jobs: 8
+Repeats (default): 1
+Starting parallel runs on caa0dgx01...
+Monitor progress with: tail -f logs_parallel_runs/*.log
+Started [R/baseline] (NUMA 0) - logging to logs_parallel_runs/r_baseline.log
+Started [R/saver] (NUMA 1) - logging to logs_parallel_runs/r_saver.log
+Started [R/ccimpute] (NUMA 1) - logging to logs_parallel_runs/r_ccimpute.log
+Started [PY/magic] (CPU-only, NUMA 0) - logging to logs_parallel_runs/py_cpu_magic.log
+Started [PY/dca] (GPU 4, NUMA 0) - logging to logs_parallel_runs/py_gpu_dca.log
+Started [PY/autoclass] (GPU 1, NUMA 1) - logging to logs_parallel_runs/py_gpu_autoclass.log
+Started [PY/low_mse] (GPU 2, NUMA 0) - logging to logs_parallel_runs/py_gpu_low_mse.log
+Started [PY/balanced_mse] (GPU 3, NUMA 1) - logging to logs_parallel_runs/py_gpu_balanced_mse.log
+CPU threads per job: 8
+GPU threads per job: 8
+MAGIC jobs: 8
+Repeats (default): 5
+Starting parallel runs on caa0dgx01...
+Monitor progress with: tail -f logs_parallel_runs/*.log
+Started [R/baseline] (NUMA 0) - logging to logs_parallel_runs/r_baseline.log
+Started [R/saver] (NUMA 1) - logging to logs_parallel_runs/r_saver.log
+Started [R/ccimpute] (NUMA 1) - logging to logs_parallel_runs/r_ccimpute.log
+Started [PY/magic] (CPU-only, NUMA 0) - logging to logs_parallel_runs/py_cpu_magic.log
+Started [PY/dca] (GPU 4, NUMA 0) - logging to logs_parallel_runs/py_gpu_dca.log
+Started [PY/autoclass] (GPU 1, NUMA 1) - logging to logs_parallel_runs/py_gpu_autoclass.log
+Started [PY/low_mse] (GPU 2, NUMA 0) - logging to logs_parallel_runs/py_gpu_low_mse.log
+Started [PY/balanced_mse] (GPU 3, NUMA 1) - logging to logs_parallel_runs/py_gpu_balanced_mse.log
+CPU threads per job: 8
+GPU threads per job: 8
+MAGIC jobs: 8
+Repeats (default): 5
+Starting parallel runs on caa0dgx01...
+Monitor progress with: tail -f logs_parallel_runs/*.log
+Started [R/baseline] (NUMA 0) - logging to logs_parallel_runs/r_baseline.log
+Started [R/saver] (NUMA 1) - logging to logs_parallel_runs/r_saver.log
+Started [R/ccimpute] (NUMA 1) - logging to logs_parallel_runs/r_ccimpute.log
+Started [PY/magic] (CPU-only, NUMA 0) - logging to logs_parallel_runs/py_cpu_magic.log
+Started [PY/dca] (GPU 4, NUMA 0) - logging to logs_parallel_runs/py_gpu_dca.log
+Started [PY/autoclass] (GPU 1, NUMA 1) - logging to logs_parallel_runs/py_gpu_autoclass.log
+Started [PY/low_mse] (GPU 2, NUMA 0) - logging to logs_parallel_runs/py_gpu_low_mse.log
+Started [PY/balanced_mse] (GPU 3, NUMA 1) - logging to logs_parallel_runs/py_gpu_balanced_mse.log
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+--- Dataset: blakeley_top1000markers ---
+  -> balanced_mse
+    [ERROR] balanced_mse: 
+
+--- Dataset: darmanis_top1000markers ---
+  -> balanced_mse
+    [ERROR] balanced_mse: 
+
+--- Dataset: deng_top1000markers ---
+Traceback (most recent call last):
+  File "/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/run_clustering.py", line 711, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/run_clustering.py", line 494, in main
+    logcounts, counts, norm, labels, label_source = load_dataset(str(rds_path))
+                                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/run_clustering.py", line 219, in load_dataset
+    sce = read_rds(path)
+          ^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/generics.py", line 105, in read_rds
+    return _dispatcher(_robj, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/generics.py", line 138, in _dispatcher
+    return command(robject, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/read_sce.py", line 52, in read_single_cell_experiment
+    _rse = _dispatcher(robject, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/generics.py", line 138, in _dispatcher
+    return command(robject, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/read_se.py", line 111, in read_ranged_summarized_experiment
+    row_ranges_data = _dispatcher(robject["attributes"]["rowRanges"], **kwargs)
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/generics.py", line 138, in _dispatcher
+    return command(robject, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/read_granges.py", line 113, in read_granges_list
+    _grelist.append(_gre[current:_pend])
+                    ~~~~^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/genomicranges/GenomicRanges.py", line 964, in __getitem__
+    return self.get_subset(subset)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/genomicranges/GenomicRanges.py", line 947, in get_subset
+    return GenomicRanges.empty()
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/genomicranges/GenomicRanges.py", line 3214, in empty
+    return cls([], IRanges.empty())
+                   ^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/iranges/base.py", line 2219, in empty
+    return cls([], [])
+           ^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/iranges/base.py", line 112, in __init__
+    self._validate_width()
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/iranges/base.py", line 140, in _validate_width
+    if (end < self._start).any() or np.any(end > np.iinfo(np.int32).max) or np.any(end < np.iinfo(np.int32).min):
+                                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/numpy/core/fromnumeric.py", line 2412, in any
+    return _wrapreduction(a, np.logical_or, 'any', axis, None, out,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/numpy/core/fromnumeric.py", line 72, in _wrapreduction
+    passkwargs = {k: v for k, v in kwargs.items()
+                                   ^^^^^^^^^^^^^^
+KeyboardInterrupt
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+--- Dataset: blakeley_top1000markers ---
+  -> balanced_mse
+    ASW=0.5693 ARI=0.6648 NMI=0.8008 PS=0.8800
+
+--- Dataset: darmanis_top1000markers ---
+  -> balanced_mse
+    ASW=0.4861 ARI=0.8694 NMI=0.8611 PS=0.9243
+
+--- Dataset: deng_top1000markers ---
+  -> balanced_mse
+    ASW=0.5105 ARI=0.5542 NMI=0.7827 PS=0.8507
+
+--- Dataset: pollen_top1000markers ---
+  -> balanced_mse
+    ASW=0.6853 ARI=0.9429 NMI=0.9337 PS=0.9418
+
+--- Dataset: usoskin_top1000markers ---
+  -> balanced_mse
+    ASW=0.3729 ARI=0.8831 NMI=0.8440 PS=0.9360
+Saved results_clustering_py/balanced_mse_tuned/balanced_mse_clustering_table.tsv
+CPU threads per job: 8
+GPU threads per job: 8
+MAGIC jobs: 8
+Repeats (default): 5
+Starting parallel runs on caa0dgx02...
+Monitor progress with: tail -f logs_parallel_runs/*.log
+Started [R/baseline] (NUMA 0) - logging to logs_parallel_runs/r_baseline.log
+Started [R/saver] (NUMA 1) - logging to logs_parallel_runs/r_saver.log
+Started [R/ccimpute] (NUMA 1) - logging to logs_parallel_runs/r_ccimpute.log
+Started [PY/magic] (CPU-only, NUMA 0) - logging to logs_parallel_runs/py_cpu_magic.log
+Started [PY/dca] (GPU 4, NUMA 0) - logging to logs_parallel_runs/py_gpu_dca.log
+Started [PY/autoclass] (GPU 1, NUMA 1) - logging to logs_parallel_runs/py_gpu_autoclass.log
+Started [PY/low_mse] (GPU 2, NUMA 0) - logging to logs_parallel_runs/py_gpu_low_mse.log
+Started [PY/balanced_mse] (GPU 3, NUMA 1) - logging to logs_parallel_runs/py_gpu_balanced_mse.log
