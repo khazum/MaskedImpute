@@ -1,0 +1,83 @@
+{
+  "blakeley_top1000markers": {
+    "epochs": 300,
+    "lr": 0.0001,
+    "p_zero": 0.05,
+    "p_nz": 0.4,
+    "noise_max": 0.3,
+    "loss_bio_weight": 4.0,
+    "loss_nz_weight": 0.5,
+    "bio_reg_weight": 1.0,
+    "hidden": [
+      128
+    ],
+    "bottleneck": 16,
+    "batch_size": 16,
+    "weight_decay": 0.0001
+  },
+  "darmanis_top1000markers": {
+    "epochs": 300,
+    "lr": 0.0001,
+    "p_zero": 0.05,
+    "p_nz": 0.3,
+    "noise_max": 0.3,
+    "loss_bio_weight": 4.0,
+    "loss_nz_weight": 0.5,
+    "bio_reg_weight": 1.0,
+    "hidden": [
+      64
+    ],
+    "bottleneck": 64,
+    "batch_size": 16,
+    "weight_decay": 0.0001
+  },
+  "deng_top1000markers": {
+    "epochs": 300,
+    "lr": 0.0001,
+    "p_zero": 0.01,
+    "p_nz": 0.3,
+    "noise_max": 0.2,
+    "loss_bio_weight": 2.0,
+    "loss_nz_weight": 1.0,
+    "bio_reg_weight": 1.0,
+    "hidden": [
+      64
+    ],
+    "bottleneck": 32,
+    "batch_size": 32,
+    "weight_decay": 0.0
+  },
+  "pollen_top1000markers": {
+    "epochs": 200,
+    "lr": 0.0005,
+    "p_zero": 0.05,
+    "p_nz": 0.4,
+    "noise_max": 0.3,
+    "loss_bio_weight": 2.0,
+    "loss_nz_weight": 1.0,
+    "bio_reg_weight": 1.0,
+    "hidden": [
+      64
+    ],
+    "bottleneck": 16,
+    "batch_size": 32,
+    "weight_decay": 0.0001
+  },
+  "usoskin_top1000markers": {
+    "epochs": 200,
+    "lr": 0.0001,
+    "p_zero": 0.05,
+    "p_nz": 0.4,
+    "noise_max": 0.3,
+    "loss_bio_weight": 1.0,
+    "loss_nz_weight": 1.0,
+    "bio_reg_weight": 1.0,
+    "hidden": [
+      128,
+      64
+    ],
+    "bottleneck": 32,
+    "batch_size": 32,
+    "weight_decay": 0.0
+  }
+}

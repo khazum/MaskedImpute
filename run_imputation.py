@@ -558,29 +558,6 @@ def _import_masked26():
     return mi26
 
 
-def _load_masked26_config(path: Optional[str]) -> Optional[Dict[str, object]]:
-    if not path:
-        return None
-    import json
-    cfg = json.loads(Path(path).read_text())
-    if not isinstance(cfg, dict):
-        raise ValueError("masked26 config must be a JSON object.")
-    return cfg
-
-
-def _resolve_device(device_arg: str):
-    import torch
-
-    device_arg = str(device_arg or "cuda").strip().lower()
-    if device_arg == "auto":
-        device_arg = "cuda" if torch.cuda.is_available() else "cpu"
-    if device_arg == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA requested for masked_imputation26 but not available.")
-    if device_arg not in ("cuda", "cpu"):
-        raise ValueError(f"Unsupported device '{device_arg}' (expected cuda, cpu, auto).")
-    return torch.device(device_arg)
-
-
 def _counts_obs_from_logcounts(logcounts: np.ndarray, counts: Optional[np.ndarray]) -> np.ndarray:
     if counts is None:
         return np.clip(np.expm1(logcounts * np.log(2.0)), 0.0, None).astype(np.float32)
@@ -601,13 +578,13 @@ def run_masked26(
     *,
     bio_reg_weight: float,
     seed: int,
-    device: str,
-    config: Optional[Dict[str, object]] = None,
 ) -> np.ndarray:
+    import torch
+
     mi26 = _import_masked26()
-    if config:
-        mi26.apply_config(config)
-    device = _resolve_device(device)
+    device = torch.device("cuda")
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested for masked_imputation26 but not available.")
 
     counts_obs = _counts_obs_from_logcounts(logcounts, counts)
     zeros_obs = counts_obs <= 0.0
@@ -628,18 +605,16 @@ def run_masked26(
         )
         p_bio = p_bio * (1.0 - cell_w[:, None])
 
-    use_fast = device.type == "cuda"
     log_recon = mi26.train_autoencoder_reconstruct(
         logcounts=logcounts,
         counts_max=counts_max,
         p_bio=p_bio,
         device=device,
-        fast_mode=use_fast,
-        amp_enabled=use_fast,
-        compile_enabled=use_fast,
-        fast_batch_mult=2 if use_fast else 1,
-        num_workers=2 if use_fast else 0,
-        output="recon",
+        fast_mode=True,
+        amp_enabled=True,
+        compile_enabled=True,
+        fast_batch_mult=2,
+        num_workers=2,
     )
 
     log_imputed = log_recon.copy()
@@ -706,22 +681,6 @@ def main() -> None:
     )
     parser.add_argument("--n-jobs", type=int, default=1, help="MAGIC n_jobs value")
     parser.add_argument("--n-repeat", type=int, default=10, help="Number of repeats per method.")
-    parser.add_argument(
-        "--masked26-config",
-        default=None,
-        help="Path to JSON config for masked_imputation26 (applied to low_mse/balanced_mse).",
-    )
-    parser.add_argument(
-        "--masked26-bio-reg-weight",
-        type=float,
-        default=None,
-        help="Override bio_reg_weight for masked_imputation26 methods.",
-    )
-    parser.add_argument(
-        "--masked26-device",
-        default="cuda",
-        help="Device for masked_imputation26 (cuda, cpu, auto).",
-    )
 
     g_dca = parser.add_argument_group("DCA Options")
     g_dca.add_argument("--dca-bin", type=str, default="~/miniconda3/envs/dca_env/bin/dca")
@@ -780,7 +739,6 @@ def main() -> None:
 
     results: Dict[str, List[Dict[str, object]]] = {m: [] for m in methods}
     autoclass_kwargs = _parse_kv_pairs(args.autoclass_kwargs) if "autoclass" in methods else {}
-    masked26_config = _load_masked26_config(args.masked26_config)
 
     for path in collect_rds_files(args.input_path):
         ds_name = path.stem
@@ -829,15 +787,11 @@ def main() -> None:
                         log_imp = run_autoclass(logcounts, args.autoclass_dir, autoclass_kwargs)
                     elif method in ("low_mse", "balanced_mse"):
                         bio_reg = 0.0 if method == "low_mse" else 1.0
-                        if args.masked26_bio_reg_weight is not None:
-                            bio_reg = float(args.masked26_bio_reg_weight)
                         log_imp = run_masked26(
                             logcounts,
                             counts,
                             bio_reg_weight=bio_reg,
                             seed=42 + rep,
-                            device=args.masked26_device,
-                            config=masked26_config,
                         )
                     else:
                         raise RuntimeError(f"Unsupported method: {method}")

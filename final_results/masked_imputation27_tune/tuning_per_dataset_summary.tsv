@@ -1,0 +1,6 @@
+dataset	score	ARI	NMI	PS	ASW	hidden	bottleneck	batch_size	lr	epochs	p_zero	p_nz	noise_max	loss_bio_weight	loss_nz_weight	weight_decay
+blakeley_top1000markers	4.7556	1.0	1.0	1.0	0.7556	[128]	16	16	0.0001	300	0.05	0.4	0.3	4.0	0.5	0.0001
+darmanis_top1000markers	4.286300000000001	0.9382	0.914	0.9595	0.5364	[64]	64	16	0.0001	300	0.05	0.3	0.3	4.0	0.5	0.0001
+deng_top1000markers	4.3658	0.9232	0.8971	0.9552	0.6671	[64]	32	32	0.0001	300	0.01	0.3	0.2	2.0	1.0	0.0
+pollen_top1000markers	4.5225	0.9536	0.945	0.9565	0.7138	[64]	16	32	0.0005	200	0.05	0.4	0.3	2.0	1.0	0.0001
+usoskin_top1000markers	4.0865	0.9142	0.876	0.9534	0.4287	[128, 64]	32	32	0.0001	200	0.05	0.4	0.3	1.0	1.0	0.0

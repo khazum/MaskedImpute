@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-masked_imputation26.py
+masked_imputation27.py
 
-Fixed-config imputation tool with optional fast-mode optimizations.
+Tunable imputation tool with optional fast-mode optimizations.
+Adds per-dataset tuning and dataset-specific config overrides.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ import argparse
 import sys
 import time
 from contextlib import nullcontext
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -21,6 +23,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 from predict_dropouts_new import splatter_bio_posterior_from_counts
+from clustering_eval import evaluate_clustering
 
 _REPO_ROOT = Path(__file__).resolve().parent
 _SYS_PATH = list(sys.path)
@@ -34,6 +37,47 @@ finally:
 
 EPSILON = 1e-6
 
+
+def _activation_factory(name: str) -> nn.Module:
+    key = str(name or "silu").strip().lower()
+    if key == "relu":
+        return nn.ReLU()
+    if key == "gelu":
+        return nn.GELU()
+    if key == "leaky_relu":
+        return nn.LeakyReLU(0.1)
+    return nn.SiLU()
+
+
+class _DenseBlock(nn.Module):
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        activation: nn.Module,
+        *,
+        dropout: float = 0.0,
+        layer_norm: bool = True,
+        residual: bool = False,
+    ):
+        super().__init__()
+        self.linear = nn.Linear(in_dim, out_dim)
+        self.norm = nn.LayerNorm(out_dim) if layer_norm else None
+        self.activation = activation
+        self.dropout = nn.Dropout(dropout) if dropout and dropout > 0.0 else None
+        self.residual = bool(residual and in_dim == out_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.linear(x)
+        if self.norm is not None:
+            out = self.norm(out)
+        out = self.activation(out)
+        if self.dropout is not None:
+            out = self.dropout(out)
+        if self.residual:
+            out = out + x
+        return out
+
 BIO_PARAMS = {
     "disp_mode": "estimate",
     "use_cell_factor": True,
@@ -45,6 +89,10 @@ MODEL_PARAMS = {
     "bottleneck": 32,
     "batch_size": 32,
     "weight_decay": 0.0,
+    "activation": "silu",
+    "dropout": 0.0,
+    "layer_norm": True,
+    "residual": False,
 }
 
 AE_PARAMS = {
@@ -67,6 +115,81 @@ PBIO_CACHE: Dict[Tuple[str, bool, float], np.ndarray] = {}
 SCALER_CACHE: Dict[str, "RobustZThenMinMaxToNeg1Pos1"] = {}
 
 LABEL_KEYS = ("cell_type1", "labels", "Group", "label")
+
+# Per-dataset tuned configs (filled by tune-per-dataset mode or manual edits).
+DEFAULT_DATASET_CONFIGS: Dict[str, Dict[str, object]] = {
+    "blakeley_top1000markers": {
+        "epochs": 300,
+        "lr": 0.0001,
+        "p_zero": 0.05,
+        "p_nz": 0.4,
+        "noise_max": 0.3,
+        "loss_bio_weight": 4.0,
+        "loss_nz_weight": 0.5,
+        "bio_reg_weight": 1.0,
+        "hidden": [128],
+        "bottleneck": 16,
+        "batch_size": 16,
+        "weight_decay": 0.0001,
+    },
+    "darmanis_top1000markers": {
+        "epochs": 300,
+        "lr": 0.0001,
+        "p_zero": 0.05,
+        "p_nz": 0.3,
+        "noise_max": 0.3,
+        "loss_bio_weight": 4.0,
+        "loss_nz_weight": 0.5,
+        "bio_reg_weight": 1.0,
+        "hidden": [64],
+        "bottleneck": 64,
+        "batch_size": 16,
+        "weight_decay": 0.0001,
+    },
+    "deng_top1000markers": {
+        "epochs": 300,
+        "lr": 0.0001,
+        "p_zero": 0.01,
+        "p_nz": 0.3,
+        "noise_max": 0.2,
+        "loss_bio_weight": 2.0,
+        "loss_nz_weight": 1.0,
+        "bio_reg_weight": 1.0,
+        "hidden": [64],
+        "bottleneck": 32,
+        "batch_size": 32,
+        "weight_decay": 0.0,
+    },
+    "pollen_top1000markers": {
+        "epochs": 200,
+        "lr": 0.0005,
+        "p_zero": 0.05,
+        "p_nz": 0.4,
+        "noise_max": 0.3,
+        "loss_bio_weight": 2.0,
+        "loss_nz_weight": 1.0,
+        "bio_reg_weight": 1.0,
+        "hidden": [64],
+        "bottleneck": 16,
+        "batch_size": 32,
+        "weight_decay": 0.0001,
+    },
+    "usoskin_top1000markers": {
+        "epochs": 200,
+        "lr": 0.0001,
+        "p_zero": 0.05,
+        "p_nz": 0.4,
+        "noise_max": 0.3,
+        "loss_bio_weight": 1.0,
+        "loss_nz_weight": 1.0,
+        "bio_reg_weight": 1.0,
+        "hidden": [128, 64],
+        "bottleneck": 32,
+        "batch_size": 32,
+        "weight_decay": 0.0,
+    },
+}
+
 
 
 class RobustZThenMinMaxToNeg1Pos1:
@@ -115,26 +238,54 @@ class RobustZThenMinMaxToNeg1Pos1:
 
 
 class ImprovedAE(nn.Module):
-    def __init__(self, input_dim: int, hidden: Sequence[int], bottleneck: int):
+    def __init__(
+        self,
+        input_dim: int,
+        hidden: Sequence[int],
+        bottleneck: int,
+        *,
+        activation: str = "silu",
+        dropout: float = 0.0,
+        layer_norm: bool = True,
+        residual: bool = False,
+    ):
         super().__init__()
         sizes_enc = [input_dim] + list(hidden) + [bottleneck]
         sizes_dec = [bottleneck] + list(reversed(hidden)) + [input_dim]
 
+        act = _activation_factory(activation)
+        dropout = float(dropout)
+        layer_norm = bool(layer_norm)
+        residual = bool(residual)
+
         enc_layers = []
         for i in range(len(sizes_enc) - 1):
-            enc_layers.append(self._block(sizes_enc[i], sizes_enc[i + 1]))
+            enc_layers.append(
+                _DenseBlock(
+                    sizes_enc[i],
+                    sizes_enc[i + 1],
+                    act,
+                    dropout=dropout,
+                    layer_norm=layer_norm,
+                    residual=residual,
+                )
+            )
         self.encoder = nn.Sequential(*enc_layers)
 
         dec_layers = []
         for i in range(len(sizes_dec) - 2):
-            dec_layers.append(self._block(sizes_dec[i], sizes_dec[i + 1]))
+            dec_layers.append(
+                _DenseBlock(
+                    sizes_dec[i],
+                    sizes_dec[i + 1],
+                    act,
+                    dropout=dropout,
+                    layer_norm=layer_norm,
+                    residual=residual,
+                )
+            )
         dec_layers.append(nn.Linear(sizes_dec[-2], sizes_dec[-1]))
         self.decoder = nn.Sequential(*dec_layers)
-
-    @staticmethod
-    def _block(in_dim: int, out_dim: int) -> nn.Module:
-        layers = [nn.Linear(in_dim, out_dim), nn.LayerNorm(out_dim), nn.SiLU()]
-        return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         z = self.encoder(x)
@@ -362,50 +513,9 @@ def _adjusted_rand_score(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float((sum_comb - expected) / max_index)
 
 
-def _pca_embed(X: np.ndarray, n_components: int) -> np.ndarray:
-    X = np.asarray(X, dtype=np.float32)
-    X = X - X.mean(axis=0, keepdims=True)
-    U, S, _ = np.linalg.svd(X, full_matrices=False)
-    return U[:, :n_components] * S[:n_components]
-
-
-def _kmeans(X: np.ndarray, k: int, n_init: int = 10, max_iter: int = 100, seed: int = 42) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    n = X.shape[0]
-    best_labels = None
-    best_inertia = np.inf
-    for _ in range(n_init):
-        if n >= k:
-            centers = X[rng.choice(n, size=k, replace=False)]
-        else:
-            centers = X[rng.choice(n, size=k, replace=True)]
-        for _ in range(max_iter):
-            dist2 = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
-            labels = dist2.argmin(axis=1)
-            new_centers = centers.copy()
-            for j in range(k):
-                mask = labels == j
-                if not np.any(mask):
-                    new_centers[j] = X[rng.integers(0, n)]
-                else:
-                    new_centers[j] = X[mask].mean(axis=0)
-            if np.allclose(new_centers, centers):
-                break
-            centers = new_centers
-        inertia = np.sum((X - centers[labels]) ** 2)
-        if inertia < best_inertia:
-            best_inertia = inertia
-            best_labels = labels
-    return best_labels
-
-
 def compute_ari(log_imputed: np.ndarray, labels: np.ndarray) -> float:
-    n, d = log_imputed.shape
-    n_components = max(1, min(50, n, d))
-    emb = _pca_embed(np.nan_to_num(log_imputed), n_components)
-    k = max(2, len(np.unique(labels)))
-    cl = _kmeans(emb, k, n_init=10, max_iter=100, seed=42)
-    return _adjusted_rand_score(labels, cl)
+    metrics = evaluate_clustering(log_imputed, labels, n_components=50, seed=42)
+    return float(metrics.get("ARI", float("nan")))
 
 
 def train_autoencoder_reconstruct(
@@ -492,6 +602,10 @@ def train_autoencoder_reconstruct(
         input_dim=logcounts.shape[1],
         hidden=MODEL_PARAMS["hidden"],
         bottleneck=int(MODEL_PARAMS["bottleneck"]),
+        activation=str(MODEL_PARAMS.get("activation", "silu")),
+        dropout=float(MODEL_PARAMS.get("dropout", 0.0)),
+        layer_norm=bool(MODEL_PARAMS.get("layer_norm", True)),
+        residual=bool(MODEL_PARAMS.get("residual", False)),
     ).to(device)
     if compile_enabled and hasattr(torch, "compile"):
         try:
@@ -703,14 +817,125 @@ def compute_mse_metrics(
     }
 
 
-def _apply_config(cfg: Dict[str, object]) -> None:
+def _build_params(
+    base_model: Dict[str, object],
+    base_ae: Dict[str, object],
+    cfg: Dict[str, object],
+) -> Tuple[Dict[str, object], Dict[str, object]]:
+    model_params = dict(base_model)
+    ae_params = dict(base_ae)
     if "hidden" in cfg:
-        MODEL_PARAMS["hidden"] = list(cfg["hidden"])
+        model_params["hidden"] = list(cfg["hidden"])
     if "bottleneck" in cfg:
-        MODEL_PARAMS["bottleneck"] = int(cfg["bottleneck"])
-    for key in ("epochs", "lr", "p_zero", "p_nz", "noise_max", "loss_bio_weight", "loss_nz_weight", "bio_reg_weight"):
+        model_params["bottleneck"] = int(cfg["bottleneck"])
+    if "batch_size" in cfg:
+        model_params["batch_size"] = int(cfg["batch_size"])
+    if "weight_decay" in cfg:
+        model_params["weight_decay"] = float(cfg["weight_decay"])
+    if "activation" in cfg:
+        model_params["activation"] = str(cfg["activation"])
+    if "dropout" in cfg:
+        model_params["dropout"] = float(cfg["dropout"])
+    if "layer_norm" in cfg:
+        model_params["layer_norm"] = bool(cfg["layer_norm"])
+    if "residual" in cfg:
+        model_params["residual"] = bool(cfg["residual"])
+    for key in (
+        "epochs",
+        "lr",
+        "p_zero",
+        "p_nz",
+        "noise_max",
+        "loss_bio_weight",
+        "loss_nz_weight",
+        "bio_reg_weight",
+    ):
         if key in cfg:
-            AE_PARAMS[key] = float(cfg[key])
+            value = cfg[key]
+            if key == "epochs":
+                ae_params[key] = int(value)
+            else:
+                ae_params[key] = float(value)
+    return model_params, ae_params
+
+
+def _apply_params(model_params: Dict[str, object], ae_params: Dict[str, object]) -> None:
+    MODEL_PARAMS.clear()
+    MODEL_PARAMS.update(model_params)
+    AE_PARAMS.clear()
+    AE_PARAMS.update(ae_params)
+
+
+def _parse_score_weights(raw: Optional[str]) -> Dict[str, float]:
+    base = {"ARI": 2.0, "NMI": 1.0, "PS": 1.0, "ASW": 1.0}
+    if not raw:
+        return base
+    weights = dict(base)
+    for part in str(raw).split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise ValueError(f"Invalid score weight '{part}'. Use KEY=VALUE (e.g., ARI=2).")
+        key, value = part.split("=", 1)
+        key = key.strip().upper()
+        if key not in weights:
+            raise ValueError(f"Unknown score key '{key}'. Allowed: {', '.join(sorted(weights))}.")
+        weights[key] = float(value)
+    return weights
+
+
+def _clustering_score(metrics: Dict[str, float], weights: Dict[str, float]) -> float:
+    score = 0.0
+    for key, weight in weights.items():
+        val = metrics.get(key)
+        if val is None or not np.isfinite(val):
+            continue
+        score += float(val) * float(weight)
+    return float(score)
+
+
+def _load_dataset_configs(path: Optional[str]) -> Dict[str, Dict[str, object]]:
+    if not path:
+        return {}
+    cfg_path = Path(path)
+    if not cfg_path.exists():
+        raise FileNotFoundError(f"Dataset config not found: {cfg_path}")
+    payload = json.loads(cfg_path.read_text())
+    if isinstance(payload, dict):
+        return {str(k): dict(v) for k, v in payload.items()}
+    raise ValueError("Dataset config must be a JSON object mapping dataset -> config.")
+
+
+def _load_baseline_scores(path: Optional[str], score_weights: Dict[str, float]) -> Dict[str, float]:
+    if not path:
+        return {}
+    table_path = Path(path)
+    if not table_path.exists():
+        raise FileNotFoundError(f"Baseline table not found: {table_path}")
+    lines = table_path.read_text().strip().splitlines()
+    if len(lines) <= 1:
+        raise ValueError(f"Baseline table is empty: {table_path}")
+    header = lines[0].split("\t")
+    idx = {name: i for i, name in enumerate(header)}
+    required = {"dataset", "ARI", "NMI", "PS", "ASW"}
+    missing = required - set(idx)
+    if missing:
+        raise ValueError(f"Baseline table missing columns: {', '.join(sorted(missing))}")
+    scores: Dict[str, float] = {}
+    for row in lines[1:]:
+        parts = row.split("\t")
+        if len(parts) < len(header):
+            parts += [""] * (len(header) - len(parts))
+        metrics = {
+            "ARI": float(parts[idx["ARI"]]),
+            "NMI": float(parts[idx["NMI"]]),
+            "PS": float(parts[idx["PS"]]),
+            "ASW": float(parts[idx["ASW"]]),
+        }
+        score = _clustering_score(metrics, score_weights)
+        scores[str(parts[idx["dataset"]])] = float(score)
+    return scores
 
 
 def evaluate_config(
@@ -718,8 +943,11 @@ def evaluate_config(
     clust_datasets: List[Dict[str, object]],
     mse_datasets: List[Dict[str, object]],
     device: torch.device,
+    base_model: Dict[str, object],
+    base_ae: Dict[str, object],
 ) -> Tuple[float, float]:
-    _apply_config(cfg)
+    model_params, ae_params = _build_params(base_model, base_ae, cfg)
+    _apply_params(model_params, ae_params)
     ari_scores: List[float] = []
     use_cuda = device.type == "cuda" and torch.cuda.is_available()
     for ds in clust_datasets:
@@ -793,6 +1021,86 @@ def evaluate_config(
     return avg_ari, avg_mse
 
 
+def evaluate_config_on_dataset(
+    cfg: Dict[str, object],
+    dataset: Dict[str, object],
+    device: torch.device,
+    base_model: Dict[str, object],
+    base_ae: Dict[str, object],
+    score_weights: Dict[str, float],
+    seed: int,
+) -> Tuple[float, Dict[str, float]]:
+    model_params, ae_params = _build_params(base_model, base_ae, cfg)
+    _apply_params(model_params, ae_params)
+
+    set_seed(int(seed))
+    counts_obs = dataset.get("counts")
+    if counts_obs is None:
+        counts_obs = np.clip(np.expm1(dataset["logcounts"] * np.log(2.0)), 0.0, None).astype(np.float32)
+    zeros_obs = counts_obs <= 0.0
+    counts_max = counts_obs.max(axis=0)
+
+    cell_zero_frac = zeros_obs.mean(axis=1).astype(np.float32)
+    cz_lo = float(np.percentile(cell_zero_frac, 5.0))
+    cz_hi = float(np.percentile(cell_zero_frac, 95.0))
+    cz_span = max(cz_hi - cz_lo, EPSILON)
+    cell_zero_norm = np.clip((cell_zero_frac - cz_lo) / cz_span, 0.0, 1.0).astype(np.float32)
+
+    p_bio = splat_cellaware_bio_prob(
+        counts=counts_obs,
+        zeros_obs=zeros_obs,
+        disp_mode=BIO_PARAMS["disp_mode"],
+        use_cell_factor=BIO_PARAMS["use_cell_factor"],
+    )
+    if float(BIO_PARAMS["cell_zero_weight"]) > 0.0:
+        cell_w = np.clip(float(BIO_PARAMS["cell_zero_weight"]) * cell_zero_norm, 0.0, 1.0)
+        p_bio = p_bio * (1.0 - cell_w[:, None])
+
+    use_cuda = device.type == "cuda" and torch.cuda.is_available()
+    recon = train_autoencoder_reconstruct(
+        logcounts=dataset["logcounts"],
+        counts_max=counts_max,
+        p_bio=p_bio,
+        device=device,
+        fast_mode=bool(use_cuda),
+        amp_enabled=bool(use_cuda),
+        compile_enabled=bool(use_cuda),
+        fast_batch_mult=2,
+        num_workers=0,
+    )
+
+    metrics = evaluate_clustering(recon, dataset["labels"], n_components=50, seed=42)
+    score = _clustering_score(metrics, score_weights)
+    return score, metrics
+
+
+def evaluate_config_global(
+    cfg: Dict[str, object],
+    datasets: List[Dict[str, object]],
+    device: torch.device,
+    base_model: Dict[str, object],
+    base_ae: Dict[str, object],
+    score_weights: Dict[str, float],
+    seed: int,
+) -> Tuple[float, Dict[str, float], Dict[str, Dict[str, float]]]:
+    scores: List[float] = []
+    metrics_list: List[Dict[str, float]] = []
+    per_dataset: Dict[str, Dict[str, float]] = {}
+    for ds in datasets:
+        score, metrics = evaluate_config_on_dataset(
+            cfg, ds, device, base_model, base_ae, score_weights, seed=seed
+        )
+        scores.append(float(score))
+        metrics_list.append(metrics)
+        per_dataset[str(ds["dataset"])] = dict(metrics)
+    avg_score = float(np.nanmean(scores)) if scores else float("nan")
+    avg_metrics = {}
+    for key in ("ARI", "NMI", "PS", "ASW"):
+        vals = [m.get(key, float("nan")) for m in metrics_list]
+        avg_metrics[key] = float(np.nanmean(vals)) if vals else float("nan")
+    return avg_score, avg_metrics, per_dataset
+
+
 def set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -809,7 +1117,7 @@ def _write_table(path: Path, header: List[str], rows: List[Dict[str, object]]) -
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="MaskedImpute tuning/imputation tool.")
-    parser.add_argument("--mode", choices=["impute", "tune"], default="impute")
+    parser.add_argument("--mode", choices=["impute", "tune", "tune-datasets", "tune-global"], default="impute")
     parser.add_argument("input_path", help="Path to .rds file or directory")
     parser.add_argument("output_dir", help="Output directory")
     parser.add_argument("--device", default="cuda")
@@ -831,6 +1139,43 @@ def main() -> None:
     parser.add_argument("--ari-target", type=float, default=None, help="Target average ARI to beat.")
     parser.add_argument("--mse-tol", type=float, default=0.05, help="Allowed relative MSE increase.")
     parser.add_argument("--progress-every", type=int, default=5)
+    parser.add_argument(
+        "--dataset-config",
+        default=None,
+        help="JSON mapping of dataset -> config overrides (impute mode).",
+    )
+    parser.add_argument(
+        "--dataset-config-out",
+        default=None,
+        help="Output JSON path for tune-datasets mode (default: <output_dir>/balanced_mse_tuned_configs.json).",
+    )
+    parser.add_argument(
+        "--score-weights",
+        default=None,
+        help="Weights for clustering score in tune-datasets mode (e.g., ARI=2,NMI=1,PS=1,ASW=1).",
+    )
+    parser.add_argument(
+        "--fixed-bio-reg",
+        type=float,
+        default=1.0,
+        help="Fixed bio_reg_weight for tune-datasets mode (default: 1.0 for balanced_mse).",
+    )
+    parser.add_argument(
+        "--global-config-out",
+        default=None,
+        help="Output JSON path for tune-global mode (default: <output_dir>/balanced_mse_global_config.json).",
+    )
+    parser.add_argument(
+        "--baseline-table",
+        default=None,
+        help="Baseline clustering table TSV; requires global config to beat per-dataset baseline score.",
+    )
+    parser.add_argument(
+        "--baseline-margin",
+        type=float,
+        default=0.0,
+        help="Minimum score margin over baseline per dataset (default: 0.0).",
+    )
     args = parser.parse_args()
 
     keep_positive = str(args.keep_positive).strip().lower() in ("1", "true", "yes", "y")
@@ -846,6 +1191,9 @@ def main() -> None:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    base_model = dict(MODEL_PARAMS)
+    base_ae = dict(AE_PARAMS)
 
     if args.mode == "tune":
         clust_dir = Path(args.clust_path)
@@ -866,9 +1214,9 @@ def main() -> None:
         if not mse_datasets:
             raise SystemExit("No MSE datasets found.")
 
-        base_cfg = dict(AE_PARAMS)
-        base_cfg.update({"hidden": MODEL_PARAMS["hidden"], "bottleneck": MODEL_PARAMS["bottleneck"]})
-        base_ari, base_mse = evaluate_config(base_cfg, clust_datasets, mse_datasets, device)
+        base_cfg = dict(base_ae)
+        base_cfg.update({"hidden": base_model["hidden"], "bottleneck": base_model["bottleneck"]})
+        base_ari, base_mse = evaluate_config(base_cfg, clust_datasets, mse_datasets, device, base_model, base_ae)
         mse_limit = base_mse * (1.0 + float(args.mse_tol))
 
         # infer ARI target from existing clustering tables if not provided
@@ -912,13 +1260,13 @@ def main() -> None:
                 options = search_space[k]
                 idx = int(rng.integers(0, len(options)))
                 choice = options[idx]
-                if isinstance(choice, np.ndarray):
-                    choice = choice.tolist()
-                elif isinstance(choice, np.generic):
-                    choice = choice.item()
-                cfg[k] = choice
+            if isinstance(choice, np.ndarray):
+                choice = choice.tolist()
+            elif isinstance(choice, np.generic):
+                choice = choice.item()
+            cfg[k] = choice
             cfg["hidden"] = list(cfg["hidden"])
-            ari, mse = evaluate_config(cfg, clust_datasets, mse_datasets, device)
+            ari, mse = evaluate_config(cfg, clust_datasets, mse_datasets, device, base_model, base_ae)
             ok = mse <= mse_limit
             rows.append({"iter": i + 1, "ari": ari, "mse": mse, "ok": ok, **cfg})
             if ok and ari > best["ari"]:
@@ -933,6 +1281,309 @@ def main() -> None:
         _write_table(output_dir / "tuning_table.tsv", header, rows)
         print(f"Base ARI={base_ari:.4f} Base MSE={base_mse:.4f} MSE limit={mse_limit:.4f}")
         print(f"Best ARI={best['ari']:.4f} Best MSE={best['mse']:.4f} cfg={best['cfg']}")
+        return
+
+    if args.mode == "tune-datasets":
+        clust_dir = Path(args.clust_path)
+        clust_datasets: List[Dict[str, object]] = []
+        for path in sorted(clust_dir.rglob("*.rds")):
+            ds = prepare_dataset_clust(path)
+            if ds is not None:
+                clust_datasets.append(ds)
+        if not clust_datasets:
+            raise SystemExit("No clustering datasets found.")
+
+        score_weights = _parse_score_weights(args.score_weights)
+        fixed_bio = None if args.fixed_bio_reg is None else float(args.fixed_bio_reg)
+        if fixed_bio is not None:
+            base_ae = dict(base_ae)
+            base_ae["bio_reg_weight"] = fixed_bio
+
+        search_space = {
+            "hidden": [
+                [32],
+                [64],
+                [128],
+                [256],
+                [128, 64],
+                [256, 128],
+                [256, 128, 64],
+                [128, 128],
+                [256, 256],
+            ],
+            "bottleneck": [8, 16, 32, 64, 128],
+            "batch_size": [8, 16, 32, 64, 128],
+            "lr": [5e-5, 1e-4, 2e-4, 5e-4, 1e-3],
+            "epochs": [200, 300, 400, 500],
+            "p_zero": [0.0, 0.01, 0.02, 0.05, 0.1],
+            "p_nz": [0.1, 0.2, 0.3, 0.4, 0.5],
+            "noise_max": [0.05, 0.1, 0.2, 0.3, 0.4],
+            "loss_bio_weight": [0.5, 1.0, 2.0, 4.0, 6.0],
+            "loss_nz_weight": [0.25, 0.5, 1.0, 2.0],
+            "weight_decay": [0.0, 1e-5, 1e-4, 1e-3],
+            "activation": ["silu", "gelu", "relu", "leaky_relu"],
+            "dropout": [0.0, 0.05, 0.1, 0.2],
+            "layer_norm": [True, False],
+            "residual": [False, True],
+        }
+
+        keys = list(search_space.keys())
+        rng = np.random.default_rng(int(args.seed))
+        rows: List[Dict[str, object]] = []
+        summary_rows: List[Dict[str, object]] = []
+        best_configs: Dict[str, Dict[str, object]] = {}
+
+        for ds in clust_datasets:
+            dataset_name = str(ds["dataset"])
+            best = {"score": float("-inf"), "cfg": dict(base_ae), "metrics": {}}
+
+            base_cfg = dict(base_ae)
+            base_cfg.update(
+                {
+                    "hidden": base_model["hidden"],
+                    "bottleneck": base_model["bottleneck"],
+                    "batch_size": base_model.get("batch_size"),
+                    "weight_decay": base_model.get("weight_decay"),
+                }
+            )
+            base_score, base_metrics = evaluate_config_on_dataset(
+                base_cfg, ds, device, base_model, base_ae, score_weights, seed=int(args.seed)
+            )
+            best = {"score": base_score, "cfg": base_cfg, "metrics": base_metrics}
+            rows.append(
+                {
+                    "dataset": dataset_name,
+                    "iter": 0,
+                    "score": base_score,
+                    **base_metrics,
+                    **base_cfg,
+                }
+            )
+
+            for i in range(int(args.max_evals)):
+                cfg: Dict[str, object] = {}
+                for k in keys:
+                    options = search_space[k]
+                    idx = int(rng.integers(0, len(options)))
+                    choice = options[idx]
+                    if isinstance(choice, np.ndarray):
+                        choice = choice.tolist()
+                    elif isinstance(choice, np.generic):
+                        choice = choice.item()
+                    cfg[k] = choice
+                cfg["hidden"] = list(cfg["hidden"])
+                if fixed_bio is not None:
+                    cfg["bio_reg_weight"] = fixed_bio
+
+                score, metrics = evaluate_config_on_dataset(
+                    cfg, ds, device, base_model, base_ae, score_weights, seed=int(args.seed)
+                )
+                rows.append(
+                    {
+                        "dataset": dataset_name,
+                        "iter": i + 1,
+                        "score": score,
+                        **metrics,
+                        **cfg,
+                    }
+                )
+                if score > best["score"]:
+                    best = {"score": score, "cfg": cfg, "metrics": metrics}
+                if args.progress_every and ((i + 1) % int(args.progress_every) == 0 or i == 0):
+                    print(
+                        f"[tune-datasets] {dataset_name} {i+1}/{args.max_evals} "
+                        f"score={score:.4f} best={best['score']:.4f}"
+                    )
+
+            best_cfg = dict(base_ae)
+            best_cfg.update(
+                {
+                    "hidden": base_model["hidden"],
+                    "bottleneck": base_model["bottleneck"],
+                    "batch_size": base_model.get("batch_size"),
+                    "weight_decay": base_model.get("weight_decay"),
+                }
+            )
+            best_cfg.update(best["cfg"])
+            best_configs[dataset_name] = best_cfg
+            summary_rows.append(
+                {
+                    "dataset": dataset_name,
+                    "score": best["score"],
+                    **best["metrics"],
+                    **best_cfg,
+                }
+            )
+
+        tune_out = Path(args.dataset_config_out) if args.dataset_config_out else output_dir / "balanced_mse_tuned_configs.json"
+        tune_out.write_text(json.dumps(best_configs, indent=2))
+        _write_table(
+            output_dir / "tuning_per_dataset.tsv",
+            ["dataset", "iter", "score", "ARI", "NMI", "PS", "ASW"] + keys,
+            rows,
+        )
+        _write_table(
+            output_dir / "tuning_per_dataset_summary.tsv",
+            ["dataset", "score", "ARI", "NMI", "PS", "ASW"] + keys,
+            summary_rows,
+        )
+        print(f"[tune-datasets] wrote {tune_out}")
+        return
+
+    if args.mode == "tune-global":
+        clust_dir = Path(args.clust_path)
+        clust_datasets: List[Dict[str, object]] = []
+        for path in sorted(clust_dir.rglob("*.rds")):
+            ds = prepare_dataset_clust(path)
+            if ds is not None:
+                clust_datasets.append(ds)
+        if not clust_datasets:
+            raise SystemExit("No clustering datasets found.")
+
+        score_weights = _parse_score_weights(args.score_weights)
+        baseline_scores = _load_baseline_scores(args.baseline_table, score_weights)
+        baseline_margin = float(args.baseline_margin)
+        fixed_bio = None if args.fixed_bio_reg is None else float(args.fixed_bio_reg)
+        if fixed_bio is not None:
+            base_ae = dict(base_ae)
+            base_ae["bio_reg_weight"] = fixed_bio
+
+        search_space = {
+            "hidden": [
+                [32],
+                [64],
+                [128],
+                [256],
+                [128, 64],
+                [256, 128],
+                [256, 128, 64],
+                [128, 128],
+                [256, 256],
+            ],
+            "bottleneck": [8, 16, 32, 64, 128],
+            "batch_size": [8, 16, 32, 64, 128],
+            "lr": [5e-5, 1e-4, 2e-4, 5e-4, 1e-3],
+            "epochs": [200, 300, 400, 500],
+            "p_zero": [0.0, 0.01, 0.02, 0.05, 0.1],
+            "p_nz": [0.1, 0.2, 0.3, 0.4, 0.5],
+            "noise_max": [0.05, 0.1, 0.2, 0.3, 0.4],
+            "loss_bio_weight": [0.5, 1.0, 2.0, 4.0, 6.0],
+            "loss_nz_weight": [0.25, 0.5, 1.0, 2.0],
+            "weight_decay": [0.0, 1e-5, 1e-4, 1e-3],
+            "activation": ["silu", "gelu", "relu", "leaky_relu"],
+            "dropout": [0.0, 0.05, 0.1, 0.2],
+            "layer_norm": [True, False],
+            "residual": [False, True],
+        }
+        keys = list(search_space.keys())
+        rng = np.random.default_rng(int(args.seed))
+
+        base_cfg = dict(base_ae)
+        base_cfg.update(
+            {
+                "hidden": base_model["hidden"],
+                "bottleneck": base_model["bottleneck"],
+                "batch_size": base_model.get("batch_size"),
+                "weight_decay": base_model.get("weight_decay"),
+            }
+        )
+        base_score, base_metrics, base_per = evaluate_config_global(
+            base_cfg, clust_datasets, device, base_model, base_ae, score_weights, seed=int(args.seed)
+        )
+        def _meets_baseline(per_dataset: Dict[str, Dict[str, float]]) -> bool:
+            if not baseline_scores:
+                return True
+            for name, score in baseline_scores.items():
+                m = per_dataset.get(name)
+                if m is None:
+                    return False
+                s = _clustering_score(m, score_weights)
+                if s <= score + baseline_margin:
+                    return False
+            return True
+
+        base_ok = _meets_baseline(base_per)
+        best = {
+            "score": base_score,
+            "cfg": base_cfg,
+            "metrics": base_metrics,
+            "ok": base_ok,
+        }
+
+        rows: List[Dict[str, object]] = []
+        rows.append({"iter": 0, "score": base_score, "ok": base_ok, **base_metrics, **base_cfg})
+
+        for i in range(int(args.max_evals)):
+            cfg: Dict[str, object] = {}
+            for k in keys:
+                options = search_space[k]
+                idx = int(rng.integers(0, len(options)))
+                choice = options[idx]
+                if isinstance(choice, np.ndarray):
+                    choice = choice.tolist()
+                elif isinstance(choice, np.generic):
+                    choice = choice.item()
+                cfg[k] = choice
+            cfg["hidden"] = list(cfg["hidden"])
+            if fixed_bio is not None:
+                cfg["bio_reg_weight"] = fixed_bio
+
+            score, metrics, per_dataset = evaluate_config_global(
+                cfg, clust_datasets, device, base_model, base_ae, score_weights, seed=int(args.seed)
+            )
+            ok = _meets_baseline(per_dataset)
+            rows.append({"iter": i + 1, "score": score, "ok": ok, **metrics, **cfg})
+            if ok and (not best["ok"] or score > best["score"]):
+                best = {"score": score, "cfg": cfg, "metrics": metrics, "ok": ok}
+            if args.progress_every and ((i + 1) % int(args.progress_every) == 0 or i == 0):
+                print(
+                    f"[tune-global] {i+1}/{args.max_evals} score={score:.4f} ok={ok} best={best['score']:.4f}"
+                )
+
+        best_cfg = dict(base_ae)
+        best_cfg.update(
+            {
+                "hidden": base_model["hidden"],
+                "bottleneck": base_model["bottleneck"],
+                "batch_size": base_model.get("batch_size"),
+                "weight_decay": base_model.get("weight_decay"),
+            }
+        )
+        best_cfg.update(best["cfg"])
+
+        score, metrics, per_dataset = evaluate_config_global(
+            best_cfg, clust_datasets, device, base_model, base_ae, score_weights, seed=int(args.seed)
+        )
+
+        global_out = (
+            Path(args.global_config_out)
+            if args.global_config_out
+            else output_dir / "balanced_mse_global_config.json"
+        )
+        global_out.write_text(json.dumps(best_cfg, indent=2))
+        _write_table(
+            output_dir / "tuning_global.tsv",
+            ["iter", "score", "ok", "ARI", "NMI", "PS", "ASW"] + keys,
+            rows,
+        )
+
+        per_rows = []
+        for ds_name, m in per_dataset.items():
+            base_score = baseline_scores.get(ds_name)
+            score = _clustering_score(m, score_weights)
+            per_rows.append(
+                {"dataset": ds_name, "score": score, "baseline_score": base_score, **m}
+            )
+        _write_table(
+            output_dir / "tuning_global_per_dataset.tsv",
+            ["dataset", "score", "baseline_score", "ARI", "NMI", "PS", "ASW"],
+            per_rows,
+        )
+
+        if baseline_scores and not best["ok"]:
+            print("[tune-global] no config met per-dataset baseline constraints.")
+        print(f"[tune-global] best score={score:.4f} metrics={metrics}")
+        print(f"[tune-global] wrote {global_out}")
         return
 
     datasets: List[Dict[str, object]] = []
@@ -955,12 +1606,23 @@ def main() -> None:
         )
         BIO_PARAMS.update(tuned)
 
+    dataset_configs = dict(DEFAULT_DATASET_CONFIGS)
+    if args.dataset_config:
+        dataset_configs.update(_load_dataset_configs(args.dataset_config))
+
     rows: List[Dict[str, object]] = []
     mse_list: List[float] = []
     bz_list: List[float] = []
     start_time = time.perf_counter()
 
     for ds in datasets:
+        ds_cfg = dataset_configs.get(ds["dataset"])
+        if ds_cfg:
+            model_params, ae_params = _build_params(base_model, base_ae, ds_cfg)
+            _apply_params(model_params, ae_params)
+            print(f"[config] {ds['dataset']}: using dataset-specific overrides.")
+        else:
+            _apply_params(base_model, base_ae)
         set_seed(int(args.seed))
         cache_key = (ds["dataset"], bool(BIO_PARAMS["use_cell_factor"]), float(BIO_PARAMS["cell_zero_weight"]))
         p_bio = PBIO_CACHE.get(cache_key)
@@ -1022,12 +1684,12 @@ def main() -> None:
     runtime_sec = float(time.perf_counter() - start_time)
 
     _write_table(
-        output_dir / "masked_imputation26_metrics.tsv",
+        output_dir / "masked_imputation27_metrics.tsv",
         ["dataset", "mse", "mse_biozero", "mse_dropout", "mse_non_zero"],
         rows,
     )
     _write_table(
-        output_dir / "masked_imputation26_summary.tsv",
+        output_dir / "masked_imputation27_summary.tsv",
         ["avg_mse", "avg_bz_mse", "score", "runtime_sec", "fast_mode"],
         [
             {
@@ -1040,13 +1702,13 @@ def main() -> None:
         ],
     )
 
-    print("\n=== masked_imputation26 ===")
+    print("\n=== masked_imputation27 ===")
     print("Biozero params:", BIO_PARAMS)
     print("AE params:", AE_PARAMS)
     print("avg_mse:", avg_mse, "avg_bz_mse:", avg_bz, "score:", score)
     print("runtime_sec:", runtime_sec, "fast_mode:", fast_mode)
-    print("Metrics written to masked_imputation26_metrics.tsv")
-    print("Summary written to masked_imputation26_summary.tsv")
+    print("Metrics written to masked_imputation27_metrics.tsv")
+    print("Summary written to masked_imputation27_summary.tsv")
 
 
 if __name__ == "__main__":

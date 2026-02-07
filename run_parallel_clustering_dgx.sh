@@ -24,7 +24,6 @@ GPU_THREADS="${GPU_THREADS:-8}"
 NREPEATS="${NREPEATS:-5}"
 MAGIC_JOBS="${MAGIC_JOBS:-$CPU_THREADS}"
 CCIMPUTE_CORES="${CCIMPUTE_CORES:-8}"
-DCA_BIN="${DCA_BIN:-}"
 
 export MASKEDIMPUTE_PYTHON="$(command -v python)"
 
@@ -33,9 +32,6 @@ echo "GPU threads per job: $GPU_THREADS"
 echo "MAGIC jobs: $MAGIC_JOBS"
 echo "ccImpute cores (R): $CCIMPUTE_CORES"
 echo "Repeats (default): $NREPEATS"
-if [[ -n "${DCA_BIN}" ]]; then
-  echo "DCA binary override: ${DCA_BIN}"
-fi
 
 numa_node_for_method() {
   case "$1" in
@@ -143,9 +139,6 @@ run_py_gpu_method() {
     local -a extra_args=()
     if [[ "${method}" == "dca" ]]; then
       extra_args+=(--dca-threads "${GPU_THREADS}")
-      if [[ -n "${DCA_BIN}" ]]; then
-        extra_args+=(--dca-bin "${DCA_BIN}")
-      fi
     fi
 
     if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
