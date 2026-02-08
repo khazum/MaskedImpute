@@ -18,6 +18,8 @@ input_path <- args[1]
 output_dir <- args[2]
 ncores <- if (length(args) >= 3) as.integer(args[3]) else parallel::detectCores()
 if (is.na(ncores) || ncores < 1) ncores <- 1
+saver_default_cores <- suppressWarnings(as.integer(Sys.getenv("SAVER_CORES", "8")))
+if (is.na(saver_default_cores) || saver_default_cores < 1) saver_default_cores <- 8
 n_repeats <- if (length(args) >= 4) as.integer(args[4]) else 5L
 if (is.na(n_repeats) || n_repeats < 1) n_repeats <- 1L
 methods_arg <- if (length(args) >= 5) args[5] else "all"
@@ -364,13 +366,16 @@ for (path in files) {
       } else {
         mean_obs <- mean(lib_obs[saver_cells])
         size_factor_obs <- lib_obs[saver_cells] / mean_obs
+        saver_ncores <- min(ncores, saver_default_cores)
+        if (saver_ncores < 1) saver_ncores <- 1
+        cat(sprintf("  [saver] Using %d worker(s).\n", saver_ncores))
         saver_metrics <- list()
         saver_runtimes <- numeric()
         saver_err <- NA_character_
         for (i in seq_len(n_repeats)) {
           t0 <- proc.time()
           res <- tryCatch({
-            saver_imp <- SAVER::saver(counts_saver, ncores = 1)
+            saver_imp <- SAVER::saver(counts_saver, ncores = saver_ncores)
             saver_est <- as.matrix(saver_imp$estimate)
             saver_counts <- sweep(saver_est, 2, size_factor_obs, "*")
             log_imp <- logcounts

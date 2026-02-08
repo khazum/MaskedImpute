@@ -27,6 +27,8 @@ input_path <- args[1]
 output_dir <- args[2]
 ncores <- if (length(args) >= 3) as.integer(args[3]) else parallel::detectCores()
 if (is.na(ncores) || ncores < 1) ncores <- 1
+saver_default_cores <- suppressWarnings(as.integer(Sys.getenv("SAVER_CORES", "8")))
+if (is.na(saver_default_cores) || saver_default_cores < 1) saver_default_cores <- 8
 n_repeats <- if (length(args) >= 4) as.integer(args[4]) else 10L
 if (is.na(n_repeats) || n_repeats < 1) n_repeats <- 1L
 methods_arg <- if (length(args) >= 5) args[5] else "all"
@@ -362,11 +364,9 @@ for (input_file in input_files) {
         cat("  [saver] Using null model (no predictor genes above mean threshold).\n")
       }
 
-      saver_ncores <- ncores
-      if (saver_ncores > 1) {
-        message("SAVER can be unstable with ncores > 1; using ncores = 1.")
-        saver_ncores <- 1
-      }
+      saver_ncores <- min(ncores, saver_default_cores)
+      if (saver_ncores < 1) saver_ncores <- 1
+      message(sprintf("Running SAVER with %d worker(s)", saver_ncores))
       saver_metrics <- list()
       saver_runtimes <- numeric()
       saver_err <- NA_character_

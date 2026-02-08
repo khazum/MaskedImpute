@@ -24,6 +24,7 @@ GPU_THREADS="${GPU_THREADS:-8}"
 NREPEATS="${NREPEATS:-5}"
 MAGIC_JOBS="${MAGIC_JOBS:-$CPU_THREADS}"
 CCIMPUTE_CORES="${CCIMPUTE_CORES:-8}"
+SAVER_CORES="${SAVER_CORES:-8}"
 
 export MASKEDIMPUTE_PYTHON="$(command -v python)"
 
@@ -31,11 +32,16 @@ echo "CPU threads per job: $CPU_THREADS"
 echo "GPU threads per job: $GPU_THREADS"
 echo "MAGIC jobs: $MAGIC_JOBS"
 echo "ccImpute cores (R): $CCIMPUTE_CORES"
+echo "SAVER cores (R): $SAVER_CORES"
 echo "Repeats (default): $NREPEATS"
+
+declare -a JOB_PIDS=()
+declare -a JOB_NAMES=()
+declare -a JOB_LOGS=()
 
 numa_node_for_method() {
   case "$1" in
-    baseline|magic|dca|low_mse|experiment)
+    baseline|magic|dca)
       echo 0
       ;;
     saver|ccimpute|autoclass|balanced_mse)
@@ -49,20 +55,11 @@ numa_node_for_method() {
 
 gpu_for_method() {
   case "$1" in
-    dca)
-      echo 0
-      ;;
     autoclass)
       echo 1
       ;;
-    low_mse)
-      echo 2
-      ;;
     balanced_mse)
       echo 3
-      ;;
-    experiment)
-      echo 4
       ;;
     *)
       echo ""
@@ -95,6 +92,9 @@ run_r_method() {
     fi
     echo "Finished [R/${method}]"
   ) > "$log_file" 2>&1 &
+  JOB_PIDS+=("$!")
+  JOB_NAMES+=("R/${method}")
+  JOB_LOGS+=("${log_file}")
 }
 
 run_py_cpu_method() {
@@ -108,19 +108,26 @@ run_py_cpu_method() {
     local out_dir="${OUT_PY}/${method}"
     mkdir -p "${out_dir}"
     echo "Processing ${method} datasets from ${DATA_DIR}..."
+    local -a extra_args=()
+    if [[ "${method}" == "dca" ]]; then
+      extra_args+=(--dca-threads "${CPU_THREADS}")
+    fi
 
     if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
       CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
         OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
         numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
-        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}"
+        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}"
     else
       CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
         OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
-        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}"
+        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-jobs "${MAGIC_JOBS}" --n-repeat "${NREPEATS}"
     fi
     echo "Finished [PY/${method}]"
   ) > "$log_file" 2>&1 &
+  JOB_PIDS+=("$!")
+  JOB_NAMES+=("PY/${method}")
+  JOB_LOGS+=("${log_file}")
 }
 
 run_py_gpu_method() {
@@ -136,35 +143,35 @@ run_py_gpu_method() {
     mkdir -p "${out_dir}"
     echo "Processing ${method} datasets from ${DATA_DIR}..."
 
-    local -a extra_args=()
-    if [[ "${method}" == "dca" ]]; then
-      extra_args+=(--dca-threads "${GPU_THREADS}")
-    fi
-
     if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
       CUDA_VISIBLE_DEVICES="${gpu}" OMP_NUM_THREADS="${GPU_THREADS}" MKL_NUM_THREADS="${GPU_THREADS}" \
         OPENBLAS_NUM_THREADS="${GPU_THREADS}" NUMEXPR_NUM_THREADS="${GPU_THREADS}" TORCH_NUM_THREADS="${GPU_THREADS}" \
         numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
-        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${NREPEATS}"
+        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" --n-repeat "${NREPEATS}"
     else
       CUDA_VISIBLE_DEVICES="${gpu}" OMP_NUM_THREADS="${GPU_THREADS}" MKL_NUM_THREADS="${GPU_THREADS}" \
         OPENBLAS_NUM_THREADS="${GPU_THREADS}" NUMEXPR_NUM_THREADS="${GPU_THREADS}" TORCH_NUM_THREADS="${GPU_THREADS}" \
-        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" "${extra_args[@]}" --n-repeat "${NREPEATS}"
+        python run_clustering.py "${DATA_DIR}" "${out_dir}" "${method}" --n-repeat "${NREPEATS}"
     fi
     echo "Finished [PY/${method}]"
   ) > "$log_file" 2>&1 &
+  JOB_PIDS+=("$!")
+  JOB_NAMES+=("PY/${method}")
+  JOB_LOGS+=("${log_file}")
 }
 
 echo "Starting parallel clustering runs on $(hostname)..."
 echo "Monitor progress with: tail -f ${LOG_DIR}/*.log"
 
 CPU_R_METHODS=(baseline saver ccimpute)
-CPU_PY_METHODS=(magic)
-GPU_METHODS=(dca autoclass low_mse balanced_mse experiment)
+CPU_PY_METHODS=(magic dca)
+GPU_METHODS=(autoclass balanced_mse)
 
 for method in "${CPU_R_METHODS[@]}"; do
   ncores="${CPU_THREADS}"
-  if [[ "${method}" == "ccimpute" ]]; then
+  if [[ "${method}" == "saver" ]]; then
+    ncores="${SAVER_CORES}"
+  elif [[ "${method}" == "ccimpute" ]]; then
     ncores="${CCIMPUTE_CORES}"
   fi
   run_r_method "${method}" "$(numa_node_for_method "${method}")" "${ncores}"
@@ -184,5 +191,43 @@ for method in "${GPU_METHODS[@]}"; do
   run_py_gpu_method "${method}" "${gpu_id}" "${numa_node}"
 done
 
-wait
-echo "All clustering runs complete."
+fail_count=0
+declare -A PID_TO_INDEX=()
+for i in "${!JOB_PIDS[@]}"; do
+  PID_TO_INDEX["${JOB_PIDS[$i]}"]="$i"
+done
+
+if ! help wait 2>/dev/null | grep -q -- "-n"; then
+  echo "This script requires bash support for 'wait -n' and 'wait -p'." >&2
+  exit 2
+fi
+
+remaining="${#JOB_PIDS[@]}"
+while [[ "${remaining}" -gt 0 ]]; do
+  done_pid=""
+  if wait -n -p done_pid; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ -z "${done_pid}" ]]; then
+    echo "Internal error: wait -n returned empty PID." >&2
+    exit 2
+  fi
+  idx="${PID_TO_INDEX[$done_pid]}"
+  name="${JOB_NAMES[$idx]}"
+  log_file="${JOB_LOGS[$idx]}"
+  if [[ "${status}" -eq 0 ]]; then
+    echo "[OK] ${name} completed."
+  else
+    fail_count=$((fail_count + 1))
+    echo "[FAIL] ${name} exited with status ${status}. See ${log_file}"
+  fi
+  remaining=$((remaining - 1))
+done
+
+if [[ "${fail_count}" -gt 0 ]]; then
+  echo "All clustering runs finished with ${fail_count} failed method(s)."
+  exit 1
+fi
+echo "All clustering runs completed successfully."

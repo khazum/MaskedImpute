@@ -239,3 +239,5 @@ Started [PY/dca] (GPU 4, NUMA 0) - logging to logs_parallel_runs/py_gpu_dca.log
 Started [PY/autoclass] (GPU 1, NUMA 1) - logging to logs_parallel_runs/py_gpu_autoclass.log
 Started [PY/low_mse] (GPU 2, NUMA 0) - logging to logs_parallel_runs/py_gpu_low_mse.log
 Started [PY/balanced_mse] (GPU 3, NUMA 1) - logging to logs_parallel_runs/py_gpu_balanced_mse.log
+All runs complete.
+./run_parallel_imputations_dgx.sh: line 235: syntax error near unexpected token `fi'

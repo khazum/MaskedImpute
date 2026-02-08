@@ -9,6 +9,7 @@
 suppressPackageStartupMessages(library(argparse))
 suppressPackageStartupMessages(library(scran))
 suppressPackageStartupMessages(library(SingleCellExperiment))
+suppressPackageStartupMessages(library(Matrix))
 
 # --- Define Command-Line Arguments ---
 parser <- ArgumentParser(description = "Find marker genes in pre-normalized SingleCellExperiment objects.")
@@ -185,6 +186,14 @@ for (file_path in rds_files) {
     print(length(top_genes_final))
     sce_subset <- sce[top_genes_final, ]
     message(paste("  -> Subset object to", length(top_genes_final), "unique marker genes using global ranking."))
+
+    # Ensure all assays are dense (avoid sparse matrix issues downstream).
+    for (assay_name in assayNames(sce_subset)) {
+        mat <- assay(sce_subset, assay_name)
+        if (inherits(mat, "sparseMatrix") || inherits(mat, "Matrix")) {
+            assay(sce_subset, assay_name) <- as.matrix(mat)
+        }
+    }
 
     output_filename <- paste0(base_name, "_top", args$n_genes, "markers.rds")
     output_path <- file.path(args$output_dir, output_filename)

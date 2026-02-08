@@ -6,24 +6,40 @@ Processing balanced_mse datasets from datasets...
 /mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
   warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
 
---- Dataset: blakeley_top1000markers ---
+--- Dataset: baron-human_top1000markers ---
   -> balanced_mse
-    ASW=0.6171 ARI=0.6671 NMI=0.8013 PS=0.8800
+    ASW=0.2928 ARI=0.5792 NMI=0.7862 PS=0.9461
 
---- Dataset: darmanis_top1000markers ---
+--- Dataset: baron-mouse_top1000markers ---
   -> balanced_mse
-    ASW=0.5295 ARI=0.8841 NMI=0.8738 PS=0.9348
+    ASW=0.3568 ARI=0.4791 NMI=0.7359 PS=0.9367
 
---- Dataset: deng_top1000markers ---
+--- Dataset: campbell_top1000markers ---
   -> balanced_mse
-    ASW=0.6774 ARI=0.9068 NMI=0.8907 PS=0.9306
+    ASW=0.2032 ARI=0.1506 NMI=0.4812 PS=0.6528
 
---- Dataset: pollen_top1000markers ---
+--- Dataset: chen_top1000markers ---
   -> balanced_mse
-    ASW=0.7038 ARI=0.9225 NMI=0.9225 PS=0.9298
+    ASW=0.2146 ARI=0.3259 NMI=0.6391 PS=0.8204
 
---- Dataset: usoskin_top1000markers ---
+--- Dataset: macosko_top1000markers ---
   -> balanced_mse
-    ASW=0.4405 ARI=0.8569 NMI=0.8203 PS=0.9244
+    ASW=0.2155 ARI=0.2562 NMI=0.5515 PS=0.9346
+
+--- Dataset: manno_human_top1000markers ---
+  -> balanced_mse
+    ASW=0.1952 ARI=0.3554 NMI=0.6193 PS=0.4890
+
+--- Dataset: manno_mouse_top1000markers ---
+  -> balanced_mse
+    ASW=0.1879 ARI=0.1817 NMI=0.5073 PS=0.4843
+
+--- Dataset: shekhar_top1000markers ---
+  -> balanced_mse
+    ASW=0.3766 ARI=0.1605 NMI=0.3433 PS=0.9615
+
+--- Dataset: zeisel_top1000markers ---
+  -> balanced_mse
+    ASW=0.3439 ARI=0.6964 NMI=0.7709 PS=0.9248
 Saved results_clustering_py/balanced_mse/balanced_mse_clustering_table.tsv
 Finished [PY/balanced_mse]

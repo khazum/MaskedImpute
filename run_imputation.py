@@ -328,10 +328,18 @@ def run_dca(
     if C_work.shape[0] < 2 or C_work.shape[1] < 2:
         raise ValueError(f"DCA requires at least 2 cells and 2 genes. Got shape {C_work.shape}.")
 
+    def _dca_python_bin(dca_exec: str) -> Optional[str]:
+        bin_dir = Path(dca_exec).resolve().parent
+        py = bin_dir / "python"
+        if py.exists():
+            return str(py)
+        return None
+
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_dir_path = Path(tmpdir)
         input_file = tmp_dir_path / "matrix.csv"
         output_dir = tmp_dir_path / "dca_out"
+        wrapper_file = tmp_dir_path / "dca_yaml_compat_wrapper.py"
 
         try:
             gene_names = [f"gene_{i}" for i in range(C_work.shape[1])]
@@ -341,18 +349,38 @@ def run_dca(
         except Exception as e:
             raise RuntimeError(f"Failed to write input CSV for DCA: {e}")
 
-        cmd = [dca_bin, str(input_file), str(output_dir)]
+        cmd_args = [str(input_file), str(output_dir)]
 
         if ae_type is not None:
-            cmd.extend(["--type", ae_type])
+            cmd_args.extend(["--type", ae_type])
         if threads is not None:
-            cmd.extend(["--threads", str(threads)])
+            cmd_args.extend(["--threads", str(threads)])
         if epochs is not None:
-            cmd.extend(["-e", str(epochs)])
+            cmd_args.extend(["-e", str(epochs)])
         if batch_size is not None:
-            cmd.extend(["-b", str(batch_size)])
+            cmd_args.extend(["-b", str(batch_size)])
         if ridge is not None:
-            cmd.extend(["--ridge", str(ridge)])
+            cmd_args.extend(["--ridge", str(ridge)])
+
+        py_bin = _dca_python_bin(dca_bin)
+        if py_bin:
+            wrapper_file.write_text(
+                "import sys\n"
+                "import yaml\n"
+                "_orig_load = yaml.load\n"
+                "def _compat_load(stream, Loader=None, *args, **kwargs):\n"
+                "    if Loader is None:\n"
+                "        return yaml.safe_load(stream)\n"
+                "    return _orig_load(stream, Loader=Loader, *args, **kwargs)\n"
+                "yaml.load = _compat_load\n"
+                "from dca.__main__ import main\n"
+                "sys.argv = ['dca'] + sys.argv[1:]\n"
+                "sys.exit(main())\n",
+                encoding="utf-8",
+            )
+            cmd = [py_bin, str(wrapper_file)] + cmd_args
+        else:
+            cmd = [dca_bin] + cmd_args
 
         try:
             subprocess.run(

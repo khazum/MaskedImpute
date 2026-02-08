@@ -1,6 +1,0 @@
-dataset	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	n_cells	n_genes	label_source	error
-blakeley_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	30	935	cell_type1	Found array with 0 feature(s) (shape=(30, 0)) while a minimum of 1 is required by SpectralClustering.
-darmanis_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	420	1000	cell_type1	Found array with 0 feature(s) (shape=(420, 0)) while a minimum of 1 is required by SpectralClustering.
-deng_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	268	1000	cell_type1	Found array with 0 feature(s) (shape=(268, 0)) while a minimum of 1 is required by SpectralClustering.
-pollen_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	299	1000	cell_type1	Found array with 0 feature(s) (shape=(299, 0)) while a minimum of 1 is required by SpectralClustering.
-usoskin_top1000markers	nan	nan	nan	nan	nan	nan	nan	nan	nan	nan	0	622	1000	cell_type1	Found array with 0 feature(s) (shape=(622, 0)) while a minimum of 1 is required by SpectralClustering.

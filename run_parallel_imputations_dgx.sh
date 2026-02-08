@@ -24,11 +24,17 @@ CPU_THREADS="${CPU_THREADS:-8}"
 GPU_THREADS="${GPU_THREADS:-8}"
 NREPEATS="${NREPEATS:-1}"
 MAGIC_JOBS="${MAGIC_JOBS:-$CPU_THREADS}"
+SAVER_CORES="${SAVER_CORES:-8}"
 
 echo "CPU threads per job: $CPU_THREADS"
 echo "GPU threads per job: $GPU_THREADS"
 echo "MAGIC jobs: $MAGIC_JOBS"
+echo "SAVER cores (R): $SAVER_CORES"
 echo "Repeats (default): $NREPEATS"
+
+declare -a JOB_PIDS=()
+declare -a JOB_NAMES=()
+declare -a JOB_LOGS=()
 
 repeats_for_size() {
   if [[ "$1" == "5000" ]]; then
@@ -89,6 +95,7 @@ gpu_for_method() {
 run_r_method() {
   local method="$1"
   local numa_node="$2"
+  local ncores="$3"
   local log_file="${LOG_DIR}/r_${method}.log"
 
   echo "Started [R/${method}] (NUMA ${numa_node:-none}) - logging to $log_file"
@@ -107,18 +114,21 @@ run_r_method() {
       repeats="$(repeats_for_method_size "${method}" "${size}")"
 
       if [[ -n "${numa_node}" ]] && command -v numactl >/dev/null 2>&1; then
-        CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
-          OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
+        CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${ncores}" MKL_NUM_THREADS="${ncores}" \
+          OPENBLAS_NUM_THREADS="${ncores}" NUMEXPR_NUM_THREADS="${ncores}" \
           numactl --cpunodebind="${numa_node}" --membind="${numa_node}" \
-          Rscript run_imputation.R "${in_dir}" "${out_dir}" "${CPU_THREADS}" "${repeats}" "${method}"
+          Rscript run_imputation.R "${in_dir}" "${out_dir}" "${ncores}" "${repeats}" "${method}"
       else
-        CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${CPU_THREADS}" MKL_NUM_THREADS="${CPU_THREADS}" \
-          OPENBLAS_NUM_THREADS="${CPU_THREADS}" NUMEXPR_NUM_THREADS="${CPU_THREADS}" \
-          Rscript run_imputation.R "${in_dir}" "${out_dir}" "${CPU_THREADS}" "${repeats}" "${method}"
+        CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS="${ncores}" MKL_NUM_THREADS="${ncores}" \
+          OPENBLAS_NUM_THREADS="${ncores}" NUMEXPR_NUM_THREADS="${ncores}" \
+          Rscript run_imputation.R "${in_dir}" "${out_dir}" "${ncores}" "${repeats}" "${method}"
       fi
     done
     echo "Finished [R/${method}]"
   ) > "$log_file" 2>&1 &
+  JOB_PIDS+=("$!")
+  JOB_NAMES+=("R/${method}")
+  JOB_LOGS+=("${log_file}")
 }
 
 run_py_cpu_method() {
@@ -154,6 +164,9 @@ run_py_cpu_method() {
     done
     echo "Finished [PY/${method}]"
   ) > "$log_file" 2>&1 &
+  JOB_PIDS+=("$!")
+  JOB_NAMES+=("PY/${method}")
+  JOB_LOGS+=("${log_file}")
 }
 
 run_py_gpu_method() {
@@ -195,6 +208,9 @@ run_py_gpu_method() {
     done
     echo "Finished [PY/${method}]"
   ) > "$log_file" 2>&1 &
+  JOB_PIDS+=("$!")
+  JOB_NAMES+=("PY/${method}")
+  JOB_LOGS+=("${log_file}")
 }
 
 echo "Starting parallel runs on $(hostname)..."
@@ -205,7 +221,11 @@ CPU_PY_METHODS=(magic)
 GPU_METHODS=(dca autoclass low_mse balanced_mse)
 
 for method in "${CPU_R_METHODS[@]}"; do
-  run_r_method "${method}" "$(numa_node_for_method "${method}")"
+  ncores="${CPU_THREADS}"
+  if [[ "${method}" == "saver" ]]; then
+    ncores="${SAVER_CORES}"
+  fi
+  run_r_method "${method}" "$(numa_node_for_method "${method}")" "${ncores}"
 done
 
 for method in "${CPU_PY_METHODS[@]}"; do
@@ -222,5 +242,43 @@ for method in "${GPU_METHODS[@]}"; do
   run_py_gpu_method "${method}" "${gpu_id}" "${numa_node}"
 done
 
-wait
-echo "All runs complete."
+fail_count=0
+declare -A PID_TO_INDEX=()
+for i in "${!JOB_PIDS[@]}"; do
+  PID_TO_INDEX["${JOB_PIDS[$i]}"]="$i"
+done
+
+if ! help wait 2>/dev/null | grep -q -- "-n"; then
+  echo "This script requires bash support for 'wait -n' and 'wait -p'." >&2
+  exit 2
+fi
+
+remaining="${#JOB_PIDS[@]}"
+while [[ "${remaining}" -gt 0 ]]; do
+  done_pid=""
+  if wait -n -p done_pid; then
+    status=0
+  else
+    status=$?
+  fi
+  if [[ -z "${done_pid}" ]]; then
+    echo "Internal error: wait -n returned empty PID." >&2
+    exit 2
+  fi
+  idx="${PID_TO_INDEX[$done_pid]}"
+  name="${JOB_NAMES[$idx]}"
+  log_file="${JOB_LOGS[$idx]}"
+  if [[ "${status}" -eq 0 ]]; then
+    echo "[OK] ${name} completed."
+  else
+    fail_count=$((fail_count + 1))
+    echo "[FAIL] ${name} exited with status ${status}. See ${log_file}"
+  fi
+  remaining=$((remaining - 1))
+done
+
+if [[ "${fail_count}" -gt 0 ]]; then
+  echo "All runs finished with ${fail_count} failed method(s)."
+  exit 1
+fi
+echo "All runs completed successfully."
