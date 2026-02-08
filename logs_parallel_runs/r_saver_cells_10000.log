@@ -1,0 +1,1176 @@
+Processing saver cells_10000...
+Running SAVER with 8 worker(s)
+1095 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1095 genes using 973 genes and 10000 cells...
+Start time: 2026-02-08 02:19:35.967521
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1095 genes. Approximate finish time: 2026-02-08 02:25:14.834351
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1095 genes. Approximate finish time: 2026-02-08 02:23:40.31409
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 206/1095 genes. Approximate finish time: 2026-02-08 02:23:29.257996
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 429/1095 genes. Approximate finish time: 2026-02-08 02:24:35.830703
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 02:24:46.735024
+Total time: 5.179451 mins
+1095 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1095 genes using 973 genes and 10000 cells...
+Start time: 2026-02-08 02:24:54.650634
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1095 genes. Approximate finish time: 2026-02-08 02:28:33.972698
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1095 genes. Approximate finish time: 2026-02-08 02:29:17.006216
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 212/1095 genes. Approximate finish time: 2026-02-08 02:29:18.584776
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 433/1095 genes. Approximate finish time: 2026-02-08 02:30:33.322024
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 02:30:27.758036
+Total time: 5.551785 mins
+1095 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1095 genes using 973 genes and 10000 cells...
+Start time: 2026-02-08 02:30:32.561261
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1095 genes. Approximate finish time: 2026-02-08 02:34:24.957273
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1095 genes. Approximate finish time: 2026-02-08 02:34:35.622915
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 212/1095 genes. Approximate finish time: 2026-02-08 02:34:27.078077
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 433/1095 genes. Approximate finish time: 2026-02-08 02:35:49.156716
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 02:35:50.184938
+Total time: 5.293723 mins
+1095 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1095 genes using 973 genes and 10000 cells...
+Start time: 2026-02-08 02:35:54.765845
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1095 genes. Approximate finish time: 2026-02-08 02:39:42.275866
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1095 genes. Approximate finish time: 2026-02-08 02:40:14.263642
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 207/1095 genes. Approximate finish time: 2026-02-08 02:40:12.432245
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 429/1095 genes. Approximate finish time: 2026-02-08 02:41:26.413983
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 02:41:39.263796
+Total time: 5.741627 mins
+Running SAVER with 8 worker(s)
+1094 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1094 genes using 978 genes and 10000 cells...
+Start time: 2026-02-08 02:41:50.678281
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1094 genes. Approximate finish time: 2026-02-08 02:45:15.82434
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1094 genes. Approximate finish time: 2026-02-08 02:45:16.939096
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 203/1094 genes. Approximate finish time: 2026-02-08 02:45:03.146298
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 426/1094 genes. Approximate finish time: 2026-02-08 02:46:17.780474
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 02:46:22.471863
+Total time: 4.529888 mins
+1094 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1094 genes using 978 genes and 10000 cells...
+Start time: 2026-02-08 02:46:29.436589
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1094 genes. Approximate finish time: 2026-02-08 02:50:04.260621
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1094 genes. Approximate finish time: 2026-02-08 02:50:51.674556
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 213/1094 genes. Approximate finish time: 2026-02-08 02:50:54.683408
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 434/1094 genes. Approximate finish time: 2026-02-08 02:52:24.519527
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 02:52:01.990916
+Total time: 5.542567 mins
+1094 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1094 genes using 978 genes and 10000 cells...
+Start time: 2026-02-08 02:52:06.088004
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1094 genes. Approximate finish time: 2026-02-08 02:54:51.348022
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1094 genes. Approximate finish time: 2026-02-08 02:54:51.036335
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 208/1094 genes. Approximate finish time: 2026-02-08 02:55:12.486658
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 430/1094 genes. Approximate finish time: 2026-02-08 02:56:31.279766
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 02:56:25.512913
+Total time: 4.323744 mins
+1094 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1094 genes using 978 genes and 10000 cells...
+Start time: 2026-02-08 02:56:28.727284
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1094 genes. Approximate finish time: 2026-02-08 02:59:19.534665
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1094 genes. Approximate finish time: 2026-02-08 03:00:31.747493
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 214/1094 genes. Approximate finish time: 2026-02-08 03:01:00.711295
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 434/1094 genes. Approximate finish time: 2026-02-08 03:02:30.69145
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 03:02:20.884645
+Total time: 5.869284 mins
+Running SAVER with 8 worker(s)
+1096 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1096 genes using 1006 genes and 10000 cells...
+Start time: 2026-02-08 03:02:29.920568
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1096 genes. Approximate finish time: 2026-02-08 03:05:32.507639
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1096 genes. Approximate finish time: 2026-02-08 03:05:46.308753
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 205/1096 genes. Approximate finish time: 2026-02-08 03:06:06.536809
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 428/1096 genes. Approximate finish time: 2026-02-08 03:07:39.844766
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 03:07:32.11117
+Total time: 5.036504 mins
+1096 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1096 genes using 1006 genes and 10000 cells...
+Start time: 2026-02-08 03:07:39.160186
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1096 genes. Approximate finish time: 2026-02-08 03:11:04.375057
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1096 genes. Approximate finish time: 2026-02-08 03:11:27.440748
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 204/1096 genes. Approximate finish time: 2026-02-08 03:11:24.520383
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 427/1096 genes. Approximate finish time: 2026-02-08 03:13:16.132859
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 03:13:09.957098
+Total time: 5.513276 mins
+1096 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1096 genes using 1006 genes and 10000 cells...
+Start time: 2026-02-08 03:13:14.132241
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1096 genes. Approximate finish time: 2026-02-08 03:17:37.748482
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1096 genes. Approximate finish time: 2026-02-08 03:18:14.319154
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 213/1096 genes. Approximate finish time: 2026-02-08 03:18:17.393332
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 434/1096 genes. Approximate finish time: 2026-02-08 03:19:31.714073
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 03:19:46.207826
+Total time: 6.534588 mins
+1096 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1096 genes using 1006 genes and 10000 cells...
+Start time: 2026-02-08 03:19:50.004313
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1096 genes. Approximate finish time: 2026-02-08 03:23:01.246245
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1096 genes. Approximate finish time: 2026-02-08 03:23:44.926711
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 208/1096 genes. Approximate finish time: 2026-02-08 03:23:46.783036
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 430/1096 genes. Approximate finish time: 2026-02-08 03:25:02.511743
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 03:25:12.985922
+Total time: 5.383022 mins
+Running SAVER with 8 worker(s)
+1097 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1097 genes using 997 genes and 10000 cells...
+Start time: 2026-02-08 03:25:22.160956
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1097 genes. Approximate finish time: 2026-02-08 03:28:30.535692
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1097 genes. Approximate finish time: 2026-02-08 03:29:27.928991
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 204/1097 genes. Approximate finish time: 2026-02-08 03:29:33.520265
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 428/1097 genes. Approximate finish time: 2026-02-08 03:30:34.30921
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 03:30:37.032932
+Total time: 5.24786 mins
+1097 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1097 genes using 997 genes and 10000 cells...
+Start time: 2026-02-08 03:30:43.694995
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1097 genes. Approximate finish time: 2026-02-08 03:33:53.331422
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1097 genes. Approximate finish time: 2026-02-08 03:33:47.009874
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 200/1097 genes. Approximate finish time: 2026-02-08 03:34:36.349666
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 425/1097 genes. Approximate finish time: 2026-02-08 03:35:41.453478
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 03:35:37.649356
+Total time: 4.899234 mins
+1097 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1097 genes using 997 genes and 10000 cells...
+Start time: 2026-02-08 03:35:42.403415
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1097 genes. Approximate finish time: 2026-02-08 03:38:40.9286
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1097 genes. Approximate finish time: 2026-02-08 03:39:28.11556
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 200/1097 genes. Approximate finish time: 2026-02-08 03:39:19.755269
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 425/1097 genes. Approximate finish time: 2026-02-08 03:40:36.825547
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 03:40:30.410751
+Total time: 4.800117 mins
+1097 genes, 10000 cells
+Running SAVER with 8 worker(s)
+Calculating predictions for 1097 genes using 997 genes and 10000 cells...
+Start time: 2026-02-08 03:40:34.109169
+Estimating finish time...
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Loading required package: SAVER
+loaded SAVER and set parent environment
+Finished 8/1097 genes. Approximate finish time: 2026-02-08 03:45:40.78874
+Calculating max cor cutoff...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 100/1097 genes. Approximate finish time: 2026-02-08 03:45:13.518173
+Calculating lambda coefficients...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 200/1097 genes. Approximate finish time: 2026-02-08 03:45:24.626989
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Finished 425/1097 genes. Approximate finish time: 2026-02-08 03:46:27.935586
+Predicting remaining genes...
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+loaded SAVER and set parent environment
+Done!
+Finish time: 2026-02-08 03:46:35.476589
+Total time: 6.022785 mins
+
+=== dataset_2_types_equal ===
+Running SAVER x4...
+starting worker pid=13060 on localhost:11143 at 02:19:34.077
+starting worker pid=13062 on localhost:11143 at 02:19:34.079
+starting worker pid=13059 on localhost:11143 at 02:19:34.079
+starting worker pid=13058 on localhost:11143 at 02:19:34.079
+starting worker pid=13061 on localhost:11143 at 02:19:34.083
+starting worker pid=13057 on localhost:11143 at 02:19:34.083
+starting worker pid=13064 on localhost:11143 at 02:19:34.123
+starting worker pid=13063 on localhost:11143 at 02:19:34.123
+  [saver] Saved imputed matrix to results_imputation_r/saver/cells_10000/dataset_2_types_equal_saver.rds
+starting worker pid=25131 on localhost:11143 at 02:24:52.664
+starting worker pid=25130 on localhost:11143 at 02:24:52.668
+starting worker pid=25128 on localhost:11143 at 02:24:52.676
+starting worker pid=25133 on localhost:11143 at 02:24:52.695
+starting worker pid=25134 on localhost:11143 at 02:24:52.696
+starting worker pid=25127 on localhost:11143 at 02:24:52.696
+starting worker pid=25132 on localhost:11143 at 02:24:52.703
+starting worker pid=25129 on localhost:11143 at 02:24:52.706
+starting worker pid=37328 on localhost:11143 at 02:30:30.975
+starting worker pid=37322 on localhost:11143 at 02:30:30.975
+starting worker pid=37325 on localhost:11143 at 02:30:30.975
+starting worker pid=37324 on localhost:11143 at 02:30:30.984
+starting worker pid=37327 on localhost:11143 at 02:30:31.003
+starting worker pid=37323 on localhost:11143 at 02:30:31.006
+starting worker pid=37321 on localhost:11143 at 02:30:31.019
+starting worker pid=37326 on localhost:11143 at 02:30:31.031
+starting worker pid=47462 on localhost:11143 at 02:35:53.676
+starting worker pid=47463 on localhost:11143 at 02:35:53.676
+starting worker pid=47464 on localhost:11143 at 02:35:53.676
+starting worker pid=47460 on localhost:11143 at 02:35:53.676
+starting worker pid=47457 on localhost:11143 at 02:35:53.677
+starting worker pid=47459 on localhost:11143 at 02:35:53.691
+starting worker pid=47461 on localhost:11143 at 02:35:53.692
+starting worker pid=47458 on localhost:11143 at 02:35:53.707
+
+=== dataset_3_types_unequal ===
+Running SAVER x4...
+starting worker pid=58479 on localhost:11143 at 02:41:48.393
+starting worker pid=58471 on localhost:11143 at 02:41:48.396
+starting worker pid=58476 on localhost:11143 at 02:41:48.400
+starting worker pid=58475 on localhost:11143 at 02:41:48.410
+starting worker pid=58474 on localhost:11143 at 02:41:48.412
+starting worker pid=58472 on localhost:11143 at 02:41:48.421
+starting worker pid=58478 on localhost:11143 at 02:41:48.426
+starting worker pid=58477 on localhost:11143 at 02:41:48.429
+  [saver] Saved imputed matrix to results_imputation_r/saver/cells_10000/dataset_3_types_unequal_saver.rds
+starting worker pid=66863 on localhost:11143 at 02:46:27.989
+starting worker pid=66866 on localhost:11143 at 02:46:27.989
+starting worker pid=66861 on localhost:11143 at 02:46:27.990
+starting worker pid=66864 on localhost:11143 at 02:46:28.010
+starting worker pid=66867 on localhost:11143 at 02:46:28.012
+starting worker pid=66865 on localhost:11143 at 02:46:28.012
+starting worker pid=66868 on localhost:11143 at 02:46:28.017
+starting worker pid=66862 on localhost:11143 at 02:46:28.017
+starting worker pid=77181 on localhost:11143 at 02:52:04.341
+starting worker pid=77179 on localhost:11143 at 02:52:04.341
+starting worker pid=77175 on localhost:11143 at 02:52:04.341
+starting worker pid=77178 on localhost:11143 at 02:52:04.341
+starting worker pid=77182 on localhost:11143 at 02:52:04.344
+starting worker pid=77180 on localhost:11143 at 02:52:04.359
+starting worker pid=77176 on localhost:11143 at 02:52:04.362
+starting worker pid=77177 on localhost:11143 at 02:52:04.373
+starting worker pid=84906 on localhost:11143 at 02:56:27.731
+starting worker pid=84904 on localhost:11143 at 02:56:27.731
+starting worker pid=84900 on localhost:11143 at 02:56:27.731
+starting worker pid=84903 on localhost:11143 at 02:56:27.731
+starting worker pid=84901 on localhost:11143 at 02:56:27.733
+starting worker pid=84905 on localhost:11143 at 02:56:27.744
+starting worker pid=84907 on localhost:11143 at 02:56:27.773
+starting worker pid=84902 on localhost:11143 at 02:56:27.782
+
+=== dataset_4_types_rare ===
+Running SAVER x4...
+starting worker pid=96012 on localhost:11143 at 03:02:28.491
+starting worker pid=96014 on localhost:11143 at 03:02:28.491
+starting worker pid=96011 on localhost:11143 at 03:02:28.491
+starting worker pid=96015 on localhost:11143 at 03:02:28.491
+starting worker pid=96016 on localhost:11143 at 03:02:28.492
+starting worker pid=96009 on localhost:11143 at 03:02:28.494
+starting worker pid=96010 on localhost:11143 at 03:02:28.496
+starting worker pid=96013 on localhost:11143 at 03:02:28.527
+  [saver] Saved imputed matrix to results_imputation_r/saver/cells_10000/dataset_4_types_rare_saver.rds
+starting worker pid=104663 on localhost:11143 at 03:07:37.765
+starting worker pid=104659 on localhost:11143 at 03:07:37.765
+starting worker pid=104660 on localhost:11143 at 03:07:37.765
+starting worker pid=104662 on localhost:11143 at 03:07:37.765
+starting worker pid=104666 on localhost:11143 at 03:07:37.765
+starting worker pid=104661 on localhost:11143 at 03:07:37.766
+starting worker pid=104665 on localhost:11143 at 03:07:37.774
+starting worker pid=104664 on localhost:11143 at 03:07:37.775
+starting worker pid=114253 on localhost:11143 at 03:13:12.987
+starting worker pid=114256 on localhost:11143 at 03:13:12.988
+starting worker pid=114254 on localhost:11143 at 03:13:12.988
+starting worker pid=114251 on localhost:11143 at 03:13:12.988
+starting worker pid=114252 on localhost:11143 at 03:13:12.988
+starting worker pid=114257 on localhost:11143 at 03:13:12.988
+starting worker pid=114250 on localhost:11143 at 03:13:12.989
+starting worker pid=114255 on localhost:11143 at 03:13:13.002
+starting worker pid=125216 on localhost:11143 at 03:19:48.722
+starting worker pid=125218 on localhost:11143 at 03:19:48.722
+starting worker pid=125222 on localhost:11143 at 03:19:48.731
+starting worker pid=125220 on localhost:11143 at 03:19:48.732
+starting worker pid=125219 on localhost:11143 at 03:19:48.732
+starting worker pid=125217 on localhost:11143 at 03:19:48.737
+starting worker pid=125221 on localhost:11143 at 03:19:48.741
+starting worker pid=125215 on localhost:11143 at 03:19:48.744
+
+=== dataset_multibatch_dropout ===
+Running SAVER x4...
+starting worker pid=134792 on localhost:11143 at 03:25:20.812
+starting worker pid=134793 on localhost:11143 at 03:25:20.816
+starting worker pid=134790 on localhost:11143 at 03:25:20.816
+starting worker pid=134789 on localhost:11143 at 03:25:20.819
+starting worker pid=134787 on localhost:11143 at 03:25:20.846
+starting worker pid=134794 on localhost:11143 at 03:25:20.846
+starting worker pid=134788 on localhost:11143 at 03:25:20.847
+starting worker pid=134791 on localhost:11143 at 03:25:20.850
+  [saver] Saved imputed matrix to results_imputation_r/saver/cells_10000/dataset_multibatch_dropout_saver.rds
+starting worker pid=143748 on localhost:11143 at 03:30:42.644
+starting worker pid=143743 on localhost:11143 at 03:30:42.645
+starting worker pid=143746 on localhost:11143 at 03:30:42.645
+starting worker pid=143744 on localhost:11143 at 03:30:42.645
+starting worker pid=143749 on localhost:11143 at 03:30:42.647
+starting worker pid=143742 on localhost:11143 at 03:30:42.665
+starting worker pid=143745 on localhost:11143 at 03:30:42.670
+starting worker pid=143747 on localhost:11143 at 03:30:42.673
+starting worker pid=151733 on localhost:11143 at 03:35:40.315
+starting worker pid=151731 on localhost:11143 at 03:35:40.316
+starting worker pid=151729 on localhost:11143 at 03:35:40.317
+starting worker pid=151732 on localhost:11143 at 03:35:40.318
+starting worker pid=151736 on localhost:11143 at 03:35:40.319
+starting worker pid=151730 on localhost:11143 at 03:35:40.329
+starting worker pid=151735 on localhost:11143 at 03:35:40.330
+starting worker pid=151734 on localhost:11143 at 03:35:40.351
+starting worker pid=160839 on localhost:11143 at 03:40:32.815
+starting worker pid=160843 on localhost:11143 at 03:40:32.815
+starting worker pid=160836 on localhost:11143 at 03:40:32.816
+starting worker pid=160837 on localhost:11143 at 03:40:32.816
+starting worker pid=160840 on localhost:11143 at 03:40:32.826
+starting worker pid=160842 on localhost:11143 at 03:40:32.826
+starting worker pid=160841 on localhost:11143 at 03:40:32.836
+starting worker pid=160838 on localhost:11143 at 03:40:32.837
+Wrote results_imputation_r/saver/cells_10000/saver_mse_table.tsv
+
+Done.
