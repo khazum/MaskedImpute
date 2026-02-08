@@ -53,6 +53,18 @@ def _counts_obs_from_logcounts(logcounts: np.ndarray, counts: Optional[np.ndarra
     return np.clip(counts, 0.0, None).astype(np.float32)
 
 
+def _normalize_counts_to_logcounts_cpm(counts_mat: np.ndarray, target_sum: float = 1e6) -> np.ndarray:
+    """Fallback normalization for real datasets: CPM then log2(1+x)."""
+    x = np.asarray(counts_mat, dtype=np.float64)
+    if x.ndim != 2:
+        raise ValueError(f"Expected 2D counts matrix, got shape {x.shape}.")
+    x = np.clip(x, 0.0, None)
+    lib = np.sum(x, axis=1)
+    denom = np.where(np.isfinite(lib) & (lib > 0.0), lib, 1.0)
+    cpm = (x / denom[:, None]) * float(target_sum)
+    return np.log2(1.0 + cpm).astype(np.float32)
+
+
 def _cell_zero_norm(zeros_obs: np.ndarray) -> np.ndarray:
     cell_zero_frac = zeros_obs.mean(axis=1).astype(np.float32)
     cz_lo = float(np.percentile(cell_zero_frac, 5.0))
@@ -195,8 +207,6 @@ def _run_method(
             if counts is None:
                 raise RuntimeError("DCA requires raw counts assay.")
             size_factors = norm.get("size_factors")
-            if size_factors is None:
-                raise RuntimeError("Missing TrueCounts size factors for DCA normalization.")
             mu = imp.run_dca(
                 counts=counts,
                 dca_bin=args.dca_bin,
@@ -207,6 +217,11 @@ def _run_method(
                 ridge=args.dca_ridge,
                 verbose=args.verbose,
             )
+            if size_factors is None:
+                return _normalize_counts_to_logcounts_cpm(mu)
+            size_factors = np.asarray(size_factors, dtype=np.float64)
+            if size_factors.shape[0] != mu.shape[0]:
+                return _normalize_counts_to_logcounts_cpm(mu)
             return imp.normalize_counts_to_logcounts(mu, size_factors)
         if method == "low_mse":
             return _run_masked26_clustering(logcounts, counts, bio_reg_weight=0.0, seed=seed)

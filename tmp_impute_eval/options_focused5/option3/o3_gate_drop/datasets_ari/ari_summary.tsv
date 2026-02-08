@@ -1,0 +1,7 @@
+dataset	avg_ari	std_ari	n_seeds
+blakeley_top1000hvg	0.7447	0.0	3
+darmanis_top1000hvg	0.5567	0.0	3
+deng_top1000hvg	0.9068	0.0	3
+pollen_top1000hvg	0.9241	0.0	3
+usoskin_top1000hvg	0.6858999999999998	0.0009626352718796091	3
+__overall__	0.7636400000000002	0.13818069233193667	15

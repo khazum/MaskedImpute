@@ -1,0 +1,7 @@
+scope	dataset	avg_ari	n_values
+overall	ALL	0.6995600000000001	15
+dataset	blakeley_top1000hvg	0.7768	3
+dataset	darmanis_top1000hvg	0.45619999999999994	3
+dataset	deng_top1000hvg	0.8543	3
+dataset	pollen_top1000hvg	0.8645999999999999	3
+dataset	usoskin_top1000hvg	0.5459	3

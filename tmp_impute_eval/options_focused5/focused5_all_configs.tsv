@@ -1,0 +1,26 @@
+option	tag	avg_mse	avg_biozero	feasible	selected_for_ari	avg_ari	source_file	has_ari	beat_count_5	meets_3_of_5	better_5pct_than_best_benchmark	overall_objective_met
+1	o1_base	0.7316067069768906	0.2493604719638824	False	False		tmp_impute_eval/options_focused5/option1/results.tsv	False		False	False	False
+1	o1_bio_strict	0.9304331839084624	0.1551471725106239	True	True	0.7015999999999999	tmp_impute_eval/options_focused5/option1/results.tsv	True	0.0	False	False	False
+1	o1_balanced	0.8240739703178406	0.1949257515370845	True	True	0.6644466666666666	tmp_impute_eval/options_focused5/option1/results.tsv	True	0.0	False	False	False
+1	o1_ari_push	0.7048019915819168	0.2709815502166748	False	False		tmp_impute_eval/options_focused5/option1/results.tsv	False		False	False	False
+1	o1_dropout_gate	0.7555464953184128	0.2325064614415168	False	False		tmp_impute_eval/options_focused5/option1/results.tsv	False		False	False	False
+2	o2_base	0.6944132298231125	0.4024010300636291	False	False		tmp_impute_eval/options_focused5/option2/results.tsv	False		False	False	False
+2	o2_bio_strict	0.8701944351196289	0.2780577912926674	False	True	0.6995600000000001	tmp_impute_eval/options_focused5/option2/results.tsv	True	0.0	False	False	False
+2	o2_balanced	0.7570998668670654	0.3387830853462219	False	True	0.7484466666666665	tmp_impute_eval/options_focused5/option2/results.tsv	True	2.0	False	False	False
+2	o2_ari_push	0.6370644420385361	0.4683094024658203	False	False		tmp_impute_eval/options_focused5/option2/results.tsv	False		False	False	False
+2	o2_em_mid	0.7097631543874741	0.3840135261416435	False	False		tmp_impute_eval/options_focused5/option2/results.tsv	False		False	False	False
+3	o3_base	0.816839799284935	0.2273530885577201	False	False		tmp_impute_eval/options_focused5/option3/results.tsv	False		False	False	False
+3	o3_bio_strict	1.1021517217159271	0.1166809219866991	False	False		tmp_impute_eval/options_focused5/option3/results.tsv	False		False	False	False
+3	o3_balanced	0.9448848813772202	0.1667248979210853	True	True	0.7271400000000001	tmp_impute_eval/options_focused5/option3/results.tsv	True	0.0	False	False	False
+3	o3_ari_push	0.7752102017402649	0.2554760873317718	False	False		tmp_impute_eval/options_focused5/option3/results.tsv	False		False	False	False
+3	o3_gate_drop	0.849720373749733	0.2137497439980507	False	True	0.7636400000000002	tmp_impute_eval/options_focused5/option3/results.tsv	True	2.0	False	False	False
+4	o4_base	0.6568977981805801	0.373473197221756	False	False		tmp_impute_eval/options_focused5/option4/results.tsv	False		False	False	False
+4	o4_bio_strict	0.9039387404918672	0.2063223682343959	False	True	0.7206800000000001	tmp_impute_eval/options_focused5/option4/results.tsv	True	0.0	False	False	False
+4	o4_balanced	0.7919832170009613	0.2555486261844635	False	True	0.7553333333333332	tmp_impute_eval/options_focused5/option4/results.tsv	True	2.0	False	False	False
+4	o4_ari_push	0.6383601725101471	0.3967076018452644	False	False		tmp_impute_eval/options_focused5/option4/results.tsv	False		False	False	False
+4	o4_neighbor_mid	0.7071031779050827	0.3203565180301666	False	False		tmp_impute_eval/options_focused5/option4/results.tsv	False		False	False	False
+5	o5_base	0.7069540023803711	0.287368007004261	False	False		tmp_impute_eval/options_focused5/option5/results.tsv	False		False	False	False
+5	o5_bio_strict	0.9018816351890564	0.1898227632045745	True	True	0.7429533333333336	tmp_impute_eval/options_focused5/option5/results.tsv	True	2.0	False	False	False
+5	o5_balanced	0.809898629784584	0.2196311540901661	False	True	0.7641533333333334	tmp_impute_eval/options_focused5/option5/results.tsv	True	2.0	False	False	False
+5	o5_ari_push	0.7048180103302002	0.2887778356671333	False	False		tmp_impute_eval/options_focused5/option5/results.tsv	False		False	False	False
+5	o5_gene_mid	0.7570127546787262	0.2484748698771	False	False		tmp_impute_eval/options_focused5/option5/results.tsv	False		False	False	False

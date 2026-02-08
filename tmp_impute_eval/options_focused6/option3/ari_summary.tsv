@@ -1,0 +1,5 @@
+option	base_tag	ari_tag	avg_ari	n_scores	n_datasets	n_seeds
+option3	o3_gate	ari_p0	0.7422066666666667	15	5	3
+option3	o3_gate	ari_p1	0.7321933333333333	15	5	3
+option3	o3_gate	ari_p2	0.7192866666666667	15	5	3
+option3	o3_gate	ari_p3	0.7163733333333334	15	5	3

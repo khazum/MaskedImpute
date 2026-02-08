@@ -1,0 +1,6 @@
+option	tag	avg_mse	avg_biozero	feasible	selected_for_ari	avg_ari	source_file	has_ari	beat_count_5	meets_3_of_5	better_5pct_than_best_benchmark	overall_objective_met
+1	o1_bio_strict	0.9304331839084624	0.1551471725106239	True	True	0.7015999999999999	tmp_impute_eval/options_focused5/option1/results.tsv	True	0.0	False	False	False
+2	o2_balanced	0.7570998668670654	0.3387830853462219	False	True	0.7484466666666665	tmp_impute_eval/options_focused5/option2/results.tsv	True	2.0	False	False	False
+3	o3_balanced	0.9448848813772202	0.1667248979210853	True	True	0.7271400000000001	tmp_impute_eval/options_focused5/option3/results.tsv	True	0.0	False	False	False
+4	o4_balanced	0.7919832170009613	0.2555486261844635	False	True	0.7553333333333332	tmp_impute_eval/options_focused5/option4/results.tsv	True	2.0	False	False	False
+5	o5_bio_strict	0.9018816351890564	0.1898227632045745	True	True	0.7429533333333336	tmp_impute_eval/options_focused5/option5/results.tsv	True	2.0	False	False	False

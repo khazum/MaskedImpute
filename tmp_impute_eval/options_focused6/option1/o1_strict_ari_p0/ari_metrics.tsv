@@ -1,0 +1,6 @@
+dataset	label_key	ari_seed42	ari_seed43	ari_seed44	avg_ari
+blakeley_top1000hvg	cell_type1	1.0	1.0	1.0	1.0
+darmanis_top1000hvg	cell_type1	0.518	0.518	0.518	0.518
+deng_top1000hvg	cell_type1	0.8657	0.8657	0.8657	0.8657
+pollen_top1000hvg	cell_type1	0.6651	0.7755	0.7637	0.7347666666666667
+usoskin_top1000hvg	cell_type1	0.5306	0.5306	0.5306	0.5306

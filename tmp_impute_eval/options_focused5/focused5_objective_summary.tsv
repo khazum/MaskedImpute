@@ -1,0 +1,2 @@
+best_benchmark_method	best_benchmark_avg_ari	target_5pct_over_best	n_configs	n_configs_with_ari	n_feasible_with_ari	n_meet_3_of_5	n_meet_full_objective	best_option	best_tag	best_avg_ari	best_avg_mse	best_avg_biozero	best_feasible	best_beat_count_5	best_meets_3_of_5	best_5pct_over_best_benchmark
+ccimpute	0.88294	0.927087	25	10	4	0	0	5	o5_bio_strict	0.7429533333333336	0.9018816351890564	0.1898227632045745	True	2	False	False

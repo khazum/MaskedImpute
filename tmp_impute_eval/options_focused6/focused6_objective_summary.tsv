@@ -1,0 +1,2 @@
+best_benchmark_method	best_benchmark_avg_ari	target_5pct_over_best	n_rows	n_feasible_rows	n_meet_3of5	n_meet_full_objective	best_option	best_base_tag	best_ari_tag	best_avg_ari	best_avg_mse	best_avg_biozero	best_feasible	best_beat_count_5
+ccimpute	0.88294	0.927087	20	0	0	0	option3	o3_gate	ari_p0	0.7422066666666667	0.9408641755580902	0.2344539165496826	False	2

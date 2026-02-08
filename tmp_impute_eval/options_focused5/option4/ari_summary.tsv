@@ -1,0 +1,3 @@
+option	tag	avg_ari	n_scores	n_datasets
+4	o4_balanced	0.7553333333333332	15	5
+4	o4_bio_strict	0.7206800000000001	15	5

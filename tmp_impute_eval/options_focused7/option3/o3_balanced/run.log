@@ -1,0 +1,15 @@
+CMD: python masked_imputation_option3.py synthetic_datasets/rds_splat_output/cells_100 /mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute2/tmp_impute_eval/options_focused7/option3/o3_balanced --device cuda --seed 42 --keep-positive true --save-imputed false --epochs 180 --batch-size 64 --loss-bio-weight 2.9 --bio-reg-weight 1.4 --p-nz 0.38 --noise-max 0.18 --gate-loss-weight 0.50 --expert-bio-weight 0.55 --expert-drop-weight 0.16 --prior-blend 0.76 --update-min-dropout 0.90
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/rds2py/PyRdsReader.py:105: RuntimeWarning: Unsupported R object type: other
+  warn(f"Unsupported R object type: {rtype}", RuntimeWarning)
+
+=== masked_imputation_option3 ===
+AE params: {'epochs': 180, 'lr': 0.0001, 'p_zero': 0.01, 'p_nz': 0.38, 'noise_max': 0.18, 'loss_bio_weight': 2.9, 'loss_nz_weight': 1.0, 'bio_reg_weight': 1.4}
+Model params: {'hidden': [64], 'bottleneck': 32, 'batch_size': 64, 'weight_decay': 0.0}
+Refine params: {'enabled': True, 'start_epoch': 70, 'every_n_epochs': 15, 'ema_alpha': 0.25, 'prior_blend': 0.76, 'dropout_midpoint': 0.08, 'dropout_scale': 0.3, 'update_min_dropout_prob': 0.9, 'force_dropout_prob': 0.999, 'prior_floor_ratio': 0.2, 'p_bio_min': 0.0001, 'p_bio_max': 0.999} enabled: True
+Extra params: {'gate_loss_weight': 0.5, 'expert_bio_weight': 0.55, 'expert_drop_weight': 0.16, 'gate_zero_soft_weight': 0.3}
+avg_mse: 0.9448848813772202 avg_biozero: 0.16672489792108536
+runtime_sec: 9.485213379957713
+Metrics written to masked_imputation_option3_metrics.tsv
+Summary written to masked_imputation_option3_summary.tsv

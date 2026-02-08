@@ -3,7 +3,7 @@
 clustering_eval.py
 -----------------
 
-Shared clustering evaluation utilities (PCA + k-means + ARI/NMI/Purity/ASW).
+Shared clustering evaluation utilities (Hartigan k-means + ARI/NMI/Purity/ASW).
 Used by Python and R pipelines to ensure identical clustering behavior.
 """
 
@@ -69,66 +69,30 @@ def _normalized_mutual_info(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(2 * I / (H_i + H_j))
 
 
-def _pca_embed(X: np.ndarray, n_components: int) -> np.ndarray:
-    X = np.asarray(X, dtype=np.float32)
-    X = X - X.mean(axis=0, keepdims=True)
-    U, S, _ = np.linalg.svd(X, full_matrices=False)
-    return U[:, :n_components] * S[:n_components]
-
-
-def _kmeans_pp_init(X: np.ndarray, k: int, rng: np.random.Generator) -> np.ndarray:
-    n, d = X.shape
-    centers = np.empty((k, d), dtype=X.dtype)
-    first = int(rng.integers(0, n))
-    centers[0] = X[first]
-    closest_dist2 = ((X - centers[0]) ** 2).sum(axis=1)
-    for i in range(1, k):
-        total = float(closest_dist2.sum())
-        if not np.isfinite(total) or total <= 0.0:
-            idx = int(rng.integers(0, n))
-        else:
-            probs = closest_dist2 / total
-            idx = int(rng.choice(n, p=probs))
-        centers[i] = X[idx]
-        dist2 = ((X - centers[i]) ** 2).sum(axis=1)
-        closest_dist2 = np.minimum(closest_dist2, dist2)
-    return centers
-
-
-def _kmeans(
-    X: np.ndarray, k: int, n_init: int = 10, max_iter: int = 100, seed: int = 42
+def _hkmeans_cluster(
+    X: np.ndarray,
+    k: int,
+    n_init: int = 1000,
+    max_iter: int = 1000,
+    seed: int = 42,
 ) -> np.ndarray:
-    rng = np.random.default_rng(seed)
-    n = X.shape[0]
-    n_init = max(1, int(n_init))
-    best_labels = None
-    best_inertia = np.inf
-    for _ in range(n_init):
-        if n >= k:
-            centers = _kmeans_pp_init(X, k, rng)
-        else:
-            centers = X[rng.choice(n, size=k, replace=True)]
-        labels = None
-        for _ in range(max_iter):
-            dist2 = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
-            labels = dist2.argmin(axis=1)
-            new_centers = centers.copy()
-            for j in range(k):
-                mask = labels == j
-                if not np.any(mask):
-                    new_centers[j] = X[rng.integers(0, n)]
-                else:
-                    new_centers[j] = X[mask].mean(axis=0)
-            if np.allclose(new_centers, centers):
-                break
-            centers = new_centers
-        if labels is None:
-            continue
-        inertia = float(np.sum((X - centers[labels]) ** 2))
-        if inertia < best_inertia:
-            best_inertia = inertia
-            best_labels = labels
-    return best_labels
+    try:
+        from hkmeans import HKMeans
+    except Exception as exc:
+        raise RuntimeError(
+            "HKMeans is required. Install via: pip install hartigan-kmeans"
+        ) from exc
+
+    model = HKMeans(
+        n_clusters=int(k),
+        random_state=int(seed),
+        n_init=int(max(1, n_init)),
+        n_jobs=1,
+        max_iter=int(max(1, max_iter)),
+        verbose=False,
+    )
+    labels = model.fit_predict(np.asarray(X, dtype=np.float64))
+    return np.asarray(labels, dtype=np.int32)
 
 
 def _silhouette_score(X: np.ndarray, labels: np.ndarray) -> float:
@@ -168,8 +132,8 @@ def evaluate_clustering(
     *,
     n_components: int = 50,
     k: Optional[int] = None,
-    n_init: int = 10,
-    max_iter: int = 100,
+    n_init: int = 1000,
+    max_iter: int = 1000,
     seed: int = 42,
 ) -> Dict[str, float]:
     X = np.asarray(imputed_data, dtype=np.float32)
@@ -177,12 +141,10 @@ def evaluate_clustering(
     y = np.asarray(true_labels)
     if X.ndim == 1:
         X = X[:, None]
-    n, d = X.shape
-    n_components = max(1, min(int(n_components), n, d))
-    emb = _pca_embed(X, n_components)
+    emb = X
     if k is None:
         k = max(2, len(np.unique(y)))
-    cl = _kmeans(emb, int(k), n_init=n_init, max_iter=max_iter, seed=seed)
+    cl = _hkmeans_cluster(emb, int(k), n_init=n_init, max_iter=max_iter, seed=seed)
     return {
         "ASW": round(_silhouette_score(emb, cl), 4),
         "ARI": round(_adjusted_rand_score(y, cl), 4),

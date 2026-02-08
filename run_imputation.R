@@ -27,8 +27,6 @@ input_path <- args[1]
 output_dir <- args[2]
 ncores <- if (length(args) >= 3) as.integer(args[3]) else parallel::detectCores()
 if (is.na(ncores) || ncores < 1) ncores <- 1
-saver_default_cores <- suppressWarnings(as.integer(Sys.getenv("SAVER_CORES", "8")))
-if (is.na(saver_default_cores) || saver_default_cores < 1) saver_default_cores <- 8
 n_repeats <- if (length(args) >= 4) as.integer(args[4]) else 10L
 if (is.na(n_repeats) || n_repeats < 1) n_repeats <- 1L
 methods_arg <- if (length(args) >= 5) args[5] else "all"
@@ -66,6 +64,33 @@ parse_methods <- function(raw) {
           paste(unknown, collapse = ", "), paste(allowed, collapse = ", "))
   }
   unique(methods)
+}
+
+label_keys <- c("cell_type1", "cell_type", "labels", "label", "Group")
+
+get_ccimpute_k_from_labels <- function(sce) {
+  cd <- colData(sce)
+  label_col <- NULL
+  for (key in label_keys) {
+    if (key %in% colnames(cd)) {
+      label_col <- key
+      break
+    }
+  }
+  if (is.null(label_col)) {
+    stopf("ccImpute requires a label column. Tried: %s", paste(label_keys, collapse = ", "))
+  }
+
+  labels <- as.vector(cd[[label_col]])
+  labels <- labels[!is.na(labels)]
+  labels <- as.character(labels)
+  labels <- labels[nzchar(labels)]
+  n_groups <- length(unique(labels))
+  if (!is.finite(n_groups) || n_groups < 2) {
+    stopf("ccImpute requires >=2 unique labels in '%s'; found %d.", label_col, n_groups)
+  }
+
+  list(k = as.integer(n_groups), label_col = label_col)
 }
 
 save_imputed <- function(dataset_name, data, method) {
@@ -364,9 +389,8 @@ for (input_file in input_files) {
         cat("  [saver] Using null model (no predictor genes above mean threshold).\n")
       }
 
-      saver_ncores <- min(ncores, saver_default_cores)
-      if (saver_ncores < 1) saver_ncores <- 1
-      message(sprintf("Running SAVER with %d worker(s)", saver_ncores))
+      saver_ncores <- 1L
+      message("Running SAVER with 1 worker (forced serial mode for stability)")
       saver_metrics <- list()
       saver_runtimes <- numeric()
       saver_err <- NA_character_
@@ -435,9 +459,35 @@ for (input_file in input_files) {
     require_pkg("ccImpute")
     require_pkg("BiocParallel")
 
-    n_groups <- NA_integer_
-    if (!is.null(colData(sce)$Group)) n_groups <- length(unique(colData(sce)$Group))
-    if (!is.finite(n_groups) || n_groups < 2) n_groups <- 2
+    cc_k_error <- NA_character_
+    cc_k_info <- tryCatch(
+      get_ccimpute_k_from_labels(sce),
+      error = function(e) {
+        cc_k_error <<- conditionMessage(e)
+        report_error(dataset_name, "ccimpute", cc_k_error)
+        NULL
+      }
+    )
+    if (is.null(cc_k_info)) {
+      cc_row <- data.frame(
+        dataset = dataset_name,
+        method = "ccimpute",
+        summarize_repeats(
+          metrics_list = list(),
+          runtimes = numeric(),
+          n_total = n_total,
+          n_dropout = n_dropout,
+          n_biozero = n_biozero,
+          n_non_zero = n_non_zero,
+          err_msg = cc_k_error
+        ),
+        stringsAsFactors = FALSE
+      )
+      all_results[[length(all_results) + 1]] <- cc_row
+      next
+    }
+    n_groups <- cc_k_info$k
+    cat(sprintf("  [ccimpute] Using k=%d from label column '%s'.\n", n_groups, cc_k_info$label_col))
 
     cc_ncores <- min(ncores, 8)
     if (ncores > 8) {

@@ -1,0 +1,13 @@
+===== START phaseA o5_bal 2026-02-08T17:13:52-05:00 =====
+CMD: CUDA_VISIBLE_DEVICES=4 python masked_imputation_option5.py synthetic_datasets/rds_splat_output/cells_100 tmp_impute_eval/options_focused6/option5/o5_bal --device cuda --seed 42 --epochs 140 --batch-size 64 --keep-positive true --save-imputed false --loss-bio-weight 3.1 --bio-reg-weight 1.6 --p-nz 0.34 --noise-max 0.14 --gene-shrink 0.58 --prior-blend 0.82 --update-min-dropout 0.92 --latent-consistency-weight 0.03
+
+=== masked_imputation_option5 ===
+AE params: {'epochs': 140, 'lr': 0.0001, 'p_zero': 0.01, 'p_nz': 0.34, 'noise_max': 0.14, 'loss_bio_weight': 3.1, 'loss_nz_weight': 1.0, 'bio_reg_weight': 1.6}
+Model params: {'hidden': [64], 'bottleneck': 32, 'batch_size': 64, 'weight_decay': 0.0}
+Refine params: {'enabled': True, 'start_epoch': 70, 'every_n_epochs': 15, 'ema_alpha': 0.25, 'prior_blend': 0.82, 'dropout_midpoint': 0.08, 'dropout_scale': 0.3, 'update_min_dropout_prob': 0.92, 'force_dropout_prob': 0.999, 'prior_floor_ratio': 0.2, 'p_bio_min': 0.0001, 'p_bio_max': 0.999} enabled: True
+Extra params: {'gene_shrink': 0.58, 'latent_consistency_weight': 0.03}
+avg_mse: 0.8473315984010696 avg_biozero: 0.2705163508653641
+runtime_sec: 8.71848250500625
+Metrics written to masked_imputation_option5_metrics.tsv
+Summary written to masked_imputation_option5_summary.tsv
+===== END phaseA o5_bal rc=0 2026-02-08T17:14:07-05:00 =====

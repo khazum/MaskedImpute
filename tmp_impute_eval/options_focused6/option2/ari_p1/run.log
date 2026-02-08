@@ -1,0 +1,13 @@
+===== START ari_p1 2026-02-08T17:13:46-05:00 =====
+CMD: CUDA_VISIBLE_DEVICES=1 python masked_imputation_option2.py datasets tmp_impute_eval/options_focused6/option2/ari_p1 --device cuda --seed 42 --keep-positive false --save-imputed true --epochs 80 --batch-size 128 --loss-bio-weight 4.6 --bio-reg-weight 2.6 --p-nz 0.20 --noise-max 0.08 --prior-blend 0.92 --update-min-dropout 0.97 --refine-alpha 0.36 --p-zero 0.02 --latent-consistency-weight 0.04 --graph-blend 0.20 --graph-k 8 --cluster-blend 0.20 --cluster-k-min 2 --cluster-k-max 8
+
+=== masked_imputation_option2 ===
+AE params: {'epochs': 80, 'lr': 0.0001, 'p_zero': 0.02, 'p_nz': 0.2, 'noise_max': 0.08, 'loss_bio_weight': 4.6, 'loss_nz_weight': 1.0, 'bio_reg_weight': 2.6}
+Model params: {'hidden': [64], 'bottleneck': 32, 'batch_size': 128, 'weight_decay': 0.0}
+Refine params: {'enabled': True, 'start_epoch': 80, 'every_n_epochs': 20, 'ema_alpha': 0.36, 'prior_blend': 0.92, 'dropout_midpoint': 0.08, 'dropout_scale': 0.3, 'update_min_dropout_prob': 0.97, 'force_dropout_prob': 0.999, 'prior_floor_ratio': 0.2, 'p_bio_min': 0.0001, 'p_bio_max': 0.999} enabled: True
+Extra params: {'latent_consistency_weight': 0.04, 'graph_blend': 0.2, 'graph_k': 8, 'cluster_blend': 0.2, 'cluster_k_min': 2, 'cluster_k_max': 8}
+avg_mse: nan avg_biozero: nan
+runtime_sec: 10.381218462018296
+Metrics written to masked_imputation_option2_metrics.tsv
+Summary written to masked_imputation_option2_summary.tsv
+===== END ari_p1 rc=0 2026-02-08T17:14:04-05:00 =====

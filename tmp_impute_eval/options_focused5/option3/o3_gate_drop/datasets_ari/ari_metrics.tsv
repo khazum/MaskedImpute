@@ -1,0 +1,16 @@
+dataset	seed	ARI
+blakeley_top1000hvg	42	0.7447
+blakeley_top1000hvg	43	0.7447
+blakeley_top1000hvg	44	0.7447
+darmanis_top1000hvg	42	0.5567
+darmanis_top1000hvg	43	0.5567
+darmanis_top1000hvg	44	0.5567
+deng_top1000hvg	42	0.9068
+deng_top1000hvg	43	0.9068
+deng_top1000hvg	44	0.9068
+pollen_top1000hvg	42	0.9241
+pollen_top1000hvg	43	0.9241
+pollen_top1000hvg	44	0.9241
+usoskin_top1000hvg	42	0.6849
+usoskin_top1000hvg	43	0.6856
+usoskin_top1000hvg	44	0.6872

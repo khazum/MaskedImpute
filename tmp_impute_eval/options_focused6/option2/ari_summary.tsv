@@ -1,0 +1,5 @@
+option	base_tag	ari_tag	avg_ari	n_values	n_datasets	n_seeds
+option2	o2_strict	ari_p0	0.6616599999999999	15	5	3
+option2	o2_strict	ari_p1	0.6593933333333335	15	5	3
+option2	o2_strict	ari_p2	0.6601133333333334	15	5	3
+option2	o2_strict	ari_p3	0.6573266666666666	15	5	3

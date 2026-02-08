@@ -1,44 +1,109 @@
 #!/usr/bin/env Rscript
 
 # Description:
-# This script processes a directory of pre-normalized SingleCellExperiment (SCE) objects.
-# For each SCE, it selects the top N marker genes that best distinguish cell types based on
-# existing labels in colData. The resulting subsetted SCE object is saved to an output directory.
+# This script processes a directory of pre-normalized and pre-log-transformed
+# SingleCellExperiment (SCE) objects.
+# For each SCE, it selects the top N highly variable genes (HVGs) using an
+# AutoClass-style score: variance(non-zero expression) / mean(non-zero expression).
+# No additional normalization or log transformation is applied.
 
 # --- Load required libraries ---
 suppressPackageStartupMessages(library(argparse))
-suppressPackageStartupMessages(library(scran))
 suppressPackageStartupMessages(library(SingleCellExperiment))
 suppressPackageStartupMessages(library(Matrix))
 
 # --- Define Command-Line Arguments ---
-parser <- ArgumentParser(description = "Find marker genes in pre-normalized SingleCellExperiment objects.")
+parser <- ArgumentParser(
+  description = paste(
+    "Select top HVGs from pre-normalized, pre-log-transformed",
+    "SingleCellExperiment objects without re-normalization."
+  )
+)
 parser$add_argument("-i", "--input_dir", type = "character", required = TRUE,
                     help = "Path to the directory containing input RDS files.")
 parser$add_argument("-o", "--output_dir", type = "character", required = TRUE,
                     help = "Path to the directory where output RDS files will be saved.")
 parser$add_argument("-n", "--n_genes", type = "integer", default = 1000,
-                    help = "Number of top marker genes to select [default: %(default)s].")
+                    help = "Number of top HVGs to select [default: %(default)s].")
 args <- parser$parse_args()
 
-# --- Main Processing Logic ---
+if (is.na(args$n_genes) || args$n_genes < 1L) {
+  stop("--n_genes must be a positive integer.")
+}
 
-# 1. Validate inputs and find RDS files
+row_sums_any <- function(x) {
+  if (inherits(x, "Matrix")) {
+    Matrix::rowSums(x)
+  } else {
+    rowSums(x)
+  }
+}
+
+# Mimics the reference HVG logic:
+# score(gene) = var(non-zero gene expression) / mean(non-zero gene expression)
+# where variance uses population variance (ddof = 0).
+find_hv_genes <- function(expr_mat, top = 1000L) {
+  n_genes <- nrow(expr_mat)
+  if (is.null(n_genes) || n_genes == 0L || top <= 0L) {
+    return(integer(0))
+  }
+
+  nz_counts <- row_sums_any(expr_mat != 0)
+  nz_sums <- row_sums_any(expr_mat)
+  nz_sq_sums <- row_sums_any(expr_mat * expr_mat)
+
+  mu <- rep(NA_real_, n_genes)
+  valid_nz <- nz_counts > 0
+  mu[valid_nz] <- nz_sums[valid_nz] / nz_counts[valid_nz]
+
+  var_nz <- rep(NA_real_, n_genes)
+  var_nz[valid_nz] <- nz_sq_sums[valid_nz] / nz_counts[valid_nz] - mu[valid_nz]^2
+  var_nz[var_nz < 0] <- 0
+
+  hv_score <- var_nz / mu
+  hv_score[!is.finite(hv_score) | mu <= 0] <- -Inf
+
+  valid_score_idx <- which(is.finite(hv_score) & hv_score > -Inf)
+  if (length(valid_score_idx) == 0L) {
+    return(integer(0))
+  }
+
+  ranked <- valid_score_idx[order(hv_score[valid_score_idx], decreasing = TRUE)]
+  ranked[seq_len(min(as.integer(top), length(ranked)))]
+}
+
+select_expression_assay <- function(sce) {
+  preferred <- c("logcounts", "logTrueCounts", "perfect_logcounts", "counts", "TrueCounts")
+  available <- intersect(preferred, assayNames(sce))
+  if (length(available) == 0L) {
+    stop(
+      "No compatible assay found. Expected one of: ",
+      paste(preferred, collapse = ", ")
+    )
+  }
+  available[[1]]
+}
+
+# --- Main Processing Logic ---
 if (!dir.exists(args$input_dir)) {
   stop("Input directory does not exist: ", args$input_dir)
 }
-rds_files <- list.files(path = args$input_dir, pattern = "\\.rds$", full.names = TRUE, ignore.case = TRUE)
-if (length(rds_files) == 0) {
+
+rds_files <- list.files(
+  path = args$input_dir,
+  pattern = "\\.rds$",
+  full.names = TRUE,
+  ignore.case = TRUE
+)
+if (length(rds_files) == 0L) {
   stop("No .rds files found in the specified input directory.")
 }
 
-# 2. Create output directory
 if (!dir.exists(args$output_dir)) {
   message("Output directory does not exist. Creating it now: ", args$output_dir)
   dir.create(args$output_dir, recursive = TRUE)
 }
 
-# 3. Loop through each file
 message(paste("\nFound", length(rds_files), "RDS file(s) to process."))
 for (file_path in rds_files) {
   base_name <- tools::file_path_sans_ext(basename(file_path))
@@ -49,155 +114,55 @@ for (file_path in rds_files) {
     sce <- readRDS(file_path)
 
     if (!inherits(sce, "SingleCellExperiment")) {
-        warning(paste("Skipping", base_name, "as it is not a SingleCellExperiment object."))
-        next
+      warning(paste("Skipping", base_name, "as it is not a SingleCellExperiment object."))
+      next
+    }
+    if (nrow(sce) == 0L || ncol(sce) == 0L) {
+      warning(paste("Skipping", base_name, "- empty SCE object."))
+      next
     }
 
-    possible_label_cols <- c("cell_type1", "cell_type", "label", "labels", "Group")
-    label_col <- NULL
-    for (col in possible_label_cols) {
-        if (col %in% names(colData(sce))) {
-            label_col <- col
-            message(paste("  -> Found cell labels in column:", label_col))
-            break
-        }
-    }
-    if (is.null(label_col)) {
-        warning(paste("Skipping", base_name, " - could not find a valid cell label column."))
-        next
-    }
-    
-    message("  -> Ensuring size factor metadata for DCA/clustering...")
-    coldata <- colData(sce)
-    md_norm <- metadata(sce)$normalization
-    if (is.null(md_norm)) {
-        md_norm <- list()
+    assay_name <- select_expression_assay(sce)
+    message(paste("  -> Using assay for HVG scoring:", assay_name))
+    expr_mat <- assay(sce, assay_name)
+
+    n_target <- min(args$n_genes, nrow(sce))
+    if (n_target < args$n_genes) {
+      message(sprintf(
+        "  -> Requested %d HVGs but only %d genes available; selecting %d.",
+        args$n_genes, nrow(sce), n_target
+      ))
     }
 
-    lib_sizes <- NULL
-    if ("libSizeTrueCounts" %in% colnames(coldata)) {
-        lib_sizes <- as.numeric(coldata$libSizeTrueCounts)
-    } else if (!is.null(md_norm$library_sizes)) {
-        lib_sizes <- as.numeric(md_norm$library_sizes)
-    } else if ("counts" %in% assayNames(sce)) {
-        lib_sizes <- Matrix::colSums(counts(sce))
-    } else if ("TrueCounts" %in% assayNames(sce)) {
-        lib_sizes <- Matrix::colSums(assay(sce, "TrueCounts"))
+    message(paste(
+      "  -> Selecting top", n_target,
+      "HVGs by var(non-zero)/mean(non-zero) without re-normalization..."
+    ))
+    top_idx <- find_hv_genes(expr_mat, top = n_target)
+    if (length(top_idx) == 0L) {
+      warning(paste("Skipping", base_name, "- no valid HVGs found."))
+      next
+    }
+    if (length(top_idx) < n_target) {
+      message(sprintf(
+        "  -> Only %d genes had valid non-zero statistics; using all of them.",
+        length(top_idx)
+      ))
     }
 
-    scale_factor <- NULL
-    if ("scaleFactorTrueCounts" %in% colnames(coldata)) {
-        scale_vals <- unique(as.numeric(coldata$scaleFactorTrueCounts))
-        scale_vals <- scale_vals[is.finite(scale_vals) & scale_vals > 0]
-        if (length(scale_vals) > 0) {
-            scale_factor <- scale_vals[1]
-        }
-    }
-    if (is.null(scale_factor) && !is.null(md_norm$scale_factor)) {
-        scale_factor <- as.numeric(md_norm$scale_factor)[1]
-    }
-    if (is.null(scale_factor) || !is.finite(scale_factor) || scale_factor <= 0) {
-        scale_factor <- 100000
-    }
-
-    size_factors <- NULL
-    if ("sizeFactorTrueCounts" %in% colnames(coldata)) {
-        size_factors <- as.numeric(coldata$sizeFactorTrueCounts)
-    } else if ("sizeFactorsTrueCounts" %in% colnames(coldata)) {
-        size_factors <- as.numeric(coldata$sizeFactorsTrueCounts)
-    } else if (!is.null(md_norm$size_factors)) {
-        size_factors <- as.numeric(md_norm$size_factors)
-    } else if (!is.null(lib_sizes)) {
-        size_factors <- lib_sizes / scale_factor
-    }
-
-    if (!is.null(lib_sizes) && length(lib_sizes) != ncol(sce)) {
-        stop(sprintf("libSizeTrueCounts length (%d) does not match number of cells (%d).",
-                     length(lib_sizes), ncol(sce)))
-    }
-    if (!is.null(size_factors) && length(size_factors) != ncol(sce)) {
-        stop(sprintf("sizeFactorTrueCounts length (%d) does not match number of cells (%d).",
-                     length(size_factors), ncol(sce)))
-    }
-
-    if (!"libSizeTrueCounts" %in% colnames(coldata) && !is.null(lib_sizes)) {
-        colData(sce)$libSizeTrueCounts <- lib_sizes
-    }
-    if (!"scaleFactorTrueCounts" %in% colnames(coldata)) {
-        colData(sce)$scaleFactorTrueCounts <- scale_factor
-    }
-    if (!"sizeFactorTrueCounts" %in% colnames(coldata) && !is.null(size_factors)) {
-        colData(sce)$sizeFactorTrueCounts <- size_factors
-    }
-
-    if (is.null(md_norm$method)) {
-        md_norm$method <- "library_size"
-    }
-    if (!is.null(lib_sizes)) {
-        md_norm$library_sizes <- lib_sizes
-    }
-    if (!is.null(size_factors)) {
-        md_norm$size_factors <- size_factors
-    }
-    md_norm$scale_factor <- scale_factor
-    if (is.null(md_norm$log_base)) {
-        md_norm$log_base <- 2
-    }
-    if (is.null(md_norm$pseudo_count)) {
-        md_norm$pseudo_count <- 1
-    }
-    metadata(sce)$normalization <- md_norm
-
-    n_top_genes <- args$n_genes
-
-    message(paste("  -> Running findMarkers to identify top", n_top_genes, "genes..."))
-    # We run findMarkers normally. The fix is applied *after* this step.
-    marker_results <- findMarkers(sce, groups = colData(sce)[[label_col]])
-
-    message("  -> Creating a global ranking of all markers...")
-    
-    # --- THE DEFINITIVE FIX ---
-    # We now loop through the results. For each dataframe, we select ONLY the common
-    # summary columns before adding gene/cell_type info. This guarantees that every
-    # dataframe passed to rbind() has the exact same structure.
-    list_of_dfs <- lapply(names(marker_results), function(cell_type) {
-      df <- marker_results[[cell_type]]
-      
-      # Select only the columns that are guaranteed to be present and consistent
-      df_subset <- df[, c("summary.logFC", "p.value", "FDR")]
-      
-      df_subset$gene <- rownames(df)
-      df_subset$cell_type_marker <- cell_type
-      return(df_subset)
-    })
-    
-    # Now, rbind will work because every element in list_of_dfs has the same columns.
-    combined_markers <- do.call(rbind, list_of_dfs)
-    
-    upregulated_markers <- combined_markers[combined_markers$summary.logFC > 0 & combined_markers$FDR < 0.05, ]
-    sorted_markers <- upregulated_markers[order(upregulated_markers$summary.logFC, decreasing = TRUE), ]
-    
-    if (nrow(sorted_markers) == 0) {
-        warning(paste("Skipping", base_name, "- no significant upregulated markers found."))
-        next
-    }
-    top_genes_final <- unique(sorted_markers$gene)[1:n_top_genes]
-    top_genes_final <- top_genes_final[!is.na(top_genes_final)] 
-    print(length(top_genes_final))
-    sce_subset <- sce[top_genes_final, ]
-    message(paste("  -> Subset object to", length(top_genes_final), "unique marker genes using global ranking."))
+    sce_subset <- sce[top_idx, , drop = FALSE]
+    message(paste("  -> Subset object to", nrow(sce_subset), "HVGs."))
 
     # Ensure all assays are dense (avoid sparse matrix issues downstream).
-    for (assay_name in assayNames(sce_subset)) {
-        mat <- assay(sce_subset, assay_name)
-        if (inherits(mat, "sparseMatrix") || inherits(mat, "Matrix")) {
-            assay(sce_subset, assay_name) <- as.matrix(mat)
-        }
+    for (assay_name_i in assayNames(sce_subset)) {
+      mat <- assay(sce_subset, assay_name_i)
+      if (inherits(mat, "sparseMatrix") || inherits(mat, "Matrix")) {
+        assay(sce_subset, assay_name_i) <- as.matrix(mat)
+      }
     }
 
-    output_filename <- paste0(base_name, "_top", args$n_genes, "markers.rds")
+    output_filename <- paste0(base_name, "_top", args$n_genes, "hvg.rds")
     output_path <- file.path(args$output_dir, output_filename)
-
     saveRDS(sce_subset, file = output_path)
     message(paste("  -> Successfully saved subsetted object to:", output_path))
 

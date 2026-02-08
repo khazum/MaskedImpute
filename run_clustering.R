@@ -18,8 +18,6 @@ input_path <- args[1]
 output_dir <- args[2]
 ncores <- if (length(args) >= 3) as.integer(args[3]) else parallel::detectCores()
 if (is.na(ncores) || ncores < 1) ncores <- 1
-saver_default_cores <- suppressWarnings(as.integer(Sys.getenv("SAVER_CORES", "8")))
-if (is.na(saver_default_cores) || saver_default_cores < 1) saver_default_cores <- 8
 n_repeats <- if (length(args) >= 4) as.integer(args[4]) else 5L
 if (is.na(n_repeats) || n_repeats < 1) n_repeats <- 1L
 methods_arg <- if (length(args) >= 5) args[5] else "all"
@@ -96,7 +94,7 @@ collect_rds_files <- function(path) {
   stopf("Input path not found: %s", path)
 }
 
-label_keys <- c("cell_type1", "labels", "Group", "label")
+label_keys <- c("cell_type1", "cell_type", "labels", "label", "Group")
 
 extract_labels <- function(sce) {
   cd <- colData(sce)
@@ -366,9 +364,8 @@ for (path in files) {
       } else {
         mean_obs <- mean(lib_obs[saver_cells])
         size_factor_obs <- lib_obs[saver_cells] / mean_obs
-        saver_ncores <- min(ncores, saver_default_cores)
-        if (saver_ncores < 1) saver_ncores <- 1
-        cat(sprintf("  [saver] Using %d worker(s).\n", saver_ncores))
+        saver_ncores <- 1L
+        cat("  [saver] Using 1 worker (forced serial mode for stability).\n")
         saver_metrics <- list()
         saver_runtimes <- numeric()
         saver_err <- NA_character_
@@ -414,38 +411,49 @@ for (path in files) {
     require_pkg("ccImpute")
     require_pkg("BiocParallel")
 
-    n_groups <- NA_integer_
-    if (!is.null(colData(sce)$Group)) n_groups <- length(unique(colData(sce)$Group))
-    if (!is.finite(n_groups) || n_groups < 2) n_groups <- 2
-
-    bpp <- BiocParallel::SerialParam()
-    if (ncores > 1) {
-      bpp <- tryCatch(
-        BiocParallel::MulticoreParam(workers = ncores),
-        error = function(e) BiocParallel::SerialParam()
-      )
-    }
+    cc_labels <- as.character(labels)
+    cc_labels <- cc_labels[!is.na(cc_labels) & nzchar(cc_labels)]
+    n_groups <- length(unique(cc_labels))
 
     cc_metrics <- list()
     cc_runtimes <- numeric()
     cc_err <- NA_character_
-    for (i in seq_len(n_repeats)) {
-      t0 <- proc.time()
-      res <- tryCatch({
-        cc_obj <- ccImpute::ccImpute(sce, k = n_groups, verbose = FALSE, BPPARAM = bpp)
-        log_imp <- assay(cc_obj, "imputed")
-        df <- evaluate_clustering(t(as.matrix(log_imp)), labels)
-        df
-      }, error = function(e) {
-        cc_err <<- conditionMessage(e)
-        cat(sprintf("ERROR [%s/ccimpute]: %s\n", dataset_name, cc_err))
-        NULL
-      })
-      elapsed <- (proc.time() - t0)["elapsed"]
-      if (is.null(res)) break
-      cc_metrics[[length(cc_metrics) + 1]] <- res
-      cc_runtimes <- c(cc_runtimes, elapsed)
+    if (!is.finite(n_groups) || n_groups < 2) {
+      cc_err <- sprintf(
+        "ccImpute requires >=2 unique labels in '%s'; found %d.",
+        lab_info$source, n_groups
+      )
+      cat(sprintf("ERROR [%s/ccimpute]: %s\n", dataset_name, cc_err))
+    } else {
+      cat(sprintf("  [ccimpute] Using k=%d from label column '%s'.\n", n_groups, lab_info$source))
+
+      bpp <- BiocParallel::SerialParam()
+      if (ncores > 1) {
+        bpp <- tryCatch(
+          BiocParallel::MulticoreParam(workers = ncores),
+          error = function(e) BiocParallel::SerialParam()
+        )
+      }
+
+      for (i in seq_len(n_repeats)) {
+        t0 <- proc.time()
+        res <- tryCatch({
+          cc_obj <- ccImpute::ccImpute(sce, k = n_groups, verbose = FALSE, BPPARAM = bpp)
+          log_imp <- assay(cc_obj, "imputed")
+          df <- evaluate_clustering(t(as.matrix(log_imp)), labels)
+          df
+        }, error = function(e) {
+          cc_err <<- conditionMessage(e)
+          cat(sprintf("ERROR [%s/ccimpute]: %s\n", dataset_name, cc_err))
+          NULL
+        })
+        elapsed <- (proc.time() - t0)["elapsed"]
+        if (is.null(res)) break
+        cc_metrics[[length(cc_metrics) + 1]] <- res
+        cc_runtimes <- c(cc_runtimes, elapsed)
+      }
     }
+
     cc_row <- data.frame(
       dataset = dataset_name,
       method = "ccimpute",
