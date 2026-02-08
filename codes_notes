@@ -61,5 +61,5 @@ goal is to get cells_100 avg_mse <= 0.65 and avg_biozero <= 0.15.
   - tmp_impute_eval/options/tuning_results_cells_100.tsv
   - tmp_impute_eval/options/best_by_option_cells_100.tsv
 
-  Do more focused sweep on each option  to push toward 0.65/0.15., reports best results. do multiagentic approach GPUS id 0-7 are available for use.
+  Do more focused sweep on each option  Do each in separate file ex: masked_imputation_option1.py for option 1, and masked_imputation_option5.py for option 5. Do light tuning of each. The objective is to keep avg_mse <= 1 and avg_biozero <= 0.2, and maximizing average ARI performance, as well as be at least 3/5 best ARI out of all methods (except balanced_mse which we are improving upon) benchmarked results_clustering_py and results_clustering_r. do multi-agentic approach GPUS id 0-7 are available for use.
 
