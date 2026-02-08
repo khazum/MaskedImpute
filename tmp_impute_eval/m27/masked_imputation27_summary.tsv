@@ -1,0 +1,2 @@
+avg_mse	avg_bz_mse	score	runtime_sec	fast_mode	refine_enabled
+0.8362528681755066	1.0530320405960083	1.4711584746837616	4.525541735987645	False	True

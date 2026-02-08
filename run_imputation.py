@@ -586,6 +586,18 @@ def _import_masked26():
     return mi26
 
 
+def _import_masked27():
+    try:
+        import masked_imputation27 as mi27
+    except Exception as exc:  # pragma: no cover - import error surfaced for user
+        raise SystemExit(
+            "Failed to import masked_imputation27. Ensure dependencies (torch, numpy) are available.\n"
+            f"Python: {sys.executable}\n"
+            f"Error: {exc}\n"
+        ) from exc
+    return mi27
+
+
 def _counts_obs_from_logcounts(logcounts: np.ndarray, counts: Optional[np.ndarray]) -> np.ndarray:
     if counts is None:
         return np.clip(np.expm1(logcounts * np.log(2.0)), 0.0, None).astype(np.float32)
@@ -610,9 +622,8 @@ def run_masked26(
     import torch
 
     mi26 = _import_masked26()
-    device = torch.device("cuda")
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA requested for masked_imputation26 but not available.")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_fast = device.type == "cuda"
 
     counts_obs = _counts_obs_from_logcounts(logcounts, counts)
     zeros_obs = counts_obs <= 0.0
@@ -638,11 +649,61 @@ def run_masked26(
         counts_max=counts_max,
         p_bio=p_bio,
         device=device,
-        fast_mode=True,
-        amp_enabled=True,
-        compile_enabled=True,
-        fast_batch_mult=2,
-        num_workers=2,
+        fast_mode=use_fast,
+        amp_enabled=use_fast,
+        compile_enabled=use_fast,
+        fast_batch_mult=2 if use_fast else 1,
+        num_workers=2 if use_fast else 0,
+    )
+
+    log_imputed = log_recon.copy()
+    log_imputed[~zeros_obs] = logcounts[~zeros_obs]
+    return log_imputed
+
+
+def run_masked27(
+    logcounts: np.ndarray,
+    counts: Optional[np.ndarray],
+    *,
+    bio_reg_weight: float,
+    seed: int,
+) -> np.ndarray:
+    import torch
+
+    mi27 = _import_masked27()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_fast = device.type == "cuda"
+
+    counts_obs = _counts_obs_from_logcounts(logcounts, counts)
+    zeros_obs = counts_obs <= 0.0
+    counts_max = counts_obs.max(axis=0)
+    cell_zero_norm = _cell_zero_norm(zeros_obs)
+
+    mi27.AE_PARAMS["bio_reg_weight"] = float(bio_reg_weight)
+    mi27.set_seed(int(seed))
+    p_bio = mi27.splat_cellaware_bio_prob(
+        counts=counts_obs,
+        zeros_obs=zeros_obs,
+        disp_mode=mi27.BIO_PARAMS["disp_mode"],
+        use_cell_factor=mi27.BIO_PARAMS["use_cell_factor"],
+    )
+    if float(mi27.BIO_PARAMS["cell_zero_weight"]) > 0.0:
+        cell_w = np.clip(
+            float(mi27.BIO_PARAMS["cell_zero_weight"]) * cell_zero_norm, 0.0, 1.0
+        )
+        p_bio = p_bio * (1.0 - cell_w[:, None])
+
+    log_recon = mi27.train_autoencoder_reconstruct(
+        logcounts=logcounts,
+        counts_max=counts_max,
+        p_bio=p_bio,
+        device=device,
+        fast_mode=use_fast,
+        amp_enabled=use_fast,
+        compile_enabled=use_fast,
+        fast_batch_mult=2 if use_fast else 1,
+        num_workers=2 if use_fast else 0,
+        refine_enabled=True,
     )
 
     log_imputed = log_recon.copy()
@@ -813,12 +874,18 @@ def main() -> None:
                         )
                     elif method == "autoclass":
                         log_imp = run_autoclass(logcounts, args.autoclass_dir, autoclass_kwargs)
-                    elif method in ("low_mse", "balanced_mse"):
-                        bio_reg = 0.0 if method == "low_mse" else 1.0
+                    elif method == "low_mse":
                         log_imp = run_masked26(
                             logcounts,
                             counts,
-                            bio_reg_weight=bio_reg,
+                            bio_reg_weight=0.0,
+                            seed=42 + rep,
+                        )
+                    elif method == "balanced_mse":
+                        log_imp = run_masked27(
+                            logcounts,
+                            counts,
+                            bio_reg_weight=1.0,
                             seed=42 + rep,
                         )
                     else:

@@ -1,5 +1,65 @@
-› I want to modify run_clustering.py and run_clustering.R:
-  (1) I want the clustering part to happen in py code for the R approached. This is to ensure that the same kmeans algorithm is used.
-  (2) I want another method 'experiment' added - this is implemented in experiment.py. Modify experiment.py as needed as well
-  (3) I want to make sure that the downstream application benchmarking -- clustering is done using best practices - make amends to make it a fair comparision.
+Strong Alternatives Likely to Improve Both avg_mse and avg_biozero
+
+  1. Add explicit dropout-probability head with synthetic supervision (highest ROI)
+      - Randomly mask known nonzero entries as synthetic dropouts.
+      - Train head to predict P(dropout)=1 on those masked nonzeros and P(dropout)=0 on trusted biozeros.
+      - Keep reconstruction loss + classification loss jointly.
+      - This directly enforces your requirement: dropped nonzeros get near-100% dropout probability.
+  2. EM-style ZINB latent-variable training (most principled)
+      - Decoder predicts mu, theta, and pi_dropout.
+      - For observed zeros, compute posterior:
+          - q(dropout|0) = pi / (pi + (1-pi)*NB(0|mu,theta))
+      - Use q to weight reconstruction/NLL in an EM-like loop.
+      - Usually improves calibration of biozero vs dropout and lowers both metrics if fitted well.
+  3. Two-expert zero model with learned gate
+      - Expert A: biozero branch constrained near zero.
+      - Expert B: dropout branch reconstructs positive signal.
+      - Gate outputs P(dropout) and mixes experts.
+      - Add KL regularization to SPLAT prior and entropy control.
+  4. Neighbor-informed posterior correction
+      - Use latent kNN expected expression as extra evidence.
+      - Dropout probability should rise when neighbors strongly express that gene.
+      - Combine with model posterior via learned calibrator.
+  5. Gene-specific calibration instead of global midpoint/scale
+      - Current global (midpoint, scale) is crude.
+      - Learn per-gene (or gene-bin) calibration parameters for dropout posterior mapping.
+goal is to get cells_100 avg_mse <= 0.65 and avg_biozero <= 0.15.
+
+• Implemented and ran all 5 alternatives as separate files:
+
+  - masked_imputation_option1.py
+  - masked_imputation_option2.py
+  - masked_imputation_option3.py
+  - masked_imputation_option4.py
+  - masked_imputation_option5.py
+  - Shared core: masked_imputation_options_base.py
+
+  Ran light tuning on synthetic_datasets/rds_splat_output/cells_100:
+
+  - 3 configs per option (default + 2 tuned variants)
+  - Single-seed quick sweep (for speed)
+
+  Best result per option (closeness to target avg_mse<=0.65, avg_biozero<=0.15):
+
+  | Option | Best config tag | avg_mse | avg_biozero | mse gap | biozero gap | total gap |
+  |---|---|---:|---:|---:|---:|---:|
+  | 1 | denoise_gate_hi | 0.7045 | 0.2215 | 0.0545 | 0.0715 | 0.1260 |
+  | 2 | em_conservative | 0.6802 | 0.2753 | 0.0302 | 0.1253 | 0.1555 |
+  | 3 | experts_stable | 0.7368 | 0.2121 | 0.0868 | 0.0621 | 0.1489 |
+  | 4 | neighbor_light | 0.6647 | 0.2811 | 0.0147 | 0.1311 | 0.1458 |
+  | 5 | gene_specific_low_shrink | 0.7146 | 0.2258 | 0.0646 | 0.0758 | 0.1404 |
+
+  Key outcome:
+
+  - None hit both targets yet.
+  - Closest overall (combined gap): Option 1.
+  - Closest on mse alone: Option 4 (0.6647, and one config hit 0.6495 but with poor biozero).
+  - Best biozero among all tested: Option 3 (0.2121), still above 0.15.
+
+  Full results:
+
+  - tmp_impute_eval/options/tuning_results_cells_100.tsv
+  - tmp_impute_eval/options/best_by_option_cells_100.tsv
+
+  Do more focused sweep on each option  to push toward 0.65/0.15., reports best results. do multiagentic approach GPUS id 0-7 are available for use.
 
