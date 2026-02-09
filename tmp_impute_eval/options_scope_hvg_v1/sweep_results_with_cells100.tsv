@@ -1,0 +1,4 @@
+run_name	option	avg_ari	wins_vs_benchmark_best	cells100_avg_mse	cells100_avg_biozero	meets_mse_le_1	meets_biozero_le_thresh	meets_joint_cells100
+option3_biofocus	3	0.8511799999999999	1	0.8446196019649506	0.15017688274383545	1	1	1
+option3_labelcal_beta03	3	0.8949	3	0.8446196019649506	0.15017688274383545	1	1	1
+option3_labelcal_beta04	3	0.90106	4	0.8446196019649506	0.15017688274383545	1	1	1

@@ -1,0 +1,2 @@
+option	best_run_name	avg_mse	avg_biozero	avg_ari	wins_vs_benchmark_best	meets_joint
+3	option3_labelcal_auto_structlight_centerrow_2_keep	nan	nan	0.85118	2	0

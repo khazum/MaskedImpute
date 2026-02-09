@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -434,39 +438,171 @@ def _pca_embed_np(x: np.ndarray, n_components: int = 16) -> np.ndarray:
     return (u[:, :d] * s[:d]).astype(np.float32)
 
 
-def _kmeans_simple(x: np.ndarray, k: int, seed: int = 42, max_iter: int = 50) -> np.ndarray:
+def _kmeans_hartigan_wong_r(
+    x: np.ndarray,
+    k: int,
+    seed: int,
+    nstart: int,
+    iter_max: int,
+) -> Optional[np.ndarray]:
+    rscript = shutil.which("Rscript")
+    if not rscript:
+        return None
+    x = np.asarray(x, dtype=np.float64)
+    n = x.shape[0]
+    if n <= 2:
+        return None
+    k = int(max(2, min(int(k), n - 1)))
+    nstart = int(max(1, nstart))
+    iter_max = int(max(10, iter_max))
+    r_code = """
+in_path <- Sys.getenv("MI_HW_IN")
+out_path <- Sys.getenv("MI_HW_OUT")
+seed <- as.integer(Sys.getenv("MI_HW_SEED"))
+k <- as.integer(Sys.getenv("MI_HW_K"))
+nstart <- as.integer(Sys.getenv("MI_HW_NSTART"))
+iter_max <- as.integer(Sys.getenv("MI_HW_ITERMAX"))
+x <- as.matrix(read.csv(in_path, header=FALSE))
+set.seed(seed)
+km <- stats::kmeans(
+  x,
+  centers=k,
+  nstart=nstart,
+  iter.max=iter_max,
+  algorithm="Hartigan-Wong"
+)
+write.table(
+  km$cluster - 1L,
+  file=out_path,
+  sep=",",
+  row.names=FALSE,
+  col.names=FALSE
+)
+"""
+    try:
+        with tempfile.TemporaryDirectory(prefix="mi_hw_") as td:
+            in_path = Path(td) / "x.csv"
+            out_path = Path(td) / "labels.csv"
+            np.savetxt(in_path, x, delimiter=",")
+            env = os.environ.copy()
+            env["MI_HW_IN"] = str(in_path)
+            env["MI_HW_OUT"] = str(out_path)
+            env["MI_HW_SEED"] = str(int(seed))
+            env["MI_HW_K"] = str(int(k))
+            env["MI_HW_NSTART"] = str(int(nstart))
+            env["MI_HW_ITERMAX"] = str(int(iter_max))
+            proc = subprocess.run(
+                [rscript, "-e", r_code],
+                env=env,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=180,
+            )
+            if proc.returncode != 0 or (not out_path.exists()):
+                return None
+            labels = np.loadtxt(out_path, delimiter=",", dtype=np.int32)
+            labels = np.asarray(labels).reshape(-1)
+            if labels.size != n:
+                return None
+            return labels.astype(np.int32, copy=False)
+    except Exception:
+        return None
+
+
+def _row_center_l2_np(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=np.float32)
+    xc = x - x.mean(axis=1, keepdims=True)
+    denom = np.linalg.norm(xc, axis=1, keepdims=True)
+    denom = np.where(denom > EPSILON, denom, 1.0)
+    return (xc / denom).astype(np.float32, copy=False)
+
+
+def _pairwise_distance_matrix_np(x: np.ndarray, metric: str = "euclidean") -> np.ndarray:
+    x = np.asarray(x, dtype=np.float32)
+    m = str(metric).strip().lower()
+    if m == "pearson":
+        xn = _row_center_l2_np(x)
+        sim = np.clip(xn @ xn.T, -1.0, 1.0)
+        dist = 1.0 - sim
+        np.fill_diagonal(dist, 0.0)
+        return dist.astype(np.float32, copy=False)
+    sq = np.sum(x * x, axis=1, keepdims=True)
+    dist2 = sq + sq.T - 2.0 * (x @ x.T)
+    return np.sqrt(np.maximum(dist2, 0.0)).astype(np.float32, copy=False)
+
+
+def _point_to_centroid_distance_np(
+    x: np.ndarray,
+    centroids: np.ndarray,
+    metric: str = "euclidean",
+) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float32)
+    c = np.asarray(centroids, dtype=np.float32)
+    m = str(metric).strip().lower()
+    if m == "pearson":
+        xn = _row_center_l2_np(x)
+        cn = _row_center_l2_np(c)
+        sim = np.clip(xn @ cn.T, -1.0, 1.0)
+        return (1.0 - sim).astype(np.float32, copy=False)
+    diff = x[:, None, :] - c[None, :, :]
+    dist2 = np.sum(diff * diff, axis=2)
+    return np.sqrt(np.maximum(dist2, 0.0)).astype(np.float32, copy=False)
+
+
+def _kmeans_simple(
+    x: np.ndarray,
+    k: int,
+    seed: int = 42,
+    max_iter: int = 50,
+    metric: str = "euclidean",
+) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float32)
+    metric = str(metric).strip().lower()
+    if metric not in ("euclidean", "pearson"):
+        metric = "euclidean"
+    x_work = _row_center_l2_np(x) if metric == "pearson" else x
     n = x.shape[0]
     k = int(max(2, min(k, n)))
     rng = np.random.default_rng(seed)
     init_idx = rng.choice(n, size=k, replace=False)
-    centers = x[init_idx].copy()
+    centers = x_work[init_idx].copy()
     labels = np.zeros(n, dtype=np.int32)
     for _ in range(int(max_iter)):
-        dist2 = ((x[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
-        new_labels = dist2.argmin(axis=1).astype(np.int32)
+        if metric == "pearson":
+            sim = np.clip(x_work @ centers.T, -1.0, 1.0)
+            new_labels = sim.argmax(axis=1).astype(np.int32)
+        else:
+            dist2 = ((x_work[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+            new_labels = dist2.argmin(axis=1).astype(np.int32)
         if np.array_equal(new_labels, labels):
             break
         labels = new_labels
         for j in range(k):
             mask = labels == j
             if np.any(mask):
-                centers[j] = x[mask].mean(axis=0)
+                c = x_work[mask].mean(axis=0)
+                if metric == "pearson":
+                    c = c - c.mean()
+                    cn = float(np.linalg.norm(c))
+                    if cn > EPSILON:
+                        c = c / cn
+                    else:
+                        c = x_work[rng.integers(0, n)]
+                centers[j] = c
             else:
-                centers[j] = x[rng.integers(0, n)]
+                centers[j] = x_work[rng.integers(0, n)]
     return labels
 
 
-def _silhouette_score_np(x: np.ndarray, labels: np.ndarray) -> float:
+def _silhouette_score_np(x: np.ndarray, labels: np.ndarray, metric: str = "euclidean") -> float:
     x = np.asarray(x, dtype=np.float32)
     labels = np.asarray(labels, dtype=np.int32)
     n = x.shape[0]
     uniq = np.unique(labels)
     if len(uniq) < 2 or len(uniq) >= n:
         return float("nan")
-    sq = np.sum(x * x, axis=1, keepdims=True)
-    dist2 = sq + sq.T - 2.0 * (x @ x.T)
-    dist = np.sqrt(np.maximum(dist2, 0.0))
+    dist = _pairwise_distance_matrix_np(x, metric=metric)
     sil = np.zeros(n, dtype=np.float32)
     for i in range(n):
         same = labels == labels[i]
@@ -547,10 +683,279 @@ def _cluster_centroid_blend(
     return out.astype(np.float32, copy=False)
 
 
+def _parse_label_calibrate_beta(raw: object) -> float | str:
+    if raw is None:
+        return 0.0
+    if isinstance(raw, (float, int, np.floating, np.integer)):
+        return float(raw)
+    s = str(raw).strip().lower()
+    if not s:
+        return 0.0
+    if s == "auto":
+        return "auto"
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+def _label_centroids_and_inverse(x: np.ndarray, labels: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    _, inv = np.unique(labels, return_inverse=True)
+    g = int(inv.max()) + 1
+    centroids = np.zeros((g, x.shape[1]), dtype=np.float32)
+    counts = np.bincount(inv, minlength=g).astype(np.float32)
+    for j in range(g):
+        mask = inv == j
+        if np.any(mask):
+            centroids[j] = x[mask].mean(axis=0)
+    return centroids, inv.astype(np.int32, copy=False), counts
+
+
+def _infer_auto_pseudo_labels(
+    log_x: np.ndarray,
+    extra_params: Dict[str, object],
+    exact_k: Optional[int] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    x = np.asarray(log_x, dtype=np.float32)
+    n = x.shape[0]
+    if n <= 2:
+        return np.zeros(n, dtype=np.int32), _pca_embed_np(x, n_components=2)
+
+    emb = _pca_embed_np(x, n_components=min(16, max(2, x.shape[1])))
+    metric = str(extra_params.get("label_auto_metric", "euclidean")).strip().lower()
+    if metric not in ("euclidean", "pearson"):
+        metric = "euclidean"
+    k_exact = exact_k
+    if k_exact is None:
+        k_exact_raw = extra_params.get("label_auto_exact_k", None)
+        if k_exact_raw is not None:
+            try:
+                k_exact = int(k_exact_raw)
+            except Exception:
+                k_exact = None
+    k_min = int(extra_params.get("label_auto_k_min", 2))
+    k_max_default = int(min(14, max(2, round(np.sqrt(max(n, 2))))))
+    k_max = int(extra_params.get("label_auto_k_max", k_max_default))
+    seed = int(extra_params.get("label_auto_seed", 42))
+    clusterer = str(extra_params.get("label_auto_clusterer", "simple")).strip().lower()
+    n_init = int(max(10, int(extra_params.get("label_auto_hkmeans_n_init", 100))))
+    max_iter = int(max(50, int(extra_params.get("label_auto_hkmeans_max_iter", 300))))
+    hw_nstart = int(max(1, int(extra_params.get("label_auto_hw_nstart", n_init))))
+    hw_iter_max = int(max(10, int(extra_params.get("label_auto_hw_iter_max", max_iter))))
+    gmm_n_init = int(max(1, int(extra_params.get("label_auto_gmm_n_init", 20))))
+    gmm_max_iter = int(max(20, int(extra_params.get("label_auto_gmm_max_iter", 300))))
+    gmm_cov = str(extra_params.get("label_auto_gmm_covariance", "full")).strip().lower()
+    if gmm_cov not in ("full", "diag", "tied", "spherical"):
+        gmm_cov = "full"
+    gmm_reg = max(float(extra_params.get("label_auto_gmm_reg_covar", 1e-5)), 1e-8)
+    if (k_exact is not None) and int(k_exact) >= 2:
+        lo = int(max(2, min(int(k_exact), n - 1)))
+        hi = lo
+    else:
+        lo = int(max(2, min(k_min, n - 1)))
+        hi = int(max(lo, min(k_max, n - 1)))
+
+    def _cluster_for_k(emb_x: np.ndarray, k: int, rs: int) -> np.ndarray:
+        if clusterer in ("gmm", "gaussian_mixture", "gaussian-mixture"):
+            try:
+                from sklearn.mixture import GaussianMixture
+            except Exception:
+                return _kmeans_simple(emb_x, k, seed=rs, max_iter=80, metric=metric)
+            x_fit = emb_x
+            if metric == "pearson":
+                x_fit = _row_center_l2_np(emb_x)
+            try:
+                gm = GaussianMixture(
+                    n_components=int(k),
+                    covariance_type=gmm_cov,
+                    random_state=int(rs),
+                    n_init=int(gmm_n_init),
+                    max_iter=int(gmm_max_iter),
+                    reg_covar=float(gmm_reg),
+                    init_params="kmeans",
+                )
+                labels = gm.fit_predict(np.asarray(x_fit, dtype=np.float64))
+                labels = np.asarray(labels, dtype=np.int32).reshape(-1)
+                if labels.size == emb_x.shape[0]:
+                    return labels
+            except Exception:
+                pass
+            return _kmeans_simple(emb_x, k, seed=rs, max_iter=80, metric=metric)
+        if clusterer in ("hartigan_wong", "hartigan-wong", "hw"):
+            if metric != "pearson":
+                hw_labels = _kmeans_hartigan_wong_r(
+                    emb_x,
+                    k,
+                    seed=rs,
+                    nstart=hw_nstart,
+                    iter_max=hw_iter_max,
+                )
+                if hw_labels is not None:
+                    return hw_labels
+        if metric == "pearson":
+            return _kmeans_simple(emb_x, k, seed=rs, max_iter=80, metric="pearson")
+        if clusterer == "hkmeans":
+            try:
+                from hkmeans import HKMeans
+            except Exception:
+                return _kmeans_simple(emb_x, k, seed=rs, max_iter=80)
+            model = HKMeans(
+                n_clusters=int(k),
+                random_state=int(rs),
+                n_init=int(n_init),
+                n_jobs=1,
+                max_iter=int(max_iter),
+                verbose=False,
+            )
+            return np.asarray(model.fit_predict(np.asarray(emb_x, dtype=np.float64)), dtype=np.int32)
+        return _kmeans_simple(emb_x, k, seed=rs, max_iter=80)
+
+    best_k = lo
+    best_score = -np.inf
+    best_labels = None
+    for k in range(lo, hi + 1):
+        labels = _cluster_for_k(emb, k, seed)
+        sil = _silhouette_score_np(emb, labels, metric=metric)
+        score = float(sil) if np.isfinite(sil) else -np.inf
+        if score > best_score:
+            best_score = score
+            best_k = int(k)
+            best_labels = labels
+
+    if best_labels is None:
+        best_labels = _cluster_for_k(emb, best_k, seed)
+
+    return best_labels.astype(np.int32, copy=False), emb.astype(np.float32, copy=False)
+
+
+def _infer_auto_label_beta(
+    log_x: np.ndarray,
+    labels: np.ndarray,
+    emb: np.ndarray,
+    extra_params: Dict[str, object],
+) -> np.ndarray:
+    x = np.asarray(log_x, dtype=np.float32)
+    y = np.asarray(labels).reshape(-1)
+    n = x.shape[0]
+    if y.size != n or n <= 2:
+        return np.zeros(n, dtype=np.float32)
+    metric = str(extra_params.get("label_auto_metric", "euclidean")).strip().lower()
+    if metric not in ("euclidean", "pearson"):
+        metric = "euclidean"
+
+    centroids, inv, counts = _label_centroids_and_inverse(x, y)
+    if centroids.shape[0] <= 1:
+        return np.zeros(n, dtype=np.float32)
+
+    residual = x - centroids[inv]
+    within_var = float(np.mean(residual * residual))
+    mean_global = x.mean(axis=0, keepdims=True)
+    cent_off = centroids - mean_global
+    between_num = float((counts[:, None] * (cent_off * cent_off)).sum())
+    between_den = max(float(counts.sum()) * float(x.shape[1]), 1.0)
+    between_var = between_num / between_den
+
+    beta_base = within_var / (within_var + between_var + EPSILON)
+    beta_min = float(extra_params.get("label_auto_beta_min", 0.05))
+    beta_max = float(extra_params.get("label_auto_beta_max", 0.95))
+    beta_min = float(np.clip(beta_min, 0.0, 1.0))
+    beta_max = float(np.clip(beta_max, beta_min, 1.0))
+    beta_base = float(np.clip(beta_base, beta_min, beta_max))
+
+    n0 = max(float(extra_params.get("label_auto_n0", 20.0)), 1.0)
+    beta_label = beta_base * (counts / (counts + n0))
+
+    dist = _pairwise_distance_matrix_np(emb, metric=metric)
+    np.fill_diagonal(dist, np.inf)
+    k = int(extra_params.get("label_auto_k", 15))
+    k = int(max(2, min(k, n - 1)))
+    nbr_idx = np.argpartition(dist, kth=k - 1, axis=1)[:, :k]
+    purity = np.mean(inv[nbr_idx] == inv[:, None], axis=1).astype(np.float32)
+
+    purity_center = float(extra_params.get("label_auto_purity_center", 0.6))
+    purity_scale = max(float(extra_params.get("label_auto_purity_scale", 0.08)), EPSILON)
+    purity_conf = _sigmoid_np((purity - purity_center) / purity_scale)
+
+    emb_centroids, _, _ = _label_centroids_and_inverse(emb, y)
+    d_all = _point_to_centroid_distance_np(emb, emb_centroids, metric=metric)
+    own_d = d_all[np.arange(n), inv]
+    d_all[np.arange(n), inv] = np.inf
+    near_other_d = d_all.min(axis=1)
+    margin = near_other_d - own_d
+
+    margin_center_raw = extra_params.get("label_auto_margin_center", None)
+    if margin_center_raw is None:
+        margin_center = float(np.percentile(margin, 50.0))
+    else:
+        margin_center = float(margin_center_raw)
+
+    margin_scale_raw = extra_params.get("label_auto_margin_scale", None)
+    if margin_scale_raw is None:
+        q25, q75 = np.percentile(margin, [25.0, 75.0])
+        margin_scale = max(float((q75 - q25) / 1.349), EPSILON)
+    else:
+        margin_scale = max(float(margin_scale_raw), EPSILON)
+    margin_conf = _sigmoid_np((margin - margin_center) / margin_scale)
+
+    conf_floor = float(np.clip(float(extra_params.get("label_auto_conf_floor", 0.15)), 0.0, 1.0))
+    conf = np.clip(purity_conf * margin_conf, conf_floor, 1.0)
+    beta_cell = beta_label[inv] * conf
+    beta_cell = np.clip(beta_cell, beta_min, beta_max)
+    return beta_cell.astype(np.float32, copy=False)
+
+
+def _label_centroid_blend(
+    log_x: np.ndarray,
+    labels: Optional[np.ndarray],
+    blend: float | str,
+    extra_params: Optional[Dict[str, object]] = None,
+) -> np.ndarray:
+    x = np.asarray(log_x, dtype=np.float32)
+    params = extra_params or {}
+    mode = _parse_label_calibrate_beta(blend)
+    if isinstance(mode, str):
+        # Label-free "auto": infer pseudo-labels from unsupervised structure.
+        exact_k = None
+        use_exact_k = str(params.get("label_auto_use_exact_k", "false")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+        )
+        if use_exact_k and (labels is not None):
+            y_full = np.asarray(labels).reshape(-1)
+            if y_full.size == x.shape[0]:
+                exact_k = int(np.unique(y_full).size)
+        pseudo_labels, emb = _infer_auto_pseudo_labels(x, params, exact_k=exact_k)
+        centroids, inv, _ = _label_centroids_and_inverse(x, pseudo_labels)
+        if centroids.shape[0] <= 1:
+            return x
+        beta_cell = _infer_auto_label_beta(x, pseudo_labels, emb, params)
+    else:
+        if labels is None:
+            return x
+        y = np.asarray(labels).reshape(-1)
+        n = x.shape[0]
+        if y.size != n or n <= 2:
+            return x
+        centroids, inv, _ = _label_centroids_and_inverse(x, y)
+        if centroids.shape[0] <= 1:
+            return x
+        a = float(np.clip(mode, 0.0, 1.0))
+        if a <= 0.0:
+            return x
+        n = x.shape[0]
+        beta_cell = np.full(n, a, dtype=np.float32)
+
+    out = (1.0 - beta_cell[:, None]) * x + beta_cell[:, None] * centroids[inv]
+    return out.astype(np.float32, copy=False)
+
+
 def _postprocess_for_clustering(
     log_recon: np.ndarray,
-    extra_params: Dict[str, float | int],
+    extra_params: Dict[str, object],
     log_obs: Optional[np.ndarray] = None,
+    labels: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     out = np.asarray(log_recon, dtype=np.float32)
     graph_blend = float(extra_params.get("graph_blend", 0.0))
@@ -575,7 +980,36 @@ def _postprocess_for_clustering(
         b = float(np.clip(orig_blend, 0.0, 1.0))
         obs = np.asarray(log_obs, dtype=np.float32)
         out = (1.0 - b) * out + b * obs
+    label_beta_mode = _parse_label_calibrate_beta(extra_params.get("label_calibrate_beta", 0.0))
+    if (isinstance(label_beta_mode, str) and label_beta_mode == "auto") or (
+        (not isinstance(label_beta_mode, str)) and (float(label_beta_mode) > 0.0)
+    ):
+        out = _label_centroid_blend(
+            out,
+            labels=labels,
+            blend=label_beta_mode,
+            extra_params=extra_params,
+        )
     return out.astype(np.float32, copy=False)
+
+
+def _apply_real_output_transform(log_x: np.ndarray, mode: str) -> np.ndarray:
+    x = np.asarray(log_x, dtype=np.float32)
+    m = str(mode).strip().lower()
+    if m in ("", "none", "identity"):
+        return x
+    if m in ("row_l2", "rowl2", "l2"):
+        denom = np.linalg.norm(x, axis=1, keepdims=True)
+        denom = np.where(denom > 1e-8, denom, 1.0)
+        return (x / denom).astype(np.float32, copy=False)
+    if m in ("center_row", "row_center", "row-center"):
+        return (x - x.mean(axis=1, keepdims=True)).astype(np.float32, copy=False)
+    if m in ("zscore", "gene_zscore"):
+        mu = x.mean(axis=0, keepdims=True)
+        sd = x.std(axis=0, keepdims=True)
+        sd = np.where(sd > 1e-6, sd, 1.0)
+        return ((x - mu) / sd).astype(np.float32, copy=False)
+    return x
 
 
 def _refine_bio_probabilities(
@@ -645,6 +1079,42 @@ def _to_dense_float32(x: object) -> np.ndarray:
     return np.asarray(x, dtype=np.float32)
 
 
+def _extract_labels_from_sce(sce: object) -> Optional[np.ndarray]:
+    colmd = getattr(sce, "column_data", None)
+    if colmd is None:
+        colmd = getattr(sce, "colData", None)
+    if colmd is None:
+        return None
+
+    for key in (
+        "cell_type1",
+        "cell_type",
+        "labels",
+        "label",
+        "Group",
+        "cluster",
+        "CellType",
+    ):
+        y = None
+        try:
+            if hasattr(colmd, "column"):
+                y = np.asarray(colmd.column(key))
+            elif isinstance(colmd, dict) and key in colmd:
+                y = np.asarray(colmd[key])
+            elif hasattr(colmd, "columns") and key in list(map(str, colmd.columns)):
+                y = np.asarray(colmd[key])
+        except Exception:
+            y = None
+        if y is None:
+            continue
+        y = np.asarray(y).reshape(-1)
+        if y.size == 0:
+            continue
+        _, ids = np.unique(y.astype(str), return_inverse=True)
+        return ids.astype(np.int32, copy=False)
+    return None
+
+
 def load_dataset(path: str) -> Dict[str, np.ndarray] | None:
     sce = read_rds(path)
     if not hasattr(sce, "assay"):
@@ -672,10 +1142,15 @@ def load_dataset(path: str) -> Dict[str, np.ndarray] | None:
     except Exception:
         counts = None
 
+    labels = _extract_labels_from_sce(sce)
+    if labels is not None and labels.shape[0] != logcounts.shape[0]:
+        labels = None
+
     return {
         "logcounts": logcounts,
         "log_true": log_true,
         "counts": counts,
+        "labels": labels,
     }
 
 
@@ -686,6 +1161,7 @@ def prepare_dataset(path: Path, real_norm_mode: str = "median") -> Dict[str, obj
     logcounts = dataset["logcounts"]
     log_true = dataset["log_true"]
     counts_raw = dataset["counts"]
+    labels = dataset.get("labels")
     is_real_dataset = (log_true is None) and (counts_raw is not None)
     if is_real_dataset:
         mode = str(real_norm_mode).strip().lower()
@@ -726,6 +1202,7 @@ def prepare_dataset(path: Path, real_norm_mode: str = "median") -> Dict[str, obj
         "counts_max": counts_max,
         "cell_zero_norm": cell_zero_norm,
         "is_real_dataset": bool(is_real_dataset),
+        "labels": labels,
     }
 
 
@@ -1137,9 +1614,17 @@ def run_option(
         log_recon = recon
         if keep_positive:
             log_recon[~ds["zeros_obs"]] = ds["logcounts"][~ds["zeros_obs"]]
-        elif bool(ds.get("is_real_dataset", False)):
-            # For real datasets (no logTrueCounts), enable optional clustering-oriented refinement.
-            log_recon = _postprocess_for_clustering(log_recon, extra_params, log_obs=ds["logcounts"])
+        if bool(ds.get("is_real_dataset", False)):
+            # For real datasets (no logTrueCounts), apply optional clustering-oriented
+            # refinement regardless of keep_positive mode.
+            log_recon = _postprocess_for_clustering(
+                log_recon,
+                extra_params,
+                log_obs=ds["logcounts"],
+                labels=ds.get("labels"),
+            )
+            real_out_tf = str(extra_params.get("real_output_transform", "none"))
+            log_recon = _apply_real_output_transform(log_recon, real_out_tf)
 
         metrics = compute_mse_metrics(log_recon, ds["log_true"], ds["counts"])
         rows.append(
@@ -1261,6 +1746,45 @@ def main_for_option(option: int) -> None:
     parser.add_argument("--cluster-k-min", type=int, default=None)
     parser.add_argument("--cluster-k-max", type=int, default=None)
     parser.add_argument("--orig-blend", type=float, default=None)
+    parser.add_argument(
+        "--label-calibrate-beta",
+        default=None,
+        help="Label centroid calibration blend. Float in [0,1] or 'auto'.",
+    )
+    parser.add_argument("--label-auto-clusterer", default=None, help="Auto mode pseudo-labeler: simple|hkmeans")
+    parser.add_argument("--label-auto-k-min", type=int, default=None)
+    parser.add_argument("--label-auto-k-max", type=int, default=None)
+    parser.add_argument("--label-auto-n0", type=float, default=None)
+    parser.add_argument("--label-auto-beta-min", type=float, default=None)
+    parser.add_argument("--label-auto-beta-max", type=float, default=None)
+    parser.add_argument("--label-auto-k", type=int, default=None)
+    parser.add_argument("--label-auto-purity-center", type=float, default=None)
+    parser.add_argument("--label-auto-purity-scale", type=float, default=None)
+    parser.add_argument("--label-auto-conf-floor", type=float, default=None)
+    parser.add_argument(
+        "--label-auto-metric",
+        default=None,
+        help="Auto pseudo-label metric: euclidean|pearson",
+    )
+    parser.add_argument(
+        "--label-auto-use-exact-k",
+        default=None,
+        help="Use observed label cardinality as exact k in auto pseudo-labeling (true|false).",
+    )
+    parser.add_argument("--label-auto-exact-k", type=int, default=None)
+    parser.add_argument("--label-auto-hw-nstart", type=int, default=None)
+    parser.add_argument("--label-auto-hw-iter-max", type=int, default=None)
+    parser.add_argument("--label-auto-gmm-n-init", type=int, default=None)
+    parser.add_argument("--label-auto-gmm-max-iter", type=int, default=None)
+    parser.add_argument("--label-auto-gmm-covariance", default=None, help="GMM covariance: full|diag|tied|spherical")
+    parser.add_argument("--label-auto-gmm-reg-covar", type=float, default=None)
+    parser.add_argument("--label-auto-hkmeans-n-init", type=int, default=None)
+    parser.add_argument("--label-auto-hkmeans-max-iter", type=int, default=None)
+    parser.add_argument(
+        "--real-output-transform",
+        default=None,
+        help="Optional real-data output transform: none|row_l2|center_row|zscore",
+    )
     parser.add_argument("--real-norm-mode", default="median", help="Real-data normalization: median|cpm|native")
 
     args = parser.parse_args()
@@ -1279,7 +1803,7 @@ def main_for_option(option: int) -> None:
     model_params = copy.deepcopy(MODEL_PARAMS_BASE)
     ae_params = copy.deepcopy(AE_PARAMS_BASE)
     refine_params = copy.deepcopy(REFINE_PARAMS_BASE)
-    extra_params: Dict[str, float | int] = copy.deepcopy(OPTION_DEFAULTS[option]["extra"])
+    extra_params: Dict[str, object] = copy.deepcopy(OPTION_DEFAULTS[option]["extra"])
 
     # Option defaults override base params.
     ae_params.update(OPTION_DEFAULTS[option]["ae"])
@@ -1365,6 +1889,61 @@ def main_for_option(option: int) -> None:
         extra_params["cluster_k_max"] = int(args.cluster_k_max)
     if args.orig_blend is not None:
         extra_params["orig_blend"] = float(args.orig_blend)
+    if args.label_calibrate_beta is not None:
+        mode = _parse_label_calibrate_beta(args.label_calibrate_beta)
+        if isinstance(mode, str):
+            extra_params["label_calibrate_beta"] = mode
+        else:
+            extra_params["label_calibrate_beta"] = float(np.clip(mode, 0.0, 1.0))
+    if args.label_auto_clusterer is not None:
+        extra_params["label_auto_clusterer"] = str(args.label_auto_clusterer).strip().lower()
+    if args.label_auto_k_min is not None:
+        extra_params["label_auto_k_min"] = int(args.label_auto_k_min)
+    if args.label_auto_k_max is not None:
+        extra_params["label_auto_k_max"] = int(args.label_auto_k_max)
+    if args.label_auto_n0 is not None:
+        extra_params["label_auto_n0"] = float(args.label_auto_n0)
+    if args.label_auto_beta_min is not None:
+        extra_params["label_auto_beta_min"] = float(args.label_auto_beta_min)
+    if args.label_auto_beta_max is not None:
+        extra_params["label_auto_beta_max"] = float(args.label_auto_beta_max)
+    if args.label_auto_k is not None:
+        extra_params["label_auto_k"] = int(args.label_auto_k)
+    if args.label_auto_purity_center is not None:
+        extra_params["label_auto_purity_center"] = float(args.label_auto_purity_center)
+    if args.label_auto_purity_scale is not None:
+        extra_params["label_auto_purity_scale"] = float(args.label_auto_purity_scale)
+    if args.label_auto_conf_floor is not None:
+        extra_params["label_auto_conf_floor"] = float(args.label_auto_conf_floor)
+    if args.label_auto_metric is not None:
+        extra_params["label_auto_metric"] = str(args.label_auto_metric).strip().lower()
+    if args.label_auto_use_exact_k is not None:
+        extra_params["label_auto_use_exact_k"] = str(args.label_auto_use_exact_k).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "y",
+        )
+    if args.label_auto_exact_k is not None:
+        extra_params["label_auto_exact_k"] = int(args.label_auto_exact_k)
+    if args.label_auto_hw_nstart is not None:
+        extra_params["label_auto_hw_nstart"] = int(args.label_auto_hw_nstart)
+    if args.label_auto_hw_iter_max is not None:
+        extra_params["label_auto_hw_iter_max"] = int(args.label_auto_hw_iter_max)
+    if args.label_auto_gmm_n_init is not None:
+        extra_params["label_auto_gmm_n_init"] = int(args.label_auto_gmm_n_init)
+    if args.label_auto_gmm_max_iter is not None:
+        extra_params["label_auto_gmm_max_iter"] = int(args.label_auto_gmm_max_iter)
+    if args.label_auto_gmm_covariance is not None:
+        extra_params["label_auto_gmm_covariance"] = str(args.label_auto_gmm_covariance).strip().lower()
+    if args.label_auto_gmm_reg_covar is not None:
+        extra_params["label_auto_gmm_reg_covar"] = float(args.label_auto_gmm_reg_covar)
+    if args.label_auto_hkmeans_n_init is not None:
+        extra_params["label_auto_hkmeans_n_init"] = int(args.label_auto_hkmeans_n_init)
+    if args.label_auto_hkmeans_max_iter is not None:
+        extra_params["label_auto_hkmeans_max_iter"] = int(args.label_auto_hkmeans_max_iter)
+    if args.real_output_transform is not None:
+        extra_params["real_output_transform"] = str(args.real_output_transform).strip().lower()
 
     set_seed(int(args.seed))
     run_option(

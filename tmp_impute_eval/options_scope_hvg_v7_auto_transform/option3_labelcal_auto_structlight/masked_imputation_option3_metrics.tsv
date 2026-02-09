@@ -1,0 +1,6 @@
+dataset	mse	mse_biozero	mse_dropout	mse_non_zero
+blakeley_top1000hvg	nan	nan	nan	nan
+darmanis_top1000hvg	nan	nan	nan	nan
+deng_top1000hvg	nan	nan	nan	nan
+pollen_top1000hvg	nan	nan	nan	nan
+usoskin_top1000hvg	nan	nan	nan	nan

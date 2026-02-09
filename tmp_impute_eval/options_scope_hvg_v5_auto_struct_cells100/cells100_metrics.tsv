@@ -1,0 +1,4 @@
+run_name	option	cells100_avg_mse	cells100_avg_biozero	cells100_runtime_sec	meets_mse_le_1	meets_biozero_le_thresh	meets_joint_cells100
+option3_labelcal_auto	3	0.8446196019649506	0.15017688274383545	12.80637150403345	1	1	1
+option3_labelcal_auto_struct1	3	0.864459753036499	0.14669188112020493	17.104607290995773	1	1	1
+option3_labelcal_auto_struct2	3	0.8852005004882812	0.1397720966488123	18.39315934397746	1	1	1

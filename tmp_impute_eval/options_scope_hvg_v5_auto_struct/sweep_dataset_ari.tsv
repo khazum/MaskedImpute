@@ -1,0 +1,16 @@
+run_name	option	dataset	ari	benchmark_best_ari	beats_or_ties_benchmark_best
+option3_labelcal_auto	3	blakeley_top1000hvg	1.0	1.0	1
+option3_labelcal_auto	3	darmanis_top1000hvg	0.8258	0.9589	0
+option3_labelcal_auto	3	deng_top1000hvg	0.5759	0.56818	1
+option3_labelcal_auto	3	pollen_top1000hvg	0.9373	0.9661	0
+option3_labelcal_auto	3	usoskin_top1000hvg	0.9222	0.9275	0
+option3_labelcal_auto_struct1	3	blakeley_top1000hvg	0.7832	1.0	0
+option3_labelcal_auto_struct1	3	darmanis_top1000hvg	0.8107000000000001	0.9589	0
+option3_labelcal_auto_struct1	3	deng_top1000hvg	0.5468	0.56818	0
+option3_labelcal_auto_struct1	3	pollen_top1000hvg	0.9503	0.9661	0
+option3_labelcal_auto_struct1	3	usoskin_top1000hvg	0.9224	0.9275	0
+option3_labelcal_auto_struct2	3	blakeley_top1000hvg	0.8823	1.0	0
+option3_labelcal_auto_struct2	3	darmanis_top1000hvg	0.8107000000000001	0.9589	0
+option3_labelcal_auto_struct2	3	deng_top1000hvg	0.5468	0.56818	0
+option3_labelcal_auto_struct2	3	pollen_top1000hvg	0.9503	0.9661	0
+option3_labelcal_auto_struct2	3	usoskin_top1000hvg	0.9224	0.9275	0

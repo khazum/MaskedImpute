@@ -1,0 +1,2 @@
+run_name	option	avg_ari	wins_vs_benchmark_best	cells100_avg_mse	cells100_avg_biozero	meets_mse_le_1	meets_biozero_le_thresh	meets_joint_cells100
+option3_labelcal_auto	3	0.8522399999999999	2	0.8446196019649506	0.15017688274383545	1	1	1

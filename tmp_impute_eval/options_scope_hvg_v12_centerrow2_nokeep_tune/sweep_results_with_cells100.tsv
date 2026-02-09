@@ -1,0 +1,5 @@
+run_name	option	avg_ari	wins_vs_benchmark_best	cells100_avg_mse	cells100_avg_biozero	meets_mse_le_1	meets_biozero_le_thresh	meets_joint_cells100
+option3_labelcal_auto_structlight_centerrow_2_keep	3	0.85118	2	0.8545357435941696	0.14810816943645477	1	1	1
+option3_labelcal_auto_structlight_centerrow_2	3	0.80044	1	1.399198591709137	0.14810816943645477	0	1	0
+option3_labelcal_auto_structlight_centerrow_2_tuneA	3	0.80044	1	1.3946940898895264	0.14842848107218742	0	1	0
+option3_labelcal_auto_structlight_centerrow_2_tuneB	3	0.82358	1	1.399198591709137	0.14810816943645477	0	1	0

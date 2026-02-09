@@ -1,0 +1,4 @@
+run_name	option	avg_mse	avg_biozero	avg_ari	wins_vs_benchmark_best	meets_mse	meets_biozero	meets_joint	runtime_sec	returncode	error
+option3_labelcal_auto_structlight_centerrow	3	nan	nan	0.8785000000000001	2	0	0	0	63.51133499003481	0	
+option3_labelcal_auto_structlight_centerrow_pearson	3	nan	nan	0.87782	2	0	0	0	64.15638495102758	0	
+option3_labelcal_auto_structlight_centerrow_gmm	3	nan	nan	0.88006	2	0	0	0	334.6795267339912	0	

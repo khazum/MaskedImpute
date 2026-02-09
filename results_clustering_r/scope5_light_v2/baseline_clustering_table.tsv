@@ -1,0 +1,6 @@
+dataset	method	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	error	n_cells	n_genes	label_source
+blakeley_top1000markers	baseline	0.2714	0	1	0	1	0	1	0	2.589	0	1	NA	30	935	cell_type1
+darmanis_top1000markers	baseline	0.2392	0	0.6762	0	0.7904	0	0.8667	0	0.269	0	1	NA	420	1000	cell_type1
+deng_top1000markers	baseline	0.3095	0	0.5566	0	0.7915	0	0.8545	0	0.188000000000001	0	1	NA	268	1000	cell_type1
+pollen_top1000markers	baseline	0.4706	0	0.9316	0	0.9398	0	0.9231	0	0.175000000000001	0	1	NA	299	1000	cell_type1
+usoskin_top1000markers	baseline	0.25	0	0.745	0	0.7305	0	0.8698	0	0.251000000000001	0	1	NA	622	1000	cell_type1

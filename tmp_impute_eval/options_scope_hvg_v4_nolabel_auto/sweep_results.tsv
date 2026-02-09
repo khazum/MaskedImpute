@@ -1,0 +1,8 @@
+run_name	option	avg_mse	avg_biozero	avg_ari	wins_vs_benchmark_best	meets_mse	meets_biozero	meets_joint	runtime_sec	returncode	error
+option3_default	3	nan	nan	0.8485799999999999	1	0	0	0	39.26081907696789	0	
+option3_biofocus	3	nan	nan	0.8511799999999999	1	0	0	0	42.619018575001974	0	
+option3_midbio	3	nan	nan	0.8504133333333334	1	0	0	0	39.73954037099611	0	
+option3_ari	3	nan	nan	0.8470599999999999	1	0	0	0	39.09024346305523	0	
+option3_labelcal_beta03	3	nan	nan	0.8949	3	0	0	0	41.58039783296408	0	
+option3_labelcal_beta04	3	nan	nan	0.90106	4	0	0	0	39.25843301200075	0	
+option3_labelcal_auto	3	nan	nan	0.8522399999999999	2	0	0	0	47.93874434195459	0	

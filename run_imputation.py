@@ -18,6 +18,7 @@ factors (libSizeTrueCounts/scaleFactorTrueCounts or stored sizeFactor values).
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib
 import inspect
 import os
@@ -40,7 +41,14 @@ except Exception as exc:  # pragma: no cover - import error surfaced for user
     ) from exc
 
 EPSILON = 1e-6
-METHODS = ("magic", "dca", "autoclass", "low_mse", "balanced_mse")
+METHODS = (
+    "magic",
+    "dca",
+    "autoclass",
+    "low_mse",
+    "balanced_mse",
+    "option3_labelcal_auto_structlight_centerrow",
+)
 
 
 def _masked_mse(diff: np.ndarray, mask: np.ndarray) -> float:
@@ -598,6 +606,18 @@ def _import_masked27():
     return mi27
 
 
+def _import_masked_options_base():
+    try:
+        import masked_imputation_options_base as mio
+    except Exception as exc:  # pragma: no cover - import error surfaced for user
+        raise SystemExit(
+            "Failed to import masked_imputation_options_base. Ensure dependencies (torch, numpy) are available.\n"
+            f"Python: {sys.executable}\n"
+            f"Error: {exc}\n"
+        ) from exc
+    return mio
+
+
 def _counts_obs_from_logcounts(logcounts: np.ndarray, counts: Optional[np.ndarray]) -> np.ndarray:
     if counts is None:
         return np.clip(np.expm1(logcounts * np.log(2.0)), 0.0, None).astype(np.float32)
@@ -610,6 +630,91 @@ def _cell_zero_norm(zeros_obs: np.ndarray) -> np.ndarray:
     cz_hi = float(np.percentile(cell_zero_frac, 95.0))
     cz_span = max(cz_hi - cz_lo, EPSILON)
     return np.clip((cell_zero_frac - cz_lo) / cz_span, 0.0, 1.0).astype(np.float32)
+
+
+def run_option3_labelcal_auto_structlight_centerrow(
+    logcounts: np.ndarray,
+    counts: Optional[np.ndarray],
+    *,
+    seed: int,
+) -> np.ndarray:
+    import torch
+
+    mio = _import_masked_options_base()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    counts_obs = _counts_obs_from_logcounts(logcounts, counts)
+    zeros_obs = counts_obs <= 0.0
+    counts_max = counts_obs.max(axis=0)
+    cell_zero_norm = _cell_zero_norm(zeros_obs)
+
+    bio_params = copy.deepcopy(mio.BIO_PARAMS_BASE)
+    model_params = copy.deepcopy(mio.MODEL_PARAMS_BASE)
+    ae_params = copy.deepcopy(mio.AE_PARAMS_BASE)
+    refine_params = copy.deepcopy(mio.REFINE_PARAMS_BASE)
+    extra_params = copy.deepcopy(mio.OPTION_DEFAULTS[3]["extra"])
+
+    # Option-3 defaults.
+    ae_params.update(mio.OPTION_DEFAULTS[3]["ae"])
+    refine_params.update(mio.OPTION_DEFAULTS[3]["refine"])
+
+    # option3_labelcal_auto_structlight_centerrow configuration.
+    ae_params["epochs"] = 120
+    ae_params["p_nz"] = 0.4
+    ae_params["loss_bio_weight"] = 2.8
+    ae_params["bio_reg_weight"] = 1.4
+
+    refine_params["prior_blend"] = 0.75
+    refine_params["update_min_dropout_prob"] = 0.8
+
+    extra_params.update(
+        {
+            "gate_loss_weight": 0.65,
+            "expert_bio_weight": 0.55,
+            "expert_drop_weight": 0.15,
+            "gate_margin": 0.2,
+            "gate_margin_weight": 0.08,
+            "latent_consistency_weight": 0.02,
+            "full_recon_weight": 0.02,
+            "cell_sim_weight": 0.005,
+            "label_calibrate_beta": "auto",
+            "label_auto_clusterer": "simple",
+            "real_output_transform": "center_row",
+        }
+    )
+
+    mio.set_seed(int(seed))
+    p_bio = mio.splat_cellaware_bio_prob(
+        counts=counts_obs,
+        zeros_obs=zeros_obs,
+        disp_mode=str(bio_params["disp_mode"]),
+        use_cell_factor=bool(bio_params["use_cell_factor"]),
+    )
+    if float(bio_params["cell_zero_weight"]) > 0.0:
+        cell_w = np.clip(
+            float(bio_params["cell_zero_weight"]) * cell_zero_norm,
+            0.0,
+            1.0,
+        )
+        p_bio = p_bio * (1.0 - cell_w[:, None])
+
+    log_recon, _ = mio.train_autoencoder_reconstruct(
+        logcounts=logcounts,
+        counts_max=counts_max,
+        p_bio=p_bio,
+        device=device,
+        option=3,
+        model_params=model_params,
+        ae_params=ae_params,
+        refine_params=refine_params,
+        extra_params=extra_params,
+        refine_enabled=True,
+    )
+
+    # Keep observed non-zero entries fixed, matching default keep_positive behavior.
+    log_imputed = log_recon.copy()
+    log_imputed[~zeros_obs] = logcounts[~zeros_obs]
+    return log_imputed
 
 
 def run_masked26(
@@ -760,13 +865,13 @@ def main() -> None:
     parser.add_argument(
         "--methods",
         default=None,
-        help="Comma-separated list (magic,dca,autoclass,low_mse,balanced_mse) or 'all'.",
+        help="Comma-separated list (magic,dca,autoclass,low_mse,balanced_mse,option3_labelcal_auto_structlight_centerrow) or 'all'.",
     )
     parser.add_argument(
         "methods_arg",
         nargs="?",
         default=None,
-        help="Optional methods list (magic,dca,autoclass,low_mse,balanced_mse) or 'all'.",
+        help="Optional methods list (magic,dca,autoclass,low_mse,balanced_mse,option3_labelcal_auto_structlight_centerrow) or 'all'.",
     )
     parser.add_argument("--n-jobs", type=int, default=1, help="MAGIC n_jobs value")
     parser.add_argument("--n-repeat", type=int, default=10, help="Number of repeats per method.")
@@ -886,6 +991,12 @@ def main() -> None:
                             logcounts,
                             counts,
                             bio_reg_weight=1.0,
+                            seed=42 + rep,
+                        )
+                    elif method == "option3_labelcal_auto_structlight_centerrow":
+                        log_imp = run_option3_labelcal_auto_structlight_centerrow(
+                            logcounts,
+                            counts,
                             seed=42 + rep,
                         )
                     else:

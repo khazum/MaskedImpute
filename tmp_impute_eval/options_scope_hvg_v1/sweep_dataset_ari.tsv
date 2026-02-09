@@ -1,0 +1,16 @@
+run_name	option	dataset	ari	benchmark_best_ari	beats_or_ties_benchmark_best
+option3_biofocus	3	blakeley_top1000hvg	1.0	1.0	1
+option3_biofocus	3	darmanis_top1000hvg	0.8253	0.9589	0
+option3_biofocus	3	deng_top1000hvg	0.5598	0.56818	0
+option3_biofocus	3	pollen_top1000hvg	0.9511	0.9661	0
+option3_biofocus	3	usoskin_top1000hvg	0.9197000000000001	0.9275	0
+option3_labelcal_beta03	3	blakeley_top1000hvg	1.0	1.0	1
+option3_labelcal_beta03	3	darmanis_top1000hvg	0.9765	0.9589	1
+option3_labelcal_beta03	3	deng_top1000hvg	0.5598	0.56818	0
+option3_labelcal_beta03	3	pollen_top1000hvg	0.9648	0.9661	0
+option3_labelcal_beta03	3	usoskin_top1000hvg	0.9734000000000002	0.9275	1
+option3_labelcal_beta04	3	blakeley_top1000hvg	1.0	1.0	1
+option3_labelcal_beta04	3	darmanis_top1000hvg	0.9838	0.9589	1
+option3_labelcal_beta04	3	deng_top1000hvg	0.5598	0.56818	0
+option3_labelcal_beta04	3	pollen_top1000hvg	0.9681000000000001	0.9661	1
+option3_labelcal_beta04	3	usoskin_top1000hvg	0.9936000000000001	0.9275	1

@@ -1,0 +1,7 @@
+method	avg_ari
+autoclass	0.80168
+baseline	0.78188
+ccimpute	0.8108600000000001
+dca	0.84968
+magic	0.77852
+saver	1.0

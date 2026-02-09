@@ -1,0 +1,4 @@
+run_name	option	cells100_avg_mse	cells100_avg_biozero	cells100_runtime_sec	meets_mse_le_1	meets_biozero_le_thresh	meets_joint_cells100
+option3_labelcal_auto_structlight_centerrow	3	0.8545357435941696	0.14810816943645477	17.148415177012794	1	1	1
+option3_labelcal_auto_structlight_centerrow_exactk	3	0.8545357435941696	0.14810816943645477	17.108187654986978	1	1	1
+option3_labelcal_auto_structlight_centerrow_2	3	0.8545357435941696	0.14810816943645477	16.751805704960134	1	1	1
