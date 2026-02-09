@@ -1,0 +1,147 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{Hicks2018MissingData,Luecken2019BestPractices,VanDeSande2023DrugDiscovery}
+\citation{Brennecke2013TechnicalNoise,Hicks2018MissingData}
+\citation{Li2018scImpute,SarkarStephens2021SeparatingMeasurement,Svensson2020NotZeroInflated,Linderman2022ZeroPreserving}
+\citation{Luecken2019BestPractices,Hou2020ImputationBenchmark}
+\citation{vanDijk2018MAGIC}
+\citation{Li2018scImpute,Linderman2022ZeroPreserving,Hou2020ImputationBenchmark}
+\citation{Huang2018SAVER}
+\citation{Li2018scImpute}
+\citation{Eraslan2019DCA,Li2022AutoClass,Hou2020ImputationBenchmark}
+\citation{Eraslan2019DCA}
+\citation{Li2022AutoClass}
+\citation{Eraslan2019DCA}
+\citation{Li2022AutoClass}
+\citation{Linderman2022ZeroPreserving,Hou2020ImputationBenchmark}
+\citation{He2022MAE,Devlin2019BERT}
+\@writefile{toc}{\contentsline {section}{Abstract}{1}{section*.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Introduction}{1}{section.2}\protected@file@percent }
+\citation{Huang2018SAVER}
+\citation{Li2018scImpute}
+\citation{Jiang2022ZeroInflationReview}
+\citation{vanDijk2018MAGIC}
+\citation{Svensson2020NotZI}
+\citation{Malec2022ccImpute}
+\citation{Kiselev2017SC3}
+\citation{Eraslan2019DCA}
+\citation{Svensson2020NotZI}
+\citation{Li2022AutoClass}
+\citation{blakeley2015defining}
+\citation{pollen2014low}
+\citation{darmanis2015survey}
+\citation{usoskin2015unbiased}
+\citation{li2017reference}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Related Works}{2}{section.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Statistical and Probabilistic Models}{2}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Graph-Based and Diffusion Methods}{2}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Deep Learning and Autoencoders}{2}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Self-Supervised and Masked Learning}{2}{subsection.3.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Methods}{2}{section.4}\protected@file@percent }
+\newlabel{sec:methods}{{4}{2}{Methods}{section.4}{}}
+\newlabel{sec:methods@cref}{{[section][4][]4}{[1][2][]2}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Experimental scRNA-seq Datasets}{2}{subsection.4.1}\protected@file@percent }
+\citation{lun2016step}
+\citation{blakeley2015defining}
+\citation{li2017reference}
+\citation{pollen2014low}
+\citation{darmanis2015survey}
+\citation{usoskin2015unbiased}
+\citation{zappia2017splatter}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Synthetic Data Generation}{3}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:synthetic_data}{{4.2}{3}{Synthetic Data Generation}{subsection.4.2}{}}
+\newlabel{sec:synthetic_data@cref}{{[subsection][2][4]4.2}{[1][3][]3}}
+\@writefile{toc}{\contentsline {paragraph}{Notation.}{3}{section*.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Model Architecture}{3}{subsection.4.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Gene Scaling}{3}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:scaling}{{4.4}{3}{Gene Scaling}{subsection.4.4}{}}
+\newlabel{sec:scaling@cref}{{[subsection][4][4]4.4}{[1][3][]3}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Masked Denoising Objective}{3}{subsection.4.5}\protected@file@percent }
+\newlabel{sec:masking}{{4.5}{3}{Masked Denoising Objective}{subsection.4.5}{}}
+\newlabel{sec:masking@cref}{{[subsection][5][4]4.5}{[1][3][]3}}
+\@writefile{toc}{\contentsline {paragraph}{Noise for masked zeros.}{3}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Loss.}{3}{section*.8}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Summary of the experimental scRNA-seq datasets used for benchmarking. $N$ denotes the number of samples (cells), $M$ the initial number of features (genes) prior to preprocessing, and $K$ the number of distinct cell clusters reported in the original study. Datasets are available at: \url  {https://github.com/khazum/ccImputeDatasets}}}{4}{table.caption.5}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:datasets}{{1}{4}{Summary of the experimental scRNA-seq datasets used for benchmarking. $N$ denotes the number of samples (cells), $M$ the initial number of features (genes) prior to preprocessing, and $K$ the number of distinct cell clusters reported in the original study. Datasets are available at: \ccimputedatasetslink }{table.caption.5}{}}
+\newlabel{tab:datasets@cref}{{[table][1][]1}{[1][3][]4}}
+\@writefile{toc}{\contentsline {paragraph}{Dropout gate and expert regularization.}{4}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{MaskClass configuration.}{4}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.6}Biological Zero Probability Estimation}{4}{subsection.4.6}\protected@file@percent }
+\newlabel{sec:biozero}{{4.6}{4}{Biological Zero Probability Estimation}{subsection.4.6}{}}
+\newlabel{sec:biozero@cref}{{[subsection][6][4]4.6}{[1][4][]4}}
+\@writefile{toc}{\contentsline {paragraph}{Cell sparsity adjustment.}{4}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Iterative refinement from the dropout gate.}{4}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.7}Training Details}{4}{subsection.4.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.8}Label-Free Structure Calibration for Clustering}{4}{subsection.4.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.9}Evaluation Metrics}{5}{subsection.4.9}\protected@file@percent }
+\newlabel{sec:evaluation}{{4.9}{5}{Evaluation Metrics}{subsection.4.9}{}}
+\newlabel{sec:evaluation@cref}{{[subsection][9][4]4.9}{[1][5][]5}}
+\@writefile{toc}{\contentsline {paragraph}{(i) Denoising accuracy (mean squared error; MSE).}{5}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{(ii) Runtime scaling.}{5}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{(iii) Downstream clustering.}{5}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.10}Algorithm Outline}{5}{subsection.4.10}\protected@file@percent }
+\@writefile{loa}{\contentsline {algorithm}{\numberline {1}{\ignorespaces MaskClass training and imputation.}}{5}{algorithm.1}\protected@file@percent }
+\newlabel{alg:maskclass}{{1}{5}{MaskClass training and imputation}{algorithm.1}{}}
+\newlabel{alg:maskclass@cref}{{[algorithm][1][]1}{[1][5][]5}}
+\bibdata{references}
+\bibcite{blakeley2015defining}{{1}{2015}{{Blakeley et~al\mbox  {.}}}{{}}}
+\bibcite{Brennecke2013TechnicalNoise}{{2}{2013}{{Brennecke et~al\mbox  {.}}}{{}}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces \textbf  {MaskClass overview.} Starting from logcounts $\mathbf  {X}_{\log }$ and counts $\mathbf  {C}$, we estimate an initial biozero probability $p^{(0)}_{\mathrm  {bio}}(i,j)$ for observed zeros. During self-supervised training, non-zeros are masked at a fixed rate, while zeros are masked with probability proportional to $p_{\mathrm  {bio}}$; masked zeros are corrupted by injecting noise, and masked non-zeros are replaced by zero in the scaled space. A mixture-of-experts autoencoder reconstructs the scaled matrix with a dropout gate that estimates entry-wise dropout probabilities. The gate is trained self-supervisedly and is also used to iteratively refine $p_{\mathrm  {bio}}$, reducing the influence of likely dropouts. For downstream clustering on real data, we optionally apply a label-free centroid calibration and per-cell centering to the reconstructed profiles.}}{6}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:maskimpute_pipeline}{{1}{6}{\textbf {MaskClass overview.} Starting from logcounts $\mathbf {X}_{\log }$ and counts $\mathbf {C}$, we estimate an initial biozero probability $p^{(0)}_{\mathrm {bio}}(i,j)$ for observed zeros. During self-supervised training, non-zeros are masked at a fixed rate, while zeros are masked with probability proportional to $p_{\mathrm {bio}}$; masked zeros are corrupted by injecting noise, and masked non-zeros are replaced by zero in the scaled space. A mixture-of-experts autoencoder reconstructs the scaled matrix with a dropout gate that estimates entry-wise dropout probabilities. The gate is trained self-supervisedly and is also used to iteratively refine $p_{\mathrm {bio}}$, reducing the influence of likely dropouts. For downstream clustering on real data, we optionally apply a label-free centroid calibration and per-cell centering to the reconstructed profiles}{figure.caption.13}{}}
+\newlabel{fig:maskimpute_pipeline@cref}{{[figure][1][]1}{[1][5][]6}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Experiments and Results}{6}{section.5}\protected@file@percent }
+\newlabel{sec:experiments}{{5}{6}{Experiments and Results}{section.5}{}}
+\newlabel{sec:experiments@cref}{{[section][5][]5}{[1][6][]6}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Denoising Accuracy on Synthetic Data}{6}{subsection.5.1}\protected@file@percent }
+\newlabel{sec:denoising_results}{{5.1}{6}{Denoising Accuracy on Synthetic Data}{subsection.5.1}{}}
+\newlabel{sec:denoising_results@cref}{{[subsection][1][5]5.1}{[1][6][]6}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Runtime Scaling on Synthetic Data (Linear Scale)}{6}{subsection.5.2}\protected@file@percent }
+\newlabel{sec:runtime_linear}{{5.2}{6}{Runtime Scaling on Synthetic Data (Linear Scale)}{subsection.5.2}{}}
+\newlabel{sec:runtime_linear@cref}{{[subsection][2][5]5.2}{[1][6][]6}}
+\@writefile{toc}{\contentsline {section}{\numberline {6}Software and Data Availability}{6}{section.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {7}Limitations and Ethical Considerations}{6}{section.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{References}{6}{section*.20}\protected@file@percent }
+\bibcite{darmanis2015survey}{{3}{2015}{{Darmanis et~al\mbox  {.}}}{{}}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Bar plots (mean $\pm $ std) of denoising error components on synthetic data with $N=5{,}000$ cells. We report overall MSE, dropout-MSE over entries with $x_{ij}=0$ and $x^{\star }_{ij}>0$, and biozero-MSE over entries with $x^{\star }_{ij}=0$. Lower is better.}}{7}{figure.caption.17}\protected@file@percent }
+\newlabel{fig:mse_5000_bars}{{2}{7}{Bar plots (mean $\pm $ std) of denoising error components on synthetic data with $N=5{,}000$ cells. We report overall MSE, dropout-MSE over entries with $x_{ij}=0$ and $x^{\star }_{ij}>0$, and biozero-MSE over entries with $x^{\star }_{ij}=0$. Lower is better}{figure.caption.17}{}}
+\newlabel{fig:mse_5000_bars@cref}{{[figure][2][]2}{[1][6][]7}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Runtime scaling on synthetic data in linear time scale. Points show mean runtime (seconds) across the four synthetic datasets for each cell count; shaded regions indicate one standard deviation across datasets.}}{7}{figure.caption.18}\protected@file@percent }
+\newlabel{fig:runtime_linear}{{3}{7}{Runtime scaling on synthetic data in linear time scale. Points show mean runtime (seconds) across the four synthetic datasets for each cell count; shaded regions indicate one standard deviation across datasets}{figure.caption.18}{}}
+\newlabel{fig:runtime_linear@cref}{{[figure][3][]3}{[1][6][]7}}
+\bibcite{Devlin2019BERT}{{4}{2019}{{Devlin et~al\mbox  {.}}}{{}}}
+\bibcite{Eraslan2019DCA}{{5}{2019}{{Eraslan et~al\mbox  {.}}}{{}}}
+\bibcite{He2022MAE}{{6}{2022}{{He et~al\mbox  {.}}}{{}}}
+\bibcite{Hicks2018MissingData}{{7}{2018}{{Hicks et~al\mbox  {.}}}{{}}}
+\bibcite{Hou2020ImputationBenchmark}{{8}{2020}{{Hou et~al\mbox  {.}}}{{}}}
+\bibcite{Huang2018SAVER}{{9}{2018}{{Huang et~al\mbox  {.}}}{{}}}
+\bibcite{Jiang2022ZeroInflationReview}{{10}{2022}{{Jiang et~al\mbox  {.}}}{{}}}
+\bibcite{Kiselev2017SC3}{{11}{2017}{{Kiselev et~al\mbox  {.}}}{{}}}
+\bibcite{li2017reference}{{12}{2017}{{Li et~al\mbox  {.}}}{{}}}
+\bibcite{Li2022AutoClass}{{13}{2022}{{Li et~al\mbox  {.}}}{{}}}
+\bibcite{Li2018scImpute}{{14}{2018}{{Li and Li}}{{}}}
+\bibcite{Linderman2022ZeroPreserving}{{15}{2022}{{Linderman et~al\mbox  {.}}}{{}}}
+\bibcite{Luecken2019BestPractices}{{16}{2019}{{Luecken and Theis}}{{}}}
+\bibcite{lun2016step}{{17}{2016}{{Lun et~al\mbox  {.}}}{{}}}
+\bibcite{Malec2022ccImpute}{{18}{2022}{{Malec et~al\mbox  {.}}}{{}}}
+\bibcite{pollen2014low}{{19}{2014}{{Pollen et~al\mbox  {.}}}{{}}}
+\bibcite{SarkarStephens2021SeparatingMeasurement}{{20}{2021}{{Sarkar and Stephens}}{{}}}
+\bibcite{Svensson2020NotZeroInflated}{{21}{2020a}{{Svensson}}{{}}}
+\bibcite{Svensson2020NotZI}{{22}{2020b}{{Svensson}}{{}}}
+\bibcite{usoskin2015unbiased}{{23}{2015}{{Usoskin et~al\mbox  {.}}}{{}}}
+\bibcite{VanDeSande2023DrugDiscovery}{{24}{2023}{{Van~de Sande et~al\mbox  {.}}}{{}}}
+\bibcite{vanDijk2018MAGIC}{{25}{2018}{{van Dijk et~al\mbox  {.}}}{{}}}
+\bibcite{zappia2017splatter}{{26}{2017}{{Zappia et~al\mbox  {.}}}{{}}}
+\bibstyle{ACM-Reference-Format}
+\newlabel{tocindent-1}{0pt}
+\newlabel{tocindent0}{0pt}
+\newlabel{tocindent1}{4.185pt}
+\newlabel{tocindent2}{14.53499pt}
+\newlabel{tocindent3}{0pt}
+\newlabel{tocindent4}{0pt}
+\newlabel{tocindent5}{0pt}
+\newlabel{TotPages}{{8}{8}{}{page.8}{}}
+\gdef \@abspage@last{8}

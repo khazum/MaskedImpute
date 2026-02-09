@@ -1,0 +1,6 @@
+dataset	method	ASW	ASW_std	ARI	ARI_std	NMI	NMI_std	PS	PS_std	runtime_sec	runtime_sec_std	n_repeats	error	n_cells	n_genes	label_source
+blakeley_top1000hvg	saver	0.1942	0	1	0	1	0	1	0	4.703	1.87084348178391	4	Skipped 1 repeat(s) with 0 (non-NA) cases	30	1000	cell_type1
+darmanis_top1000hvg	saver	0.0952	0	0.6557	0	0.7845	0	0.8667	0	23.724	0.461033621333635	2	Skipped 3 repeat(s) with 0 (non-NA) cases	420	1000	cell_type1
+deng_top1000hvg	saver	0.1914	0	0.5678	0	0.8031	0	0.8582	0	16.8526666666667	0.155281464873736	3	Skipped 2 repeat(s) with 0 (non-NA) cases	268	1000	cell_type1
+pollen_top1000hvg	saver	0.2619	0	0.9563	0	0.9475	0	0.9599	0	19.9815	0.292035100630032	2	Skipped 3 repeat(s) with 0 (non-NA) cases	299	1000	cell_type1
+usoskin_top1000hvg	saver	0.0966	0	0.8106	0	0.7665	0	0.8955	0	20.6533333333334	0.596262805592751	3	Skipped 2 repeat(s) with 0 (non-NA) cases	622	1000	cell_type1

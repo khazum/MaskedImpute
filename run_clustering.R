@@ -369,6 +369,7 @@ for (path in files) {
         saver_metrics <- list()
         saver_runtimes <- numeric()
         saver_err <- NA_character_
+        saver_skip_non_na <- 0L
         for (i in seq_len(n_repeats)) {
           t0 <- proc.time()
           res <- tryCatch({
@@ -383,14 +384,32 @@ for (path in files) {
             df <- evaluate_clustering(t(log_imp), labels)
             df
           }, error = function(e) {
-            saver_err <<- conditionMessage(e)
+            msg <- conditionMessage(e)
+            if (grepl("0 \\(non-NA\\) cases", msg)) {
+              saver_skip_non_na <<- saver_skip_non_na + 1L
+              cat(sprintf(
+                "WARN [%s/saver]: %s (repeat %d/%d skipped)\n",
+                dataset_name, msg, i, n_repeats
+              ))
+              return("SKIP_NON_NA")
+            }
+            saver_err <<- msg
             cat(sprintf("ERROR [%s/saver]: %s\n", dataset_name, saver_err))
             NULL
           })
           elapsed <- (proc.time() - t0)["elapsed"]
+          if (identical(res, "SKIP_NON_NA")) next
           if (is.null(res)) break
           saver_metrics[[length(saver_metrics) + 1]] <- res
           saver_runtimes <- c(saver_runtimes, elapsed)
+        }
+        if (saver_skip_non_na > 0L) {
+          skip_msg <- sprintf("Skipped %d repeat(s) with 0 (non-NA) cases", saver_skip_non_na)
+          if (is.na(saver_err) || !nzchar(saver_err)) {
+            saver_err <- skip_msg
+          } else {
+            saver_err <- paste(saver_err, skip_msg, sep = " | ")
+          }
         }
       }
       saver_row <- data.frame(
@@ -411,47 +430,34 @@ for (path in files) {
     require_pkg("ccImpute")
     require_pkg("BiocParallel")
 
-    cc_labels <- as.character(labels)
-    cc_labels <- cc_labels[!is.na(cc_labels) & nzchar(cc_labels)]
-    n_groups <- length(unique(cc_labels))
-
     cc_metrics <- list()
     cc_runtimes <- numeric()
     cc_err <- NA_character_
-    if (!is.finite(n_groups) || n_groups < 2) {
-      cc_err <- sprintf(
-        "ccImpute requires >=2 unique labels in '%s'; found %d.",
-        lab_info$source, n_groups
+    bpp <- BiocParallel::SerialParam()
+    if (ncores > 1) {
+      bpp <- tryCatch(
+        BiocParallel::MulticoreParam(workers = ncores),
+        error = function(e) BiocParallel::SerialParam()
       )
-      cat(sprintf("ERROR [%s/ccimpute]: %s\n", dataset_name, cc_err))
-    } else {
-      cat(sprintf("  [ccimpute] Using k=%d from label column '%s'.\n", n_groups, lab_info$source))
+    }
 
-      bpp <- BiocParallel::SerialParam()
-      if (ncores > 1) {
-        bpp <- tryCatch(
-          BiocParallel::MulticoreParam(workers = ncores),
-          error = function(e) BiocParallel::SerialParam()
-        )
-      }
-
-      for (i in seq_len(n_repeats)) {
-        t0 <- proc.time()
-        res <- tryCatch({
-          cc_obj <- ccImpute::ccImpute(sce, k = n_groups, verbose = FALSE, BPPARAM = bpp)
-          log_imp <- assay(cc_obj, "imputed")
-          df <- evaluate_clustering(t(as.matrix(log_imp)), labels)
-          df
-        }, error = function(e) {
-          cc_err <<- conditionMessage(e)
-          cat(sprintf("ERROR [%s/ccimpute]: %s\n", dataset_name, cc_err))
-          NULL
-        })
-        elapsed <- (proc.time() - t0)["elapsed"]
-        if (is.null(res)) break
-        cc_metrics[[length(cc_metrics) + 1]] <- res
-        cc_runtimes <- c(cc_runtimes, elapsed)
-      }
+    for (i in seq_len(n_repeats)) {
+      t0 <- proc.time()
+      res <- tryCatch({
+        # Intentionally do not pass k from labels to avoid label leakage.
+        cc_obj <- ccImpute::ccImpute(sce, verbose = FALSE, BPPARAM = bpp)
+        log_imp <- assay(cc_obj, "imputed")
+        df <- evaluate_clustering(t(as.matrix(log_imp)), labels)
+        df
+      }, error = function(e) {
+        cc_err <<- conditionMessage(e)
+        cat(sprintf("ERROR [%s/ccimpute]: %s\n", dataset_name, cc_err))
+        NULL
+      })
+      elapsed <- (proc.time() - t0)["elapsed"]
+      if (is.null(res)) break
+      cc_metrics[[length(cc_metrics) + 1]] <- res
+      cc_runtimes <- c(cc_runtimes, elapsed)
     }
 
     cc_row <- data.frame(

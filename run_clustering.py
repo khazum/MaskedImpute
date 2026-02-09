@@ -6,7 +6,7 @@ run_clustering.py
 Run clustering evaluation (ARI, NMI, Purity, ASW) on SingleCellExperiment .rds
 files for multiple imputation methods. Methods mirror run_imputation.py and
 add the experiment autoencoder: magic, dca, autoclass, low_mse, balanced_mse,
-experiment.
+option3_labelcal_auto_structlight_centerrow, experiment.
 
 Procedure (per method):
 - impute (or baseline) to obtain logcounts
@@ -44,7 +44,15 @@ except Exception as exc:  # pragma: no cover
 
 import torch
 
-METHODS = ("magic", "dca", "autoclass", "low_mse", "balanced_mse", "experiment")
+METHODS = (
+    "magic",
+    "dca",
+    "autoclass",
+    "low_mse",
+    "balanced_mse",
+    "option3_labelcal_auto_structlight_centerrow",
+    "experiment",
+)
 
 
 def _counts_obs_from_logcounts(logcounts: np.ndarray, counts: Optional[np.ndarray]) -> np.ndarray:
@@ -227,6 +235,12 @@ def _run_method(
             return _run_masked26_clustering(logcounts, counts, bio_reg_weight=0.0, seed=seed)
         if method == "balanced_mse":
             return _run_masked26_clustering(logcounts, counts, bio_reg_weight=1.0, seed=seed)
+        if method == "option3_labelcal_auto_structlight_centerrow":
+            return imp.run_option3_labelcal_auto_structlight_centerrow(
+                logcounts,
+                counts,
+                seed=seed,
+            )
         if method == "experiment":
             try:
                 import experiment as exp
@@ -255,13 +269,21 @@ def main() -> int:
     parser.add_argument(
         "--methods",
         default=None,
-        help="Comma-separated list (magic,dca,autoclass,low_mse,balanced_mse,experiment) or 'all'.",
+        help=(
+            "Comma-separated list "
+            "(magic,dca,autoclass,low_mse,balanced_mse,"
+            "option3_labelcal_auto_structlight_centerrow,experiment) or 'all'."
+        ),
     )
     parser.add_argument(
         "methods_arg",
         nargs="?",
         default=None,
-        help="Optional methods list (magic,dca,autoclass,low_mse,balanced_mse,experiment) or 'all'.",
+        help=(
+            "Optional methods list "
+            "(magic,dca,autoclass,low_mse,balanced_mse,"
+            "option3_labelcal_auto_structlight_centerrow,experiment) or 'all'."
+        ),
     )
     parser.add_argument("--n-jobs", type=int, default=1, help="MAGIC n_jobs value")
     parser.add_argument("--n-repeat", type=int, default=5, help="Number of repeats per method")
