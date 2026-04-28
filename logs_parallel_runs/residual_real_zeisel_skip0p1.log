@@ -1,0 +1,5 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+[WARN] normalization.target_sum missing; inferred target_sum=12089 from counts/logcounts.
+{"ari_grid_max": 0.7084711250351283, "ari_grid_mean": 0.36047835948063106, "ari_matched_mean": 0.7023490017005324, "cluster_seeds": "42", "config": "skip0p1", "dataset": "Zeisel", "n_clusters_grid_mean": 28.11111111111111, "n_clusters_matched_mean": 10.0, "nmi_grid_max": 0.7147183473510399, "nmi_grid_mean": 0.6208166054043247, "nmi_matched_mean": 0.7037618039475333, "runtime_sec": 85.64772497303784, "seed": 42, "transform": "raw"}
+Wrote results_real_data/tuning_maskimpute/residual_real_screen/zeisel/Zeisel_screen.tsv

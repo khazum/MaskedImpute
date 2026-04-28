@@ -1,0 +1,11 @@
+\begin{tabular}{lrrrrrr}
+\toprule
+Variant & Efficacy & MSE & Biozero-MSE & Dropout-MSE & ARI & NMI \\
+\midrule
+MaskImpute & 0.251 $\pm$ 0.017 & 0.224 $\pm$ 0.022 & 0.013 $\pm$ 0.003 & 0.304 & 0.718 & 0.764 \\
+No zero shrinkage & 0.263 $\pm$ 0.017 & 0.228 $\pm$ 0.023 & 0.018 $\pm$ 0.004 & 0.312 & 0.716 & 0.762 \\
+No biozero regularization & 0.360 $\pm$ 0.019 & 0.171 $\pm$ 0.008 & 0.095 $\pm$ 0.011 & 0.190 & 0.766 & 0.816 \\
+Uniform masking & 0.319 $\pm$ 0.043 & 0.305 $\pm$ 0.047 & 0.007 $\pm$ 0.003 & 0.441 & 0.699 & 0.734 \\
+Plain masked AE & 0.703 $\pm$ 0.146 & 0.682 $\pm$ 0.159 & 0.010 $\pm$ 0.011 & 0.792 & 0.639 & 0.676 \\
+\bottomrule
+\end{tabular}

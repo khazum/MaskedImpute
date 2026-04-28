@@ -1,0 +1,6 @@
+target_sum	10000
+n_cells	12000
+n_genes	1000
+sampling	random
+seed	42
+max_cells	12000

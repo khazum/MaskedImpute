@@ -1,0 +1,61 @@
+Processing dca n10000...
+
+=== groups_balanced_moderate_drop_n10000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n10000/dca_mse_table.tsv
+Processing dca n100000...
+
+=== groups_balanced_moderate_drop_n100000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n100000/dca_mse_table.tsv
+Processing dca n20000...
+
+=== groups_balanced_moderate_drop_n20000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n20000/dca_mse_table.tsv
+Processing dca n30000...
+
+=== groups_balanced_moderate_drop_n30000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n30000/dca_mse_table.tsv
+Processing dca n40000...
+
+=== groups_balanced_moderate_drop_n40000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n40000/dca_mse_table.tsv
+Processing dca n50000...
+
+=== groups_balanced_moderate_drop_n50000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n50000/dca_mse_table.tsv
+Processing dca n60000...
+
+=== groups_balanced_moderate_drop_n60000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n60000/dca_mse_table.tsv
+Processing dca n70000...
+
+=== groups_balanced_moderate_drop_n70000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n70000/dca_mse_table.tsv
+Processing dca n80000...
+
+=== groups_balanced_moderate_drop_n80000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n80000/dca_mse_table.tsv
+Processing dca n90000...
+
+=== groups_balanced_moderate_drop_n90000 ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/scale/n90000/dca_mse_table.tsv
+Finished [PY/dca]

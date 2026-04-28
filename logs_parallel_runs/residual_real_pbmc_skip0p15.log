@@ -1,0 +1,4 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+{"ari_grid_max": 0.23522316331943396, "ari_grid_mean": 0.18688674055721688, "ari_matched_mean": 0.2113327382313387, "cluster_seeds": "42", "config": "skip0p15", "dataset": "PBMC68k", "n_clusters_grid_mean": 15.28888888888889, "n_clusters_matched_mean": 12.0, "nmi_grid_max": 0.49195599815593294, "nmi_grid_mean": 0.41054200926889756, "nmi_matched_mean": 0.4196474459588478, "runtime_sec": 363.7230509358924, "seed": 42, "transform": "raw"}
+Wrote results_real_data/tuning_maskimpute/residual_real_screen/pbmc_skip0p15/PBMC68k_screen.tsv

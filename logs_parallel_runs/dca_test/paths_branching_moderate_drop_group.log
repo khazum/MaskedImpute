@@ -1,0 +1,10 @@
+[DCA] paths_branching_moderate_drop_group -> results_imputation_py/dca/test/paths_branching_moderate_drop_group
+
+=== paths_branching_moderate_drop_group ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/test/paths_branching_moderate_drop_group/dca_mse_table.tsv

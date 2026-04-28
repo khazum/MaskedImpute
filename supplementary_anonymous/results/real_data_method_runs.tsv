@@ -1,0 +1,55 @@
+dataset	path	method	display_method	impute_seed	status	error	impute_runtime_sec	n_cells	n_genes	n_labels	n_batches	label_column	batch_column	feature_mode	n_seeds_requested	source_note
+Baron	datasets_original/baron-human.rds	baseline	Observed	42	ok		1.1211959645152092e-05	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	dca	DCA	42	ok		106.91901528509334	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	scvi	scVI	42	ok		90.4188349780161	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	scvi	scVI	43	ok		85.58426695689559	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	scvi	scVI	44	ok		82.54124668193981	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	scvi	scVI	45	ok		82.61125606880523	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	scvi	scVI	46	ok		83.33581987395883	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	alra	ALRA	42	ok		0.4173272440675646	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	alra	ALRA	43	ok		0.354411882115528	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	alra	ALRA	44	ok		0.9013935958500952	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	alra	ALRA	45	ok		0.39542594109661877	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	alra	ALRA	46	ok		0.36928889295086265	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	magic	MAGIC	42	ok		1.5790053829550743	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	maskimpute	MaskImpute	42	ok		246.12127775209956	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	maskimpute	MaskImpute	43	ok		242.80792952189222	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	maskimpute	MaskImpute	44	ok		239.87786369095556	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	maskimpute	MaskImpute	45	ok		243.45154469413683	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Baron	datasets_original/baron-human.rds	maskimpute	MaskImpute	46	ok		243.849532879889	8569	1000	14	4	cell_type1	human	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	baseline	Observed	42	ok		8.500181138515472e-06	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	dca	DCA	42	ok		37.822109050815925	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	scvi	scVI	42	ok		69.11395132401958	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	scvi	scVI	43	ok		31.24659124086611	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	scvi	scVI	44	ok		31.118083788082004	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	scvi	scVI	45	ok		30.5441661758814	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	scvi	scVI	46	ok		29.93953814706765	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	alra	ALRA	42	ok		0.2590066818520427	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	alra	ALRA	43	ok		0.23800905398093164	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	alra	ALRA	44	ok		0.2496643711347133	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	alra	ALRA	45	ok		0.2333652968518436	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	alra	ALRA	46	ok		0.1875102799385786	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	magic	MAGIC	42	ok		0.5675578368827701	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	maskimpute	MaskImpute	42	ok		82.89493802492507	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	maskimpute	MaskImpute	43	ok		82.71453058090992	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	maskimpute	MaskImpute	44	ok		82.60048751579598	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	maskimpute	MaskImpute	45	ok		83.21998215909116	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+Zeisel	datasets_original/zeisel.rds	maskimpute	MaskImpute	46	ok		83.24331207992509	3005	1000	9	76	cell_type1	cell_id_prefix	label_free_hvg	5	SingleCellExperiment original matrix
+PBMC68k	temp/pbmc68k_data.rds	baseline	Observed	42	ok		6.182119250297546e-06	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	dca	DCA	42	ok		80.98507243511267	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	scvi	scVI	42	ok		116.10388477798551	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	scvi	scVI	43	ok		116.03203588793986	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	scvi	scVI	44	ok		116.21868511009961	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	scvi	scVI	45	ok		118.24168335902505	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	scvi	scVI	46	ok		116.24525958602317	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	alra	ALRA	42	ok		0.6933025170583278	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	alra	ALRA	43	ok		0.543141134781763	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	alra	ALRA	44	ok		0.5444604919757694	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	alra	ALRA	45	ok		0.6926826178096235	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	alra	ALRA	46	ok		0.6471503691282123	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	magic	MAGIC	42	ok		1.6775364470668137	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	maskimpute	MaskImpute	42	ok		342.5242023449391	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	maskimpute	MaskImpute	43	ok		342.6350587650668	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	maskimpute	MaskImpute	44	ok		350.7073820331134	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	maskimpute	MaskImpute	45	ok		433.4594552030321	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations
+PBMC68k	temp/pbmc68k_data.rds	maskimpute	MaskImpute	46	ok		343.6224825049285	12000	1000	11	8	celltype	barcode_suffix	label_free_hvg	5	10x PBMC68k matrix with published barcode annotations

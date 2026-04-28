@@ -1,0 +1,53 @@
+[2026-04-25 09:25:52] GPU 2 start groups_imbalanced_moderate_drop_group
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+{
+  "config": {
+    "bio_reg_weight": 1.2,
+    "epochs": 400,
+    "loss_bio_weight": 1.0,
+    "loss_nz_weight": 2.0,
+    "lr": 0.0001,
+    "name": "f02_bioreg1p2_lossbio1",
+    "noise_max": 0.02,
+    "observed_recon_weight": 0.75,
+    "p_nz": 0.05,
+    "p_zero": 0.01,
+    "zero_shrink_strength": 0.3
+  },
+  "corr_err": 0.1888191441714466,
+  "corr_err_dataset_std": NaN,
+  "device": "cuda",
+  "gnrmse": 1.152105943309384,
+  "gnrmse_dataset_std": NaN,
+  "gnrmse_marker": 1.0910742969482508,
+  "gnrmse_marker_dataset_std": NaN,
+  "input_dir": "synthetic_datasets/simulated_data/test/groups_imbalanced_moderate_drop_group",
+  "mae": 0.3382585223200248,
+  "mae_biozero": 0.03246965696461822,
+  "mae_biozero_dataset_std": NaN,
+  "mae_dataset_std": NaN,
+  "mae_dropout": 0.4261801307758236,
+  "mae_dropout_dataset_std": NaN,
+  "mae_marker": 0.334355428131427,
+  "mae_marker_dataset_std": NaN,
+  "mae_non_zero": 0.3378624546154017,
+  "mae_non_zero_dataset_std": NaN,
+  "mse": 0.20924967612781975,
+  "mse_biozero": 0.011717957943526716,
+  "mse_biozero_dataset_std": NaN,
+  "mse_dataset_std": NaN,
+  "mse_dropout": 0.2864706958956518,
+  "mse_dropout_dataset_std": NaN,
+  "mse_marker": 0.20864017720843703,
+  "mse_marker_dataset_std": NaN,
+  "mse_non_zero": 0.19002786694383786,
+  "mse_non_zero_dataset_std": NaN,
+  "n_datasets": 1,
+  "n_repeats": 5,
+  "runtime_sec": 137.35784939839505,
+  "runtime_sec_dataset_std": NaN,
+  "score_mse_plus_2biozero": 0.23268559201487318,
+  "score_mse_plus_biozero": 0.22096763407134645
+}
+[2026-04-25 09:37:49] GPU 2 done groups_imbalanced_moderate_drop_group status=0

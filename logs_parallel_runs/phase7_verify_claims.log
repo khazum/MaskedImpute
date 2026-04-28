@@ -1,0 +1,4 @@
+Phase 7 claim checks passed
+MaskImpute MSE=0.224159, Dropout-MSE=0.305331, Biozero-MSE=0.013313
+Reductions vs DCA: MSE=37.7%, Dropout-MSE=34.4%
+Reductions vs scVI: MSE=34.6%, Dropout-MSE=32.3%

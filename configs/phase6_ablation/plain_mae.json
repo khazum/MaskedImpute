@@ -1,0 +1,1 @@
+{"name":"plain_mae","zero_shrink_strength":0.0,"bio_reg_weight":0.0,"p_zero":0.03,"p_nz":0.03,"zero_mask_uses_bio_prob":false,"loss_bio_weight":1.0,"loss_nz_weight":1.0,"observed_recon_weight":0.0}

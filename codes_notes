@@ -1,5 +1,0 @@
-› I want to modify run_clustering.py and run_clustering.R:
-  (1) I want the clustering part to happen in py code for the R approached. This is to ensure that the same kmeans algorithm is used.
-  (2) I want another method 'experiment' added - this is implemented in experiment.py. Modify experiment.py as needed as well
-  (3) I want to make sure that the downstream application benchmarking -- clustering is done using best practices - make amends to make it a fair comparision.
-

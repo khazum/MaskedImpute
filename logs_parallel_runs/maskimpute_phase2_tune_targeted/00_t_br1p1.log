@@ -1,0 +1,53 @@
+[2026-04-25 08:26:31] GPU 0 start 00_t_br1p1
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+{
+  "config": {
+    "bio_reg_weight": 1.1,
+    "epochs": 400,
+    "loss_bio_weight": 2.0,
+    "loss_nz_weight": 2.0,
+    "lr": 0.0001,
+    "name": "t_br1p1",
+    "noise_max": 0.02,
+    "observed_recon_weight": 0.75,
+    "p_nz": 0.05,
+    "p_zero": 0.01,
+    "zero_shrink_strength": 0.3
+  },
+  "corr_err": 0.2073829005712109,
+  "corr_err_dataset_std": 0.030682736235633702,
+  "device": "cuda",
+  "gnrmse": 1.174062760384645,
+  "gnrmse_dataset_std": 0.10410363066967045,
+  "gnrmse_marker": 1.1229355637609286,
+  "gnrmse_marker_dataset_std": 0.10265748323716055,
+  "input_dir": "synthetic_datasets/simulated_data/tune",
+  "mae": 0.36035961131257105,
+  "mae_biozero": 0.04360208542640753,
+  "mae_biozero_dataset_std": 0.013782499375611369,
+  "mae_dataset_std": 0.03628429400719912,
+  "mae_dropout": 0.4424201395579987,
+  "mae_dropout_dataset_std": 0.029688259360179103,
+  "mae_marker": 0.3619257935437863,
+  "mae_marker_dataset_std": 0.0377499250479907,
+  "mae_non_zero": 0.35904620971688284,
+  "mae_non_zero_dataset_std": 0.02778130546698338,
+  "mse": 0.23426042709744938,
+  "mse_biozero": 0.015608031570721924,
+  "mse_biozero_dataset_std": 0.0060741808543391,
+  "mse_dataset_std": 0.04482182256839635,
+  "mse_dropout": 0.3110694249756048,
+  "mse_dropout_dataset_std": 0.04218850504907039,
+  "mse_marker": 0.23596589968661458,
+  "mse_marker_dataset_std": 0.047313108005752634,
+  "mse_non_zero": 0.21198269348911605,
+  "mse_non_zero_dataset_std": 0.02859550750991425,
+  "n_datasets": 13,
+  "n_repeats": 1,
+  "runtime_sec": 22.102646794223872,
+  "runtime_sec_dataset_std": 0.5467823156080237,
+  "score_mse_plus_2biozero": 0.26547649023889325,
+  "score_mse_plus_biozero": 0.2498684586681713
+}
+[2026-04-25 08:31:52] GPU 0 done 00_t_br1p1 status=0

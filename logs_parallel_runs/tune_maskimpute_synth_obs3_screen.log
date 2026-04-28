@@ -1,0 +1,15 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+=== batch_effects_moderate_drop
+{"dataset": "batch_effects_moderate_drop", "gnrmse": 1.0836400983195826, "mae": 0.3335017851094876, "mse": 0.2043903660538862, "mse_biozero": 0.0325632576871874, "mse_dropout": 0.26944832621109116, "runtime_sec": 133.18334730295464, "seed": 42, "transform": "raw"}
+{"dataset": "batch_effects_moderate_drop", "gnrmse": 1.1153208042816982, "mae": 0.342801001762598, "mse": 0.21525070701774718, "mse_biozero": 0.023526955005124243, "mse_dropout": 0.333790960621412, "runtime_sec": 133.18334730295464, "seed": 42, "transform": "all_obs0.15"}
+=== groups_balanced_moderate_drop
+{"dataset": "groups_balanced_moderate_drop", "gnrmse": 1.1051688460613038, "mae": 0.3274325854477681, "mse": 0.19343826739924555, "mse_biozero": 0.025038524065595202, "mse_dropout": 0.2501834576754809, "runtime_sec": 130.67633437504992, "seed": 42, "transform": "raw"}
+{"dataset": "groups_balanced_moderate_drop", "gnrmse": 1.1364923460344685, "mae": 0.3354410930756118, "mse": 0.20259538309851627, "mse_biozero": 0.01809033466505328, "mse_dropout": 0.30913330789252874, "runtime_sec": 130.67633437504992, "seed": 42, "transform": "all_obs0.15"}
+=== groups_rare_high_drop
+{"dataset": "groups_rare_high_drop", "gnrmse": 1.2869302314567903, "mae": 0.39353201800862453, "mse": 0.27079697706343675, "mse_biozero": 0.01540738240420837, "mse_dropout": 0.3259323041960035, "runtime_sec": 130.63260495709255, "seed": 42, "transform": "raw"}
+{"dataset": "groups_rare_high_drop", "gnrmse": 1.3068595503010196, "mae": 0.4043709098389575, "mse": 0.2789274199626239, "mse_biozero": 0.011131834411251831, "mse_dropout": 0.3579240385810736, "runtime_sec": 130.63260495709255, "seed": 42, "transform": "all_obs0.15"}
+  transform      mse  mse_dropout  mse_biozero      mae   gnrmse
+all_obs0.15 0.232258     0.333616     0.017583 0.360871 1.186224
+        raw 0.222875     0.281855     0.024336 0.351489 1.158580
+Wrote results_real_data/tuning_maskimpute/synthetic_obs3_screen/metrics.tsv

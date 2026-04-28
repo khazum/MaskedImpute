@@ -12,24 +12,30 @@ if [[ "${CONDA_DEFAULT_ENV:-}" != "magic311" ]]; then
   fi
 fi
 
-BASE_DIR="synthetic_datasets/rds_splat_output"
-OUT_BASE_R="results_imputation_r"
-OUT_BASE_PY="results_imputation_py"
+BASE_DIR="${BASE_DIR:-simulated_data/test}"
+OUT_BASE_R="${OUT_BASE_R:-results_imputation_r}"
+OUT_BASE_PY="${OUT_BASE_PY:-results_imputation_py}"
+NREPEATS="${NREPEATS:-5}"
 
-SIZES=(1000) # 5000 10000 15000 20000 25000)
+if [[ ! -d "${BASE_DIR}" ]]; then
+  echo "Missing dataset root: ${BASE_DIR}" >&2
+  exit 1
+fi
 
-for size in "${SIZES[@]}"; do
-  in_dir="${BASE_DIR}/cells_${size}"
-  if [[ ! -d "${in_dir}" ]]; then
-    echo "Skipping missing dataset folder: ${in_dir}" >&2
+for scenario_dir in "${BASE_DIR}"/*; do
+  [[ -d "${scenario_dir}" ]] || continue
+  scenario="$(basename "${scenario_dir}")"
+  in_file="${scenario_dir}/sce.rds"
+  if [[ ! -f "${in_file}" ]]; then
+    echo "Skipping missing dataset file: ${in_file}" >&2
     continue
   fi
 
-  out_r="${OUT_BASE_R}/cells_${size}"
-  out_py="${OUT_BASE_PY}/cells_${size}"
+  out_r="${OUT_BASE_R}/all_methods/test/${scenario}"
+  out_py="${OUT_BASE_PY}/all_methods/test/${scenario}"
   mkdir -p "${out_r}" "${out_py}"
 
-  echo "== cells_${size} =="
-  #Rscript run_imputation.R "${in_dir}" "${out_r}"
-  python run_imputation.py "${in_dir}" "${out_py}" --methods low_mse
+  echo "== ${scenario} =="
+  conda run -n r45_bio Rscript run_imputation.R "${in_file}" "${out_r}" 8 "${NREPEATS}" all
+  python run_imputation.py "${in_file}" "${out_py}" --methods all --n-repeat "${NREPEATS}"
 done

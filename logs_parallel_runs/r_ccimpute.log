@@ -1,181 +1,81 @@
-Processing ccimpute cells_1000...
+Processing ccimpute n10000...
 
-=== dataset_2_types_equal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_1000/dataset_2_types_equal_ccimpute.rds
-
-=== dataset_3_types_unequal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_1000/dataset_3_types_unequal_ccimpute.rds
-
-=== dataset_4_types_rare ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_1000/dataset_4_types_rare_ccimpute.rds
-
-=== dataset_multibatch_dropout ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_1000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_1000/ccimpute_mse_table.tsv
+=== groups_balanced_moderate_drop_n10000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n10000/groups_balanced_moderate_drop_n10000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n10000/ccimpute_mse_table.tsv
 
 Done.
-Processing ccimpute cells_5000...
+Processing ccimpute n100000...
 
-=== dataset_2_types_equal ===
-Running ccImpute x10...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_5000/dataset_2_types_equal_ccimpute.rds
-
-=== dataset_3_types_unequal ===
-Running ccImpute x10...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_5000/dataset_3_types_unequal_ccimpute.rds
-
-=== dataset_4_types_rare ===
-Running ccImpute x10...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_5000/dataset_4_types_rare_ccimpute.rds
-
-=== dataset_multibatch_dropout ===
-Running ccImpute x10...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_5000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_5000/ccimpute_mse_table.tsv
+=== groups_balanced_moderate_drop_n100000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n100000/groups_balanced_moderate_drop_n100000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n100000/ccimpute_mse_table.tsv
 
 Done.
-Processing ccimpute cells_10000...
+Processing ccimpute n20000...
 
-=== dataset_2_types_equal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_10000/dataset_2_types_equal_ccimpute.rds
-
-=== dataset_3_types_unequal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_10000/dataset_3_types_unequal_ccimpute.rds
-
-=== dataset_4_types_rare ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_10000/dataset_4_types_rare_ccimpute.rds
-
-=== dataset_multibatch_dropout ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_10000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_10000/ccimpute_mse_table.tsv
+=== groups_balanced_moderate_drop_n20000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n20000/groups_balanced_moderate_drop_n20000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n20000/ccimpute_mse_table.tsv
 
 Done.
-Processing ccimpute cells_15000...
+Processing ccimpute n30000...
 
-=== dataset_2_types_equal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_15000/dataset_2_types_equal_ccimpute.rds
-
-=== dataset_3_types_unequal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_15000/dataset_3_types_unequal_ccimpute.rds
-
-=== dataset_4_types_rare ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_15000/dataset_4_types_rare_ccimpute.rds
-
-=== dataset_multibatch_dropout ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_15000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_15000/ccimpute_mse_table.tsv
+=== groups_balanced_moderate_drop_n30000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n30000/groups_balanced_moderate_drop_n30000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n30000/ccimpute_mse_table.tsv
 
 Done.
-Processing ccimpute cells_20000...
+Processing ccimpute n40000...
 
-=== dataset_2_types_equal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_20000/dataset_2_types_equal_ccimpute.rds
-
-=== dataset_3_types_unequal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_20000/dataset_3_types_unequal_ccimpute.rds
-
-=== dataset_4_types_rare ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_20000/dataset_4_types_rare_ccimpute.rds
-
-=== dataset_multibatch_dropout ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_20000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_20000/ccimpute_mse_table.tsv
+=== groups_balanced_moderate_drop_n40000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n40000/groups_balanced_moderate_drop_n40000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n40000/ccimpute_mse_table.tsv
 
 Done.
-Processing ccimpute cells_25000...
+Processing ccimpute n50000...
 
-=== dataset_2_types_equal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_25000/dataset_2_types_equal_ccimpute.rds
-
-=== dataset_3_types_unequal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_25000/dataset_3_types_unequal_ccimpute.rds
-
-=== dataset_4_types_rare ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_25000/dataset_4_types_rare_ccimpute.rds
-
-=== dataset_multibatch_dropout ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_25000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_25000/ccimpute_mse_table.tsv
+=== groups_balanced_moderate_drop_n50000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n50000/groups_balanced_moderate_drop_n50000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n50000/ccimpute_mse_table.tsv
 
 Done.
-Processing ccimpute cells_50000...
+Processing ccimpute n60000...
 
-=== dataset_2_types_equal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_50000/dataset_2_types_equal_ccimpute.rds
-
-=== dataset_3_types_unequal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_50000/dataset_3_types_unequal_ccimpute.rds
-
-=== dataset_4_types_rare ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_50000/dataset_4_types_rare_ccimpute.rds
-
-=== dataset_multibatch_dropout ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_50000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_50000/ccimpute_mse_table.tsv
+=== groups_balanced_moderate_drop_n60000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n60000/groups_balanced_moderate_drop_n60000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n60000/ccimpute_mse_table.tsv
 
 Done.
-Processing ccimpute cells_75000...
+Processing ccimpute n70000...
 
-=== dataset_2_types_equal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_75000/dataset_2_types_equal_ccimpute.rds
-
-=== dataset_3_types_unequal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_75000/dataset_3_types_unequal_ccimpute.rds
-
-=== dataset_4_types_rare ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_75000/dataset_4_types_rare_ccimpute.rds
-
-=== dataset_multibatch_dropout ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_75000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_75000/ccimpute_mse_table.tsv
+=== groups_balanced_moderate_drop_n70000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n70000/groups_balanced_moderate_drop_n70000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n70000/ccimpute_mse_table.tsv
 
 Done.
-Processing ccimpute cells_100000...
+Processing ccimpute n80000...
 
-=== dataset_2_types_equal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_100000/dataset_2_types_equal_ccimpute.rds
+=== groups_balanced_moderate_drop_n80000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n80000/groups_balanced_moderate_drop_n80000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n80000/ccimpute_mse_table.tsv
 
-=== dataset_3_types_unequal ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_100000/dataset_3_types_unequal_ccimpute.rds
+Done.
+Processing ccimpute n90000...
 
-=== dataset_4_types_rare ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_100000/dataset_4_types_rare_ccimpute.rds
-
-=== dataset_multibatch_dropout ===
-Running ccImpute x5...
-  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/cells_100000/dataset_multibatch_dropout_ccimpute.rds
-Wrote results_imputation_r/ccimpute/cells_100000/ccimpute_mse_table.tsv
+=== groups_balanced_moderate_drop_n90000 ===
+Running ccImpute x1...
+  [ccimpute] Saved imputed matrix to results_imputation_r/ccimpute/scale/n90000/groups_balanced_moderate_drop_n90000_ccimpute.rds
+Wrote results_imputation_r/ccimpute/scale/n90000/ccimpute_mse_table.tsv
 
 Done.
 Finished [R/ccimpute]

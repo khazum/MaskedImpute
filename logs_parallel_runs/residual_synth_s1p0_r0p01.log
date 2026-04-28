@@ -1,0 +1,11 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+=== batch_effects_moderate_drop
+{"dataset": "batch_effects_moderate_drop", "gnrmse": 2.6232119364531608, "mae": 0.8891994447959278, "mse": 1.4023904405493053, "mse_biozero": 0.00015774483825737004, "mse_dropout": 2.4339140093575606, "runtime_sec": 148.07900488004088, "seed": 42, "transform": "raw"}
+=== groups_balanced_moderate_drop
+{"dataset": "groups_balanced_moderate_drop", "gnrmse": 2.6710811922663678, "mae": 0.8622835105456799, "mse": 1.3305759714498806, "mse_biozero": 7.053299721754257e-05, "mse_dropout": 2.3418702227568526, "runtime_sec": 142.66306749312207, "seed": 42, "transform": "raw"}
+=== groups_rare_high_drop
+{"dataset": "groups_rare_high_drop", "gnrmse": 3.4034666768638075, "mae": 1.1656854409555686, "mse": 2.1407707589432037, "mse_biozero": 9.611741527499868e-05, "mse_dropout": 2.923297951022345, "runtime_sec": 145.9983916869387, "seed": 42, "transform": "raw"}
+transform      mse  mse_dropout  mse_biozero      mae   gnrmse
+      raw 1.624579     2.566361     0.000108 0.972389 2.899253
+Wrote results_real_data/tuning_maskimpute/residual_synthetic_screen/s1p0_r0p01/metrics.tsv

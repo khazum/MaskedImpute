@@ -1,0 +1,10 @@
+[DCA] batch_effects_moderate_drop -> results_imputation_py/dca/test/batch_effects_moderate_drop
+
+=== batch_effects_moderate_drop ===
+  -> dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+Wrote results_imputation_py/dca/test/batch_effects_moderate_drop/dca_mse_table.tsv

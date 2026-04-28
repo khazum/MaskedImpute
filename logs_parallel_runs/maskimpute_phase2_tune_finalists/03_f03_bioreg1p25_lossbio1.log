@@ -1,0 +1,53 @@
+[2026-04-25 08:43:25] GPU 3 start 03_f03_bioreg1p25_lossbio1
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+{
+  "config": {
+    "bio_reg_weight": 1.25,
+    "epochs": 400,
+    "loss_bio_weight": 1.0,
+    "loss_nz_weight": 2.0,
+    "lr": 0.0001,
+    "name": "f03_bioreg1p25_lossbio1",
+    "noise_max": 0.02,
+    "observed_recon_weight": 0.75,
+    "p_nz": 0.05,
+    "p_zero": 0.01,
+    "zero_shrink_strength": 0.3
+  },
+  "corr_err": 0.20998504159404788,
+  "corr_err_dataset_std": 0.029169485042412693,
+  "device": "cuda",
+  "gnrmse": 1.1752030662740987,
+  "gnrmse_dataset_std": 0.10041604107992833,
+  "gnrmse_marker": 1.1244528926116844,
+  "gnrmse_marker_dataset_std": 0.09888466066496593,
+  "input_dir": "synthetic_datasets/simulated_data/tune",
+  "mae": 0.36083473878412803,
+  "mae_biozero": 0.04282096772895079,
+  "mae_biozero_dataset_std": 0.01217476998069581,
+  "mae_dataset_std": 0.03515962168944027,
+  "mae_dropout": 0.44357534107101193,
+  "mae_dropout_dataset_std": 0.02814617016657135,
+  "mae_marker": 0.36242536783776463,
+  "mae_marker_dataset_std": 0.03630107495770022,
+  "mae_non_zero": 0.35896120332712694,
+  "mae_non_zero_dataset_std": 0.02579924070439957,
+  "mse": 0.23506468841807093,
+  "mse_biozero": 0.01510487555841978,
+  "mse_biozero_dataset_std": 0.005495948288113007,
+  "mse_dataset_std": 0.04340701190910501,
+  "mse_dropout": 0.312742934144519,
+  "mse_dropout_dataset_std": 0.040313883470211566,
+  "mse_marker": 0.23666709771525965,
+  "mse_marker_dataset_std": 0.04529680202727538,
+  "mse_non_zero": 0.2120766621943775,
+  "mse_non_zero_dataset_std": 0.026528840949137582,
+  "n_datasets": 13,
+  "n_repeats": 3,
+  "runtime_sec": 21.986050525465263,
+  "runtime_sec_dataset_std": 0.16417672713229886,
+  "score_mse_plus_2biozero": 0.2652744395349105,
+  "score_mse_plus_biozero": 0.2501695639764907
+}
+[2026-04-25 08:58:20] GPU 3 done 03_f03_bioreg1p25_lossbio1 status=0

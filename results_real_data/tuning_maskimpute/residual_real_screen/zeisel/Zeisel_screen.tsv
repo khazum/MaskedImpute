@@ -1,0 +1,2 @@
+dataset	config	transform	seed	cluster_seeds	runtime_sec	ari_grid_mean	nmi_grid_mean	ari_grid_max	nmi_grid_max	n_clusters_grid_mean	ari_matched_mean	nmi_matched_mean	n_clusters_matched_mean
+Zeisel	skip0p1	raw	42	42	85.64772497303784	0.36047835948063106	0.6208166054043247	0.7084711250351283	0.7147183473510399	28.11111111111111	0.7023490017005324	0.7037618039475333	10.0

@@ -1,0 +1,12 @@
+[2026-04-24 22:04:16] GPU 6 start groups_imbalanced_moderate_drop_group
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+
+=== groups_imbalanced_moderate_drop_group ===
+  -> MaskImpute [balanced_mse]
+    [ERROR] balanced_mse failed: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+Wrote results_imputation_py/balanced_mse/test_phase2_prior_fix/groups_imbalanced_moderate_drop_group/balanced_mse_mse_table.tsv
+[2026-04-24 22:04:42] GPU 6 done groups_imbalanced_moderate_drop_group status=0

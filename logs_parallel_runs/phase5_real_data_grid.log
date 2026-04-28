@@ -1,0 +1,346 @@
+[WARN] normalization.target_sum missing; inferred target_sum=5075 from counts/logcounts.
+
+=== Baron ===
+source=datasets_original/baron-human.rds
+cells=8569/8569 genes=1000/20125 label=cell_type1 n_labels=14 batch=human n_batches=4
+  -> baseline impute_seed=42
+    clustering seed=42
+    clustering seed=43
+    clustering seed=44
+    clustering seed=45
+    clustering seed=46
+  -> dca impute_seed=42
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    clustering seed=42
+    clustering seed=43
+    clustering seed=44
+    clustering seed=45
+    clustering seed=46
+  -> scvi impute_seed=42
+Seed set to 42
+An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+You are using a CUDA device ('NVIDIA H100 80GB HBM3') that has Tensor Cores. To properly utilize them, you should set `torch.set_float32_matmul_precision('medium' | 'high')` which will trade-off precision for performance. For more details, read https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=42
+  -> scvi impute_seed=43
+Seed set to 43
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=43
+  -> scvi impute_seed=44
+Seed set to 44
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=44
+  -> scvi impute_seed=45
+Seed set to 45
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=45
+  -> scvi impute_seed=46
+Seed set to 46
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=46
+  -> alra impute_seed=42
+    clustering seed=42
+  -> alra impute_seed=43
+    clustering seed=43
+  -> alra impute_seed=44
+    clustering seed=44
+  -> alra impute_seed=45
+    clustering seed=45
+  -> alra impute_seed=46
+    clustering seed=46
+  -> magic impute_seed=42
+Calculating MAGIC...
+  Running MAGIC on 8569 cells and 1000 genes.
+  Calculating graph and diffusion operator...
+    Calculating PCA...
+    Calculated PCA in 0.16 seconds.
+    Calculating KNN search...
+    Calculated KNN search in 0.43 seconds.
+    Calculating affinities...
+    Calculated affinities in 0.45 seconds.
+  Calculated graph and diffusion operator in 1.05 seconds.
+  Calculating imputation...
+  Calculated imputation in 0.35 seconds.
+Calculated MAGIC in 1.41 seconds.
+    clustering seed=42
+    clustering seed=43
+    clustering seed=44
+    clustering seed=45
+    clustering seed=46
+  -> maskimpute impute_seed=42
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+    clustering seed=42
+  -> maskimpute impute_seed=43
+    clustering seed=43
+  -> maskimpute impute_seed=44
+    clustering seed=44
+  -> maskimpute impute_seed=45
+    clustering seed=45
+  -> maskimpute impute_seed=46
+    clustering seed=46
+[WARN] normalization.target_sum missing; inferred target_sum=12089 from counts/logcounts.
+
+=== Zeisel ===
+source=datasets_original/zeisel.rds
+cells=3005/3005 genes=1000/19972 label=cell_type1 n_labels=9 batch=cell_id_prefix n_batches=76
+  -> baseline impute_seed=42
+    clustering seed=42
+    clustering seed=43
+    clustering seed=44
+    clustering seed=45
+    clustering seed=46
+  -> dca impute_seed=42
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    clustering seed=42
+    clustering seed=43
+    clustering seed=44
+    clustering seed=45
+    clustering seed=46
+  -> scvi impute_seed=42
+Seed set to 42
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=42
+  -> scvi impute_seed=43
+Seed set to 43
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=43
+  -> scvi impute_seed=44
+Seed set to 44
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=44
+  -> scvi impute_seed=45
+Seed set to 45
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=45
+  -> scvi impute_seed=46
+Seed set to 46
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=46
+  -> alra impute_seed=42
+    clustering seed=42
+  -> alra impute_seed=43
+    clustering seed=43
+  -> alra impute_seed=44
+    clustering seed=44
+  -> alra impute_seed=45
+    clustering seed=45
+  -> alra impute_seed=46
+    clustering seed=46
+  -> magic impute_seed=42
+Calculating MAGIC...
+  Running MAGIC on 3005 cells and 1000 genes.
+  Calculating graph and diffusion operator...
+    Calculating PCA...
+    Calculated PCA in 0.07 seconds.
+    Calculating KNN search...
+    Calculated KNN search in 0.26 seconds.
+    Calculating affinities...
+    Calculated affinities in 0.16 seconds.
+  Calculated graph and diffusion operator in 0.50 seconds.
+  Calculating imputation...
+  Calculated imputation in 0.07 seconds.
+Calculated MAGIC in 0.57 seconds.
+    clustering seed=42
+    clustering seed=43
+    clustering seed=44
+    clustering seed=45
+    clustering seed=46
+  -> maskimpute impute_seed=42
+    clustering seed=42
+  -> maskimpute impute_seed=43
+    clustering seed=43
+  -> maskimpute impute_seed=44
+    clustering seed=44
+  -> maskimpute impute_seed=45
+    clustering seed=45
+  -> maskimpute impute_seed=46
+    clustering seed=46
+NULL
+NULL
+Wrote PBMC68k HVG cache to results_real_data/cache/pbmc68k_hvg1000_cells12000_seed42_random with 12000 cells and 1000 genes
+
+=== PBMC68k ===
+source=temp/pbmc68k_data.rds
+cells=12000/68579 genes=1000/32738 label=celltype n_labels=11 batch=barcode_suffix n_batches=8
+  -> baseline impute_seed=42
+    clustering seed=42
+    clustering seed=43
+    clustering seed=44
+    clustering seed=45
+    clustering seed=46
+  -> dca impute_seed=42
+[DCA] CUDA_VISIBLE_DEVICES=<unset> dca_bin=/mnt/nfs/home/marcin.malec.local/miniconda3/envs/dca_env/bin/dca
+    clustering seed=42
+    clustering seed=43
+    clustering seed=44
+    clustering seed=45
+    clustering seed=46
+  -> scvi impute_seed=42
+Seed set to 42
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=42
+  -> scvi impute_seed=43
+Seed set to 43
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=43
+  -> scvi impute_seed=44
+Seed set to 44
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=44
+  -> scvi impute_seed=45
+Seed set to 45
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=45
+  -> scvi impute_seed=46
+Seed set to 46
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+IPU available: False, using: 0 IPUs
+HPU available: False, using: 0 HPUs
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/utilities/_pytree.py:21: `isinstance(treespec, LeafSpec)` is deprecated, use `isinstance(treespec, TreeSpec) and treespec.is_leaf()` instead.
+/mnt/nfs/home/marcin.malec.local/Coding/MaskedImpute/.venv_scvi/lib/python3.11/site-packages/lightning/pytorch/trainer/connectors/data_connector.py:441: The 'train_dataloader' does not have many workers which may be a bottleneck. Consider increasing the value of the `num_workers` argument` to `num_workers=223` in the `DataLoader` to improve performance.
+`Trainer.fit` stopped: `max_epochs=400` reached.
+    clustering seed=46
+  -> alra impute_seed=42
+    clustering seed=42
+  -> alra impute_seed=43
+    clustering seed=43
+  -> alra impute_seed=44
+    clustering seed=44
+  -> alra impute_seed=45
+    clustering seed=45
+  -> alra impute_seed=46
+    clustering seed=46
+  -> magic impute_seed=42
+Calculating MAGIC...
+  Running MAGIC on 12000 cells and 1000 genes.
+  Calculating graph and diffusion operator...
+    Calculating PCA...
+    Calculated PCA in 0.23 seconds.
+    Calculating KNN search...
+    Calculated KNN search in 0.40 seconds.
+    Calculating affinities...
+    Calculated affinities in 0.48 seconds.
+  Calculated graph and diffusion operator in 1.12 seconds.
+  Calculating imputation...
+  Calculated imputation in 0.54 seconds.
+Calculated MAGIC in 1.66 seconds.
+    clustering seed=42
+    clustering seed=43
+    clustering seed=44
+    clustering seed=45
+    clustering seed=46
+  -> maskimpute impute_seed=42
+    clustering seed=42
+  -> maskimpute impute_seed=43
+    clustering seed=43
+  -> maskimpute impute_seed=44
+    clustering seed=44
+  -> maskimpute impute_seed=45
+    clustering seed=45
+  -> maskimpute impute_seed=46
+    clustering seed=46
+Wrote results_real_data/real_data_clustering_grid.tsv
+Wrote results_real_data/real_data_method_runs.tsv
+Wrote results_real_data/real_data_clustering_summary.tsv
+Wrote paper/generated/real_data_table.tex

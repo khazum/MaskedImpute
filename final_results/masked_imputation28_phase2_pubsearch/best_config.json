@@ -1,0 +1,23 @@
+{
+  "epochs": 360,
+  "lr": 0.00025,
+  "p_zero": 0.004,
+  "p_nz": 0.55,
+  "noise_max": 0.04,
+  "loss_bio_weight": 2.0,
+  "loss_nz_weight": 1.0,
+  "bio_reg_weight": 0.25,
+  "hidden": [
+    64
+  ],
+  "bottleneck": 16,
+  "batch_size": 32,
+  "weight_decay": 3e-05,
+  "activation": "relu",
+  "dropout": 0.05,
+  "layer_norm": false,
+  "residual": false,
+  "WARMUP_REFINEMENT_FRACTION": 0.0,
+  "POSTHOC_ZERO_SHRINK_SCALE": 0.1,
+  "REFINED_PBIO_TRAIN_SCALE": 1.0
+}

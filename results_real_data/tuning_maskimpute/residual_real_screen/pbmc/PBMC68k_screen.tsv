@@ -1,0 +1,2 @@
+dataset	config	transform	seed	cluster_seeds	runtime_sec	ari_grid_mean	nmi_grid_mean	ari_grid_max	nmi_grid_max	n_clusters_grid_mean	ari_matched_mean	nmi_matched_mean	n_clusters_matched_mean
+PBMC68k	skip0p1	raw	42	42	340.1593858709093	0.18533435992555386	0.40689312321067433	0.23236208311735868	0.4883102895922043	14.866666666666667	0.20936718001453933	0.43652251599111747	10.0

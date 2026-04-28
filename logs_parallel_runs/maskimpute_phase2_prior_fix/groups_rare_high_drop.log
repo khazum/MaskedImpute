@@ -1,0 +1,12 @@
+[2026-04-24 22:04:16] GPU 7 start groups_rare_high_drop
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+
+=== groups_rare_high_drop ===
+  -> MaskImpute [balanced_mse]
+    [ERROR] balanced_mse failed: CUDA error: out of memory
+Search for `cudaErrorMemoryAllocation' in https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__TYPES.html for more information.
+Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.
+
+Wrote results_imputation_py/balanced_mse/test_phase2_prior_fix/groups_rare_high_drop/balanced_mse_mse_table.tsv
+[2026-04-24 22:04:42] GPU 7 done groups_rare_high_drop status=0

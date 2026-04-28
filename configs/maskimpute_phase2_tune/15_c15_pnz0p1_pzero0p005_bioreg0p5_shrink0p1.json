@@ -1,0 +1,13 @@
+{
+  "bio_reg_weight": 0.5,
+  "epochs": 400,
+  "loss_bio_weight": 2.0,
+  "loss_nz_weight": 2.0,
+  "lr": 0.0001,
+  "name": "c15_pnz0p1_pzero0p005_bioreg0p5_shrink0p1",
+  "noise_max": 0.02,
+  "observed_recon_weight": 0.75,
+  "p_nz": 0.1,
+  "p_zero": 0.005,
+  "zero_shrink_strength": 0.1
+}

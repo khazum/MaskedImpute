@@ -1,0 +1,16 @@
+avg_score_m26	0.10816028949697144
+avg_score_m27	0.10360872658650176
+avg_delta_score_m27_minus_m26	-0.004551562910469679
+median_delta_score_m27_minus_m26	-0.004842993803322315
+wins_m27_on_score	12
+ties_on_score	1
+losses_m27_on_score	0
+avg_mse_m26	0.1988893872520958
+avg_mse_m27	0.1881056346823103
+avg_delta_mse_m27_minus_m26	-0.010783752569785485
+avg_bz_mse_m26	0.008715595870923538
+avg_bz_mse_m27	0.009555909245346602
+avg_delta_bz_mse_m27_minus_m26	0.0008403133744230637
+avg_runtime_sec_m26	85.52566406440634
+avg_runtime_sec_m27	98.73432016923415
+avg_runtime_ratio_m27_over_m26	1.154429559230059

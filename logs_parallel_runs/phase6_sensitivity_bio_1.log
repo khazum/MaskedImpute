@@ -1,0 +1,7 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+=== groups_balanced_moderate_drop
+{"ari_grid_max": 0.9963922556556483, "ari_grid_mean": 0.7620248037873377, "ari_matched_mean": 0.9957928411010236, "dataset": "groups_balanced_moderate_drop", "gnrmse": 1.1424910882120307, "mae": 0.340445226039659, "mse": 0.21098378495068568, "mse_biozero": 0.015288949662937581, "mse_dropout": 0.27551501710287446, "n_clusters_matched_mean": 3.0, "nmi_grid_max": 0.9910537073761603, "nmi_grid_mean": 0.8500941153131238, "nmi_matched_mean": 0.9897735046883079, "runtime_sec": 143.97209232882597, "seed": 42, "transform": "raw"}
+transform      mse  mse_dropout  mse_biozero      mae   gnrmse  ari_grid_mean  nmi_grid_mean  ari_matched_mean  nmi_matched_mean
+      raw 0.210984     0.275515     0.015289 0.340445 1.142491       0.762025       0.850094          0.995793          0.989774
+Wrote results_phase6/sensitivity/bio_1/metrics.tsv

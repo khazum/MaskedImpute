@@ -1,0 +1,838 @@
+\documentclass{article}
+
+% If you need to pass options to natbib, use, e.g.:
+% \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2026.
+\usepackage[main]{neurips_2026}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+
+\usepackage[american]{babel}
+\usepackage{microtype}
+\usepackage{mathtools}
+\usepackage{amssymb}
+\usepackage{amsthm}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{enumitem}
+\usepackage{placeins}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}         % required by NeurIPS checklist macros
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage[capitalize,noabbrev]{cleveref}
+
+% Attempt to make hyperref and algorithmic work together better.
+\providecommand{\theHalgorithm}{\arabic{algorithm}}
+
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+% Double-blind submission: do not include identifying URLs.
+\newcommand{\maskimputerepolink}{\texttt{[URL redacted for double-blind review]}}
+\newcommand{\ccimputedatasetslink}{\texttt{[URL redacted for double-blind review]}}
+
+% ACM accessibility macro appears in imported figure blocks.
+\newcommand{\Description}[1]{}
+
+\setlist[enumerate]{nosep}
+\emergencystretch=1em
+\newenvironment{compitemize}
+  {\begin{itemize}[noitemsep, topsep=0pt, parsep=0pt, partopsep=0pt]}
+  {\end{itemize}}
+
+\title{MaskImpute: A Biozero-Aware Masked Autoencoder for Single-Cell RNA-seq Imputation}
+\author{Anonymous Author(s)}
+
+\begin{document}
+\maketitle
+\begin{abstract}
+Single-cell RNA sequencing (scRNA-seq) matrices are sparse and noisy, and
+observed zeros conflate biological non-expression with technical
+under-detection. We propose MaskImpute, a masked denoising autoencoder that uses
+different corruption schemes for observed zeros and non-zeros, a count-derived
+biozero prior as a soft regularizer, and reconstruction-informed shrinkage on
+observed zeros. On a Splatter simulation suite of 13 scenarios with known
+pre-dropout ground truth, MaskImpute reduces
+mean MSE by 38\% relative to DCA and 35\% relative to scVI, with corresponding
+dropout-MSE reductions of 34\% and 32\%, while keeping mean Biozero-MSE below
+both neural baselines. The benchmark reports full-matrix, dropout-focused,
+biozero-focused, marker-gene, and per-gene normalized reconstruction metrics in
+a fixed, dataset-independent configuration.
+\end{abstract}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\linewidth]{figures/maskimpute_pipeline.png}
+\caption{\textbf{MaskImpute overview.} Starting from logcounts
+$\mathbf{X}_{\log}$ and counts $\mathbf{C}$, we estimate a biozero probability
+$p_{\mathrm{bio}}(i,j)$ for observed zeros (Section~\ref{sec:biozero}). During
+self-supervised training, non-zeros are masked at a fixed rate, while zeros are
+masked with probability proportional to $p_{\mathrm{bio}}$; masked zeros are
+corrupted by injecting gene-scale noise, and masked non-zeros are replaced by
+zero in the scaled space. A fully connected autoencoder reconstructs the scaled
+matrix and is trained with the objective
+$\mathcal{L}=\mathcal{L}_{\mathrm{mask}}+\lambda_{\mathrm{bio}}\mathcal{L}_{\mathrm{bio}}+\lambda_{\mathrm{nz}}\mathcal{L}_{\mathrm{nz}}$
+(Section~\ref{sec:masking}). At inference, we invert the scaling to obtain
+$\hat{\mathbf{X}}_{\log}$ and apply reconstruction-informed shrinkage on
+observed zeros in the normalized count scale (Section~\ref{sec:zero_shrink}).}
+\label{fig:maskimpute_pipeline}
+\end{figure}
+
+\section{Introduction}
+Single-cell RNA sequencing (scRNA-seq) enables large-scale measurement of RNA expression across individual cells and has become central to studying cellular heterogeneity, developmental trajectories, disease states, and perturbation responses \citep{Luecken2019BestPractices, Hicks2018MissingData, VanDeSande2023DrugDiscovery}. The resulting gene-by-cell matrix is sparse and noisy because only a small fraction of molecules are captured and sequenced, and additional technical factors (e.g., batch effects) perturb measurements \citep{Brennecke2013TechnicalNoise, Hicks2018MissingData}. A central difficulty is the interpretation of zeros: an observed zero is a valid measurement that can arise from true biological non-expression or from limited molecular sampling (often termed ``dropout''), and disentangling these sources from expression alone is generally not identifiable \citep{SarkarStephens2021SeparatingMeasurement, Svensson2020NotZeroInflated, Jiang2022ZeroInflationReview, Linderman2022ZeroPreserving}. This uncertainty complicates downstream analyses such as differential expression, trajectory inference, and cell-state interpretation \citep{Hou2020ImputationBenchmark, Luecken2019BestPractices}.
+
+A large literature proposes denoising and imputation methods that treat scRNA-seq as a structured inference problem: borrow information across related cells and genes to reduce measurement noise. Graph diffusion methods such as MAGIC smooth expression by propagating information over a cell--cell neighborhood graph \citep{vanDijk2018MAGIC}; they can reveal global structure but may over-smooth within-state variability and inflate gene--gene correlations when diffusion is aggressive \citep{Huang2018SAVER, Hou2020ImputationBenchmark}. Probabilistic approaches such as SAVER and scImpute model aspects of the measurement process and/or dropout explicitly \citep{Huang2018SAVER, Li2018scImpute}, but their performance depends on modeling assumptions and on how well ``dropout'' can be operationalized for a given protocol \citep{Svensson2020NotZeroInflated, Jiang2022ZeroInflationReview}. Deep autoencoder methods (e.g., DCA and AutoClass) scale to large datasets and learn nonlinear manifolds \citep{Eraslan2019DCA, Li2022AutoClass}, yet reconstructions are typically point estimates and can still blur rare states or distort variance if treated as ground truth \citep{Hou2020ImputationBenchmark, Linderman2022ZeroPreserving}.
+
+We introduce \textbf{MaskImpute}, a masked denoising autoencoder designed around
+an uncertainty-aware view of zeros. Instead of treating every zero as a missing
+value to be filled, MaskImpute combines (i) a masking strategy with different
+corruption schemes for observed zeros vs.\ observed non-zeros, (ii) a
+count-derived biozero prior used only as a soft regularizer, and (iii) a
+reconstruction-informed shrinkage step applied only on observed zeros to reduce
+over-imputation while retaining recovery of likely technical under-detection.
+
+This work makes the following contributions:
+\begin{compitemize}
+  \item We adapt masked self-supervised learning to scRNA-seq denoising with different masking/corruption schemes for zeros and non-zeros.
+  \item We introduce a biozero-aware regularization and masking scheme that encourages zero-preserving behavior while still allowing recovery of likely technical under-detection.
+  \item We introduce a reconstruction-informed post-hoc shrinkage mechanism that modulates imputed values only at observed zeros based on the model's reconstructed signal.
+  \item We benchmark MaskImpute against representative baselines on a synthetic suite with known ground truth, reporting full-matrix, dropout-focused, biozero-focused, marker-gene, and per-gene normalized errors.
+  \item We provide a reproducible evaluation protocol that keeps MaskImpute settings fixed across synthetic scenarios and separates imputation accuracy from downstream task-specific post-processing.
+\end{compitemize}
+
+\section{Related Works}
+
+\subsection{Statistical and Probabilistic Models}
+scRNA-seq denoising sits at the intersection of representation learning and uncertainty-aware inference: methods attempt to estimate latent expression under an imperfect measurement process, while avoiding the creation of spurious signal that can mislead downstream reasoning \citep{SarkarStephens2021SeparatingMeasurement, Hou2020ImputationBenchmark, Linderman2022ZeroPreserving}.
+
+Early methods focused on explicit probabilistic models of counts. SAVER \citep{Huang2018SAVER} assumes a Poisson measurement model with a Gamma prior (negative binomial marginal) and uses empirical Bayes regression to estimate gene- and cell-specific priors, producing posterior means and uncertainty estimates. scImpute \citep{Li2018scImpute} uses mixture modeling to estimate dropout probabilities and selectively imputes only entries deemed likely to be technical, borrowing information from similar cells. These approaches can be conservative and interpretable, but they depend on distributional assumptions and on how well the model captures protocol-specific noise (including the debated role of zero inflation) \citep{Svensson2020NotZeroInflated, Jiang2022ZeroInflationReview}.
+
+\subsection{Graph-Based and Diffusion Methods}
+Graph-based methods assume that biologically similar cells lie on (or near) a
+low-dimensional manifold and that neighborhoods can be used to borrow signal
+across cells. MAGIC \citep{vanDijk2018MAGIC} constructs a $k$-nearest-neighbor
+affinity graph (often in a PCA space), normalizes it into a Markov transition
+matrix $M$, and imputes by diffusion,
+$\mathbf{X}' = M^{t}\mathbf{X}$, where $t$ is the diffusion time. Such methods
+can be effective for visualization and smooth trajectories, but the global
+averaging implicit in diffusion can blur rare states and inflate correlations
+if neighborhood or diffusion parameters are too aggressive
+\citep{Huang2018SAVER, Hou2020ImputationBenchmark, Linderman2022ZeroPreserving}.
+
+ccImpute \citep{Malec2022ccImpute} offers an alternative
+that builds a consensus similarity matrix from repeated K-means clustering
+(inspired by SC3 \citep{Kiselev2017SC3}) and imputes likely dropouts by
+consensus-weighted averaging over similar cells. Compared with diffusion,
+consensus approaches can reduce sensitivity to a single neighborhood choice,
+but they still inherit clustering biases and can sharpen boundaries; thus
+improvements in clustering metrics after imputation should be interpreted
+cautiously \citep{Hou2020ImputationBenchmark}.
+
+\subsection{Deep Learning and Autoencoders}
+Autoencoder architectures scale to large datasets and can model nonlinear
+structure, making them attractive for scRNA-seq denoising. DCA
+\citep{Eraslan2019DCA} replaces a squared-error reconstruction loss with a
+count likelihood (NB/ZINB) so that the decoder outputs distribution parameters
+(e.g., mean and dispersion, and optionally zero-inflation). This can improve
+robustness to heavy-tailed count noise, but the interpretation of zero-inflation
+and per-entry dropout probabilities is limited by identifiability and by the
+ongoing debate over whether additional zero-inflation is needed for common UMI
+protocols \citep{Svensson2020NotZeroInflated, Jiang2022ZeroInflationReview}.
+More broadly, neural denoisers typically output point estimates that can be
+over-interpreted as ``ground truth'' and can distort variance or downstream
+statistics if used uncritically \citep{Hou2020ImputationBenchmark, Linderman2022ZeroPreserving}.
+
+scVI \citep{Lopez2018scVI} is a variational autoencoder that models scRNA-seq
+counts with an explicit generative process and has become a common baseline for
+scalable representation learning and denoising. In contrast to neural
+approaches, ALRA \citep{Linderman2022ALRA} performs an adaptively-thresholded
+low-rank approximation that explicitly preserves zeros, providing a strong
+zero-preserving imputation baseline.
+
+AutoClass \citep{Li2022AutoClass} augments an autoencoder with a classifier
+branch trained on pseudo-labels from pre-clustering, encouraging the bottleneck
+to preserve population structure. This can improve separability, but it
+introduces dependence on the pre-clustering signal and can propagate
+confounders (e.g., batch structure) present in pseudo-labels
+\citep{Hou2020ImputationBenchmark}. MaskImpute adopts a self-supervised masking
+objective to learn structure without requiring explicit pseudo-labels.
+
+\subsection{Self-Supervised and Masked Learning}
+Masked self-supervision has achieved strong results in vision and language by
+masking parts of the input and training models to reconstruct them, which
+encourages learning global dependencies rather than memorizing local statistics
+\citep{Devlin2019BERT, He2022MAE}. Recent work has also applied masked
+autoencoders to scRNA-seq for representation learning
+\citep{Fang2024scMAE}. However, in scRNA-seq the distinction between an
+observed zero and a missing value is itself uncertain, and naive reconstruction
+objectives can encourage over-imputation of genuine biological zeros
+\citep{SarkarStephens2021SeparatingMeasurement, Linderman2022ZeroPreserving}.
+MaskImpute adapts masking to this setting by (i) using different masking rates
+for zeros and non-zeros, and (ii) incorporating a biozero-aware prior and
+regularization so that reconstruction pressure is reduced on zeros likely to be
+biological non-expression.
+
+\section{Methods}
+\label{sec:methods}
+\subsection{Synthetic scRNA-seq Datasets}
+\label{sec:synthetic_data}
+We benchmarked MaskImpute against other approaches on deterministic synthetic
+scRNA-seq datasets generated with the Splat simulator from the
+\texttt{Splatter} package \citep{zappia2017splatter}. The goal is controlled
+evaluation in a setting where both the observed counts and pre-dropout ground
+truth are available.
+
+\paragraph{Summary.}
+We simulate 13 scenarios with $G=1000$ genes spanning grouped populations, batch
+effects, and trajectory topologies. Each scenario is generated deterministically
+with fixed seeds and split into a tuning split ($N=1{,}000$ cells), a held-out
+test split ($N=5{,}000$ cells), and a runtime-scaling split
+($N\in\{10{,}000,\ldots,100{,}000\}$) on a representative dropout scenario.
+Datasets store observed counts and pre-dropout ground truth, along with
+log2(1+CP10k) assays; marker genes are those with differential-expression
+factors not equal to 1 in any group. Full simulator parameters and the scenario
+catalog are provided in Appendix~\ref{app:synthetic_details}.
+
+\paragraph{Notation.}
+In this work, $\mathbf{X}_{\log}\in\mathbb{R}_{\ge 0}^{N\times G}$ denotes the
+observed log-normalized matrix, $\mathbf{X}^{\star}_{\log}$ the corresponding
+synthetic ground truth (when available), and $\mathbf{X}'_{\log}$ the
+reconstructed matrix produced by MaskImpute. We write $x_{ij}$, $x^{\star}_{ij}$,
+and $x'_{ij}$ for their respective entries. We denote the (unnormalized) count
+matrix by $\mathbf{C}=\{c_{ij}\}$.
+
+\subsection{Model Architecture}
+MaskImpute is a masked denoising autoencoder trained with a biozero-aware
+corruption and regularization scheme to reduce over-imputation at observed
+zeros. Let $\tilde{\mathbf{s}}_i\in\mathbb{R}^G$ denote the corrupted, scaled
+input for cell $i$ (Sections~\ref{sec:scaling}--\ref{sec:masking}). The encoder
+$f_\theta:\mathbb{R}^{G}\!\to\!\mathbb{R}^{d_{\mathrm{lat}}}$ maps $\tilde{\mathbf{s}}_i$ to a
+latent representation $\mathbf{h}_i=f_\theta(\tilde{\mathbf{s}}_i)$, and a
+decoder $g_\phi:\mathbb{R}^{d_{\mathrm{lat}}}\!\to\!\mathbb{R}^{G}$ produces the reconstruction
+  \[
+\hat{\mathbf{s}}_i=g_\phi(\mathbf{h}_i)=g_\phi(f_\theta(\tilde{\mathbf{s}}_i)).
+  \]
+
+  We use a symmetric fully connected architecture with encoder widths
+  $128 \rightarrow 64 \rightarrow d_{\mathrm{lat}}$ and decoder widths
+  $d_{\mathrm{lat}} \rightarrow 64 \rightarrow 128 \rightarrow G$, with bottleneck dimension
+  $d_{\mathrm{lat}}{=}16$. Each hidden block applies a linear transformation, layer
+  normalization, and a SiLU nonlinearity. This yields a compact latent
+  representation while preserving enough capacity to model nonlinear
+  gene--gene structure.
+
+  Let $\mathbf{S}=\mathrm{scale}(\mathbf{X}_{\log})$ and $\hat{\mathbf{S}}$
+  denote the scaled inputs and reconstructions stacked across cells.
+  Reconstructions in log space are obtained by inverse scaling,
+  \[
+  \mathbf{X}'_{\log}=\mathrm{invscale}(\hat{\mathbf{S}}).
+  \]
+  All entries, including observed non-zeros, are reconstructed by the same model.
+  This makes the method a full-matrix imputer rather than a zero-only editing
+  procedure.
+
+\subsection{Gene Scaling}
+\label{sec:scaling}
+We apply a robust, monotone per-gene scaling with three steps:
+\[
+\begin{aligned}
+\text{(Winsorize)}\quad &\bar{x}_{ij}=\min(\max(x_{ij},q^{(2)}_j),q^{(99.5)}_j),\\
+\text{(Standardize)}\quad &z_{ij}=\frac{\bar{x}_{ij}-\mu_j}{\sigma_j},\qquad
+\sigma_j\leftarrow\max(\sigma_j,\varepsilon),\\
+\text{(Rescale)}\quad &s_{ij}=2\cdot\frac{z_{ij}-z^{\min}_j}{z^{\max}_j-z^{\min}_j}-1,\\
+&\qquad z^{\max}_j-z^{\min}_j\ge\varepsilon.
+\end{aligned}
+\]
+We denote the scaled matrix by $\mathbf{S}$ and use
+$\mathrm{scale}(\cdot)$ / $\mathrm{invscale}(\cdot)$ for forward/inverse
+transforms.
+Here $\varepsilon>0$ is an arbitrarily small constant used for numerical
+stability (we use $\varepsilon=10^{-8}$).
+We define $z^{\min}_j=\min_i z_{ij}$ and $z^{\max}_j=\max_i z_{ij}$.
+
+\subsection{Masked Denoising Objective}
+\label{sec:masking}
+  For each mini-batch $\mathcal{B}$ of cells, we sample corruption masks with
+  different rates for observed zeros vs.\ observed non-zeros. Let $c_{ij}$ denote
+  the observed count and let $x_{ij}$ denote the corresponding log-normalized
+  value. Define the observed-zero set $\mathcal{Z}=\{(i,j):c_{ij}=0\}$ and the
+  observed non-zero set $\mathcal{N}=\{(i,j):c_{ij}>0\}$. We sample two Bernoulli
+  masks:
+  \[
+  \begin{aligned}
+  m^{(0)}_{ij} &\sim \mathrm{Bernoulli}(\pi^{(0)}_{ij}),\qquad
+  \pi^{(0)}_{ij}=p_{\mathrm{zero}}\,p_{\mathrm{bio}}(i,j)
+  &&\text{for }(i,j)\in\mathcal{Z},\\
+  m^{(\mathrm{nz})}_{ij} &\sim \mathrm{Bernoulli}(p_{\mathrm{nz}})
+  &&\text{for }(i,j)\in\mathcal{N},
+  \end{aligned}
+  \]
+  where $p_{\mathrm{bio}}(i,j)$ is the biozero probability for an observed zero
+  (Section~\ref{sec:biozero}). We use $(p_{\mathrm{zero}},p_{\mathrm{nz}})=(0.01,0.05)$.
+
+  Masked non-zeros are replaced by zero in the scaled space. Masked zeros are
+  replaced by count-derived noise as described below. Unmasked entries are left
+  unchanged.
+
+  \paragraph{Noise for masked zeros.}
+  For masked zero entries, we inject noise in log space using the observed count
+  range per gene. Let $c^{\max}_j=\max_i c_{ij}$. For each masked zero entry we
+  sample
+  \[
+  \eta_{ij}\sim\mathrm{Uniform}(0,\nu),\quad \nu=0.02,\qquad
+  \tilde{x}_{ij}=\log_2(1+\eta_{ij}c^{\max}_j),
+  \]
+  then apply $\mathrm{scale}(\cdot)$ to obtain the corrupted scaled input value.
+
+\paragraph{Loss.}
+  Let $s_{ij}=[\mathrm{scale}(\mathbf{X}_{\log})]_{ij}$ and
+  $\hat{s}_{ij}$ denote the reconstruction in the scaled space, and let
+  $r_{ij}=\hat{s}_{ij}-s_{ij}$ be the residual. We optimize a weighted masked MSE:
+  \[
+  \mathcal{L}_{\mathrm{mask}}=
+  \frac{\omega_{\mathrm{bio}}\sum_{(i,j)\in\mathcal{Z}} m^{(0)}_{ij}\,r_{ij}^2
+        +\omega_{\mathrm{nz}}\sum_{(i,j)\in\mathcal{N}} m^{(\mathrm{nz})}_{ij}\,r_{ij}^2}
+       {\omega_{\mathrm{bio}}\sum_{(i,j)\in\mathcal{Z}} m^{(0)}_{ij}
+        +\omega_{\mathrm{nz}}\sum_{(i,j)\in\mathcal{N}} m^{(\mathrm{nz})}_{ij}},
+  \]
+  with weights $(\omega_{\mathrm{bio}},\omega_{\mathrm{nz}})=(1.0,2.0)$.
+
+  We add two auxiliary reconstruction terms. The biozero regularizer encourages
+  predicted values at likely biological zeros to be close to the gene-wise scaled
+  zero value:
+  \[
+  \begin{aligned}
+  \mathcal{L}_{\mathrm{bio}}
+  &=\frac{\sum_{(i,j)\in\mathcal{Z}} p_{\mathrm{bio}}(i,j)\,(\hat{s}_{ij}-s_{0j})^2}
+         {\sum_{(i,j)\in\mathcal{Z}} p_{\mathrm{bio}}(i,j)},\qquad
+  s_{0j}=[\mathrm{scale}(\mathbf{0})]_j.
+  \end{aligned}
+  \]
+  Because the model reconstructs the full matrix (including observed non-zeros),
+  we also include an observed-expression reconstruction penalty over $\mathcal{N}$,
+  \[
+  \mathcal{L}_{\mathrm{nz}}=
+  \frac{\sum_{(i,j)\in\mathcal{N}} r_{ij}^2}{|\mathcal{N}|}.
+  \]
+  The final objective is
+  \[
+  \mathcal{L}=\mathcal{L}_{\mathrm{mask}}+\lambda_{\mathrm{bio}}\,\mathcal{L}_{\mathrm{bio}}
+  +\lambda_{\mathrm{nz}}\,\mathcal{L}_{\mathrm{nz}},
+  \]
+  with $(\lambda_{\mathrm{bio}},\lambda_{\mathrm{nz}})=(1.2,0.75)$.
+
+\subsection{Biological Zero Probability Estimation}
+  \label{sec:biozero}
+  We estimate a prior probability $p_{\mathrm{bio}}(i,j)$ that an observed zero
+  corresponds to true biological non-expression. We use a negative-binomial
+  model for latent true counts with an explicit dropout mechanism. Let $t_{ij}$
+  denote a latent (pre-dropout) count and $d_{ij}$ a dropout indicator:
+  \[
+  t_{ij} \sim \mathrm{NB}(\mu_{ij},\phi_j),\qquad
+  d_{ij} \sim \mathrm{Bernoulli}(\delta_{ij}),\qquad
+  c_{ij} = (1-d_{ij})\,t_{ij}.
+  \]
+  Let $f_{ij}(0)=\Pr(t_{ij}=0\mid \mu_{ij},\phi_j)$ denote the NB zero probability.
+  Then for an observed zero (noting that $c_{ij}=0$ whenever $t_{ij}=0$,
+  regardless of dropout),
+  \[
+  p_{\mathrm{bio}}(i,j)=\Pr(t_{ij}=0\mid c_{ij}=0)
+  =\frac{f_{ij}(0)}{\delta_{ij}+(1-\delta_{ij})f_{ij}(0)}.
+  \]
+  We set $p_{\mathrm{bio}}(i,j)=0$ when $c_{ij}>0$.
+
+  We model $\mu_{ij}$ using a gene mean $\mu_j$ and a library-size factor,
+  \[
+  \mu_{ij}=\ell_i\mu_j,\qquad
+  \ell_i=\frac{\sum_j c_{ij}}{\operatorname*{median}_k\left(\sum_j c_{kj}\right)}.
+  \]
+  Dropout probabilities $\delta_{ij}$ are modeled as a smooth decreasing function
+  of $\log \mu_{ij}$ using a fitted logistic curve to empirical zero rates, and
+  gene-wise dispersion parameters $\phi_j$ are estimated using a shrinkage
+  moment-based estimator on observed counts. This prior is used strictly as a
+  soft regularizer and as a modulation signal for zero masking; it is not assumed
+  to identify ground-truth biological zeros in real data.
+
+
+\subsection{Training Details}
+We train MaskImpute in a transductive self-supervised setting: the model is fit
+on the full observed matrix and learns to reconstruct randomly corrupted
+entries. Unless otherwise specified, we optimize the objective in
+Section~\ref{sec:masking} with Adam (learning rate $10^{-4}$, weight decay
+$10^{-4}$), batch size 32, for 400 epochs on GPU. Random seeds are fixed for
+reproducibility. Biozero probabilities $p_{\mathrm{bio}}(i,j)$ are computed once
+from observed counts (Section~\ref{sec:biozero}) and held fixed during training.
+All hyperparameters are held constant across datasets and splits.
+
+\subsection{Reconstruction-Informed Zero Shrinkage}
+\label{sec:zero_shrink}
+The autoencoder outputs a full reconstruction $\hat{\mathbf{X}}_{\log}$ (all
+entries, including observed non-zeros). To reduce over-imputation at observed
+zeros, we apply a lightweight post-hoc shrinkage \emph{only} on entries with
+$c_{ij}=0$. Let $\hat{u}_{ij}=2^{\hat{x}_{ij}}-1$ denote the reconstructed
+CP10k-normalized count scale corresponding to $\hat{x}_{ij}$. For each gene $j$,
+let $\tilde{u}_j$ be a robust reference level, taken as the median of
+$\hat{u}_{ij}$ over cells where the gene is observed as expressed ($c_{ij}>0$),
+with a fallback to the 75th percentile of $\{\hat{u}_{ij}\}_i$ when needed.
+We define a reconstruction-derived biozero weight
+\[
+w^{(s)}_{ij}=\frac{1}{1+\hat{u}_{ij}/\max(\tilde{u}_j,\varepsilon)}\qquad\text{for }c_{ij}=0,
+\]
+and set $w^{(s)}_{ij}=0$ for $c_{ij}>0$. The final imputed normalized counts are
+\[
+\hat{u}^{(\mathrm{shrink})}_{ij}=\hat{u}_{ij}\big(1-\alpha w^{(s)}_{ij}\big)\qquad\text{for }c_{ij}=0,
+\]
+with shrinkage strength $\alpha=0.3$, while entries with $c_{ij}>0$ are left
+unchanged by this step. We report final reconstructions in log space as
+$x'_{ij}=\log_2(1+\hat{u}^{(\mathrm{shrink})}_{ij})$.
+
+\subsection{Evaluation Metrics}
+\label{sec:evaluation}
+\paragraph{(i) Reconstruction error (synthetic test split).}
+On the synthetic test split ($N=5000$ cells per scenario), we compare
+$\mathbf{X}'_{\log}$ to the ground truth $\mathbf{X}^{\star}_{\log}$ (both in
+log2(1+CP10k) space). We report mean squared error (MSE) and mean absolute error
+(MAE),
+\[
+\mathrm{MSE}=\frac{1}{NG}\sum_{i,j}\big(x^{\star}_{ij}-x'_{ij}\big)^2,\qquad
+\mathrm{MAE}=\frac{1}{NG}\sum_{i,j}\big|x^{\star}_{ij}-x'_{ij}\big|.
+\]
+We also report subset metrics on (a) dropout-like entries
+$D=\{(i,j):x_{ij}=0\wedge x^{\star}_{ij}>0\}$, (b) biozero entries
+$Z_{\mathrm{bio}}=\{(i,j):x^{\star}_{ij}=0\}$, and (c) marker-gene entries
+$C=\{(i,j):j\in\mathcal{J}_M\}$, where $\mathcal{J}_M$ is defined from
+\texttt{DEFacGroup*} (Section~\ref{sec:synthetic_data}). For each subset, the
+metric is the corresponding average over the subset; if a subset is empty we
+report it as NA.
+For methods that output imputed counts rather than logcounts, we normalize the
+imputed count matrix to the dataset \texttt{targetSum} using its \emph{imputed}
+per-cell library sizes, and then apply the $\log_2(1+x)$ transform; we do not
+use the ground-truth library sizes (\texttt{libSizeTrue}). Unless otherwise
+specified, stochastic methods are run for five random seeds and results are
+reported as mean $\pm$ standard deviation.
+
+\paragraph{(ii) Per-gene normalized RMSE (gNRMSE).}
+To reduce sensitivity to the scale of highly expressed genes, we report
+per-gene normalized RMSE,
+\[
+\mathrm{gNRMSE}=\frac{1}{G}\sum_{j=1}^G\frac{\sqrt{\frac{1}{N}\sum_i\left(x^{\star}_{ij}-x'_{ij}\right)^2}}
+{\max\left(\mathrm{sd}(\{x^{\star}_{ij}\}_{i=1}^N),\varepsilon\right)},
+\]
+and its marker-gene variant, averaged over $j\in\mathcal{J}_M$.
+
+\paragraph{(iii) Runtime scaling.}
+To evaluate scalability, we measure wall-clock runtime on the scaling split for
+\[
+N\in\{10000,20000,\ldots,100000\}
+\]
+on the representative scenario \texttt{groups\_balanced\_moderate\_drop}. We
+report mean runtime (and standard deviation across datasets when applicable).
+All runtime benchmarks and reported runtimes were obtained on an NVIDIA DGX
+H100 system and all methods were benchmarked on the same hardware
+(Appendix~\ref{app:runtime}).
+
+\paragraph{(iv) Real-data label agreement.}
+For labeled real datasets, no pre-dropout ground truth is available. We therefore
+evaluate only whether reconstructed matrices preserve externally annotated cell
+types. We use the full Baron human pancreas dataset \citep{Baron2016Pancreas},
+the full Zeisel mouse cortex dataset \citep{Zeisel2015Cortex}, and the 10x
+PBMC68k dataset with the published barcode-level annotations from the original
+analysis \citep{Zheng2017TenX}. To avoid supervised marker selection, we select
+the top 1,000 highly variable genes from the observed matrix only, using
+mean-binned dispersion of log-normalized expression. Labels are used only after
+imputation for evaluation.
+For computationally tractable repeated evaluation, PBMC68k is evaluated on a
+fixed random 12,000-cell subset. For each imputed matrix, we standardize genes,
+compute PCA embeddings with $d\in\{20,50,100\}$ components, build a shared
+nearest-neighbor graph with $k\in\{10,15,30\}$, and run Leiden clustering
+\citep{Traag2019Leiden} at resolutions
+$\{0.2,0.5,1.0,1.5,2.0\}$. We repeat the procedure for five seeds and report
+the mean and standard deviation across this grid. We also report a
+cluster-count-matched summary that selects, for each seed, the grid point whose
+number of clusters is closest to the number of annotated cell types; this uses
+only the number of labels, not label identities. When batch-like metadata are
+available (Baron donor, Zeisel cell-id prefix, PBMC barcode suffix), we report
+cluster--batch ARI as a diagnostic, where lower values indicate weaker
+alignment between clusters and batch. DCA is run with a 300-second wall-clock
+budget per dataset; timeouts are recorded explicitly rather than omitted.
+This evaluation remains a downstream sanity check rather than a direct
+denoising metric, and it can favor conservative methods when raw expression
+already separates annotated populations.
+
+\paragraph{(v) Synthetic downstream label agreement and calibration.}
+For the phase-6 diagnostic analyses, we also evaluate clustering on the
+synthetic test split using the simulator-provided group or path labels. Labels
+are used only for evaluation. We use the same PCA--SNN--Leiden procedure as in
+the real-data analysis, but with a smaller robustness grid
+$d\in\{20,50\}$, $k\in\{10,15,30\}$, and resolutions
+$\{0.2,0.5,1.0\}$. We report both grid-averaged ARI/NMI and a
+cluster-count-matched summary. We additionally examine a one-parameter,
+label-free residual calibration
+\[
+\mathbf{X}^{(\lambda)}_{\log}=(1-\lambda)\mathbf{X}'_{\log}
++\lambda\mathbf{X}_{\log},
+\]
+where $\mathbf{X}_{\log}$ is the observed log-normalized matrix. This transform
+does not use labels or dataset-specific fitting and is evaluated only as a
+simple calibration of the final output.
+
+\subsection{Algorithm Outline}
+Figure~\ref{fig:maskimpute_pipeline} provides a high-level view of the MaskImpute
+pipeline, from biozero probability estimation to masked corruption and
+reconstruction. Algorithm~\ref{alg:maskimpute} gives the complete
+training and imputation procedure, including mask sampling, corruption, and the
+loss minimized by MaskImpute.
+
+\begin{algorithm}[H]
+\caption{MaskImpute training and imputation.}
+\label{alg:maskimpute}
+\begin{algorithmic}[1]
+\raggedright
+\STATE \textbf{Input:} logcounts $\mathbf{X}_{\log}$, counts $\mathbf{C}$,
+scaler $\mathrm{scale}/\mathrm{invscale}$, masking rates
+$p_{\mathrm{zero}},p_{\mathrm{nz}}$, noise level $\nu$, shrinkage strength
+$\alpha$, and epochs $E$.
+\STATE Compute biozero probabilities $p_{\mathrm{bio}}(i,j)$ from counts via
+Section~\ref{sec:biozero}.
+\STATE Scale $\mathbf{S}\leftarrow\mathrm{scale}(\mathbf{X}_{\log})$.
+\FOR{epoch $=1$ to $E$}
+\FOR{mini-batch $\mathcal{B}$}
+\STATE Sample masks on entries: $m^{(0)}_{ij}\sim\mathrm{Bernoulli}(p_{\mathrm{zero}}p_{\mathrm{bio}}(i,j))$
+for observed zeros ($c_{ij}=0$), and $m^{(\mathrm{nz})}_{ij}\sim\mathrm{Bernoulli}(p_{\mathrm{nz}})$
+for observed non-zeros ($c_{ij}>0$).
+\STATE Corrupt inputs: masked non-zeros $\tilde{s}_{ij}\leftarrow 0$; masked
+zeros $\tilde{x}_{ij}=\log_2(1+\eta_{ij}c^{\max}_j)$ with
+$\eta_{ij}\sim\mathrm{Uniform}(0,\nu)$ and $c^{\max}_j=\max_i c_{ij}$, then
+$\tilde{s}_{ij}\leftarrow\mathrm{scale}(\tilde{x}_{ij})$.
+\STATE Forward pass: $\hat{\mathbf{s}}_i=g_\phi(f_\theta(\tilde{\mathbf{s}}_i))$.
+\STATE Update parameters by minimizing $\mathcal{L}$ (Section~\ref{sec:masking}).
+\ENDFOR
+\ENDFOR
+\STATE Reconstruct $\hat{\mathbf{X}}_{\log}\leftarrow\mathrm{invscale}(\hat{\mathbf{S}})$.
+\STATE Apply reconstruction-informed shrinkage on observed zeros in the
+normalized count scale (Section~\ref{sec:zero_shrink}) to obtain
+$\mathbf{X}'_{\log}$.
+\STATE \textbf{Output:} reconstructed logcounts $\mathbf{X}'_{\log}$.
+\end{algorithmic}
+\end{algorithm}
+\FloatBarrier
+
+\section{Experiments and Results}
+\label{sec:experiments}
+
+\subsection{Denoising Accuracy on Synthetic Data}
+\label{sec:denoising_results}
+We evaluate imputation accuracy on the 13 synthetic scenarios described in
+Section~\ref{sec:synthetic_data} on the held-out test split ($N=5{,}000$ cells
+per scenario). We compare reconstructed logcounts $\mathbf{X}'_{\log}$ against
+the synthetic ground truth $\mathbf{X}^{\star}_{\log}$ using the metrics in
+Section~\ref{sec:evaluation}. In addition to overall reconstruction error, we
+report subset errors on dropout-like entries (observed zeros with non-zero
+ground truth), biozero entries (ground-truth zeros), and marker-gene entries.
+Unless otherwise stated, we run each method for 5 repeats with different random
+seeds per scenario. Baselines with available generated results include DCA,
+scVI, ALRA, MAGIC, AutoClass, ccImpute, SAVER, and the un-denoised observed
+logcounts (Baseline).
+scVI is run with a negative-binomial likelihood, two hidden layers, latent
+dimension 10, and 400 training epochs; its normalized expression output is
+scaled to the benchmark CP10k target before log transformation. ALRA is run as a
+fixed adaptive low-rank reconstruction baseline on log-normalized expression,
+with rank selected from the singular-value spectrum and gene-wise thresholding
+of low reconstructed values.
+
+\begin{table*}[t]
+\caption{Synthetic test split benchmark summary across 13 scenarios and 5 seeds.
+Entries report means across scenario-level estimates; $\pm$ values are standard
+deviations across scenarios. Each scenario-level estimate averages 5 random
+seeds. Baseline denotes the un-denoised observed logcounts (identity). Lower is
+better.}
+\label{tab:benchmark_core}
+\centering
+\footnotesize
+\input{generated/benchmark_core_table.tex}
+\end{table*}
+
+Table~\ref{tab:benchmark_core} summarizes average performance across scenarios.
+Among the baselines with available results, MaskImpute achieves the lowest mean
+MSE and dropout-MSE. Relative to DCA, MaskImpute reduces overall MSE by 38\% and
+dropout-MSE by 34\% in this benchmark; relative to scVI, it reduces overall MSE
+by 35\% and dropout-MSE by 32\%. Marker-gene subset errors are reported in Appendix~\ref{app:per_scenario}
+(Table~\ref{tab:benchmark_marker}).
+MaskImpute also has lower mean Biozero-MSE than DCA (0.0133 vs. 0.0164) and
+scVI (0.0133 vs. 0.0179), but the DCA comparison is not uniform across
+scenarios. Biozero-focused errors are
+lowest for conservative strategies that preserve observed zeros (Baseline,
+SAVER), which is expected because biozero entries have ground-truth zero
+expression. MaskImpute therefore prioritizes dropout recovery and full-matrix
+accuracy while maintaining Biozero-MSE below the neural baselines.
+We report per-scenario MSE and marker-gene subset errors in
+Appendix~\ref{app:per_scenario}, along with scenario-level wins and paired
+Wilcoxon signed-rank tests against DCA.
+
+We note that gNRMSE values can exceed 1 because the metric normalizes by each
+gene's standard deviation, including low-variance genes where even small
+absolute errors translate into large relative error. In our benchmark, MaskImpute
+still improves gNRMSE relative to the baselines with available results
+(Table~\ref{tab:benchmark_core}).
+Appendix~\ref{app:per_scenario} (Figure~\ref{fig:mse_5000_bars}) summarizes
+benchmark metrics aggregated across scenarios (mean $\pm$ standard deviation).
+
+\subsection{Ablations, Calibration, and Real-Data Checks}
+\label{sec:phase6_results}
+Appendix~\ref{app:ablations} reports component ablations, sensitivity analyses,
+and a label-free residual-calibration sweep. The ablations show that the
+biozero regularizer is the primary component protecting biological zeros:
+removing it reduces aggregate MSE but increases Biozero-MSE from 0.013 to
+0.095. Removing zero shrinkage has a smaller but consistent effect, increasing
+Biozero-MSE to 0.018. A simple residual calibration
+$X^{(\lambda)}=(1-\lambda)X_{\mathrm{MI}}+\lambda X_{\mathrm{obs}}$ can improve
+the diagnostic efficacy score; $\lambda=0.05$ is the safest synthetic-error
+trade-off, while $\lambda=0.10$ gives the strongest synthetic downstream
+ARI/NMI in the screened grid.
+
+Appendix~\ref{app:real_data} gives downstream label-agreement results on Baron
+human pancreas, Zeisel mouse cortex, and PBMC68k. These real-data experiments do
+not provide pre-dropout ground truth and are therefore reported as
+structure-preservation checks rather than direct imputation-accuracy evidence.
+MaskImpute has the best cluster-count-matched Baron ARI/NMI among evaluated
+methods and the best matched Zeisel NMI among imputation methods, but PBMC68k
+does not show a MaskImpute clustering advantage. The synthetic ground-truth
+benchmark remains the primary evidence for imputation accuracy.
+
+\section{Limitations}
+MaskImpute introduces additional hyperparameters (masking rates, regularization,
+shrinkage strength) whose interactions may be dataset-dependent; the sensitivity
+analysis in Section~\ref{sec:phase6_results} is diagnostic and should be
+expanded to additional datasets before final deployment. The count-derived
+biozero prior is used only as a soft regularizer and masking modulator, and may
+be misspecified for some
+protocols or preprocessing pipelines. The real-data experiments use annotated
+cell-type labels as a downstream proxy, not ground-truth molecular
+reconstructions, and therefore can reward conservative behavior on marker-rich
+datasets. Finally, the current runtime results are
+based on an unoptimized implementation; we expect improved scalability with
+mini-batch inference and mixed-precision training, but these optimizations must
+be empirically validated.
+In terms of broader impact, improved denoising can support biological discovery
+and more stable downstream analyses, but over-imputation or misuse of denoised
+matrices as ``ground truth'' can lead to spurious conclusions; we therefore
+recommend reporting sensitivity to key hyperparameters and validating findings
+against raw data and orthogonal assays when possible.
+
+\section{Software and Data Availability}
+For double-blind review, links to code and any processed artifacts are redacted.
+An anonymized zip archive containing code, preprocessing scripts, and experiment
+configurations is provided as a separate file with this submission for
+reviewers. We will release the same materials publicly upon acceptance.
+Synthetic datasets are generated with Splatter \citep{zappia2017splatter}.
+The anonymized supplementary archive includes the code, configuration files,
+dependency notes, and license information for released scripts and third-party
+assets used to reproduce the reported experiments.
+
+% Acknowledgments should only appear in the accepted (camera-ready) version.
+% NeurIPS provides the {ack} environment (it is hidden automatically for
+% submission). Keep it commented out for blind review.
+% \begin{ack}
+% \end{ack}
+
+
+
+\clearpage
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\clearpage
+\appendix
+
+\section{Synthetic Simulation Details}
+\label{app:synthetic_details}
+This appendix describes the data-generation protocol underlying
+Table~\ref{tab:benchmark_core} and Appendix
+Tables~\ref{tab:per_scenario_mse}--\ref{tab:benchmark_significance}. It
+summarizes the fixed train/test/runtime splits, the 13 scenario definitions,
+the grouped, batch-effect, and trajectory simulation settings, and the assays
+and marker-gene annotations used by the benchmark metrics.
+\input{appendix_synthetic_details.tex}
+
+\clearpage
+\section{Per-Scenario Synthetic Results}
+\label{app:per_scenario}
+This appendix expands the aggregate synthetic benchmark in
+Table~\ref{tab:benchmark_core}. Table~\ref{tab:per_scenario_mse} reports
+per-scenario overall MSE for each method, Table~\ref{tab:benchmark_marker}
+summarizes marker-gene reconstruction errors, Figure~\ref{fig:mse_5000_bars}
+visualizes the main synthetic metrics across methods,
+Table~\ref{tab:benchmark_wins} reports scenario-level wins by metric, and
+Table~\ref{tab:benchmark_significance} gives paired Wilcoxon tests comparing
+MaskImpute with DCA across scenarios.
+\begin{table}[H]
+\caption{Per-scenario overall MSE on the synthetic test split. Entries report
+mean $\pm$ repeat standard deviation over 5 seeds. Lower is better.}
+\label{tab:per_scenario_mse}
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{\input{generated/benchmark_mse_by_scenario.tex}}
+\end{table}
+
+\begin{table}[H]
+\caption{Marker-gene subset errors on the synthetic test split across 13
+scenarios. Entries report means across scenario-level estimates; $\pm$ values
+are standard deviations across scenarios. Lower is better.}
+\label{tab:benchmark_marker}
+\centering
+\footnotesize
+\input{generated/benchmark_marker_table.tex}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/mse_5000_bars.pdf}
+\caption{Benchmark metrics on the synthetic test split ($N{=}5{,}000$ cells per
+scenario). Each panel reports a metric aggregated across the 13 scenarios: bars
+show the mean across scenarios and error bars show the standard deviation, with
+lower error bars clipped at zero for non-negative metrics. Lower is better for
+all panels.}
+\label{fig:mse_5000_bars}
+\end{figure}
+
+\begin{table}[H]
+\caption{Scenario-level wins on the synthetic test split. A win is assigned to
+the method with the lowest scenario-level mean for the metric.}
+\label{tab:benchmark_wins}
+\centering
+\footnotesize
+\input{generated/benchmark_wins_table.tex}
+\end{table}
+
+\begin{table}[H]
+\caption{Paired Wilcoxon signed-rank tests comparing MaskImpute against DCA
+across synthetic test scenarios. The one-sided test uses the alternative that
+MaskImpute has lower error than DCA.}
+\label{tab:benchmark_significance}
+\centering
+\footnotesize
+\input{generated/benchmark_significance_table.tex}
+\end{table}
+
+\FloatBarrier
+\clearpage
+\section{Ablations, Calibration, and Synthetic Downstream Details}
+\label{app:ablations}
+This appendix reports diagnostic experiments for the MaskImpute design.
+Table~\ref{tab:phase6_ablation} isolates the contribution of major components,
+Table~\ref{tab:phase6_calibration} evaluates residual calibration strengths,
+Table~\ref{tab:phase6_downstream} reports synthetic downstream clustering
+diagnostics for selected outputs, and Table~\ref{tab:phase6_sensitivity}
+summarizes one-scenario sensitivity to the shrinkage, biozero-weight, and zero
+mask-rate settings.
+\begin{table}[H]
+\caption{MaskImpute component ablations on the synthetic test split. Entries are
+means across 13 scenarios; $\pm$ values are 95\% confidence intervals across
+scenarios for efficacy, MSE, and Biozero-MSE. ARI and NMI are
+cluster-count-matched synthetic downstream scores. Lower is better for error
+metrics; higher is better for ARI/NMI.}
+\label{tab:phase6_ablation}
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{\input{generated/phase6_ablation_table.tex}}
+\end{table}
+
+\begin{table}[H]
+\caption{Label-free residual calibration on the synthetic test split. The
+calibrated output is $(1-\lambda)X_{\mathrm{MI}}+\lambda X_{\mathrm{obs}}$.
+Entries are means across 13 scenarios. Lower is better for error metrics;
+higher is better for ARI/NMI.}
+\label{tab:phase6_calibration}
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{\input{generated/phase6_calibration_table.tex}}
+\end{table}
+
+\begin{table}[H]
+\caption{Synthetic downstream clustering diagnostic for selected outputs.
+Matched columns select the clustering grid point with the closest number of
+clusters to the simulator-provided label count; grid columns average across the
+full PCA--SNN--Leiden grid. Higher is better.}
+\label{tab:phase6_downstream}
+\centering
+\footnotesize
+\input{generated/phase6_downstream_table.tex}
+\end{table}
+
+\begin{table}[H]
+\caption{One-scenario sensitivity analysis on
+\texttt{groups\_balanced\_moderate\_drop}. Efficacy is
+MSE $+2\times$ Biozero-MSE. Lower is better for error metrics; higher is better
+for ARI.}
+\label{tab:phase6_sensitivity}
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{\input{generated/phase6_sensitivity_table.tex}}
+\end{table}
+
+\FloatBarrier
+\clearpage
+\section{Real-Data Label Agreement Details}
+\label{app:real_data}
+This appendix contains the real-data label-agreement checks used as downstream
+diagnostics rather than direct imputation-accuracy evidence.
+Table~\ref{tab:real_data} reports grid-averaged and cluster-count-matched ARI
+and NMI, together with batch ARI, for Baron, Zeisel, and PBMC68k after each
+imputation method.
+\begin{table}[H]
+\caption{Real-data label agreement after imputation. ARI grid and NMI grid are
+means over five seeds and a PCA--SNN--Leiden robustness grid. Matched columns
+select the grid point whose number of clusters is closest to the number of
+annotated cell types for each seed. Higher is better for ARI and NMI. Batch ARI
+measures cluster--batch association, where lower is better.}
+\label{tab:real_data}
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{\input{generated/real_data_table.tex}}
+\end{table}
+
+\FloatBarrier
+\clearpage
+\section{Runtime Scaling Details}
+\label{app:runtime}
+Runtime artifacts were generated on an NVIDIA DGX H100 system, with all
+methods in the runtime comparison benchmarked on the same hardware. Full CPU,
+RAM, and software-version details should be finalized with the post-feedback
+benchmark rerun.
+Figure~\ref{fig:runtime_linear} plots wall-clock scaling across synthetic
+cell-count settings, and Table~\ref{tab:runtime_scaling} provides the
+corresponding runtime values in seconds for each method and cell count.
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/runtime_scaling_linear.png}
+\caption{Runtime scaling on the synthetic scaling split (linear scale). Each
+point reports wall-clock runtime for a single dataset at the corresponding cell
+count.}
+\label{fig:runtime_linear}
+\end{figure}
+
+\begin{table}[H]
+\caption{Runtime (seconds) for the synthetic scaling split.}
+\label{tab:runtime_scaling}
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{\input{generated/runtime_scaling_table.tex}}
+\end{table}
+
+\FloatBarrier
+\clearpage
+\input{checklist.tex}
+
+\end{document}

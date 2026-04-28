@@ -1,0 +1,53 @@
+[2026-04-25 08:19:58] GPU 0 start 16_c16_pnz0p1_pzero0p005_bioreg1_shrink0p1
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+{
+  "config": {
+    "bio_reg_weight": 1.0,
+    "epochs": 400,
+    "loss_bio_weight": 2.0,
+    "loss_nz_weight": 2.0,
+    "lr": 0.0001,
+    "name": "c16_pnz0p1_pzero0p005_bioreg1_shrink0p1",
+    "noise_max": 0.02,
+    "observed_recon_weight": 0.75,
+    "p_nz": 0.1,
+    "p_zero": 0.005,
+    "zero_shrink_strength": 0.1
+  },
+  "corr_err": 0.23500336442758046,
+  "corr_err_dataset_std": 0.021646863443227055,
+  "device": "cuda",
+  "gnrmse": 1.1577072596913625,
+  "gnrmse_dataset_std": 0.1018407224779088,
+  "gnrmse_marker": 1.1072013728461843,
+  "gnrmse_marker_dataset_std": 0.09987296666219737,
+  "input_dir": "synthetic_datasets/simulated_data/tune",
+  "mae": 0.352915767783414,
+  "mae_biozero": 0.056154386170079354,
+  "mae_biozero_dataset_std": 0.013977141727378163,
+  "mae_dataset_std": 0.03389379301801973,
+  "mae_dropout": 0.4319329500326437,
+  "mae_dropout_dataset_std": 0.029015096207614673,
+  "mae_marker": 0.35477094657139363,
+  "mae_marker_dataset_std": 0.035533771042279325,
+  "mae_non_zero": 0.34859535767755606,
+  "mae_non_zero_dataset_std": 0.02385587651435216,
+  "mse": 0.22349316026101995,
+  "mse_biozero": 0.02262736902437387,
+  "mse_biozero_dataset_std": 0.006810959656504354,
+  "mse_dataset_std": 0.04020714562855064,
+  "mse_dropout": 0.2969919832689078,
+  "mse_dropout_dataset_std": 0.03850194110421445,
+  "mse_marker": 0.22559732640191196,
+  "mse_marker_dataset_std": 0.042976855762831036,
+  "mse_non_zero": 0.19906637956141668,
+  "mse_non_zero_dataset_std": 0.023324149127229642,
+  "n_datasets": 13,
+  "n_repeats": 1,
+  "runtime_sec": 22.273069368236555,
+  "runtime_sec_dataset_std": 0.6727605784748538,
+  "score_mse_plus_2biozero": 0.2687478983097677,
+  "score_mse_plus_biozero": 0.24612052928539382
+}
+[2026-04-25 08:25:20] GPU 0 done 16_c16_pnz0p1_pzero0p005_bioreg1_shrink0p1 status=0

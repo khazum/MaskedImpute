@@ -1,0 +1,27 @@
+/mnt/nfs/home/marcin.malec.local/miniconda3/envs/magic311/lib/python3.11/site-packages/keras/src/export/tf2onnx_lib.py:8: FutureWarning: In the future `np.object` will be defined as the corresponding NumPy scalar.
+  if not hasattr(np, "object"):
+=== batch_effects_moderate_drop
+{"dataset": "batch_effects_moderate_drop", "gnrmse": 1.1449996087163534, "mae": 0.3561807147734052, "mse": 0.23662081444565145, "mse_biozero": 0.016157684250078023, "mse_dropout": 0.3195558408709355, "runtime_sec": 138.68462029914372, "seed": 42, "transform": "raw"}
+{"dataset": "batch_effects_moderate_drop", "gnrmse": 1.1480238118553987, "mae": 0.35851505406571493, "mse": 0.23782410115101407, "mse_biozero": 0.013087723551766245, "mse_dropout": 0.3548328606325407, "runtime_sec": 138.68462029914372, "seed": 42, "transform": "all_obs0.1"}
+{"dataset": "batch_effects_moderate_drop", "gnrmse": 1.2866290068246016, "mae": 0.39510354493812366, "mse": 0.2932892518440378, "mse_biozero": 0.009088697389357681, "mse_dropout": 0.5143422897524771, "runtime_sec": 138.68462029914372, "seed": 42, "transform": "all_obs0.25"}
+{"dataset": "batch_effects_moderate_drop", "gnrmse": 1.7020351975419536, "mae": 0.49481364250077886, "mse": 0.5288250732370554, "mse_biozero": 0.004039421062519506, "mse_dropout": 1.0644418618938791, "runtime_sec": 138.68462029914372, "seed": 42, "transform": "all_obs0.5"}
+{"dataset": "batch_effects_moderate_drop", "gnrmse": 2.2033530957555088, "mae": 0.6159607976420773, "mse": 0.9432282785797401, "mse_biozero": 0.0010098552656298764, "mse_dropout": 1.9698545572347164, "runtime_sec": 138.68462029914372, "seed": 42, "transform": "all_obs0.75"}
+=== groups_balanced_moderate_drop
+{"dataset": "groups_balanced_moderate_drop", "gnrmse": 1.155541273732946, "mae": 0.3457245540018763, "mse": 0.21824264173550784, "mse_biozero": 0.013172002171668543, "mse_dropout": 0.2873458752734228, "runtime_sec": 135.30593188013881, "seed": 42, "transform": "raw"}
+{"dataset": "groups_balanced_moderate_drop", "gnrmse": 1.1567724997857554, "mae": 0.34704842657955287, "mse": 0.21817199501372575, "mse_biozero": 0.010669321212005225, "mse_dropout": 0.31793344878228724, "runtime_sec": 135.30593188013881, "seed": 42, "transform": "all_obs0.1"}
+{"dataset": "groups_balanced_moderate_drop", "gnrmse": 1.301881443703119, "mae": 0.38270754629777914, "mse": 0.27106664512963147, "mse_biozero": 0.007409251226248203, "mse_dropout": 0.46893787036782253, "runtime_sec": 135.30593188013881, "seed": 42, "transform": "all_obs0.25"}
+{"dataset": "groups_balanced_moderate_drop", "gnrmse": 1.7406763787412194, "mae": 0.4825573606040537, "mse": 0.5005593595871035, "mse_biozero": 0.0032930005429171356, "mse_dropout": 1.00094018461222, "runtime_sec": 135.30593188013881, "seed": 42, "transform": "all_obs0.5"}
+{"dataset": "groups_balanced_moderate_drop", "gnrmse": 2.269767615650856, "mae": 0.6050091074339679, "mse": 0.906720785119194, "mse_biozero": 0.0008232501357292839, "mse_dropout": 1.883352818085697, "runtime_sec": 135.30593188013881, "seed": 42, "transform": "all_obs0.75"}
+=== groups_rare_high_drop
+{"dataset": "groups_rare_high_drop", "gnrmse": 1.356512211734124, "mae": 0.42365788811803134, "mse": 0.3152378001456022, "mse_biozero": 0.006208531877187791, "mse_dropout": 0.38627979257780876, "runtime_sec": 136.07307168305852, "seed": 42, "transform": "raw"}
+{"dataset": "groups_rare_high_drop", "gnrmse": 1.3461922387338496, "mae": 0.4244770852210203, "mse": 0.3140883185821391, "mse_biozero": 0.005028910557144951, "mse_dropout": 0.4006891039740566, "runtime_sec": 136.07307168305852, "seed": 42, "transform": "all_obs0.1"}
+{"dataset": "groups_rare_high_drop", "gnrmse": 1.5621921630340558, "mae": 0.496125540419664, "mse": 0.40689479407744783, "mse_biozero": 0.003492299179844651, "mse_dropout": 0.569354505976027, "runtime_sec": 136.07307168305852, "seed": 42, "transform": "all_obs0.25"}
+{"dataset": "groups_rare_high_drop", "gnrmse": 2.193416248012659, "mae": 0.6885401603990463, "mse": 0.8136540553047351, "mse_biozero": 0.0015521329692969477, "mse_dropout": 1.2426007739095348, "runtime_sec": 136.07307168305852, "seed": 42, "transform": "all_obs0.5"}
+{"dataset": "groups_rare_high_drop", "gnrmse": 2.9206870283830506, "mae": 0.9057665134069044, "mse": 1.5355155839514532, "mse_biozero": 0.00038803324232423693, "mse_dropout": 2.4060185966410508, "runtime_sec": 136.07307168305852, "seed": 42, "transform": "all_obs0.75"}
+  transform      mse  mse_dropout  mse_biozero      mae   gnrmse
+ all_obs0.1 0.256695     0.357818     0.009595 0.376680 1.216996
+all_obs0.25 0.323750     0.517545     0.006663 0.424646 1.383568
+ all_obs0.5 0.614346     1.102661     0.002962 0.555304 1.878709
+all_obs0.75 1.128488     2.086409     0.000740 0.708912 2.464603
+        raw 0.256700     0.331061     0.011846 0.375188 1.219018
+Wrote results_real_data/tuning_maskimpute/synthetic_transforms_screen/metrics.tsv

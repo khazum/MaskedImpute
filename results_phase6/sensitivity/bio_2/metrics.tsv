@@ -1,0 +1,2 @@
+dataset	transform	seed	runtime_sec	mse	mse_dropout	mse_biozero	mae	gnrmse	ari_grid_mean	nmi_grid_mean	ari_grid_max	nmi_grid_max	ari_matched_mean	nmi_matched_mean	n_clusters_matched_mean
+groups_balanced_moderate_drop	raw	42	143.7237750007771	0.2431103070315474	0.3276003732190714	0.008470564253322821	0.3635353563480093	1.1987712025941926	0.735829825565599	0.8304827778392565	0.9958011528637777	0.9901234310139615	0.994609547286388	0.9876603155940894	3.0
