@@ -13,6 +13,7 @@ import stat
 import subprocess
 import tempfile
 from typing import Any, Mapping, Sequence
+import unicodedata
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
@@ -136,6 +137,16 @@ def _nonempty_string(value: object, name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise SourceLedgerError(f"{name} must be a nonempty trimmed string")
     return value
+
+
+def _portable_path_key(value: str) -> str:
+    return unicodedata.normalize("NFC", value).casefold()
+
+
+def _reject_portable_collisions(values: Sequence[str], name: str) -> None:
+    keys = [_portable_path_key(value) for value in values]
+    if len(set(keys)) != len(keys):
+        raise SourceLedgerError(f"{name} contains a nonportable path collision")
 
 
 def _validate_url(value: object, name: str, *, allow_local_urls: bool) -> str:
@@ -319,6 +330,7 @@ def _validate_source(
         artifact_names = [artifact.name for artifact in artifacts]
         if len(set(artifact_names)) != len(artifact_names):
             raise SourceLedgerError(f"{name} has duplicate artifact names")
+        _reject_portable_collisions(artifact_names, f"{name}.artifacts")
 
     return SourcePin(
         id=source_id,
@@ -381,6 +393,73 @@ def load_source_ledger(
     if len(set(identifiers)) != len(identifiers):
         raise SourceLedgerError("duplicate source id in ledger")
     digest = hashlib.sha256(_canonical_json_bytes(ledger)).hexdigest()
+    return SourceLedger(schema_version=1, sources=sources, sha256=digest)
+
+
+def _source_pin_payload(source: SourcePin) -> dict[str, object]:
+    if type(source) is not SourcePin:
+        raise SourceLedgerError("ledger sources must be SourcePin values")
+    expected = source.expected_checksum
+    if expected is not None and type(expected) is not Checksum:
+        raise SourceLedgerError("source checksum must be a Checksum value")
+    if not isinstance(source.artifacts, tuple) or not all(
+        type(artifact) is DataArtifact for artifact in source.artifacts
+    ):
+        raise SourceLedgerError("source artifacts must be DataArtifact values")
+    payload: dict[str, object] = {
+        "id": source.id,
+        "role": source.role,
+        "mechanism": source.mechanism,
+        "source_type": source.source_type,
+        "url": source.url,
+        "revision": source.revision,
+        "license": source.license,
+        "license_url": source.license_url,
+        "citation_doi": source.citation_doi,
+        "expected_checksum": expected.as_dict() if expected is not None else None,
+        "eligibility": source.eligibility,
+        "endpoints": list(source.endpoints),
+    }
+    if source.artifacts:
+        payload["artifacts"] = [
+            {
+                "name": artifact.name,
+                "url": artifact.url,
+                "expected_checksum": artifact.expected_checksum.as_dict(),
+            }
+            for artifact in source.artifacts
+        ]
+    if source.ineligibility_reason is not None:
+        payload["ineligibility_reason"] = source.ineligibility_reason
+    return payload
+
+
+def _revalidate_ledger_object(
+    ledger: SourceLedger, *, allow_local_urls: bool
+) -> SourceLedger:
+    if type(ledger) is not SourceLedger:
+        raise SourceLedgerError("ledger must be a SourceLedger")
+    if type(ledger.schema_version) is not int or ledger.schema_version != 1:
+        raise SourceLedgerError("ledger schema_version must be 1")
+    if not isinstance(ledger.sources, tuple) or not ledger.sources:
+        raise SourceLedgerError("ledger sources must be a nonempty tuple")
+    try:
+        payload = {
+            "schema_version": 1,
+            "sources": [_source_pin_payload(source) for source in ledger.sources],
+        }
+        sources = tuple(
+            _validate_source(source, index, allow_local_urls=allow_local_urls)
+            for index, source in enumerate(payload["sources"])
+        )
+        identifiers = [source.id for source in sources]
+        if len(set(identifiers)) != len(identifiers):
+            raise SourceLedgerError("duplicate source id in ledger")
+        digest = hashlib.sha256(_canonical_json_bytes(payload)).hexdigest()
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise SourceLedgerError("ledger object is invalid") from exc
+    if ledger.sha256 != digest or ledger.sources != sources:
+        raise SourceLedgerError("ledger object does not match its canonical digest")
     return SourceLedger(schema_version=1, sources=sources, sha256=digest)
 
 
@@ -454,10 +533,52 @@ def _containing_git_root(path: Path) -> Path | None:
     return Path(result.stdout.strip()).resolve()
 
 
+def _is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _reject_git_administrative_root(root: Path) -> None:
+    probe = root
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    if not probe.is_dir():
+        probe = probe.parent
+    for candidate in (probe, *probe.parents):
+        result = _git(
+            "rev-parse",
+            "--absolute-git-dir",
+            "--git-common-dir",
+            cwd=candidate,
+            check=False,
+        )
+        if result.returncode != 0:
+            continue
+        values = [line for line in result.stdout.splitlines() if line]
+        if len(values) != 2:
+            raise SourceLedgerError("Git administrative directory is ambiguous")
+        git_directory = Path(values[0])
+        common_directory = Path(values[1])
+        if not git_directory.is_absolute():
+            git_directory = candidate / git_directory
+        if not common_directory.is_absolute():
+            common_directory = candidate / common_directory
+        git_directory = git_directory.resolve()
+        common_directory = common_directory.resolve()
+        if _is_within(root, git_directory) or _is_within(root, common_directory):
+            raise SourceLedgerError(
+                "fetch root must not be inside a Git administrative directory"
+            )
+
+
 def _validate_fetch_root(root: Path) -> Path:
     if root.exists() and root.is_symlink():
         raise SourceLedgerError("fetch root must not be a symlink")
     resolved = root.expanduser().resolve()
+    _reject_git_administrative_root(resolved)
     if resolved.exists() and not resolved.is_dir():
         raise SourceLedgerError("fetch root must be a directory")
     for reserved_name in ("checkouts", "data", "receipts"):
@@ -492,6 +613,17 @@ def _validate_fetch_root(root: Path) -> Path:
                 "fetch root inside a Git worktree must be ignored"
             )
     return resolved
+
+
+def _contained_path(root: Path, *parts: str) -> Path:
+    candidate = root.joinpath(*parts)
+    try:
+        candidate.resolve(strict=False).relative_to(root.resolve(strict=False))
+    except (OSError, ValueError) as exc:
+        raise SourceLedgerError(
+            "source destination path escapes fetch root through a symlink or invalid path"
+        ) from exc
+    return candidate
 
 
 def _file_sha256(path: Path) -> str:
@@ -583,6 +715,9 @@ def _assert_no_extra_worktree_entries(checkout: Path, source_id: str) -> None:
         for name in _git("ls-files", "-z", cwd=checkout).stdout.split("\0")
         if name
     )
+    _reject_portable_collisions(
+        tuple(indexed), f"existing checkout {source_id} tracked paths"
+    )
     actual: set[str] = set()
     walk_errors: list[OSError] = []
     for current_root, directory_names, file_names in os.walk(
@@ -605,6 +740,9 @@ def _assert_no_extra_worktree_entries(checkout: Path, source_id: str) -> None:
         raise SourceLedgerError(
             f"cannot inspect checkout {source_id} worktree entries"
         ) from walk_errors[0]
+    _reject_portable_collisions(
+        tuple(actual), f"existing checkout {source_id} local changes; filesystem paths"
+    )
     if actual - indexed:
         raise SourceLedgerError(f"existing checkout {source_id} has local changes")
 
@@ -675,7 +813,23 @@ def _assert_tracked_bytes(checkout: Path, expected_tree: str, source_id: str) ->
                 raise SourceLedgerError(
                     f"existing checkout {source_id} tracked bytes changed type"
                 )
-            actual_blob = _git_blob_sha1(os.fsencode(os.readlink(tracked)))
+            link_target = os.readlink(tracked)
+            target_path = Path(link_target)
+            resolved_target = (
+                target_path.resolve(strict=False)
+                if target_path.is_absolute()
+                else (tracked.parent / target_path).resolve(strict=False)
+            )
+            checkout_root = checkout.resolve(strict=True)
+            if (
+                target_path.is_absolute()
+                or not _is_within(resolved_target, checkout_root)
+                or _is_within(resolved_target, (checkout_root / ".git").resolve())
+            ):
+                raise SourceLedgerError(
+                    f"existing checkout {source_id} tracked symlink escapes checkout"
+                )
+            actual_blob = _git_blob_sha1(os.fsencode(link_target))
         elif mode == "160000":
             raise SourceLedgerError(
                 f"existing checkout {source_id} contains an unsupported submodule"
@@ -764,8 +918,15 @@ def _assert_pristine_checkout(checkout: Path, source: SourcePin) -> None:
     branch = _git("symbolic-ref", "-q", "HEAD", cwd=checkout, check=False)
     if branch.returncode == 0:
         raise SourceLedgerError(f"existing checkout {source.id} is not detached")
-    origin = _git("remote", "get-url", "origin", cwd=checkout).stdout.strip()
-    if origin != source.url:
+    remotes = _git("remote", cwd=checkout).stdout.splitlines()
+    if remotes != ["origin"]:
+        raise SourceLedgerError(
+            f"existing checkout {source.id} has unexpected remote configuration"
+        )
+    origin_urls = _git(
+        "remote", "get-url", "--all", "origin", cwd=checkout
+    ).stdout.splitlines()
+    if origin_urls != [source.url]:
         raise SourceLedgerError(f"existing checkout {source.id} has the wrong origin")
     flags = _git("ls-files", "-v", cwd=checkout).stdout.splitlines()
     if any(line and (line[0].islower() or line[0] == "S") for line in flags):
@@ -804,7 +965,7 @@ def _clone_git_source(source: SourcePin, checkout: Path) -> None:
 def _fetch_git_source(
     source: SourcePin, root: Path, ledger: SourceLedger
 ) -> dict[str, object]:
-    checkout = root / "checkouts" / source.id
+    checkout = _contained_path(root, "checkouts", source.id)
     if checkout.exists():
         _assert_pristine_checkout(checkout, source)
     else:
@@ -880,7 +1041,7 @@ def _fetch_data_source(
     source: SourcePin, root: Path, ledger: SourceLedger
 ) -> dict[str, object]:
     artifacts: list[dict[str, object]] = []
-    destination_root = root / "data" / source.id
+    destination_root = _contained_path(root, "data", source.id)
     if destination_root.is_symlink():
         raise SourceLedgerError(
             f"data destination for {source.id} must not be a symlink"
@@ -891,7 +1052,7 @@ def _fetch_data_source(
         )
     for artifact in source.artifacts:
         sha256, size = _download_artifact(
-            artifact, destination_root / artifact.name
+            artifact, _contained_path(root, "data", source.id, artifact.name)
         )
         artifacts.append(
             {"name": artifact.name, "sha256": sha256, "size_bytes": size}
@@ -922,6 +1083,9 @@ def fetch_sources(
 
     if not isinstance(root, Path):
         raise SourceLedgerError("fetch root must be a pathlib.Path")
+    ledger = _revalidate_ledger_object(
+        ledger, allow_local_urls=allow_local_urls
+    )
     root = _validate_fetch_root(root)
     by_id = {source.id: source for source in ledger.sources}
     if source_ids is None:
@@ -958,7 +1122,9 @@ def fetch_sources(
             if source.source_type == "git"
             else _fetch_data_source(source, root, ledger)
         )
-        _write_receipt(root / "receipts" / f"{source.id}.json", receipt)
+        _write_receipt(
+            _contained_path(root, "receipts", f"{source.id}.json"), receipt
+        )
         receipts.append(receipt)
     return tuple(receipts)
 

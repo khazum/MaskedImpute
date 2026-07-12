@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -350,6 +351,22 @@ def test_fetch_compares_raw_bytes_without_git_attribute_filters(
         _assert_tracked_bytes(checkout, tree, "local-source")
 
 
+@pytest.mark.parametrize("target", ["../../outside-payload", "/tmp/outside-payload"])
+def test_fetch_rejects_tracked_symlink_that_escapes_checkout(
+    tmp_path: Path, target: str
+) -> None:
+    upstream, _commit, _tree = _make_upstream(tmp_path)
+    (upstream / "escape-link").symlink_to(target)
+    _run_git("add", "escape-link", cwd=upstream)
+    _run_git("commit", "-qm", "add escaping symlink", cwd=upstream)
+    commit = _run_git("rev-parse", "HEAD", cwd=upstream)
+    tree = _run_git("rev-parse", "HEAD^{tree}", cwd=upstream)
+    ledger = _load_local(tmp_path, _git_ledger_payload(upstream, commit, tree))
+
+    with pytest.raises(SourceLedgerError, match="symlink.*escape"):
+        fetch_sources(ledger, tmp_path / "external", allow_local_urls=True)
+
+
 def test_fetch_never_updates_a_correct_pin_when_upstream_advances(tmp_path: Path) -> None:
     upstream, commit, tree = _make_upstream(tmp_path)
     ledger = _load_local(tmp_path, _git_ledger_payload(upstream, commit, tree))
@@ -398,6 +415,24 @@ def test_fetch_rejects_other_persisted_transport_credentials(
     _run_git("config", key, value, cwd=checkout)
 
     with pytest.raises(SourceLedgerError, match="credential|transport"):
+        fetch_sources(ledger, fetch_root, allow_local_urls=True)
+
+
+def test_fetch_rejects_credential_bearing_extra_remote(tmp_path: Path) -> None:
+    upstream, commit, tree = _make_upstream(tmp_path)
+    ledger = _load_local(tmp_path, _git_ledger_payload(upstream, commit, tree))
+    fetch_root = tmp_path / "external"
+    fetch_sources(ledger, fetch_root, allow_local_urls=True)
+    checkout = fetch_root / "checkouts" / "local-source"
+    _run_git(
+        "remote",
+        "add",
+        "credential-leak",
+        "https://user:secret@example.invalid/repository.git",
+        cwd=checkout,
+    )
+
+    with pytest.raises(SourceLedgerError, match="remote|credential"):
         fetch_sources(ledger, fetch_root, allow_local_urls=True)
 
 
@@ -493,6 +528,29 @@ def test_fetch_rejects_case_colliding_untracked_file_hidden_by_git_config(
         fetch_sources(ledger, fetch_root, allow_local_urls=True)
 
 
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("Case.txt", "case.txt"),
+        ("caf\N{LATIN SMALL LETTER E WITH ACUTE}.txt", "cafe\N{COMBINING ACUTE ACCENT}.txt"),
+    ],
+)
+def test_fetch_rejects_nonportable_tracked_path_collisions(
+    tmp_path: Path, names: tuple[str, str]
+) -> None:
+    upstream, _commit, _tree = _make_upstream(tmp_path)
+    for index, name in enumerate(names):
+        (upstream / name).write_text(f"payload {index}\n", encoding="utf-8")
+    _run_git("add", "--", *names, cwd=upstream)
+    _run_git("commit", "-qm", "add colliding paths", cwd=upstream)
+    commit = _run_git("rev-parse", "HEAD", cwd=upstream)
+    tree = _run_git("rev-parse", "HEAD^{tree}", cwd=upstream)
+    ledger = _load_local(tmp_path, _git_ledger_payload(upstream, commit, tree))
+
+    with pytest.raises(SourceLedgerError, match="collision|portable"):
+        fetch_sources(ledger, tmp_path / "external", allow_local_urls=True)
+
+
 @pytest.mark.parametrize("metadata", ["replacement", "graft"])
 def test_fetch_rejects_local_object_replacement_metadata(
     tmp_path: Path, metadata: str
@@ -531,6 +589,22 @@ def test_fetch_rejects_nonignored_destination_inside_git_worktree(tmp_path: Path
     assert receipts[0]["source_id"] == "local-source"
 
 
+def test_fetch_rejects_destination_inside_git_administrative_state(
+    tmp_path: Path,
+) -> None:
+    upstream, commit, tree = _make_upstream(tmp_path)
+    ledger = _load_local(tmp_path, _git_ledger_payload(upstream, commit, tree))
+    project = tmp_path / "project"
+    project.mkdir()
+    _run_git("init", "-q", cwd=project)
+    administrative_root = project / ".git" / "maskimpute-fetch"
+
+    with pytest.raises(SourceLedgerError, match="administrative|Git directory"):
+        fetch_sources(ledger, administrative_root, allow_local_urls=True)
+
+    assert not administrative_root.exists()
+
+
 def test_fetch_rejects_ignore_rule_that_matches_only_internal_probe(
     tmp_path: Path,
 ) -> None:
@@ -545,6 +619,90 @@ def test_fetch_rejects_ignore_rule_that_matches_only_internal_probe(
 
     with pytest.raises(SourceLedgerError, match="ignored"):
         fetch_sources(ledger, project / "external", allow_local_urls=True)
+
+
+def test_fetch_revalidates_public_ledger_objects_before_path_construction(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "source.bin"
+    artifact.write_bytes(b"immutable public data\n")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    payload = {
+        "schema_version": 1,
+        "sources": [
+            {
+                "id": "local-data",
+                "role": "orthogonal_validation",
+                "mechanism": None,
+                "source_type": "data",
+                "url": "https://example.invalid/GSE1",
+                "revision": "GSE1:2024-01-31",
+                "license": "CC-BY-4.0",
+                "license_url": "https://creativecommons.org/licenses/by/4.0/",
+                "citation_doi": "10.1234/example.data",
+                "expected_checksum": None,
+                "eligibility": "eligible",
+                "endpoints": ["orthogonal"],
+                "artifacts": [
+                    {
+                        "name": "source.bin",
+                        "url": artifact.resolve().as_uri(),
+                        "expected_checksum": {
+                            "algorithm": "sha256",
+                            "value": digest,
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    ledger = _load_local(tmp_path, payload)
+    malicious_source = replace(ledger.sources[0], id="../../escaped")
+    malicious_ledger = replace(ledger, sources=(malicious_source,))
+    root = tmp_path / "download-root"
+
+    with pytest.raises(SourceLedgerError, match="source|identifier|ledger|path"):
+        fetch_sources(malicious_ledger, root, allow_local_urls=True)
+
+    assert not (tmp_path / "escaped" / "source.bin").exists()
+
+
+def test_ledger_rejects_nonportable_data_artifact_name_collisions(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "source.bin"
+    artifact.write_bytes(b"immutable public data\n")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    base_artifact = {
+        "url": artifact.resolve().as_uri(),
+        "expected_checksum": {"algorithm": "sha256", "value": digest},
+    }
+    payload = {
+        "schema_version": 1,
+        "sources": [
+            {
+                "id": "local-data",
+                "role": "orthogonal_validation",
+                "mechanism": None,
+                "source_type": "data",
+                "url": "https://example.invalid/GSE1",
+                "revision": "GSE1:2024-01-31",
+                "license": "CC-BY-4.0",
+                "license_url": "https://creativecommons.org/licenses/by/4.0/",
+                "citation_doi": "10.1234/example.data",
+                "expected_checksum": None,
+                "eligibility": "eligible",
+                "endpoints": ["orthogonal"],
+                "artifacts": [
+                    {"name": "Data.bin", **base_artifact},
+                    {"name": "data.bin", **base_artifact},
+                ],
+            }
+        ],
+    }
+
+    with pytest.raises(SourceLedgerError, match="collision|unique"):
+        _load_local(tmp_path, payload)
 
 
 def test_data_fetch_verifies_bytes_and_rejects_corrupt_existing_file(
