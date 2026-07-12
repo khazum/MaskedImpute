@@ -577,6 +577,41 @@ def test_custom_sparse_conversion_hook_cannot_swap_unvalidated_storage():
     assert MaskedCoordinateSwap.conversion_called is False
 
 
+@pytest.mark.parametrize("payload_kind", ["masked", "metadata"])
+def test_exact_sparse_instance_conversion_hook_is_never_invoked(payload_kind):
+    from types import MethodType
+
+    from maskimpute.train import validate_observed_counts
+
+    expected = np.array([[1, 0], [0, 2]], dtype=np.int64)
+    counts = sparse.csr_matrix(expected)
+    hook_calls = 0
+
+    def adversarial_tocoo(self, copy=False):
+        nonlocal hook_calls
+        hook_calls += 1
+        coordinates = type(self).tocoo(self, copy=copy)
+        if payload_kind == "masked":
+            coordinates.data = np.ma.array(
+                coordinates.data,
+                mask=np.ones(coordinates.data.shape, dtype=np.bool_),
+            )
+        else:
+            metadata_dtype = np.dtype(
+                np.int64,
+                metadata={"semantic": "unvalidated-sparse-hook"},
+            )
+            coordinates.data = coordinates.data.astype(metadata_dtype)
+        return coordinates
+
+    counts.tocoo = MethodType(adversarial_tocoo, counts)
+
+    validated = validate_observed_counts(counts)
+
+    assert hook_calls == 0
+    np.testing.assert_array_equal(validated, expected)
+
+
 def test_count_and_score_dtype_metadata_are_rejected():
     from maskimpute.train import validate_observed_counts, validate_p_pre_zero
 

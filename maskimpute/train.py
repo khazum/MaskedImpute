@@ -64,6 +64,9 @@ _SUPPORTED_SPARSE_TYPES = tuple(
     )
     if isinstance((constructor := getattr(sparse, name, None)), type)
 )
+_TRUSTED_SPARSE_TOCOO = {
+    sparse_type: sparse_type.tocoo for sparse_type in _SUPPORTED_SPARSE_TYPES
+}
 
 
 def _contains_masked_array(value: object, seen: set[int] | None = None) -> bool:
@@ -92,7 +95,15 @@ def _contains_masked_array(value: object, seen: set[int] | None = None) -> bool:
 
 
 def _unsummed_sparse_coordinates(value: object, name: str):
-    coordinates = value.tocoo(copy=True)
+    coordinates = _TRUSTED_SPARSE_TOCOO[type(value)](value, copy=True)
+    if type(coordinates) not in _SUPPORTED_SPARSE_TYPES:
+        raise TypeError(f"{name} sparse conversion returned an unsupported type")
+    if _contains_masked_array(coordinates):
+        raise TypeError(f"{name} must not contain masked arrays")
+    if coordinates.dtype.metadata is not None:
+        raise TypeError(f"{name} dtype metadata is not supported")
+    if coordinates.ndim != 2 or coordinates.shape != value.shape:
+        raise ValueError(f"{name} sparse conversion changed the matrix shape")
     if coordinates.nnz < 2:
         return coordinates
     order = np.lexsort((coordinates.col, coordinates.row))
