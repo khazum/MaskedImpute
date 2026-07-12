@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import json
 
 import numpy as np
 import pytest
@@ -425,3 +426,105 @@ def test_v28_development_candidate_shares_score_gate_and_selective_output() -> N
         "leave_one_biological_draw_out"
     )
     assert diagnostics["primary_output_policy"] == "selective"
+
+
+def _candidate_configuration(payload: dict[str, object], *, identifier: str):
+    from maskimpute_benchmark.runner import AuthorizedConfiguration
+
+    return AuthorizedConfiguration.create(
+        method_id="maskimpute",
+        configuration_id=identifier,
+        kind="candidate_search",
+        payload=payload,
+        requires_count_score=True,
+        requires_calibration=True,
+    )
+
+
+def _v28_configuration_payload() -> dict[str, object]:
+    from maskimpute.nb_model import NegativeBinomialDecoderConfig
+
+    search = json.loads(Path("study/development_search.json").read_text())
+    base = search["configurations"][2]["configuration"]
+    return {
+        **base,
+        "method_version": "v28",
+        "decoder": "negative_binomial",
+        "decoder_hyperparameters": NegativeBinomialDecoderConfig().to_dict(),
+    }
+
+
+def test_candidate_decoder_dispatch_accepts_only_exact_v27_and_v28_pairs() -> None:
+    from maskimpute.nb_model import NegativeBinomialDecoderConfig
+    from maskimpute_benchmark.runner import (
+        AuthorizedConfiguration,
+        RunnerContractError,
+        maskimpute_decoder_for_configuration,
+    )
+
+    search = json.loads(Path("study/development_search.json").read_text())
+    v27_payload = search["configurations"][2]["configuration"]
+    v27 = _candidate_configuration(v27_payload, identifier="v27-test")
+    v28_payload = _v28_configuration_payload()
+    v28 = _candidate_configuration(v28_payload, identifier="v28-test")
+
+    assert maskimpute_decoder_for_configuration(v27) == (
+        "scaled_gaussian",
+        None,
+    )
+    decoder, decoder_config = maskimpute_decoder_for_configuration(v28)
+    assert decoder == "negative_binomial"
+    assert type(decoder_config) is NegativeBinomialDecoderConfig
+    assert decoder_config.to_dict() == v28_payload["decoder_hyperparameters"]
+
+    ablation_payload = json.loads(Path("study/ablations.json").read_text())["variants"][0]
+    ablation = AuthorizedConfiguration.create(
+        method_id="capacity-matched-ae",
+        configuration_id="capacity-matched-ae",
+        kind="ablation",
+        payload=ablation_payload,
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+    assert maskimpute_decoder_for_configuration(ablation) == (
+        "scaled_gaussian",
+        None,
+    )
+
+    invalid_payloads = []
+    for field, value in (
+        ("method_version", "v27"),
+        ("decoder", "scaled_gaussian"),
+        ("encoder_mode", "implicit_numeric_zero"),
+        ("output_policy", "full_gated"),
+        ("score_policy", "direct_cross_fitted_count_score"),
+    ):
+        payload = _v28_configuration_payload()
+        payload[field] = value
+        invalid_payloads.append(payload)
+    missing_decoder_config = _v28_configuration_payload()
+    missing_decoder_config.pop("decoder_hyperparameters")
+    invalid_payloads.append(missing_decoder_config)
+    extra_decoder_config = _v28_configuration_payload()
+    extra_decoder_config["decoder_hyperparameters"]["untracked"] = 1.0
+    invalid_payloads.append(extra_decoder_config)
+    invalid_prior = _v28_configuration_payload()
+    invalid_prior["decoder_hyperparameters"]["dispersion_prior_strength"] = -1.0
+    invalid_payloads.append(invalid_prior)
+
+    for index, payload in enumerate(invalid_payloads):
+        with pytest.raises(RunnerContractError):
+            maskimpute_decoder_for_configuration(
+                _candidate_configuration(payload, identifier=f"v28-invalid-{index}")
+            )
+
+    v28_ablation = AuthorizedConfiguration.create(
+        method_id="maskimpute",
+        configuration_id="v28-ablation",
+        kind="ablation",
+        payload=_v28_configuration_payload(),
+        requires_count_score=True,
+        requires_calibration=True,
+    )
+    with pytest.raises(RunnerContractError, match="development candidate"):
+        maskimpute_decoder_for_configuration(v28_ablation)

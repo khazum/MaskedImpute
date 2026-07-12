@@ -3365,6 +3365,79 @@ def maskimpute_variant_for_configuration(
     )
 
 
+def maskimpute_decoder_for_configuration(
+    configuration: AuthorizedConfiguration,
+) -> tuple[str, object | None]:
+    """Resolve an exact v27/v28 decoder without widening development authority."""
+
+    if not isinstance(configuration, AuthorizedConfiguration):
+        raise TypeError("configuration must be an AuthorizedConfiguration")
+    payload = configuration.payload
+    if configuration.kind == "ablation":
+        if "method_version" in payload or "decoder" in payload:
+            raise RunnerContractError(
+                "v28 negative-binomial execution must be a development candidate"
+            )
+        return "scaled_gaussian", None
+    if configuration.kind != "candidate_search":
+        raise RunnerContractError("MaskImpute decoder configuration kind is invalid")
+    if configuration.method_id != "maskimpute":
+        raise RunnerContractError("candidate decoder is not bound to MaskImpute")
+    method_version = payload.get("method_version")
+    decoder = payload.get("decoder")
+    if method_version == "v27":
+        expected_fields = {
+            "method_version",
+            "decoder",
+            "encoder_mode",
+            "output_policy",
+            "score_policy",
+            "hyperparameters",
+        }
+        if set(payload) != expected_fields:
+            raise RunnerContractError("v27 candidate decoder payload fields differ")
+        if (
+            decoder != "scaled_gaussian"
+            or payload.get("encoder_mode") != "explicit_mask"
+            or payload.get("output_policy") != "selective"
+        ):
+            raise RunnerContractError("v27 candidate decoder contract differs")
+        return "scaled_gaussian", None
+    if method_version != "v28" or decoder != "negative_binomial":
+        raise RunnerContractError("candidate version and decoder pair is unsupported")
+    expected_fields = {
+        "method_version",
+        "decoder",
+        "encoder_mode",
+        "output_policy",
+        "score_policy",
+        "hyperparameters",
+        "decoder_hyperparameters",
+    }
+    if set(payload) != expected_fields:
+        raise RunnerContractError("v28 candidate decoder payload fields differ")
+    if (
+        payload.get("encoder_mode") != "explicit_mask"
+        or payload.get("output_policy") != "selective"
+        or payload.get("score_policy") != "retained_development_calibrator"
+        or not configuration.requires_count_score
+        or not configuration.requires_calibration
+    ):
+        raise RunnerContractError("v28 candidate score or output contract differs")
+    decoder_payload = payload.get("decoder_hyperparameters")
+    if not isinstance(decoder_payload, Mapping):
+        raise RunnerContractError("v28 decoder_hyperparameters must be a mapping")
+    from maskimpute.nb_model import NegativeBinomialDecoderConfig
+
+    if set(decoder_payload) != set(NegativeBinomialDecoderConfig().to_dict()):
+        raise RunnerContractError("v28 decoder_hyperparameters fields differ")
+    try:
+        decoder_config = NegativeBinomialDecoderConfig(**dict(decoder_payload))
+    except (TypeError, ValueError) as error:
+        raise RunnerContractError("v28 decoder_hyperparameters are invalid") from error
+    return "negative_binomial", decoder_config
+
+
 @dataclass(frozen=True, slots=True)
 class RepositoryAdapterDispatcher:
     """Concrete dispatch for every implemented adapter; unbuilt envs stay visible."""
@@ -3425,17 +3498,20 @@ class RepositoryAdapterDispatcher:
             **json.loads(request.count_model_config_json)
         )
         calibration = load_calibration_artifact(calibration_path)
-        variant_id = maskimpute_variant_for_configuration(
-            AuthorizedConfiguration.create(
-                method_id=request.method_spec.id,
-                configuration_id=request.configuration_id,
-                kind=request.configuration_kind,
-                payload=configuration,
-                requires_count_score=request.count_score_manifest_sha256 is not None,
-                requires_calibration=request.retained_calibration_sha256 is not None
-                and request.calibration_context is not None,
-                configuration_sha256=request.configuration_sha256,
-            )
+        score_policy = str(configuration.get("score_policy", "")).casefold()
+        requires_calibration = "calibrat" in score_policy or "retained" in score_policy
+        authorized_configuration = AuthorizedConfiguration.create(
+            method_id=request.method_spec.id,
+            configuration_id=request.configuration_id,
+            kind=request.configuration_kind,
+            payload=configuration,
+            requires_count_score=request.count_score_manifest_sha256 is not None,
+            requires_calibration=requires_calibration,
+            configuration_sha256=request.configuration_sha256,
+        )
+        variant_id = maskimpute_variant_for_configuration(authorized_configuration)
+        decoder, decoder_config = maskimpute_decoder_for_configuration(
+            authorized_configuration
         )
         execution = _run_in_tree(
             request.method_spec,
@@ -3448,6 +3524,8 @@ class RepositoryAdapterDispatcher:
             device="cuda",
             development_mechanism=request.mechanism,
             development_biological_id=request.biological_id,
+            decoder=decoder,
+            decoder_config=decoder_config,
         )
         diagnostics = execution.ablation_result.diagnostics
         score_diagnostics = diagnostics.get("score")
@@ -3986,6 +4064,7 @@ __all__ = [
     "evaluate_adapter_outcome",
     "enforce_calibration_fold_receipt",
     "method_input_sha256",
+    "maskimpute_decoder_for_configuration",
     "maskimpute_variant_for_configuration",
     "load_prepared_development_panel",
     "load_runner_authority",
