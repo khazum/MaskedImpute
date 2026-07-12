@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 from typing import Any
+import unicodedata
 
 from ..protocol import canonical_sha256
 from .base import SimulationContractError
@@ -72,6 +73,15 @@ class _FileSnapshot:
     sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class _OpenNativeFile:
+    logical_path: str
+    physical_path: Path
+    descriptor: int
+    identity: tuple[int, int]
+    state: tuple[int, int, int, int, int, int]
+
+
 def _validate_json_value(value: object, name: str) -> None:
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
@@ -128,6 +138,18 @@ def _logical_path(value: object) -> str:
     return value
 
 
+def _portable_logical_path(value: str) -> str:
+    return unicodedata.normalize("NFC", unicodedata.normalize("NFC", value).casefold())
+
+
+def _reject_portable_path_collisions(paths: list[str]) -> None:
+    portable = [_portable_logical_path(path) for path in paths]
+    if len(portable) != len(set(portable)):
+        raise SimulationContractError(
+            "native logical paths contain a Unicode or case collision"
+        )
+
+
 def _reject_symlink_components(path: Path) -> None:
     absolute = path.absolute()
     components = [absolute, *absolute.parents]
@@ -155,7 +177,7 @@ def _state(metadata: os.stat_result) -> tuple[int, int, int, int, int, int]:
     )
 
 
-def _hash_regular_file(logical_path: str, path: Path) -> _FileSnapshot:
+def _open_regular_file(logical_path: str, path: Path) -> _OpenNativeFile:
     _reject_symlink_components(path)
     try:
         before_path = path.lstat()
@@ -186,42 +208,77 @@ def _hash_regular_file(logical_path: str, path: Path) -> _FileSnapshot:
             before_path.st_ino,
         ):
             raise SimulationContractError(f"native file changed while opening: {path}")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return _OpenNativeFile(
+        logical_path=logical_path,
+        physical_path=path.absolute(),
+        descriptor=descriptor,
+        identity=(before.st_dev, before.st_ino),
+        state=_state(before),
+    )
+
+
+def _open_native_files(
+    prepared: list[tuple[str, Path]],
+) -> tuple[_OpenNativeFile, ...]:
+    opened: list[_OpenNativeFile] = []
+    try:
+        for logical_path, physical_path in prepared:
+            opened.append(_open_regular_file(logical_path, physical_path))
+    except BaseException:
+        for item in opened:
+            os.close(item.descriptor)
+        raise
+    identities = [item.identity for item in opened]
+    if len(identities) != len(set(identities)):
+        for item in opened:
+            os.close(item.descriptor)
+        raise SimulationContractError("native files contain a duplicate inode")
+    return tuple(opened)
+
+
+def _hash_open_file(item: _OpenNativeFile) -> str:
+    try:
+        os.lseek(item.descriptor, 0, os.SEEK_SET)
         digest = hashlib.sha256()
         while True:
-            chunk = os.read(descriptor, _CHUNK_SIZE)
+            chunk = os.read(item.descriptor, _CHUNK_SIZE)
             if not chunk:
                 break
             digest.update(chunk)
-        after = os.fstat(descriptor)
+        return digest.hexdigest()
     except OSError as error:
         raise SimulationContractError(
-            f"native file changed while hashing: {path}"
+            f"native file changed while hashing: {item.physical_path}"
         ) from error
-    finally:
-        os.close(descriptor)
 
-    try:
-        after_path = path.lstat()
-    except OSError as error:
-        raise SimulationContractError(
-            f"native file changed while hashing: {path}"
-        ) from error
-    identity = (before.st_dev, before.st_ino)
-    if (
-        identity != (after.st_dev, after.st_ino)
-        or identity != (after_path.st_dev, after_path.st_ino)
-        or _state(before) != _state(after)
-        or _state(before) != _state(after_path)
-    ):
-        raise SimulationContractError(f"native file changed while hashing: {path}")
-    return _FileSnapshot(
-        logical_path=logical_path,
-        physical_path=path.absolute(),
-        identity=identity,
-        state=_state(before),
-        size_bytes=before.st_size,
-        sha256=digest.hexdigest(),
-    )
+
+def _verify_open_file_set(opened: tuple[_OpenNativeFile, ...]) -> None:
+    for item in opened:
+        try:
+            after = os.fstat(item.descriptor)
+            after_path = item.physical_path.lstat()
+        except OSError as error:
+            raise SimulationContractError(
+                f"native file changed while hashing: {item.physical_path}"
+            ) from error
+        if (
+            item.identity != (after.st_dev, after.st_ino)
+            or item.identity != (after_path.st_dev, after_path.st_ino)
+            or item.state != _state(after)
+            or item.state != _state(after_path)
+        ):
+            raise SimulationContractError(
+                f"native file changed while hashing: {item.physical_path}"
+            )
+        _reject_symlink_components(item.physical_path)
+
+
+def _close_native_files(opened: tuple[_OpenNativeFile, ...]) -> None:
+    for item in opened:
+        os.close(item.descriptor)
 
 
 def _manifest_payload(
@@ -261,6 +318,7 @@ def validate_native_manifest(manifest: NativeManifest) -> None:
         paths.append(path)
     if paths != sorted(paths) or len(paths) != len(set(paths)):
         raise SimulationContractError("native manifest paths must be sorted and unique")
+    _reject_portable_path_collisions(paths)
     if not isinstance(manifest._metadata_json, str):
         raise SimulationContractError("native manifest metadata is invalid")
     try:
@@ -285,6 +343,7 @@ def revalidate_native_outputs(manifest: NativeManifest) -> None:
     """Prove native bytes still match the seal after adapter translation."""
 
     validate_native_manifest(manifest)
+    prepared: list[tuple[str, Path]] = []
     for entry, sealed in zip(manifest.files, manifest._sealed_files, strict=True):
         if (
             not isinstance(sealed, _FileSnapshot)
@@ -295,16 +354,23 @@ def revalidate_native_outputs(manifest: NativeManifest) -> None:
             raise SimulationContractError(
                 "native manifest sealed-file state is invalid"
             )
-        current = _hash_regular_file(sealed.logical_path, sealed.physical_path)
-        if (
-            current.identity != sealed.identity
-            or current.state != sealed.state
-            or current.size_bytes != sealed.size_bytes
-            or current.sha256 != sealed.sha256
-        ):
-            raise SimulationContractError(
-                f"native file changed after sealing: {sealed.physical_path}"
-            )
+        prepared.append((sealed.logical_path, sealed.physical_path))
+    opened = _open_native_files(prepared)
+    try:
+        for item, sealed in zip(opened, manifest._sealed_files, strict=True):
+            if item.identity != sealed.identity or item.state != sealed.state:
+                raise SimulationContractError(
+                    f"native file changed after sealing: {sealed.physical_path}"
+                )
+        digests = tuple(_hash_open_file(item) for item in opened)
+        _verify_open_file_set(opened)
+        for digest, sealed in zip(digests, manifest._sealed_files, strict=True):
+            if digest != sealed.sha256:
+                raise SimulationContractError(
+                    f"native file changed after sealing: {sealed.physical_path}"
+                )
+    finally:
+        _close_native_files(opened)
 
 
 def seal_native_outputs(
@@ -324,27 +390,32 @@ def seal_native_outputs(
             )
         prepared.append((logical, physical_value))
     prepared.sort(key=lambda item: item[0])
-    if len({logical for logical, _ in prepared}) != len(prepared):
+    logical_paths = [logical for logical, _ in prepared]
+    if len(set(logical_paths)) != len(prepared):
         raise SimulationContractError("native logical paths must be unique")
+    _reject_portable_path_collisions(logical_paths)
 
-    first_pass = tuple(_hash_regular_file(logical, path) for logical, path in prepared)
-    identities = [snapshot.identity for snapshot in first_pass]
-    if len(set(identities)) != len(identities):
-        raise SimulationContractError("native files contain a duplicate inode")
-
-    second_pass = tuple(
-        _hash_regular_file(snapshot.logical_path, snapshot.physical_path)
-        for snapshot in first_pass
-    )
-    for first, second in zip(first_pass, second_pass, strict=True):
-        if (
-            first.identity != second.identity
-            or first.state != second.state
-            or first.sha256 != second.sha256
-        ):
-            raise SimulationContractError(
-                f"native file changed while hashing: {first.physical_path}"
+    opened = _open_native_files(prepared)
+    try:
+        first_digests = tuple(_hash_open_file(item) for item in opened)
+        _verify_open_file_set(opened)
+        second_digests = tuple(_hash_open_file(item) for item in opened)
+        _verify_open_file_set(opened)
+        if first_digests != second_digests:
+            raise SimulationContractError("native file changed while hashing")
+        first_pass = tuple(
+            _FileSnapshot(
+                logical_path=item.logical_path,
+                physical_path=item.physical_path,
+                identity=item.identity,
+                state=item.state,
+                size_bytes=item.state[2],
+                sha256=digest,
             )
+            for item, digest in zip(opened, first_digests, strict=True)
+        )
+    finally:
+        _close_native_files(opened)
 
     entries = tuple(
         NativeFile(
