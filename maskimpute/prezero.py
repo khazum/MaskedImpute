@@ -4,9 +4,26 @@ import numpy as np
 from scipy import sparse
 
 
+def _reject_sparse_duplicate_coordinates(value, name):
+    coordinates = value.tocoo(copy=True)
+    if coordinates.nnz < 2:
+        return
+    order = np.lexsort((coordinates.col, coordinates.row))
+    rows = coordinates.row[order]
+    columns = coordinates.col[order]
+    if np.any((rows[1:] == rows[:-1]) & (columns[1:] == columns[:-1])):
+        raise ValueError(f"{name} must not contain duplicate sparse coordinates")
+
+
 def _observed_array(value):
+    if np.ma.isMaskedArray(value):
+        raise TypeError("observed_counts must not be a masked array")
     if sparse.issparse(value):
-        matrix = value.tocsr(copy=False)
+        if np.ma.isMaskedArray(getattr(value, "data", None)):
+            raise TypeError("observed_counts must not contain masked sparse data")
+        matrix = value.copy()
+        _reject_sparse_duplicate_coordinates(matrix, "observed_counts")
+        matrix = matrix.tocsr(copy=True)
         entries = matrix.data
         dtype = matrix.dtype
         observed = matrix.toarray()
@@ -27,6 +44,8 @@ def _observed_array(value):
 
 
 def _model_parameter(value, name, shape, *, upper=None):
+    if np.ma.isMaskedArray(value):
+        raise TypeError(f"{name} must not be a masked array")
     if sparse.issparse(value):
         raise TypeError(f"{name} must be a dense real number or array")
     original = np.asarray(value)
@@ -62,9 +81,9 @@ def _negative_log_zero_probability(mean, dispersion):
 
         infinite = np.isinf(product)
         log_product = np.log(local_dispersion[infinite]) + np.log(local_mean[infinite])
-        negative_log[infinite] = np.logaddexp(0.0, log_product) / local_dispersion[
-            infinite
-        ]
+        negative_log[infinite] = (
+            np.logaddexp(0.0, log_product) / local_dispersion[infinite]
+        )
 
     result[overdispersed] = negative_log
     return result

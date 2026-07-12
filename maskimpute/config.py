@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import math
 from numbers import Integral, Real
-from typing import Iterable
+from collections.abc import Sequence
 
 
 def _positive_int(value: object, name: str) -> int:
@@ -29,7 +29,7 @@ def _finite_float(value: object, name: str, *, positive: bool) -> float:
 
 
 def _hidden_dims(value: object) -> tuple[int, ...]:
-    if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise TypeError("hidden_dims must be a sequence of positive integers")
     result = tuple(_positive_int(item, "hidden_dims entry") for item in value)
     if not result:

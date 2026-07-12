@@ -55,6 +55,22 @@ def test_config_freezes_a_caller_owned_hidden_dimension_sequence():
 
 
 @pytest.mark.parametrize(
+    "hidden_dims",
+    [
+        {32, 16},
+        {"first": 32, "second": 16},
+        (dimension for dimension in (32, 16)),
+        iter((32, 16)),
+    ],
+)
+def test_config_rejects_unordered_or_one_shot_hidden_dimension_iterables(hidden_dims):
+    from maskimpute import MaskImputeConfig
+
+    with pytest.raises(TypeError, match="sequence"):
+        MaskImputeConfig(hidden_dims=hidden_dims)
+
+
+@pytest.mark.parametrize(
     "override",
     [
         {"hidden_dims": ()},
@@ -129,6 +145,63 @@ def test_result_defensively_freezes_dense_outputs_and_diagnostics():
         result.diagnostics["new"] = 1
     with pytest.raises(FrozenInstanceError):
         result.latent = np.zeros((2, 2))
+    with pytest.raises(FrozenInstanceError):
+        del result.latent
+
+
+def test_result_dense_views_have_immutable_backing_and_are_freshly_materialized():
+    from maskimpute import ImputationResult
+
+    result = ImputationResult(**_valid_result_arguments())
+
+    expected = {
+        "selective_counts": result.selective_counts.copy(),
+        "denoised_counts": result.denoised_counts.copy(),
+        "p_pre_zero": result.p_pre_zero.copy(),
+        "latent": result.latent.copy(),
+    }
+    for field, original in expected.items():
+        exposed = getattr(result, field)
+        with pytest.raises(ValueError):
+            exposed.flags.writeable = True
+        exposed.shape = (exposed.size,)
+
+        fresh = getattr(result, field)
+        np.testing.assert_array_equal(fresh, original)
+        assert fresh.shape == original.shape
+
+
+def test_result_nested_diagnostic_arrays_have_immutable_private_snapshots():
+    from maskimpute import ImputationResult
+
+    arguments = _valid_result_arguments()
+    diagnostic_array = np.array([[1.0, 2.0]])
+    arguments["diagnostics"] = {"outer": {"trace": diagnostic_array}}
+    result = ImputationResult(**arguments)
+    diagnostic_array[:] = 99
+
+    exposed = result.diagnostics["outer"]["trace"]
+    with pytest.raises(ValueError):
+        exposed.flags.writeable = True
+    exposed.shape = (2,)
+
+    fresh = result.diagnostics["outer"]["trace"]
+    np.testing.assert_array_equal(fresh, [[1.0, 2.0]])
+    assert fresh.shape == (1, 2)
+
+
+def test_result_zero_width_diagnostic_array_still_has_immutable_bytes_backing():
+    from maskimpute import ImputationResult
+
+    arguments = _valid_result_arguments()
+    arguments["diagnostics"] = {"zero_width": np.empty(2, dtype="V0")}
+    result = ImputationResult(**arguments)
+
+    exposed = result.diagnostics["zero_width"]
+    with pytest.raises(ValueError):
+        exposed.flags.writeable = True
+
+    assert result.diagnostics["zero_width"].shape == (2,)
 
 
 def test_result_copies_sparse_counts_into_read_only_csr_storage():
@@ -157,6 +230,69 @@ def test_result_copies_sparse_counts_into_read_only_csr_storage():
         assert not matrix.data.flags.writeable
         assert not matrix.indices.flags.writeable
         assert not matrix.indptr.flags.writeable
+
+
+def test_result_accepts_dok_counts_without_requiring_array_backing_attributes():
+    from maskimpute import ImputationResult
+
+    selective = sparse.dok_matrix((2, 2), dtype=np.int64)
+    selective[0, 0] = 2
+    selective[1, 1] = 3
+    denoised = sparse.dok_array((2, 2), dtype=np.float64)
+    denoised[0, 0] = 2.0
+    denoised[0, 1] = 0.5
+    denoised[1, 0] = 0.25
+    denoised[1, 1] = 3.0
+
+    result = ImputationResult(
+        selective,
+        denoised,
+        np.array([[0.0, 0.8], [0.6, 0.0]]),
+        np.ones((2, 1)),
+        {},
+    )
+
+    np.testing.assert_array_equal(result.selective_counts.toarray(), [[2, 0], [0, 3]])
+    np.testing.assert_allclose(
+        result.denoised_counts.toarray(), [[2.0, 0.5], [0.25, 3.0]]
+    )
+    assert sparse.isspmatrix_csr(result.selective_counts)
+    assert isinstance(result.denoised_counts, sparse.csr_array)
+
+
+def test_result_sparse_views_cannot_mutate_private_storage():
+    from maskimpute import ImputationResult
+
+    result = ImputationResult(
+        sparse.csr_matrix([[2, 0], [0, 3]], dtype=np.int64),
+        sparse.csc_matrix([[2.0, 0.5], [0.25, 3.0]]),
+        np.array([[0.0, 0.8], [0.6, 0.0]]),
+        np.ones((2, 1)),
+        {},
+    )
+    expected_selective = result.selective_counts.toarray()
+    expected_denoised = result.denoised_counts.toarray()
+
+    selective = result.selective_counts
+    for backing in (selective.data, selective.indices, selective.indptr):
+        with pytest.raises(ValueError):
+            backing.flags.writeable = True
+    selective.data = np.array([99, 98], dtype=np.int64)
+    selective.indices = np.array([1, 0], dtype=np.int32)
+    selective.indptr = np.array([0, 1, 2], dtype=np.int32)
+    selective._shape = (1, 2)
+
+    denoised = result.denoised_counts
+    denoised.data = np.full_like(denoised.data, 77)
+    denoised.indices = np.zeros_like(denoised.indices)
+    denoised._shape = (9, 9)
+
+    fresh_selective = result.selective_counts
+    fresh_denoised = result.denoised_counts
+    np.testing.assert_array_equal(fresh_selective.toarray(), expected_selective)
+    np.testing.assert_array_equal(fresh_denoised.toarray(), expected_denoised)
+    assert fresh_selective.shape == (2, 2)
+    assert fresh_denoised.shape == (2, 2)
 
 
 def _valid_result_arguments():
@@ -202,6 +338,58 @@ def test_result_rejects_invalid_shapes_domains_and_diagnostics(field, invalid):
 
     with pytest.raises((TypeError, ValueError)):
         ImputationResult(**arguments)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["selective_counts", "denoised_counts", "p_pre_zero", "latent"],
+)
+def test_result_rejects_masked_arrays_for_every_dense_matrix_field(field):
+    from maskimpute import ImputationResult
+
+    arguments = _valid_result_arguments()
+    arguments[field] = np.ma.array(arguments[field], mask=False)
+
+    with pytest.raises(TypeError, match="masked"):
+        ImputationResult(**arguments)
+
+
+def test_result_rejects_masked_arrays_nested_in_diagnostics():
+    from maskimpute import ImputationResult
+
+    arguments = _valid_result_arguments()
+    arguments["diagnostics"] = {
+        "fit": {"trace": np.ma.array([1.0, 2.0], mask=[False, True])}
+    }
+
+    with pytest.raises(TypeError, match="masked"):
+        ImputationResult(**arguments)
+
+
+def _overflowing_duplicate_sparse_matrix(dtype):
+    if np.issubdtype(dtype, np.signedinteger):
+        values = np.array([np.iinfo(dtype).max, 1], dtype=dtype)
+    elif np.issubdtype(dtype, np.unsignedinteger):
+        values = np.array([np.iinfo(dtype).max, 1], dtype=dtype)
+    else:
+        values = np.array([np.finfo(dtype).max, np.finfo(dtype).max], dtype=dtype)
+    return sparse.coo_matrix((values, ([0, 0], [0, 0])), shape=(1, 1))
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64, np.float64])
+def test_result_rejects_duplicate_sparse_coordinates_before_overflow(dtype):
+    from maskimpute import ImputationResult
+
+    duplicate = _overflowing_duplicate_sparse_matrix(dtype)
+
+    with pytest.raises(ValueError, match="duplicate sparse coordinates"):
+        ImputationResult(
+            duplicate,
+            sparse.csr_matrix([[1.0]]),
+            np.zeros((1, 1)),
+            np.ones((1, 1)),
+            {},
+        )
 
 
 def test_result_accepts_empty_cell_axis_without_relaxing_shape_contract():
@@ -295,6 +483,36 @@ def test_pre_zero_rejects_non_raw_count_observations(observed):
         p_pre_zero_from_counts(observed, 1.0, 0.0, 0.2)
 
 
+def test_pre_zero_rejects_masked_observed_counts_before_discarding_the_mask():
+    from maskimpute import p_pre_zero_from_counts
+
+    observed = np.ma.array([0, 4], mask=[False, True])
+
+    with pytest.raises(TypeError, match="masked"):
+        p_pre_zero_from_counts(observed, 1.0, 0.0, 0.2)
+
+
+@pytest.mark.parametrize("field", ["mu", "alpha", "pi"])
+def test_pre_zero_rejects_masked_model_parameters_before_array_coercion(field):
+    from maskimpute import p_pre_zero_from_counts
+
+    parameters = {"mu": 2.0, "alpha": 0.2, "pi": 0.3}
+    parameters[field] = np.ma.array([parameters[field]], mask=[True])
+
+    with pytest.raises(TypeError, match="masked"):
+        p_pre_zero_from_counts(np.array([0]), **parameters)
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64, np.float64])
+def test_pre_zero_rejects_duplicate_sparse_coordinates_before_overflow(dtype):
+    from maskimpute import p_pre_zero_from_counts
+
+    duplicate = _overflowing_duplicate_sparse_matrix(dtype)
+
+    with pytest.raises(ValueError, match="duplicate sparse coordinates"):
+        p_pre_zero_from_counts(duplicate, 1.0, 0.0, 0.2)
+
+
 def test_pre_zero_accepts_integral_float_unsigned_and_sparse_raw_counts():
     from maskimpute import p_pre_zero_from_counts
 
@@ -305,6 +523,19 @@ def test_pre_zero_accepts_integral_float_unsigned_and_sparse_raw_counts():
     )
     np.testing.assert_array_equal(
         p_pre_zero_from_counts(np.array([[0, 2]], dtype=np.uint64), 2, 0, 0.2),
+        expected,
+    )
+
+
+def test_pre_zero_accepts_dok_sparse_raw_counts():
+    from maskimpute import p_pre_zero_from_counts
+
+    observed = sparse.dok_matrix((1, 2), dtype=np.int64)
+    observed[0, 1] = 2
+    expected = p_pre_zero_from_counts(np.array([[0, 2]]), 2, 0, 0.2)
+
+    np.testing.assert_array_equal(
+        p_pre_zero_from_counts(observed, 2, 0, 0.2),
         expected,
     )
     np.testing.assert_array_equal(
