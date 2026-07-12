@@ -190,18 +190,14 @@ def test_result_nested_diagnostic_arrays_have_immutable_private_snapshots():
     assert fresh.shape == (1, 2)
 
 
-def test_result_zero_width_diagnostic_array_still_has_immutable_bytes_backing():
+def test_result_rejects_void_diagnostic_arrays_even_when_zero_width():
     from maskimpute import ImputationResult
 
     arguments = _valid_result_arguments()
     arguments["diagnostics"] = {"zero_width": np.empty(2, dtype="V0")}
-    result = ImputationResult(**arguments)
 
-    exposed = result.diagnostics["zero_width"]
-    with pytest.raises(ValueError):
-        exposed.flags.writeable = True
-
-    assert result.diagnostics["zero_width"].shape == (2,)
+    with pytest.raises(TypeError, match="dtype"):
+        ImputationResult(**arguments)
 
 
 def test_result_copies_sparse_counts_into_read_only_csr_storage():
@@ -303,6 +299,21 @@ def _valid_result_arguments():
         "latent": np.ones((2, 1)),
         "diagnostics": {"loss": 0.5},
     }
+
+
+def _copy_with_dtype(value, dtype):
+    copied = np.empty(np.shape(value), dtype=dtype)
+    copied[...] = value
+    return copied
+
+
+class _MaskedArrayLike:
+    def __init__(self, values, mask):
+        self._values = values
+        self._mask = mask
+
+    def __array__(self, dtype=None, copy=None):
+        return np.ma.array(self._values, mask=self._mask, dtype=dtype, copy=copy)
 
 
 @pytest.mark.parametrize(
@@ -694,3 +705,209 @@ def test_pre_zero_accepts_finite_extended_precision_parameters_without_cast_over
 
     assert result.dtype == np.float64
     assert result[0] == 0.0
+
+
+@pytest.mark.parametrize("field", ["observed_counts", "mu", "alpha", "pi"])
+def test_pre_zero_rejects_masked_values_nested_in_python_sequences(field):
+    from maskimpute import p_pre_zero_from_counts
+
+    arguments = {
+        "observed_counts": [[0]],
+        "mu": [[2.0]],
+        "alpha": [[0.2]],
+        "pi": [[0.3]],
+    }
+    arguments[field] = [[np.ma.array(0.0, mask=True)]]
+
+    with pytest.raises(TypeError, match="masked"):
+        p_pre_zero_from_counts(**arguments)
+
+
+@pytest.mark.parametrize("field", ["observed_counts", "mu", "alpha", "pi"])
+def test_pre_zero_rejects_masked_values_nested_in_object_arrays(field):
+    from maskimpute import p_pre_zero_from_counts
+
+    nested = np.empty((1,), dtype=object)
+    nested[0] = (np.ma.array(0.0, mask=True),)
+    arguments = {
+        "observed_counts": np.array([0]),
+        "mu": np.array([2.0]),
+        "alpha": np.array([0.2]),
+        "pi": np.array([0.3]),
+    }
+    arguments[field] = nested
+
+    with pytest.raises(TypeError, match="masked"):
+        p_pre_zero_from_counts(**arguments)
+
+
+@pytest.mark.parametrize("sparse_type", [sparse.lil_matrix, sparse.lil_array])
+def test_pre_zero_rejects_masked_values_in_nested_lil_data_rows(sparse_type):
+    from maskimpute import p_pre_zero_from_counts
+
+    observed = sparse_type((1, 1), dtype=np.float64)
+    observed.rows[0] = [0]
+    observed.data[0] = [np.ma.array(1.0, mask=True)]
+
+    with pytest.raises(TypeError, match="masked"):
+        p_pre_zero_from_counts(observed, 2.0, 0.2, 0.3)
+
+
+def test_pre_zero_does_not_python_iterate_ordinary_numeric_ndarrays():
+    from maskimpute import p_pre_zero_from_counts
+
+    class NonIterableNumericArray(np.ndarray):
+        def __iter__(self):
+            raise AssertionError("numeric ndarray was recursively scanned")
+
+    observed = np.zeros((2, 3), dtype=np.int64).view(NonIterableNumericArray)
+    mean = np.ones((2, 3), dtype=np.float64).view(NonIterableNumericArray)
+
+    result = p_pre_zero_from_counts(observed, mean, 0.2, 0.3)
+
+    assert result.shape == (2, 3)
+
+
+@pytest.mark.parametrize("field", ["observed_counts", "mu", "alpha", "pi"])
+def test_pre_zero_rejects_array_protocol_results_that_are_masked(field):
+    from maskimpute import p_pre_zero_from_counts
+
+    arguments = {
+        "observed_counts": np.array([0]),
+        "mu": np.array([2.0]),
+        "alpha": np.array([0.2]),
+        "pi": np.array([0.3]),
+    }
+    arguments[field] = _MaskedArrayLike([0.0], [True])
+
+    with pytest.raises(TypeError, match="masked"):
+        p_pre_zero_from_counts(**arguments)
+
+
+@pytest.mark.parametrize(
+    "field", ["selective_counts", "denoised_counts", "p_pre_zero", "latent"]
+)
+def test_result_rejects_masked_values_nested_in_every_matrix(field):
+    from maskimpute import ImputationResult
+
+    arguments = _valid_result_arguments()
+    nested = np.empty((2, 2), dtype=object)
+    nested[:] = 0.0
+    nested[0, 0] = [np.ma.array(0.0, mask=True)]
+    arguments[field] = nested
+
+    with pytest.raises(TypeError, match="masked"):
+        ImputationResult(**arguments)
+
+
+@pytest.mark.parametrize("field", ["selective_counts", "denoised_counts"])
+@pytest.mark.parametrize("sparse_type", [sparse.lil_matrix, sparse.lil_array])
+def test_result_rejects_masked_values_in_nested_lil_data_rows(field, sparse_type):
+    from maskimpute import ImputationResult
+
+    arguments = _valid_result_arguments()
+    nested = sparse_type((2, 2), dtype=np.float64)
+    nested.rows[0] = [0]
+    nested.data[0] = [np.ma.array(1.0, mask=True)]
+    arguments[field] = nested
+
+    with pytest.raises(TypeError, match="masked"):
+        ImputationResult(**arguments)
+
+
+@pytest.mark.parametrize(
+    "field", ["selective_counts", "denoised_counts", "p_pre_zero", "latent"]
+)
+def test_result_rejects_array_protocol_results_that_are_masked(field):
+    from maskimpute import ImputationResult
+
+    arguments = _valid_result_arguments()
+    arguments[field] = _MaskedArrayLike([[0.0, 0.0], [0.0, 0.0]], [[True, False]] * 2)
+
+    with pytest.raises(TypeError, match="masked"):
+        ImputationResult(**arguments)
+
+
+@pytest.mark.parametrize("field", ["observed_counts", "mu", "alpha", "pi"])
+def test_pre_zero_rejects_arrays_with_dtype_metadata(field):
+    from maskimpute import p_pre_zero_from_counts
+
+    annotated_dtype = np.dtype(np.float64, metadata={"units": ["caller-owned"]})
+    arguments = {
+        "observed_counts": np.array([0]),
+        "mu": np.array([2.0]),
+        "alpha": np.array([0.2]),
+        "pi": np.array([0.3]),
+    }
+    arguments[field] = _copy_with_dtype(arguments[field], annotated_dtype)
+    assert arguments[field].dtype.metadata is not None
+
+    with pytest.raises(TypeError, match="metadata"):
+        p_pre_zero_from_counts(**arguments)
+
+
+@pytest.mark.parametrize(
+    "field", ["selective_counts", "denoised_counts", "p_pre_zero", "latent"]
+)
+def test_result_rejects_caller_owned_dtype_metadata_in_every_matrix(field):
+    from maskimpute import ImputationResult
+
+    mutable_metadata = {"labels": ["before"]}
+    annotated_dtype = np.dtype(np.float64, metadata=mutable_metadata)
+    arguments = _valid_result_arguments()
+    arguments[field] = _copy_with_dtype(arguments[field], annotated_dtype)
+    assert arguments[field].dtype.metadata is not None
+
+    with pytest.raises(TypeError, match="metadata"):
+        ImputationResult(**arguments)
+
+    mutable_metadata["labels"].append("after")
+    assert annotated_dtype.metadata["labels"] == ["before", "after"]
+
+
+def test_result_rejects_caller_owned_dtype_metadata_in_diagnostics():
+    from maskimpute import ImputationResult
+
+    mutable_metadata = {"labels": ["before"]}
+    annotated_dtype = np.dtype(np.float64, metadata=mutable_metadata)
+    arguments = _valid_result_arguments()
+    trace = _copy_with_dtype([1.0, 0.5], annotated_dtype)
+    assert trace.dtype.metadata is not None
+    arguments["diagnostics"] = {"trace": trace}
+
+    with pytest.raises(TypeError, match="metadata"):
+        ImputationResult(**arguments)
+
+    mutable_metadata["labels"].append("after")
+    assert annotated_dtype.metadata["labels"] == ["before", "after"]
+
+
+def test_result_rejects_structured_diagnostic_with_nonfinite_numeric_field():
+    from maskimpute import ImputationResult
+
+    arguments = _valid_result_arguments()
+    arguments["diagnostics"] = {
+        "trace": np.array([(np.nan,)], dtype=[("loss", np.float64)])
+    }
+
+    with pytest.raises(TypeError, match="dtype"):
+        ImputationResult(**arguments)
+
+
+@pytest.mark.parametrize(
+    "unsupported",
+    [
+        np.array([1.0 + 0.0j]),
+        np.array(["2026-07-12"], dtype="datetime64[D]"),
+        np.array([1], dtype="timedelta64[D]"),
+        np.array([b"opaque"], dtype="V6"),
+    ],
+)
+def test_result_rejects_unsupported_diagnostic_array_dtypes(unsupported):
+    from maskimpute import ImputationResult
+
+    arguments = _valid_result_arguments()
+    arguments["diagnostics"] = {"value": unsupported}
+
+    with pytest.raises(TypeError, match="dtype"):
+        ImputationResult(**arguments)

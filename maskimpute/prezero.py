@@ -1,7 +1,66 @@
 """Count-model probability that a pre-capture count was zero."""
 
+from collections.abc import Mapping
+
 import numpy as np
 from scipy import sparse
+
+
+def _reject_unsafe_container_values(value, name):
+    """Reject masks and dtype metadata before array/sparse coercion can erase them."""
+
+    pending = [value]
+    visited = set()
+    while pending:
+        current = pending.pop()
+        if np.ma.isMaskedArray(current):
+            raise TypeError(f"{name} must not contain masked values")
+
+        if sparse.issparse(current):
+            if current.dtype.metadata is not None:
+                raise TypeError(f"{name} must not contain dtype metadata")
+            identifier = id(current)
+            if identifier not in visited:
+                visited.add(identifier)
+                pending.append(getattr(current, "data", None))
+            continue
+
+        if isinstance(current, np.ndarray):
+            if current.dtype.metadata is not None:
+                raise TypeError(f"{name} must not contain dtype metadata")
+            if current.dtype.hasobject:
+                identifier = id(current)
+                if identifier not in visited:
+                    visited.add(identifier)
+                    pending.extend(current.flat)
+            continue
+
+        if isinstance(current, Mapping):
+            identifier = id(current)
+            if identifier not in visited:
+                visited.add(identifier)
+                pending.extend(current.keys())
+                pending.extend(current.values())
+            continue
+
+        if isinstance(current, (list, tuple, set, frozenset)):
+            identifier = id(current)
+            if identifier not in visited:
+                visited.add(identifier)
+                pending.extend(current)
+            continue
+
+        array_protocol = getattr(type(current), "__array__", None)
+        if current is not value and callable(array_protocol):
+            identifier = id(current)
+            if identifier not in visited:
+                visited.add(identifier)
+                pending.append(np.asanyarray(current))
+
+
+def _reject_dtype_metadata(dtype, name):
+    if dtype.metadata is not None:
+        raise TypeError(f"{name} must not contain dtype metadata")
 
 
 def _reject_sparse_duplicate_coordinates(value, name):
@@ -16,11 +75,8 @@ def _reject_sparse_duplicate_coordinates(value, name):
 
 
 def _observed_array(value):
-    if np.ma.isMaskedArray(value):
-        raise TypeError("observed_counts must not be a masked array")
+    _reject_unsafe_container_values(value, "observed_counts")
     if sparse.issparse(value):
-        if np.ma.isMaskedArray(getattr(value, "data", None)):
-            raise TypeError("observed_counts must not contain masked sparse data")
         matrix = value.copy()
         _reject_sparse_duplicate_coordinates(matrix, "observed_counts")
         matrix = matrix.tocsr(copy=True)
@@ -28,10 +84,15 @@ def _observed_array(value):
         dtype = matrix.dtype
         observed = matrix.toarray()
     else:
-        observed = np.asarray(value)
+        observed = np.asanyarray(value)
+        if np.ma.isMaskedArray(observed):
+            raise TypeError("observed_counts must not contain masked values")
+        _reject_dtype_metadata(observed.dtype, "observed_counts")
+        observed = np.asarray(observed)
         entries = observed
         dtype = observed.dtype
 
+    _reject_dtype_metadata(dtype, "observed_counts")
     if dtype.kind not in "iuf":
         raise TypeError("observed_counts must contain real, non-boolean numbers")
     if not np.all(np.isfinite(entries)):
@@ -44,11 +105,14 @@ def _observed_array(value):
 
 
 def _model_parameter(value, name, shape, *, upper=None):
-    if np.ma.isMaskedArray(value):
-        raise TypeError(f"{name} must not be a masked array")
+    _reject_unsafe_container_values(value, name)
     if sparse.issparse(value):
         raise TypeError(f"{name} must be a dense real number or array")
-    original = np.asarray(value)
+    original = np.asanyarray(value)
+    if np.ma.isMaskedArray(original):
+        raise TypeError(f"{name} must not contain masked values")
+    _reject_dtype_metadata(original.dtype, name)
+    original = np.asarray(original)
     if original.dtype.kind not in "iuf":
         raise TypeError(f"{name} must contain real, non-boolean numbers")
     if not np.all(np.isfinite(original)):

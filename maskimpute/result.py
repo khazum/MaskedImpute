@@ -49,6 +49,8 @@ class _DiagnosticScalarSnapshot:
 
 
 def _snapshot_array(value: np.ndarray) -> _ArraySnapshot:
+    if value.dtype.metadata is not None:
+        raise TypeError("arrays with dtype metadata are not supported")
     contiguous = np.array(value, copy=True, order="C", subok=False)
     return _ArraySnapshot(
         payload=contiguous.tobytes(order="C"),
@@ -81,9 +83,63 @@ def _matrix_values(value: Any) -> np.ndarray:
     return value.data if sparse.issparse(value) else value
 
 
+def _reject_unsafe_container_values(value: Any, name: str) -> None:
+    """Reject masks and dtype metadata before coercion can erase either."""
+
+    pending = [value]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if np.ma.isMaskedArray(current):
+            raise TypeError(f"{name} must not contain masked values")
+
+        if sparse.issparse(current):
+            if current.dtype.metadata is not None:
+                raise TypeError(f"{name} must not contain dtype metadata")
+            identifier = id(current)
+            if identifier not in visited:
+                visited.add(identifier)
+                pending.append(getattr(current, "data", None))
+            continue
+
+        if isinstance(current, np.ndarray):
+            if current.dtype.metadata is not None:
+                raise TypeError(f"{name} must not contain dtype metadata")
+            if current.dtype.hasobject:
+                identifier = id(current)
+                if identifier not in visited:
+                    visited.add(identifier)
+                    pending.extend(current.flat)
+            continue
+
+        if isinstance(current, Mapping):
+            identifier = id(current)
+            if identifier not in visited:
+                visited.add(identifier)
+                pending.extend(current.keys())
+                pending.extend(current.values())
+            continue
+
+        if isinstance(current, (list, tuple, set, frozenset)):
+            identifier = id(current)
+            if identifier not in visited:
+                visited.add(identifier)
+                pending.extend(current)
+            continue
+
+        array_protocol = getattr(type(current), "__array__", None)
+        if current is not value and callable(array_protocol):
+            identifier = id(current)
+            if identifier not in visited:
+                visited.add(identifier)
+                pending.append(np.asanyarray(current))
+
+
 def _validate_real_array(value: Any, name: str, *, nonnegative: bool) -> None:
     if value.ndim != 2:
         raise ValueError(f"{name} must be a two-dimensional matrix")
+    if value.dtype.metadata is not None:
+        raise TypeError(f"{name} must not contain dtype metadata")
     if value.dtype.kind not in "iuf":
         raise TypeError(f"{name} must contain real numeric values")
     entries = _matrix_values(value)
@@ -94,27 +150,33 @@ def _validate_real_array(value: Any, name: str, *, nonnegative: bool) -> None:
 
 
 def _prepare_matrix(value: Any, name: str, *, nonnegative: bool) -> Any:
-    if np.ma.isMaskedArray(value):
-        raise TypeError(f"{name} must not be a masked array")
+    _reject_unsafe_container_values(value, name)
     if sparse.issparse(value):
-        if np.ma.isMaskedArray(getattr(value, "data", None)):
-            raise TypeError(f"{name} must not contain masked sparse data")
         prepared = value.copy()
         _reject_sparse_duplicate_coordinates(prepared, name)
         prepared = prepared.tocsr(copy=True)
         prepared.sort_indices()
     else:
-        prepared = np.array(value, copy=True, order="C", subok=False)
+        coerced = np.asanyarray(value)
+        if np.ma.isMaskedArray(coerced):
+            raise TypeError(f"{name} must not contain masked values")
+        if coerced.dtype.metadata is not None:
+            raise TypeError(f"{name} must not contain dtype metadata")
+        prepared = np.array(coerced, copy=True, order="C", subok=False)
     _validate_real_array(prepared, name, nonnegative=nonnegative)
     return prepared
 
 
 def _prepare_dense_matrix(value: Any, name: str, *, nonnegative: bool) -> np.ndarray:
-    if np.ma.isMaskedArray(value):
-        raise TypeError(f"{name} must not be a masked array")
+    _reject_unsafe_container_values(value, name)
     if sparse.issparse(value):
         raise TypeError(f"{name} must be a dense matrix")
-    prepared = np.array(value, copy=True, order="C", subok=False)
+    coerced = np.asanyarray(value)
+    if np.ma.isMaskedArray(coerced):
+        raise TypeError(f"{name} must not contain masked values")
+    if coerced.dtype.metadata is not None:
+        raise TypeError(f"{name} must not contain dtype metadata")
+    prepared = np.array(coerced, copy=True, order="C", subok=False)
     _validate_real_array(prepared, name, nonnegative=nonnegative)
     return prepared
 
@@ -157,9 +219,11 @@ def _snapshot_diagnostic(value: Any, path: str = "diagnostics") -> Any:
             items.append((key, _snapshot_diagnostic(item, f"{path}.{key}")))
         return _DiagnosticMappingSnapshot(tuple(items))
     if isinstance(value, np.ndarray):
-        if value.dtype.hasobject:
-            raise TypeError(f"{path} cannot contain object arrays")
-        if value.dtype.kind in "fc" and not np.all(np.isfinite(value)):
+        if value.dtype.metadata is not None:
+            raise TypeError(f"{path} cannot contain dtype metadata")
+        if value.dtype.kind not in "biufSU":
+            raise TypeError(f"{path} has an unsupported dtype")
+        if value.dtype.kind == "f" and not np.all(np.isfinite(value)):
             raise ValueError(f"{path} must contain only finite values")
         return _snapshot_array(value)
     if isinstance(value, (list, tuple)):
