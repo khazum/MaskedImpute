@@ -45,7 +45,7 @@ All adapters emit a common `h5ad` schema:
 - `layers["reference_counts"]`: high-depth proxy counts for semisynthetic data;
 - `layers["heldout_counts"]`: an independent count-split replicate when available;
 - `layers["expected_counts"]`: simulator expectation when available;
-- `obs`: `dataset_id`, `mechanism`, `condition`, `draw`, `group`, `batch`, `library_size`, and optional `pseudotime`;
+- `obs`: constant per-file `dataset_id`, `mechanism`, `condition`, `biological_id`, `technical_view`, and positive-integer `draw`; exact observed `library_size`; evaluator-only `group`; optional `batch` and `pseudotime`;
 - `var`: stable feature identifiers and optional marker/ERCC flags;
 - `uns["truth_kind"]`: one of `exact_pre_capture`, `exact_continuous`, `proxy_high_depth`, or `orthogonal_only`;
 - `uns["primary_truth_layer"]`: the one evaluator layer used for reconstruction endpoints, absent for `orthogonal_only`;
