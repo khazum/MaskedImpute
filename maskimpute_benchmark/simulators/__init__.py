@@ -19,6 +19,7 @@ from .native import (
     seal_native_outputs,
     validate_native_manifest,
 )
+from .sergio import run_sergio_pair
 from .symsim import run_symsim_pair
 
 __all__ = [
@@ -33,6 +34,7 @@ __all__ = [
     "revalidate_native_outputs",
     "seal_native_outputs",
     "run_symsim_pair",
+    "run_sergio_pair",
     "simulation_dataset_id",
     "simulation_request_identity",
     "validate_paired_simulation_requests",
