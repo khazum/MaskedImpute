@@ -440,6 +440,57 @@ def apply_library_size_offset(
     return gene_fractions * library_sizes[:, None]
 
 
+def _negative_binomial_objective(
+    dispersion: GeneDispersionEstimate,
+    *,
+    normalization_target: float,
+    device: torch.device,
+    dtype: torch.dtype,
+):
+    """Build the fixed training objective after validation-safe estimation."""
+
+    if type(dispersion) is not GeneDispersionEstimate:
+        raise TypeError("dispersion must be an exact GeneDispersionEstimate")
+    target = _finite_real(
+        normalization_target,
+        "normalization_target",
+        positive=True,
+    )
+    inverse_dispersion = torch.as_tensor(
+        np.array(dispersion.inverse_dispersion, copy=True),
+        dtype=dtype,
+        device=device,
+    )
+
+    def objective(
+        fractions: torch.Tensor,
+        counts: torch.Tensor,
+        library_sizes: torch.Tensor,
+        artificial_mask: torch.Tensor,
+        natural_zero_mask: torch.Tensor,
+        p_pre_zero: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        from maskimpute.train import natural_zero_preservation_loss
+
+        means = apply_library_size_offset(fractions, library_sizes)
+        primary = negative_binomial_nll(
+            counts,
+            means,
+            inverse_dispersion,
+            mask=artificial_mask,
+            reduction="mean",
+        )
+        normalized_prediction = torch.log1p(fractions * target)
+        preservation = natural_zero_preservation_loss(
+            normalized_prediction,
+            natural_zero_mask,
+            p_pre_zero,
+        )
+        return primary, preservation
+
+    return objective
+
+
 __all__ = [
     "GeneDispersionEstimate",
     "NegativeBinomialDecoderConfig",

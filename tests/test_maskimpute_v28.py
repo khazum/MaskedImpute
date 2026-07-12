@@ -186,3 +186,108 @@ def test_nb_decoder_configuration_fails_closed(
 
     with pytest.raises((TypeError, ValueError), match=match):
         NegativeBinomialDecoderConfig(**{keyword: invalid})
+
+
+def _tiny_counts() -> np.ndarray:
+    return np.array(
+        [
+            [8, 0, 1, 0],
+            [0, 7, 2, 1],
+            [5, 1, 0, 2],
+            [2, 0, 8, 1],
+            [0, 3, 4, 5],
+            [6, 2, 0, 3],
+        ],
+        dtype=np.float64,
+    )
+
+
+def _tiny_config():
+    from maskimpute import MaskImputeConfig
+
+    return MaskImputeConfig(
+        hidden_dims=(8, 5),
+        latent_dim=3,
+        learning_rate=1e-3,
+        weight_decay=0.0,
+        batch_size=3,
+        max_epochs=4,
+        patience=2,
+        artificial_mask_fraction=0.25,
+        validation_fraction=0.2,
+        pre_zero_regularization=0.5,
+        gate_gamma=2.0,
+        seed=42,
+    )
+
+
+def test_train_v28_is_deterministic_truth_free_and_restores_caller_rng() -> None:
+    from maskimpute.nb_model import NegativeBinomialDecoderConfig
+    from maskimpute.train import train_v28
+
+    counts = _tiny_counts()
+    probability = np.zeros_like(counts)
+    probability[counts == 0] = 0.6
+    decoder_config = NegativeBinomialDecoderConfig(
+        dispersion_prior_strength=5.0,
+        winsor_quantile=0.9,
+    )
+    caller_state = torch.random.get_rng_state().clone()
+
+    first = train_v28(
+        counts,
+        probability,
+        _tiny_config(),
+        "cpu",
+        decoder_config=decoder_config,
+    )
+    after_first = torch.random.get_rng_state().clone()
+    second = train_v28(
+        counts,
+        probability,
+        _tiny_config(),
+        "cpu",
+        decoder_config=decoder_config,
+    )
+
+    assert torch.equal(caller_state, after_first)
+    assert torch.equal(caller_state, torch.random.get_rng_state())
+    assert first.training.training_loss_history == second.training.training_loss_history
+    assert (
+        first.training.validation_loss_history
+        == second.training.validation_loss_history
+    )
+    assert first.training.validation_mask_hashes == second.training.validation_mask_hashes
+    assert (
+        first.training.epoch_training_mask_hashes
+        == second.training.epoch_training_mask_hashes
+    )
+    for name, value in first.training.model.state_dict().items():
+        assert torch.equal(value, second.training.model.state_dict()[name])
+    np.testing.assert_array_equal(
+        first.dispersion.dispersion,
+        second.dispersion.dispersion,
+    )
+    expected_effective = np.sum(
+        ~first.training.validation_mask
+        & (first.training.library_sizes[:, None] > 0),
+        axis=0,
+    )
+    np.testing.assert_array_equal(
+        first.dispersion.effective_observations,
+        expected_effective,
+    )
+    assert first.training.deterministic_algorithms is True
+    assert first.training.caller_rng_state_restored is True
+    assert all(np.isfinite(first.training.training_loss_history))
+    assert all(np.isfinite(first.training.validation_loss_history))
+
+    with pytest.raises(TypeError):
+        train_v28(
+            counts,
+            probability,
+            _tiny_config(),
+            "cpu",
+            decoder_config=decoder_config,
+            evaluator_truth=np.ones_like(counts),
+        )

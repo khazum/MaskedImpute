@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class TrainingOutcome:
-    """Internal immutable audit record for one v27 fit."""
+    """Internal immutable audit record for one deterministic masked fit."""
 
     model: torch.nn.Module
     normalized_expression: np.ndarray
@@ -45,6 +45,22 @@ class TrainingOutcome:
     deterministic_algorithms: bool
     caller_rng_state_restored: bool
     cublas_workspace_config: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class V28TrainingOutcome:
+    """NB training record plus the fixed gene-dispersion nuisance estimate."""
+
+    training: TrainingOutcome
+    dispersion: object
+
+    def __post_init__(self) -> None:
+        from maskimpute.nb_model import GeneDispersionEstimate
+
+        if type(self.training) is not TrainingOutcome:
+            raise TypeError("training must be an exact TrainingOutcome")
+        if type(self.dispersion) is not GeneDispersionEstimate:
+            raise TypeError("dispersion must be an exact GeneDispersionEstimate")
 
 
 _MAX_EXACT_FLOAT64_INTEGER = 2**53
@@ -485,6 +501,8 @@ def _train_with_policies(
     *,
     model_factory: Callable[[int, MaskImputeConfig], torch.nn.Module],
     training_mask_factory: Callable[..., np.ndarray],
+    objective_factory: Callable[..., Callable[..., tuple[torch.Tensor, torch.Tensor]]]
+    | None = None,
 ) -> TrainingOutcome:
     """Shared deterministic trainer for prespecified architecture/mask policies."""
 
@@ -518,6 +536,21 @@ def _train_with_policies(
     model = model.to(selected_device)
     if not tuple(model.parameters()):
         raise ValueError("training model must contain parameters")
+    if objective_factory is not None and not callable(objective_factory):
+        raise TypeError("objective_factory must be callable or None")
+    objective = (
+        None
+        if objective_factory is None
+        else objective_factory(
+            counts,
+            library_sizes,
+            validation_mask,
+            config,
+            selected_device,
+        )
+    )
+    if objective is not None and not callable(objective):
+        raise TypeError("objective_factory must return a callable objective")
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -526,6 +559,16 @@ def _train_with_policies(
 
     target_expression = torch.as_tensor(
         normalized, dtype=torch.float32, device=selected_device
+    )
+    target_counts = torch.as_tensor(
+        counts,
+        dtype=torch.float32,
+        device=selected_device,
+    )
+    count_library_sizes = torch.as_tensor(
+        library_sizes,
+        dtype=torch.float32,
+        device=selected_device,
     )
     positive = torch.as_tensor(counts > 0, dtype=torch.bool, device=selected_device)
     natural_zero = ~positive
@@ -603,19 +646,29 @@ def _train_with_policies(
                 corrupted_input[rows],
                 corrupted_availability[rows],
             )
-            primary_loss = _masked_positive_loss(
-                prediction,
-                target_expression[rows],
-                artificial[rows],
-            )
-            preservation_loss = natural_zero_preservation_loss(
-                prediction,
-                natural_zero[rows],
-                score[rows],
-            )
+            if objective is None:
+                primary_loss = _masked_positive_loss(
+                    prediction,
+                    target_expression[rows],
+                    artificial[rows],
+                )
+                preservation_loss = natural_zero_preservation_loss(
+                    prediction,
+                    natural_zero[rows],
+                    score[rows],
+                )
+            else:
+                primary_loss, preservation_loss = objective(
+                    prediction,
+                    target_counts[rows],
+                    count_library_sizes[rows],
+                    artificial[rows],
+                    natural_zero[rows],
+                    score[rows],
+                )
             loss = primary_loss + config.pre_zero_regularization * preservation_loss
             if not torch.isfinite(loss):
-                raise FloatingPointError("nonfinite v27 training loss")
+                raise FloatingPointError("nonfinite masked-model training loss")
             loss.backward()
             optimizer.step()
             batch_losses.append(float(loss.detach().cpu()))
@@ -627,14 +680,24 @@ def _train_with_policies(
                 validation_input,
                 base_availability,
             )
-            validation_loss = _masked_positive_loss(
-                validation_prediction,
-                target_expression,
-                fixed_validation,
-            )
+            if objective is None:
+                validation_loss = _masked_positive_loss(
+                    validation_prediction,
+                    target_expression,
+                    fixed_validation,
+                )
+            else:
+                validation_loss, _ = objective(
+                    validation_prediction,
+                    target_counts,
+                    count_library_sizes,
+                    fixed_validation,
+                    natural_zero,
+                    score,
+                )
         validation_value = float(validation_loss.detach().cpu())
         if not np.isfinite(validation_value):
-            raise FloatingPointError("nonfinite v27 validation loss")
+            raise FloatingPointError("nonfinite masked-model validation loss")
         validation_losses.append(validation_value)
         validation_hashes.append(fixed_validation_hash)
 
@@ -649,7 +712,7 @@ def _train_with_policies(
                 break
 
     if best_state is None:
-        raise RuntimeError("v27 training produced no valid checkpoint")
+        raise RuntimeError("masked-model training produced no valid checkpoint")
     model.load_state_dict(best_state)
     model.eval()
 
@@ -705,3 +768,70 @@ def train_v27(
         model_factory=model_factory,
         training_mask_factory=make_epoch_training_mask,
     )
+
+
+def train_v28(
+    observed_counts: object,
+    p_pre_zero: object,
+    config: MaskImputeConfig,
+    device: str | torch.device,
+    *,
+    decoder_config: object,
+) -> V28TrainingOutcome:
+    """Train the conditional NB decoder from counts and an external score only."""
+
+    from maskimpute.nb_model import (
+        NegativeBinomialDecoderConfig,
+        NegativeBinomialMaskAutoencoder,
+        _negative_binomial_objective,
+        estimate_shrunk_gene_dispersion,
+    )
+
+    if type(decoder_config) is not NegativeBinomialDecoderConfig:
+        raise TypeError(
+            "decoder_config must be an exact NegativeBinomialDecoderConfig"
+        )
+    dispersion_holder: dict[str, object] = {}
+
+    def model_factory(
+        n_genes: int,
+        training_config: MaskImputeConfig,
+    ) -> torch.nn.Module:
+        return NegativeBinomialMaskAutoencoder(
+            n_genes=n_genes,
+            hidden_dims=training_config.hidden_dims,
+            latent_dim=training_config.latent_dim,
+        )
+
+    def objective_factory(
+        counts: np.ndarray,
+        library_sizes: np.ndarray,
+        validation_mask: np.ndarray,
+        training_config: MaskImputeConfig,
+        selected_device: torch.device,
+    ):
+        dispersion = estimate_shrunk_gene_dispersion(
+            counts,
+            library_sizes,
+            decoder_config,
+            estimation_mask=~validation_mask,
+        )
+        dispersion_holder["value"] = dispersion
+        return _negative_binomial_objective(
+            dispersion,
+            normalization_target=training_config.normalization_target,
+            device=selected_device,
+            dtype=torch.float32,
+        )
+
+    training = _train_with_policies(
+        observed_counts,
+        p_pre_zero,
+        config,
+        device,
+        model_factory=model_factory,
+        training_mask_factory=make_epoch_training_mask,
+        objective_factory=objective_factory,
+    )
+    dispersion = dispersion_holder.get("value")
+    return V28TrainingOutcome(training=training, dispersion=dispersion)
