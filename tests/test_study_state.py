@@ -1,10 +1,15 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import threading
 
 import pytest
+
+import maskimpute_benchmark.study as study_module
 
 from maskimpute_benchmark.study import (
     StudyStateError,
@@ -326,3 +331,204 @@ def test_cli_lifecycle_and_json_errors(clean_repo: Path) -> None:
     duplicate = run("verify-final", str(round_dir), "--repo", str(clean_repo))
     assert duplicate.returncode == 2
     assert "error" in json.loads(duplicate.stderr)
+
+
+def test_rounds_must_use_one_canonical_repository_root(clean_repo: Path) -> None:
+    with pytest.raises(StudyStateError, match="canonical rounds root"):
+        freeze_round(
+            clean_repo,
+            clean_repo / "artifacts/alternate/round-001",
+            clean_repo / "config.json",
+            clean_repo / "protocol.json",
+            environment_path=clean_repo / "environment.lock",
+        )
+
+
+def test_registry_prevents_reusing_a_frozen_snapshot_for_a_second_holdout(
+    clean_repo: Path, tmp_path: Path
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    frozen_snapshot = tmp_path / "frozen-snapshot"
+    shutil.copytree(round_dir, frozen_snapshot)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+
+    shutil.rmtree(round_dir)
+    shutil.copytree(frozen_snapshot, round_dir)
+    with pytest.raises(StudyStateError, match="registry.*running"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+
+def test_copied_round_records_fail_path_identity(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    copied = clean_repo / "artifacts/study/round-002"
+    shutil.copytree(round_dir, copied)
+
+    with pytest.raises(StudyStateError, match="round identity"):
+        assert_final_runnable(clean_repo, copied)
+
+
+def test_dirty_submodule_cannot_be_hidden_by_ignore_configuration(
+    clean_repo: Path, tmp_path: Path
+) -> None:
+    child = tmp_path / "competitor-source"
+    child.mkdir()
+    _git(child, "init")
+    _git(child, "config", "user.name", "Study Test")
+    _git(child, "config", "user.email", "study@example.invalid")
+    (child / "method.py").write_text("original\n", encoding="utf-8")
+    _git(child, "add", ".")
+    _git(child, "commit", "-m", "competitor source")
+
+    _git(
+        clean_repo,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(child),
+        "competitor",
+    )
+    _git(clean_repo, "commit", "-am", "add competitor")
+    _git(clean_repo, "config", "submodule.competitor.ignore", "all")
+    (clean_repo / "competitor/method.py").write_text("hidden change\n", encoding="utf-8")
+    assert _git(clean_repo, "status", "--porcelain") == ""
+
+    with pytest.raises(StudyStateError, match="clean"):
+        freeze_fixture(clean_repo)
+
+
+@pytest.mark.parametrize(
+    ("mutate_claim", "mutate_materialization", "message"),
+    [
+        (
+            lambda record: record.__setitem__("claim_id", None),
+            lambda record: record.__setitem__("materialization_claim_id", None),
+            "claim",
+        ),
+        (
+            lambda record: None,
+            lambda record: record.__setitem__("seed_manifest_path", "other.json"),
+            "manifest path",
+        ),
+        (
+            lambda record: None,
+            lambda record: record.__setitem__("generator_seeds", [7, 8, 9]),
+            "generator seeds",
+        ),
+    ],
+)
+def test_materialization_identity_fields_are_strictly_validated(
+    clean_repo: Path, mutate_claim, mutate_materialization, message: str
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    claim_path = round_dir / "materialization_claim.json"
+    materialization_path = round_dir / "materialization.json"
+    claim = json.loads(claim_path.read_text(encoding="utf-8"))
+    materialization = json.loads(materialization_path.read_text(encoding="utf-8"))
+    mutate_claim(claim)
+    mutate_materialization(materialization)
+    claim_path.write_text(json.dumps(claim), encoding="utf-8")
+    materialization_path.write_text(json.dumps(materialization), encoding="utf-8")
+
+    with pytest.raises(StudyStateError, match=message):
+        assert_final_runnable(clean_repo, round_dir)
+
+
+def test_boolean_schema_version_is_rejected(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    freeze_path = round_dir / "freeze.json"
+    freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+    freeze["schema_version"] = True
+    freeze_path.write_text(json.dumps(freeze), encoding="utf-8")
+
+    with pytest.raises(StudyStateError, match="schema_version"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+
+def test_concurrent_materializers_have_exactly_one_success(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+
+    def attempt() -> str:
+        try:
+            materialize_final(round_dir, seed_count=4, repo=clean_repo)
+            return "success"
+        except StudyStateError:
+            return "blocked"
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(lambda _: attempt(), range(8)))
+    assert outcomes.count("success") == 1
+    assert outcomes.count("blocked") == 7
+
+
+def test_supersede_waits_for_inflight_execution_claim(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    entered = threading.Event()
+    release = threading.Event()
+    superseded = threading.Event()
+    original = study_module._validate_seed_manifest
+
+    def paused_validate(*args, **kwargs):
+        result = original(*args, **kwargs)
+        entered.set()
+        assert release.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(study_module, "_validate_seed_manifest", paused_validate)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claim_future = pool.submit(assert_final_runnable, clean_repo, round_dir)
+        assert entered.wait(timeout=5)
+
+        def do_supersede():
+            result = supersede_round(round_dir, "concurrent stop")
+            superseded.set()
+            return result
+
+        supersede_future = pool.submit(do_supersede)
+        assert not superseded.wait(timeout=0.2)
+        release.set()
+        assert claim_future.result(timeout=5)["state"] == "running"
+        assert supersede_future.result(timeout=5)["previous_state"] == "running"
+
+
+def test_record_rechecks_repository_immediately_before_receipt(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    first_check = threading.Event()
+    continue_record = threading.Event()
+    calls = 0
+    original = study_module._verify_frozen_repository
+
+    def controlled_verify(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = original(*args, **kwargs)
+        if calls == 1:
+            first_check.set()
+            assert continue_record.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(study_module, "_verify_frozen_repository", controlled_verify)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(
+            record_final_evaluation,
+            round_dir,
+            {"results_sha256": "a" * 64},
+            repo=clean_repo,
+        )
+        assert first_check.wait(timeout=5)
+        (clean_repo / "tracked.py").write_text("changed during record\n", encoding="utf-8")
+        continue_record.set()
+        with pytest.raises(StudyStateError, match="clean frozen commit"):
+            future.result(timeout=5)
+    assert calls == 2
+    assert not (round_dir / "evaluation_receipt.json").exists()

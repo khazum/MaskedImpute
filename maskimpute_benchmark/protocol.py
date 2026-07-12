@@ -112,10 +112,30 @@ def _namespace(value: object, name: str) -> str:
     return value
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value!r}")
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 def load_protocol(path: Path) -> Protocol:
     """Load and validate schema version 1 of the publication protocol."""
 
-    data = _mapping(json.loads(path.read_text(encoding="utf-8")), "protocol")
+    data = _mapping(
+        json.loads(
+            path.read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_object,
+        ),
+        "protocol",
+    )
 
     if type(data.get("schema_version")) is not int or data["schema_version"] != 1:
         raise ValueError("schema_version must be 1")

@@ -33,3 +33,26 @@ def test_protocol_rejects_nonfinite_resource_limits(tmp_path, invalid):
 
     with pytest.raises(ValueError, match="finite"):
         load_protocol(path)
+
+
+def test_protocol_rejects_nonfinite_constants_even_in_unknown_fields(tmp_path):
+    text = Path("study/protocol.json").read_text(encoding="utf-8")
+    text = text[:-2] + ',\n  "unvalidated_metadata": NaN\n}\n'
+    path = tmp_path / "protocol.json"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="non-finite JSON constant"):
+        load_protocol(path)
+
+
+def test_protocol_rejects_duplicate_object_keys(tmp_path):
+    path = tmp_path / "protocol.json"
+    path.write_text(
+        Path("study/protocol.json")
+        .read_text(encoding="utf-8")
+        .replace('"schema_version": 1,', '"schema_version": 1, "schema_version": 1,'),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        load_protocol(path)

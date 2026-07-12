@@ -9,7 +9,9 @@ matches.  A failed claimed run must be superseded rather than silently retried.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -29,8 +31,14 @@ EXECUTION_CLAIM_NAME = "execution_claim.json"
 EVALUATION_RECEIPT_NAME = "evaluation_receipt.json"
 SUPERSESSION_NAME = "supersession.json"
 
+ROUNDS_ROOT = Path("artifacts/study")
+REGISTRY_DIR_NAME = ".registry"
+LOCKS_DIR_NAME = ".locks"
+
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
+_ROUND_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class StudyStateError(RuntimeError):
@@ -43,6 +51,15 @@ def _utc_now() -> str:
 
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant {value!r}")
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
 
 
 def _json_text(payload: Mapping[str, Any]) -> str:
@@ -79,7 +96,9 @@ def _atomic_write_json(
 def _read_record(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(
-            path.read_text(encoding="utf-8"), parse_constant=_reject_json_constant
+            path.read_text(encoding="utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
         )
     except FileNotFoundError as exc:
         raise StudyStateError(f"missing round record: {path.name}") from exc
@@ -133,6 +152,13 @@ def _round_path(repo: Path, round_dir: Path) -> Path:
         destination.relative_to(repo)
     except ValueError as exc:
         raise StudyStateError("round directory must be inside the repository") from exc
+    canonical_root = (repo / ROUNDS_ROOT).resolve()
+    if destination.parent != canonical_root:
+        raise StudyStateError(
+            f"round directory must be a direct child of canonical rounds root {ROUNDS_ROOT}"
+        )
+    if not _ROUND_ID_RE.fullmatch(destination.name):
+        raise StudyStateError("round ID contains unsupported characters")
     return destination
 
 
@@ -148,11 +174,38 @@ def _repository_for_round(round_dir: Path, repo: Path | None) -> tuple[Path, Pat
         repository = _repo_path(Path(root))
     else:
         repository = _repo_path(repo)
+    return repository, _round_path(repository, destination)
+
+
+def _round_relative_path(repo: Path, round_dir: Path) -> str:
+    return round_dir.relative_to(repo).as_posix()
+
+
+def _registry_path(repo: Path, round_id: str) -> Path:
+    return repo / ROUNDS_ROOT / REGISTRY_DIR_NAME / f"{round_id}.json"
+
+
+@contextmanager
+def _round_lock(repo: Path, round_id: str):
+    """Serialize all transitions for one repository-level round identity."""
+
+    if not _ROUND_ID_RE.fullmatch(round_id):
+        raise StudyStateError("round ID contains unsupported characters")
+    lock_dir = repo / ROUNDS_ROOT / LOCKS_DIR_NAME
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{round_id}.lock"
     try:
-        destination.relative_to(repository)
-    except ValueError as exc:
-        raise StudyStateError("round directory must be inside the repository") from exc
-    return repository, destination
+        descriptor = os.open(
+            lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
+        )
+        with os.fdopen(descriptor, "a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except OSError as exc:
+        raise StudyStateError(f"could not lock study round {round_id}: {exc}") from exc
 
 
 def _input_path(repo: Path, path: Path, label: str) -> tuple[Path, str]:
@@ -202,12 +255,14 @@ def _require_round_record(
     round_dir: Path, filename: str, expected_state: str
 ) -> dict[str, Any]:
     record = _read_record(round_dir / filename)
-    if record.get("schema_version") != 1:
+    if type(record.get("schema_version")) is not int or record["schema_version"] != 1:
         raise StudyStateError(f"invalid round record {filename}: schema_version")
     if record.get("state") != expected_state:
         raise StudyStateError(f"invalid round record {filename}: state")
     if record.get("round_id") != round_dir.name:
-        raise StudyStateError(f"invalid round record {filename}: round_id")
+        raise StudyStateError(
+            f"round identity does not match record {filename}: round_id"
+        )
     return record
 
 
@@ -219,6 +274,8 @@ def _require_sha256(value: object, label: str) -> str:
 
 def _binding_fields(freeze: Mapping[str, Any]) -> dict[str, Any]:
     return {
+        "round_path": freeze.get("round_path"),
+        "round_token": freeze.get("round_token"),
         "method_commit": freeze.get("method_commit"),
         "config_sha256": freeze.get("config_sha256"),
         "protocol_sha256": freeze.get("protocol_sha256"),
@@ -226,8 +283,19 @@ def _binding_fields(freeze: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_freeze(round_dir: Path) -> dict[str, Any]:
+def _validate_freeze(round_dir: Path, repo: Path | None = None) -> dict[str, Any]:
     freeze = _require_round_record(round_dir, FREEZE_NAME, "frozen")
+    if not isinstance(freeze.get("round_token"), str) or not _TOKEN_RE.fullmatch(
+        freeze["round_token"]
+    ):
+        raise StudyStateError("invalid frozen round token")
+    expected_path = (
+        _round_relative_path(repo, round_dir)
+        if repo is not None
+        else f"{ROUNDS_ROOT.as_posix()}/{round_dir.name}"
+    )
+    if freeze.get("round_path") != expected_path:
+        raise StudyStateError("round identity path does not match frozen record")
     if not isinstance(freeze.get("method_commit"), str) or not _GIT_OID_RE.fullmatch(
         freeze["method_commit"]
     ):
@@ -249,6 +317,85 @@ def _validate_bindings(record: Mapping[str, Any], freeze: Mapping[str, Any]) -> 
         raise StudyStateError("round record bindings do not match freeze")
 
 
+def _registry_entry(
+    *,
+    state: str,
+    record_name: str,
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "state": state,
+        "at": _utc_now(),
+        "record_name": record_name,
+        "record_sha256": canonical_sha256(dict(record)),
+    }
+
+
+def _validate_registry(
+    repo: Path,
+    round_dir: Path,
+    freeze: Mapping[str, Any],
+    *,
+    expected_state: str | None = None,
+) -> dict[str, Any]:
+    registry = _read_record(_registry_path(repo, round_dir.name))
+    if type(registry.get("schema_version")) is not int or registry["schema_version"] != 1:
+        raise StudyStateError("round registry has invalid schema_version")
+    valid_identity = (
+        registry.get("round_id") == round_dir.name
+        and registry.get("round_path") == _round_relative_path(repo, round_dir)
+        and registry.get("round_token") == freeze.get("round_token")
+    )
+    if not valid_identity:
+        raise StudyStateError("round identity does not match repository registry")
+    history = registry.get("history")
+    if (
+        not isinstance(history, list)
+        or not history
+        or not all(isinstance(entry, Mapping) for entry in history)
+    ):
+        raise StudyStateError("round registry history is invalid")
+    state = registry.get("state")
+    if not isinstance(state, str) or history[-1].get("state") != state:
+        raise StudyStateError("round registry state is invalid")
+    for entry in history:
+        if (
+            not isinstance(entry.get("state"), str)
+            or not isinstance(entry.get("record_name"), str)
+            or not isinstance(entry.get("record_sha256"), str)
+            or not _SHA256_RE.fullmatch(entry["record_sha256"])
+        ):
+            raise StudyStateError("round registry history is invalid")
+    if expected_state is not None and state != expected_state:
+        raise StudyStateError(
+            f"round registry is {state}; expected {expected_state}"
+        )
+    return registry
+
+
+def _advance_registry(
+    repo: Path,
+    round_dir: Path,
+    freeze: Mapping[str, Any],
+    *,
+    expected_state: str,
+    new_state: str,
+    record_name: str,
+    record: Mapping[str, Any],
+) -> dict[str, Any]:
+    registry = _validate_registry(
+        repo, round_dir, freeze, expected_state=expected_state
+    )
+    advanced = dict(registry)
+    advanced["state"] = new_state
+    advanced["history"] = [
+        *registry["history"],
+        _registry_entry(state=new_state, record_name=record_name, record=record),
+    ]
+    _atomic_write_json(_registry_path(repo, round_dir.name), advanced)
+    return advanced
+
+
 def _has_hidden_index_paths(repo: Path) -> bool:
     output = _git(repo, "ls-files", "-v", "-z")
     if not output:
@@ -262,7 +409,30 @@ def _has_hidden_index_paths(repo: Path) -> bool:
     return False
 
 
-def _repository_is_clean_at(repo: Path, commit: str) -> bool:
+def _gitlinks(repo: Path) -> list[tuple[Path, str]]:
+    entries = _git(repo, "ls-files", "--stage", "-z")
+    result: list[tuple[Path, str]] = []
+    for entry in entries.split("\0"):
+        if not entry:
+            continue
+        try:
+            metadata, relative = entry.split("\t", 1)
+            mode, object_id, stage = metadata.split()
+        except ValueError:
+            return [(repo / "__invalid_git_index__", "")]
+        if stage == "0" and mode == "160000":
+            result.append((repo / relative, object_id))
+    return result
+
+
+def _repository_is_clean_at(
+    repo: Path, commit: str, *, _visited: set[Path] | None = None
+) -> bool:
+    visited = set() if _visited is None else _visited
+    resolved_repo = repo.resolve()
+    if resolved_repo in visited:
+        return False
+    visited.add(resolved_repo)
     if _git(repo, "rev-parse", "HEAD") != commit:
         return False
     # Reject index flags that deliberately hide working-tree content.  With
@@ -270,16 +440,51 @@ def _repository_is_clean_at(repo: Path, commit: str) -> bool:
     # tracked paths, while porcelain also rejects untracked source additions.
     if _has_hidden_index_paths(repo):
         return False
-    if _git(repo, "status", "--porcelain=v1", "--untracked-files=all"):
+    if _git(
+        repo,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        "--ignore-submodules=none",
+    ):
         return False
-    diff = _run_git(repo, "diff", "--quiet", "--no-ext-diff", "HEAD", "--")
-    return diff.returncode == 0
+    diff = _run_git(
+        repo,
+        "diff",
+        "--quiet",
+        "--no-ext-diff",
+        "--ignore-submodules=none",
+        "HEAD",
+        "--",
+    )
+    if diff.returncode != 0:
+        return False
+    for submodule, expected_object in _gitlinks(repo):
+        if not submodule.is_dir():
+            return False
+        try:
+            if (
+                Path(_git(submodule, "rev-parse", "--show-toplevel")).resolve()
+                != submodule.resolve()
+            ):
+                return False
+            if not _repository_is_clean_at(
+                submodule,
+                expected_object,
+                _visited=visited,
+            ):
+                return False
+        except StudyStateError:
+            return False
+    return True
 
 
 def _verify_frozen_repository(repo: Path, round_dir: Path) -> dict[str, Any]:
     failure = "final evaluation requires a clean frozen commit and unchanged inputs"
+    # Record identity/schema failures are reported precisely; only mutable
+    # repository/input mismatches collapse to the common integrity error.
+    freeze = _validate_freeze(round_dir, repo)
     try:
-        freeze = _validate_freeze(round_dir)
         config = _recorded_path(repo, freeze.get("config_path"), "config")
         protocol = _recorded_path(repo, freeze.get("protocol_path"), "protocol")
         environment = _recorded_path(
@@ -305,25 +510,30 @@ def _validate_seed_manifest(
         round_dir, MATERIALIZATION_CLAIM_NAME, "materializing"
     )
     _validate_bindings(materialization_claim, freeze)
+    claim_id = materialization_claim.get("claim_id")
+    if not isinstance(claim_id, str) or not _TOKEN_RE.fullmatch(claim_id):
+        raise StudyStateError("materialization claim ID is invalid")
     materialization = _require_round_record(
         round_dir, MATERIALIZATION_NAME, "materialized"
     )
     _validate_bindings(materialization, freeze)
-    if materialization.get("materialization_claim_id") != materialization_claim.get(
-        "claim_id"
-    ):
+    if materialization.get("materialization_claim_id") != claim_id:
         raise StudyStateError("materialization claim does not match final manifest")
+    if materialization.get("seed_manifest_path") != FINAL_MANIFEST_NAME:
+        raise StudyStateError("seed manifest path is invalid")
     expected_hash = _require_sha256(
         materialization.get("seed_manifest_sha256"), "seed manifest hash"
     )
     manifest = _read_record(round_dir / FINAL_MANIFEST_NAME)
     seeds = manifest.get("generator_seeds")
     valid = (
-        manifest.get("schema_version") == 1
+        type(manifest.get("schema_version")) is int
+        and manifest["schema_version"] == 1
         and manifest.get("round_id") == round_dir.name
         and isinstance(seeds, list)
         and len(seeds) > 0
-        and manifest.get("seed_count") == len(seeds)
+        and type(manifest.get("seed_count")) is int
+        and manifest["seed_count"] == len(seeds)
         and all(type(seed) is int and 0 <= seed < 2**63 for seed in seeds)
         and len(set(seeds)) == len(seeds)
     )
@@ -335,6 +545,8 @@ def _validate_seed_manifest(
         raise StudyStateError("final seed manifest is invalid") from exc
     if observed_hash != expected_hash:
         raise StudyStateError("final seed manifest hash does not match materialization")
+    if materialization.get("generator_seeds") != seeds:
+        raise StudyStateError("materialization generator seeds do not match manifest")
     return materialization, manifest
 
 
@@ -350,36 +562,61 @@ def freeze_round(
 
     repository = _repo_path(repo)
     destination = _round_path(repository, round_dir)
-    if not _repository_is_clean_at(repository, _git(repository, "rev-parse", "HEAD")):
-        raise StudyStateError("repository must be clean before freezing a round")
-    if _current_state(destination) is not None or any(destination.glob("*.json")):
-        raise StudyStateError("round already has a state record")
+    with _round_lock(repository, destination.name):
+        commit = _git(repository, "rev-parse", "HEAD")
+        if not _repository_is_clean_at(repository, commit):
+            raise StudyStateError("repository must be clean before freezing a round")
+        if _current_state(destination) is not None or any(destination.glob("*.json")):
+            raise StudyStateError("round already has a state record")
+        if _registry_path(repository, destination.name).exists():
+            raise StudyStateError("round registry already reserves this round ID")
 
-    config, config_relative = _input_path(repository, config_path, "config")
-    protocol, protocol_relative = _input_path(repository, protocol_path, "protocol")
-    environment, environment_relative = _input_path(
-        repository, environment_path, "environment"
-    )
-    try:
-        load_protocol(protocol)
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        raise StudyStateError(f"protocol is invalid: {exc}") from exc
+        config, config_relative = _input_path(repository, config_path, "config")
+        protocol, protocol_relative = _input_path(
+            repository, protocol_path, "protocol"
+        )
+        environment, environment_relative = _input_path(
+            repository, environment_path, "environment"
+        )
+        try:
+            load_protocol(protocol)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise StudyStateError(f"protocol is invalid: {exc}") from exc
 
-    record: dict[str, Any] = {
-        "schema_version": 1,
-        "round_id": destination.name,
-        "state": "frozen",
-        "frozen_at": _utc_now(),
-        "method_commit": _git(repository, "rev-parse", "HEAD"),
-        "config_path": config_relative,
-        "config_sha256": file_sha256(config),
-        "protocol_path": protocol_relative,
-        "protocol_sha256": file_sha256(protocol),
-        "environment_path": environment_relative,
-        "environment_sha256": file_sha256(environment),
-    }
-    _atomic_write_json(destination / FREEZE_NAME, record, exclusive=True)
-    return record
+        record: dict[str, Any] = {
+            "schema_version": 1,
+            "round_id": destination.name,
+            "round_path": _round_relative_path(repository, destination),
+            "round_token": secrets.token_hex(16),
+            "state": "frozen",
+            "frozen_at": _utc_now(),
+            "method_commit": commit,
+            "config_path": config_relative,
+            "config_sha256": file_sha256(config),
+            "protocol_path": protocol_relative,
+            "protocol_sha256": file_sha256(protocol),
+            "environment_path": environment_relative,
+            "environment_sha256": file_sha256(environment),
+        }
+        registry: dict[str, Any] = {
+            "schema_version": 1,
+            "round_id": destination.name,
+            "round_path": record["round_path"],
+            "round_token": record["round_token"],
+            "state": "frozen",
+            "history": [
+                _registry_entry(
+                    state="frozen", record_name=FREEZE_NAME, record=record
+                )
+            ],
+        }
+        # The registry is the authoritative reservation.  Publishing it first
+        # makes any partial freeze fail closed rather than reusable.
+        _atomic_write_json(
+            _registry_path(repository, destination.name), registry, exclusive=True
+        )
+        _atomic_write_json(destination / FREEZE_NAME, record, exclusive=True)
+        return record
 
 
 def materialize_final(
@@ -388,101 +625,137 @@ def materialize_final(
     """Reveal a unique final seed manifest after rechecking every frozen binding."""
 
     raw_destination = Path(round_dir).resolve()
-    state = _current_state(raw_destination)
-    if state != "frozen":
-        if state == "evaluated":
-            raise StudyStateError("round was already evaluated")
-        if state == "superseded":
-            raise StudyStateError("round is superseded")
-        if state in {"materializing", "materialized", "running"}:
-            raise StudyStateError("final seed manifest already exists or was claimed")
+    if _current_state(raw_destination) is None:
         raise StudyStateError("round must be frozen before final materialization")
     if type(seed_count) is not int or seed_count <= 0:
         raise StudyStateError("seed_count must be a positive integer")
 
     repository, destination = _repository_for_round(raw_destination, repo)
-    freeze = _verify_frozen_repository(repository, destination)
-    claim: dict[str, Any] = {
-        "schema_version": 1,
-        "round_id": destination.name,
-        "state": "materializing",
-        "claimed_at": _utc_now(),
-        "claim_id": secrets.token_hex(16),
-        **_binding_fields(freeze),
-    }
-    try:
-        _atomic_write_json(
-            destination / MATERIALIZATION_CLAIM_NAME, claim, exclusive=True
-        )
-    except FileExistsError as exc:
-        raise StudyStateError("final materialization was already claimed") from exc
+    with _round_lock(repository, destination.name):
+        state = _current_state(destination)
+        if state != "frozen":
+            if state == "evaluated":
+                raise StudyStateError("round was already evaluated")
+            if state == "superseded":
+                raise StudyStateError("round is superseded")
+            if state in {"materializing", "materialized", "running"}:
+                raise StudyStateError("final seed manifest already exists or was claimed")
+            raise StudyStateError("round must be frozen before final materialization")
 
-    seeds: list[int] = []
-    used: set[int] = set()
-    while len(seeds) < seed_count:
-        seed = secrets.randbits(63)
-        if seed not in used:
-            used.add(seed)
-            seeds.append(seed)
-    seed_manifest: dict[str, Any] = {
-        "schema_version": 1,
-        "round_id": destination.name,
-        "seed_count": seed_count,
-        "generator_seeds": seeds,
-    }
-    record: dict[str, Any] = {
-        "schema_version": 1,
-        "round_id": destination.name,
-        "state": "materialized",
-        "materialized_at": _utc_now(),
-        "materialization_claim_id": claim["claim_id"],
-        "seed_manifest_path": FINAL_MANIFEST_NAME,
-        "seed_manifest_sha256": canonical_sha256(seed_manifest),
-        "generator_seeds": seeds,
-        **_binding_fields(freeze),
-    }
-    try:
-        _atomic_write_json(
-            destination / FINAL_MANIFEST_NAME, seed_manifest, exclusive=True
+        freeze = _verify_frozen_repository(repository, destination)
+        _validate_registry(
+            repository, destination, freeze, expected_state="frozen"
         )
-        _atomic_write_json(
-            destination / MATERIALIZATION_NAME, record, exclusive=True
+        claim: dict[str, Any] = {
+            "schema_version": 1,
+            "round_id": destination.name,
+            "state": "materializing",
+            "claimed_at": _utc_now(),
+            "claim_id": secrets.token_hex(16),
+            **_binding_fields(freeze),
+        }
+        try:
+            _atomic_write_json(
+                destination / MATERIALIZATION_CLAIM_NAME, claim, exclusive=True
+            )
+        except FileExistsError as exc:
+            raise StudyStateError("final materialization was already claimed") from exc
+
+        seeds: list[int] = []
+        used: set[int] = set()
+        while len(seeds) < seed_count:
+            seed = secrets.randbits(63)
+            if seed not in used:
+                used.add(seed)
+                seeds.append(seed)
+        seed_manifest: dict[str, Any] = {
+            "schema_version": 1,
+            "round_id": destination.name,
+            "seed_count": seed_count,
+            "generator_seeds": seeds,
+        }
+        record: dict[str, Any] = {
+            "schema_version": 1,
+            "round_id": destination.name,
+            "state": "materialized",
+            "materialized_at": _utc_now(),
+            "materialization_claim_id": claim["claim_id"],
+            "seed_manifest_path": FINAL_MANIFEST_NAME,
+            "seed_manifest_sha256": canonical_sha256(seed_manifest),
+            "generator_seeds": seeds,
+            **_binding_fields(freeze),
+        }
+        # Close the validation-to-publication window before revealing seeds.
+        _verify_frozen_repository(repository, destination)
+        try:
+            _atomic_write_json(
+                destination / FINAL_MANIFEST_NAME, seed_manifest, exclusive=True
+            )
+            _atomic_write_json(
+                destination / MATERIALIZATION_NAME, record, exclusive=True
+            )
+        except FileExistsError as exc:
+            raise StudyStateError("final materialization records already exist") from exc
+        _advance_registry(
+            repository,
+            destination,
+            freeze,
+            expected_state="frozen",
+            new_state="materialized",
+            record_name=MATERIALIZATION_NAME,
+            record=record,
         )
-    except FileExistsError as exc:
-        raise StudyStateError("final materialization records already exist") from exc
-    return record
+        return record
 
 
 def assert_final_runnable(repo: Path, round_dir: Path) -> dict[str, Any]:
     """Verify and atomically claim the single permitted final execution."""
 
     repository, destination = _repository_for_round(round_dir, repo)
-    state = _current_state(destination)
-    if state == "evaluated":
-        raise StudyStateError("final round was already evaluated")
-    if state == "superseded":
-        raise StudyStateError("final round is superseded")
-    if state == "running":
-        raise StudyStateError("final execution was already claimed")
-    if state != "materialized":
-        raise StudyStateError("final round must be frozen and materialized before running")
+    with _round_lock(repository, destination.name):
+        state = _current_state(destination)
+        if state == "evaluated":
+            raise StudyStateError("final round was already evaluated")
+        if state == "superseded":
+            raise StudyStateError("final round is superseded")
+        if state == "running":
+            raise StudyStateError("final execution was already claimed")
+        if state != "materialized":
+            raise StudyStateError(
+                "final round must be frozen and materialized before running"
+            )
 
-    freeze = _verify_frozen_repository(repository, destination)
-    materialization, _ = _validate_seed_manifest(destination, freeze)
-    record: dict[str, Any] = {
-        "schema_version": 1,
-        "round_id": destination.name,
-        "state": "running",
-        "claimed_at": _utc_now(),
-        "execution_claim_id": secrets.token_hex(16),
-        "seed_manifest_sha256": materialization["seed_manifest_sha256"],
-        **_binding_fields(freeze),
-    }
-    try:
-        _atomic_write_json(destination / EXECUTION_CLAIM_NAME, record, exclusive=True)
-    except FileExistsError as exc:
-        raise StudyStateError("final execution was already claimed") from exc
-    return record
+        freeze = _verify_frozen_repository(repository, destination)
+        _validate_registry(
+            repository, destination, freeze, expected_state="materialized"
+        )
+        materialization, _ = _validate_seed_manifest(destination, freeze)
+        record: dict[str, Any] = {
+            "schema_version": 1,
+            "round_id": destination.name,
+            "state": "running",
+            "claimed_at": _utc_now(),
+            "execution_claim_id": secrets.token_hex(16),
+            "seed_manifest_sha256": materialization["seed_manifest_sha256"],
+            **_binding_fields(freeze),
+        }
+        _verify_frozen_repository(repository, destination)
+        try:
+            _atomic_write_json(
+                destination / EXECUTION_CLAIM_NAME, record, exclusive=True
+            )
+        except FileExistsError as exc:
+            raise StudyStateError("final execution was already claimed") from exc
+        _advance_registry(
+            repository,
+            destination,
+            freeze,
+            expected_state="materialized",
+            new_state="running",
+            record_name=EXECUTION_CLAIM_NAME,
+            record=record,
+        )
+        return record
 
 
 def record_final_evaluation(
@@ -494,55 +767,69 @@ def record_final_evaluation(
     """Record results from the sole claimed run after rechecking all bindings."""
 
     repository, destination = _repository_for_round(round_dir, repo)
-    state = _current_state(destination)
-    if state == "evaluated":
-        raise StudyStateError("final round was already evaluated")
-    if state == "superseded":
-        raise StudyStateError("final round is superseded")
-    if state != "running":
-        raise StudyStateError("final execution must be claimed before evaluation")
     if not isinstance(result_manifest, Mapping):
         raise StudyStateError("result_manifest must be a JSON object")
+    with _round_lock(repository, destination.name):
+        state = _current_state(destination)
+        if state == "evaluated":
+            raise StudyStateError("final round was already evaluated")
+        if state == "superseded":
+            raise StudyStateError("final round is superseded")
+        if state != "running":
+            raise StudyStateError("final execution must be claimed before evaluation")
 
-    freeze = _verify_frozen_repository(repository, destination)
-    materialization, _ = _validate_seed_manifest(destination, freeze)
-    claim = _require_round_record(destination, EXECUTION_CLAIM_NAME, "running")
-    _validate_bindings(claim, freeze)
-    if not isinstance(claim.get("execution_claim_id"), str) or not claim.get(
-        "execution_claim_id"
-    ):
-        raise StudyStateError("execution claim is invalid")
-    if claim.get("seed_manifest_sha256") != materialization.get(
-        "seed_manifest_sha256"
-    ):
-        raise StudyStateError("execution claim seed manifest does not match")
-
-    manifest = dict(result_manifest)
-    try:
-        result_hash = canonical_sha256(manifest)
-        # Validate the indented representation too, so direct API callers and
-        # CLI callers have the same finite-JSON contract.
-        _json_text(manifest)
-    except (TypeError, ValueError) as exc:
-        raise StudyStateError(f"record is not valid JSON: {exc}") from exc
-    record: dict[str, Any] = {
-        "schema_version": 1,
-        "round_id": destination.name,
-        "state": "evaluated",
-        "evaluated_at": _utc_now(),
-        "execution_claim_id": claim.get("execution_claim_id"),
-        "result_manifest": manifest,
-        "result_manifest_sha256": result_hash,
-        "seed_manifest_sha256": materialization["seed_manifest_sha256"],
-        **_binding_fields(freeze),
-    }
-    try:
-        _atomic_write_json(
-            destination / EVALUATION_RECEIPT_NAME, record, exclusive=True
+        freeze = _verify_frozen_repository(repository, destination)
+        _validate_registry(
+            repository, destination, freeze, expected_state="running"
         )
-    except FileExistsError as exc:
-        raise StudyStateError("final round was already evaluated") from exc
-    return record
+        materialization, _ = _validate_seed_manifest(destination, freeze)
+        claim = _require_round_record(destination, EXECUTION_CLAIM_NAME, "running")
+        _validate_bindings(claim, freeze)
+        claim_id = claim.get("execution_claim_id")
+        if not isinstance(claim_id, str) or not _TOKEN_RE.fullmatch(claim_id):
+            raise StudyStateError("execution claim is invalid")
+        if claim.get("seed_manifest_sha256") != materialization.get(
+            "seed_manifest_sha256"
+        ):
+            raise StudyStateError("execution claim seed manifest does not match")
+
+        manifest = dict(result_manifest)
+        try:
+            result_hash = canonical_sha256(manifest)
+            # Validate the indented representation too, so direct API callers and
+            # CLI callers have the same finite-JSON contract.
+            _json_text(manifest)
+        except (TypeError, ValueError) as exc:
+            raise StudyStateError(f"record is not valid JSON: {exc}") from exc
+        record: dict[str, Any] = {
+            "schema_version": 1,
+            "round_id": destination.name,
+            "state": "evaluated",
+            "evaluated_at": _utc_now(),
+            "execution_claim_id": claim_id,
+            "result_manifest": manifest,
+            "result_manifest_sha256": result_hash,
+            "seed_manifest_sha256": materialization["seed_manifest_sha256"],
+            **_binding_fields(freeze),
+        }
+        # Recheck after result hashing and immediately before receipt publication.
+        _verify_frozen_repository(repository, destination)
+        try:
+            _atomic_write_json(
+                destination / EVALUATION_RECEIPT_NAME, record, exclusive=True
+            )
+        except FileExistsError as exc:
+            raise StudyStateError("final round was already evaluated") from exc
+        _advance_registry(
+            repository,
+            destination,
+            freeze,
+            expected_state="running",
+            new_state="evaluated",
+            record_name=EVALUATION_RECEIPT_NAME,
+            record=record,
+        )
+        return record
 
 
 def supersede_round(round_dir: Path, reason: str) -> dict[str, Any]:
@@ -550,38 +837,56 @@ def supersede_round(round_dir: Path, reason: str) -> dict[str, Any]:
 
     if not isinstance(reason, str) or not reason.strip():
         raise StudyStateError("supersession requires a nonempty reason")
-    destination = Path(round_dir).resolve()
-    state = _current_state(destination)
-    if state is None:
+    raw_destination = Path(round_dir).resolve()
+    if _current_state(raw_destination) is None:
         raise StudyStateError("round must be frozen before it can be superseded")
-    if state == "superseded":
-        raise StudyStateError("round is already superseded")
+    repository, destination = _repository_for_round(raw_destination, None)
+    with _round_lock(repository, destination.name):
+        state = _current_state(destination)
+        if state is None:
+            raise StudyStateError("round must be frozen before it can be superseded")
+        if state == "superseded":
+            raise StudyStateError("round is already superseded")
 
-    freeze = _validate_freeze(destination)
-    record: dict[str, Any] = {
-        "schema_version": 1,
-        "round_id": destination.name,
-        "state": "superseded",
-        "previous_state": state,
-        "reason": reason.strip(),
-        "superseded_at": _utc_now(),
-        **_binding_fields(freeze),
-    }
-    materialization_path = destination / MATERIALIZATION_NAME
-    if materialization_path.exists():
-        record["seed_manifest_sha256"] = _read_record(materialization_path).get(
-            "seed_manifest_sha256"
+        freeze = _validate_freeze(destination, repository)
+        registry = _validate_registry(repository, destination, freeze)
+        authoritative_state = registry["state"]
+        record: dict[str, Any] = {
+            "schema_version": 1,
+            "round_id": destination.name,
+            "state": "superseded",
+            "previous_state": authoritative_state,
+            "observed_record_state": state,
+            "reason": reason.strip(),
+            "superseded_at": _utc_now(),
+            **_binding_fields(freeze),
+        }
+        materialization_path = destination / MATERIALIZATION_NAME
+        if materialization_path.exists():
+            record["seed_manifest_sha256"] = _read_record(
+                materialization_path
+            ).get("seed_manifest_sha256")
+        receipt_path = destination / EVALUATION_RECEIPT_NAME
+        if receipt_path.exists():
+            record["result_manifest_sha256"] = _read_record(receipt_path).get(
+                "result_manifest_sha256"
+            )
+        try:
+            _atomic_write_json(
+                destination / SUPERSESSION_NAME, record, exclusive=True
+            )
+        except FileExistsError as exc:
+            raise StudyStateError("round is already superseded") from exc
+        _advance_registry(
+            repository,
+            destination,
+            freeze,
+            expected_state=authoritative_state,
+            new_state="superseded",
+            record_name=SUPERSESSION_NAME,
+            record=record,
         )
-    receipt_path = destination / EVALUATION_RECEIPT_NAME
-    if receipt_path.exists():
-        record["result_manifest_sha256"] = _read_record(receipt_path).get(
-            "result_manifest_sha256"
-        )
-    try:
-        _atomic_write_json(destination / SUPERSESSION_NAME, record, exclusive=True)
-    except FileExistsError as exc:
-        raise StudyStateError("round is already superseded") from exc
-    return record
+        return record
 
 
 __all__ = [
