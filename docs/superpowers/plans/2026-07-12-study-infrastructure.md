@@ -44,8 +44,8 @@ def test_canonical_hash_ignores_mapping_order():
 
 def test_protocol_declares_four_non_splatter_mechanisms():
     protocol = load_protocol(Path("study/protocol.json"))
-    assert protocol.mechanisms == ("scdesign3", "symsim", "scmultisim", "semisynthetic")
-    assert protocol.final_draws_per_condition == 8
+    assert protocol.mechanisms == ("symsim", "sergio", "sparsim", "semisynthetic")
+    assert protocol.final_draws_per_condition == 5
     assert protocol.final_model_seeds == 3
 
 def test_protocol_rejects_splatter_as_final(tmp_path):
@@ -75,14 +75,14 @@ The tracked JSON must contain:
 {
   "schema_version": 1,
   "legacy_data_role": "development_only",
-  "development": {"namespace": "dev", "draws_per_condition": 3, "cells": 1000, "genes": 1000},
+  "development": {"namespace": "dev", "draws_per_condition": 2, "cells": 900, "genes": 500},
   "final": {
     "namespace": "final",
-    "mechanisms": ["scdesign3", "symsim", "scmultisim", "semisynthetic"],
-    "draws_per_condition": 8,
+    "mechanisms": ["symsim", "sergio", "sparsim", "semisynthetic"],
+    "draws_per_condition": 5,
     "model_seeds": 3,
-    "cells": 2000,
-    "genes": 2000
+    "cells": 2700,
+    "genes": 1200
   },
   "primary_metrics": ["mse", "mse_dropout", "mse_pre_dropout_zero", "gnrmse", "corr_err"],
   "final_timeout_seconds": 21600,

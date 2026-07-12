@@ -26,7 +26,7 @@ Competitive results are a target, not a guaranteed conclusion. If the frozen met
 |---|---|---|
 | 1 | Add a state-controlled study registry with development, frozen, evaluated, and superseded rounds; bind final execution to code/config/protocol hashes. | `study/rounds/<round>/freeze.json`, final manifest, and evaluation receipt |
 | 2 | Generate independent biological/measurement draws for every condition; use 3 model seeds within each final draw for stochastic neural methods. | Dataset manifest with generator seed, measurement seed, model seed, and checksums |
-| 3 | Use four mechanisms beyond Splatter: scDesign3, SymSim, scMultiSim, and empirical high-depth downsampling/technical thinning. Splatter remains development-only. | Four adapter manifests and generator smoke tests |
+| 3 | Use four mechanisms beyond Splatter: SymSim, SERGIO, SPARSim, and empirical high-depth downsampling/count splitting. Splatter remains development-only. | Four adapter manifests and generator smoke tests |
 | 4 | Replace `biozero`/`p_bio` with `pre_dropout_zero`/`p_pre_zero`. Describe this as a model-dependent probability that the pre-capture count was zero, never structural non-expression. | Obsolete-term test over code, tables, and manuscript |
 | 5 | Validate `p_pre_zero` among observed zeros with AUROC, AUPRC, Brier score, log loss, calibration intercept/slope, ECE, and reliability curves, overall and by expression/library-size strata. | Score-metric CSV and calibration figure |
 | 6 | Report dropout-enabled conditions separately; use medians/IQRs, paired effects and confidence intervals, win counts, and zero-preservation/dropout-recovery Pareto fronts. | Generated aggregate and per-condition tables |
@@ -50,12 +50,12 @@ All adapters emit a common `h5ad` schema:
 
 The four mechanisms are deliberately distinct:
 
-1. **scDesign3:** reference-fitted marginal distributions and gene dependence. Generate deep counts, then apply independent capture efficiencies of 0.05, 0.10, and 0.20.
-2. **SymSim:** mechanistic transcriptional bursting with its molecule and capture stages. Vary kinetic heterogeneity and capture efficiency.
-3. **scMultiSim:** GRN- and differentiation-tree-driven counts. Use discrete and branching conditions, retaining true pseudotime and markers.
-4. **Semisynthetic:** binomial/multinomial thinning of high-depth or technical-replicate public data at 10%, 25%, and 50% depth. Treat the original as a proxy, not biological truth.
+1. **SymSim:** mechanistic two-state promoter kinetics with explicit molecule, capture, amplification, sequencing, and UMI stages. Retain exact molecule counts and vary capture efficiency.
+2. **SERGIO:** GRN-driven stochastic differential equations followed by independently controlled outlier, library-size, dropout, and UMI effects. Retain clean expression and pre-dropout technical expression separately.
+3. **SPARSim:** Gamma biological expression followed by multivariate-hypergeometric sequencing. Retain continuous biological expression and measured counts; pre-dropout-zero metrics are undefined for this positive truth.
+4. **Semisynthetic:** Gamma-Poisson thinning and independent binomial count splitting of high-depth UMI data. Treat the original as a proxy, not error-free biological truth.
 
-Development uses three draws per condition at 1,000 cells and up to 1,000 genes. Final evaluation uses eight independent draws per condition at 2,000 cells and up to 2,000 genes, with three model seeds per stochastic method. A separate scaling panel uses 10k, 25k, 50k, and 100k cells with one prespecified mechanism and reports accuracy only at sizes whose truth fits the metric implementation.
+Development uses two independent biological draws per simulated mechanism. Final evaluation uses five new biological draws per simulated mechanism with paired moderate/severe measurement views and three model seeds per stochastic method. Measurement views and semisynthetic thinning seeds are repeated technical observations, not additional biological replicates. Final simulated matrices contain approximately 2,700 cells and 1,000–1,200 genes. A separate scaling panel uses 10k, 25k, 50k, and 100k cells with one prespecified mechanism and reports accuracy only at sizes whose truth fits the metric implementation.
 
 ## Method-development ladder
 
