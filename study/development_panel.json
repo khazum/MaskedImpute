@@ -1,0 +1,22 @@
+{
+  "cells": 900,
+  "draws_per_mechanism": 2,
+  "genes": 500,
+  "mechanisms": [
+    "symsim",
+    "sergio",
+    "sparsim",
+    "semisynthetic"
+  ],
+  "namespace": "dev",
+  "role": "development_only",
+  "schema_version": 1,
+  "seed_derivation": {
+    "algorithm": "sha256-domain-separated-63bit-v1",
+    "master_seed": 410184288765510201
+  },
+  "technical_views": [
+    "moderate",
+    "severe"
+  ]
+}
