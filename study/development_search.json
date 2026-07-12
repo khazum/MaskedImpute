@@ -9,14 +9,14 @@
     "calibration_contract_sha256": "c1cb47b86e1132ef080830c6b58bf7fa4aac524ca832a9e7e55b81d41fb41ef0"
   },
   "retained_calibration_artifact": {
-    "status": "pending",
+    "status": "ready",
     "path": "artifacts/study/development/calibration/retained_calibration.json",
-    "sha256": null
+    "sha256": "905567fdb35e7e1f44defca9c76ee13b0442fc6beba3e5fc70a543f8dd59dcd9"
   },
   "count_score_manifest": {
-    "status": "pending",
+    "status": "ready",
     "path": "artifacts/study/development/count_scores/manifest.json",
-    "sha256": null
+    "sha256": "0aa43abf97499faea5c1506bcd112ae608fd51490715dbdb784184d709632a02"
   },
   "configurations": [
     {
