@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "contract_id": "prezero-calibration-retention-development-amendment-v1",
+  "artifact_schema_version": 3,
+  "status": "adopted",
+  "timing": {
+    "data_scope": "development_only",
+    "adopted_before": "final_seed_execution",
+    "final_data_used": false
+  },
+  "truth_scope": {
+    "eligible_exact_mechanisms": ["symsim"],
+    "reason": "only_symsim_has_exact_discrete_pre_capture_zero_truth",
+    "proxy_truth_relabelled": false,
+    "panel_limitations": {
+      "semisynthetic": "proxy_truth_not_exact",
+      "sergio": "undefined_for_continuous_truth",
+      "sparsim": "undefined_for_continuous_truth"
+    }
+  },
+  "cross_validation": {
+    "scheme": "leave_one_mechanism_biological_draw_out",
+    "independent_unit": "biological_draw",
+    "nested_technical_unit": "draw_technical_view_record",
+    "development_inference": "held_out_fold_calibrator_only",
+    "final_inference": "all_development_fitted_calibrator"
+  },
+  "retention_rules": {
+    "minimum_exact_mechanisms_improved": 1,
+    "minimum_biological_draws_improved": 2,
+    "minimum_technical_records_improved": 4,
+    "brier_improvement_epsilon": 0.000001,
+    "log_loss_worsening_tolerance": 0.001,
+    "calibration_slope_lower": 0.8,
+    "calibration_slope_upper": 1.2,
+    "require_all_eligible_exact_mechanisms_improved": true,
+    "require_all_biological_draws_improved": true,
+    "require_all_technical_records_improved": true,
+    "require_no_fit_failures": true,
+    "log_loss_gated_levels": [
+      "aggregate",
+      "mechanism",
+      "biological_draw",
+      "technical_record"
+    ],
+    "calibration_slope_gated_levels": [
+      "aggregate",
+      "mechanism",
+      "biological_draw"
+    ],
+    "technical_record_slope_policy": "reported_not_gated_nested_technical_observation"
+  }
+}

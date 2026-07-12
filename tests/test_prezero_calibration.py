@@ -100,6 +100,65 @@ def test_calibration_scope_constant_binds_the_tracked_development_protocol():
     }
 
 
+def test_calibration_amendment_contract_is_tracked_fixed_and_pre_final():
+    from maskimpute.calibration import CALIBRATION_CONTRACT_SHA256
+
+    path = Path("study/calibration_contract.json")
+    contract_bytes = path.read_bytes()
+    contract = json.loads(contract_bytes)
+
+    assert hashlib.sha256(contract_bytes).hexdigest() == CALIBRATION_CONTRACT_SHA256
+    assert contract["schema_version"] == 1
+    assert contract["artifact_schema_version"] == 3
+    assert contract["status"] == "adopted"
+    assert contract["timing"] == {
+        "adopted_before": "final_seed_execution",
+        "data_scope": "development_only",
+        "final_data_used": False,
+    }
+    assert contract["truth_scope"]["eligible_exact_mechanisms"] == ["symsim"]
+    assert contract["truth_scope"]["proxy_truth_relabelled"] is False
+    assert contract["truth_scope"]["panel_limitations"] == {
+        "semisynthetic": "proxy_truth_not_exact",
+        "sergio": "undefined_for_continuous_truth",
+        "sparsim": "undefined_for_continuous_truth",
+    }
+    assert contract["cross_validation"] == {
+        "development_inference": "held_out_fold_calibrator_only",
+        "final_inference": "all_development_fitted_calibrator",
+        "independent_unit": "biological_draw",
+        "nested_technical_unit": "draw_technical_view_record",
+        "scheme": "leave_one_mechanism_biological_draw_out",
+    }
+    assert contract["retention_rules"] == {
+        "brier_improvement_epsilon": 1e-6,
+        "calibration_slope_gated_levels": [
+            "aggregate",
+            "mechanism",
+            "biological_draw",
+        ],
+        "calibration_slope_lower": 0.8,
+        "calibration_slope_upper": 1.2,
+        "log_loss_gated_levels": [
+            "aggregate",
+            "mechanism",
+            "biological_draw",
+            "technical_record",
+        ],
+        "log_loss_worsening_tolerance": 1e-3,
+        "minimum_biological_draws_improved": 2,
+        "minimum_exact_mechanisms_improved": 1,
+        "minimum_technical_records_improved": 4,
+        "require_all_biological_draws_improved": True,
+        "require_all_eligible_exact_mechanisms_improved": True,
+        "require_all_technical_records_improved": True,
+        "require_no_fit_failures": True,
+        "technical_record_slope_policy": (
+            "reported_not_gated_nested_technical_observation"
+        ),
+    }
+
+
 @pytest.mark.parametrize(
     "override",
     [
@@ -486,87 +545,153 @@ def _evaluation(
     mechanism_metrics,
     aggregate=None,
     *,
+    biological_draw_metrics=None,
+    technical_record_metrics=None,
     failures=(),
+    improved_mechanisms=(),
+    improved_draws=(),
+    improved_records=(),
     eligible=False,
     reasons=(),
 ):
     from maskimpute.calibration import CandidateEvaluation
 
+    biological_draw_metrics = biological_draw_metrics or {
+        "symsim/draw-01": _metrics(),
+        "symsim/draw-02": _metrics(),
+    }
+    technical_record_metrics = technical_record_metrics or {
+        "symsim/draw-01/moderate": _metrics(),
+        "symsim/draw-01/severe": _metrics(),
+        "symsim/draw-02/moderate": _metrics(),
+        "symsim/draw-02/severe": _metrics(),
+    }
     return CandidateEvaluation(
         algorithm=algorithm,
         mechanism_metrics=tuple(sorted(mechanism_metrics.items())),
+        biological_draw_metrics=tuple(sorted(biological_draw_metrics.items())),
+        technical_record_metrics=tuple(sorted(technical_record_metrics.items())),
         aggregate_metrics=aggregate or _metrics(),
         fit_failures=tuple(failures),
-        brier_improved_mechanisms=(),
+        brier_improved_mechanisms=tuple(improved_mechanisms),
+        brier_improved_biological_draws=tuple(improved_draws),
+        brier_improved_technical_records=tuple(improved_records),
         eligible=eligible,
         eligibility_reasons=tuple(reasons),
     )
 
 
-def test_retention_gate_requires_three_brier_wins_log_loss_and_slope_safety():
+def test_retention_gate_requires_every_exact_mechanism_draw_and_technical_record():
     from maskimpute.calibration import (
         CalibrationThresholds,
         retention_reasons,
     )
 
-    mechanisms = ("m1", "m2", "m3", "m4")
+    mechanisms = {"symsim": _metrics()}
+    draws = {
+        "symsim/draw-01": _metrics(),
+        "symsim/draw-02": _metrics(),
+    }
+    records = {
+        "symsim/draw-01/moderate": _metrics(),
+        "symsim/draw-01/severe": _metrics(),
+        "symsim/draw-02/moderate": _metrics(),
+        "symsim/draw-02/severe": _metrics(),
+    }
     identity = _evaluation(
-        "identity", {mechanism: _metrics() for mechanism in mechanisms}
+        "identity",
+        mechanisms,
+        biological_draw_metrics=draws,
+        technical_record_metrics=records,
     )
     candidate = _evaluation(
         "logistic",
-        {
-            "m1": _metrics(brier=0.19),
-            "m2": _metrics(brier=0.19),
-            "m3": _metrics(brier=0.19),
-            "m4": _metrics(brier=0.21, slope=1.21),
+        {"symsim": _metrics(brier=0.19)},
+        biological_draw_metrics={
+            "symsim/draw-01": _metrics(brier=0.19),
+            "symsim/draw-02": _metrics(brier=0.21),
         },
-        aggregate=_metrics(brier=0.195),
+        technical_record_metrics={
+            **{
+                name: _metrics(brier=0.19)
+                for name in tuple(records)[:-1]
+            },
+            "symsim/draw-02/severe": _metrics(brier=0.21, log_loss=0.5011),
+        },
+        aggregate=_metrics(brier=0.195, log_loss=0.5011),
+        failures=("symsim/draw-02:RuntimeError:fit failed",),
     )
 
-    reasons, improved = retention_reasons(
+    reasons, improved_mechanisms, improved_draws, improved_records = retention_reasons(
         candidate,
         identity,
         CalibrationThresholds(),
     )
 
-    assert improved == ("m1", "m2", "m3")
-    assert "mechanism_calibration_slope_outside_tolerance:m4" in reasons
+    assert improved_mechanisms == ("symsim",)
+    assert improved_draws == ("symsim/draw-01",)
+    assert improved_records == tuple(records)[:-1]
+    assert "insufficient_biological_draw_brier_improvement:1<2" in reasons
+    assert "not_all_biological_draws_improved:symsim/draw-02" in reasons
+    assert "insufficient_technical_record_brier_improvement:3<4" in reasons
+    assert "not_all_technical_records_improved:symsim/draw-02/severe" in reasons
+    assert "aggregate_log_loss_worsened" in reasons
+    assert (
+        "fold_fit_failure:symsim/draw-02:RuntimeError:fit failed" in reasons
+    )
+    assert (
+        "technical_record_log_loss_worsened:symsim/draw-02/severe" in reasons
+    )
 
 
-def test_retention_gate_passes_only_when_every_prespecified_guardrail_passes():
+def test_retention_gate_passes_consistent_two_draw_evidence_and_does_not_gate_record_slope():
     from maskimpute.calibration import CalibrationThresholds, retention_reasons
 
-    mechanisms = ("m1", "m2", "m3", "m4")
-    identity = _evaluation(
-        "identity", {mechanism: _metrics() for mechanism in mechanisms}
-    )
+    records = {
+        "symsim/draw-01/moderate": _metrics(),
+        "symsim/draw-01/severe": _metrics(),
+        "symsim/draw-02/moderate": _metrics(),
+        "symsim/draw-02/severe": _metrics(),
+    }
+    identity = _evaluation("identity", {"symsim": _metrics()})
     candidate = _evaluation(
         "beta",
-        {
-            "m1": _metrics(brier=0.19, log_loss=0.5005),
-            "m2": _metrics(brier=0.19),
-            "m3": _metrics(brier=0.19),
-            "m4": _metrics(brier=0.21),
+        {"symsim": _metrics(brier=0.19, log_loss=0.5005)},
+        biological_draw_metrics={
+            "symsim/draw-01": _metrics(brier=0.19, log_loss=0.5005, slope=0.8),
+            "symsim/draw-02": _metrics(brier=0.19, slope=1.2),
         },
-        aggregate=_metrics(brier=0.195, log_loss=0.5005),
+        technical_record_metrics={
+            name: _metrics(
+                brier=0.19,
+                log_loss=0.5005,
+                slope=9.0 if name.endswith("severe") else 1.0,
+            )
+            for name in records
+        },
+        aggregate=_metrics(brier=0.19, log_loss=0.5005),
     )
 
-    reasons, improved = retention_reasons(
+    reasons, improved_mechanisms, improved_draws, improved_records = retention_reasons(
         candidate,
         identity,
         CalibrationThresholds(),
     )
 
     assert reasons == ()
-    assert improved == ("m1", "m2", "m3")
+    assert improved_mechanisms == ("symsim",)
+    assert improved_draws == ("symsim/draw-01", "symsim/draw-02")
+    assert improved_records == tuple(records)
 
 
 @pytest.mark.parametrize(
     "override",
     [
-        {"minimum_mechanisms_improved": 1},
-        {"minimum_mechanisms_improved": 4},
+        {"minimum_exact_mechanisms_improved": 2},
+        {"minimum_biological_draws_improved": 1},
+        {"minimum_biological_draws_improved": 3},
+        {"minimum_technical_records_improved": 3},
+        {"minimum_technical_records_improved": 5},
         {"brier_improvement_epsilon": 0.0},
         {"log_loss_worsening_tolerance": 0.0},
         {"calibration_slope_lower": 0.7},
@@ -588,10 +713,12 @@ def test_public_calibration_functions_revalidate_mutated_or_duck_typed_threshold
     )
 
     mutated = CalibrationThresholds()
-    object.__setattr__(mutated, "minimum_mechanisms_improved", 1)
+    object.__setattr__(mutated, "minimum_biological_draws_improved", 1)
 
     class LooseThresholds:
-        minimum_mechanisms_improved = 1
+        minimum_exact_mechanisms_improved = 1
+        minimum_biological_draws_improved = 1
+        minimum_technical_records_improved = 1
         brier_improvement_epsilon = 0.0
         log_loss_worsening_tolerance = 1.0
         calibration_slope_lower = 0.0
@@ -657,8 +784,10 @@ def test_cross_validated_candidate_panel_keeps_identity_and_all_three_alternativ
     assert decision.candidates[0].eligible is True
     assert decision.candidates[0].eligibility_reasons == ("default_uncalibrated_score",)
     for candidate in decision.candidates[1:]:
-        assert any(
-            reason.startswith("insufficient_eligible_exact_truth_mechanisms")
+        assert candidate.eligible is False
+        assert candidate.eligibility_reasons
+        assert not any(
+            "eligible_exact_truth_mechanisms:1<3" in reason
             for reason in candidate.eligibility_reasons
         )
 
@@ -672,8 +801,153 @@ def _development_records():
     )
 
 
-def test_fitted_artifact_is_deterministic_complete_and_score_only():
+def _consistent_two_draw_retention_records():
+    levels = np.array([0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.96])
+
+    def draw_values(intercept):
+        calibrated = expit(
+            0.5 * np.log(levels) - 1.7 * np.log1p(-levels) + intercept
+        )
+        probabilities = []
+        targets = []
+        for probability, calibrated_probability in zip(
+            levels,
+            calibrated,
+            strict=True,
+        ):
+            positives = min(49, max(1, round(50 * calibrated_probability)))
+            probabilities.extend([float(probability)] * 50)
+            targets.extend([1] * positives + [0] * (50 - positives))
+        return probabilities, targets
+
+    draw_01_probability, draw_01_target = draw_values(-1.1)
+    draw_02_probability, draw_02_target = draw_values(-0.9)
+    return (
+        _record(
+            "symsim",
+            "draw-01",
+            "5",
+            probabilities=draw_01_probability,
+            targets=draw_01_target,
+            technical_view="moderate",
+        ),
+        _record(
+            "symsim",
+            "draw-01",
+            "6",
+            probabilities=draw_01_probability,
+            targets=draw_01_target,
+            technical_view="severe",
+        ),
+        _record(
+            "symsim",
+            "draw-02",
+            "7",
+            probabilities=draw_02_probability,
+            targets=draw_02_target,
+            technical_view="moderate",
+        ),
+        _record(
+            "symsim",
+            "draw-02",
+            "8",
+            probabilities=draw_02_probability,
+            targets=draw_02_target,
+            technical_view="severe",
+        ),
+    )
+
+
+def test_real_shaped_two_draw_fixture_retains_beta_and_isotonic_but_rejects_logistic():
+    from maskimpute.calibration import evaluate_calibration_candidates
+
+    decision = evaluate_calibration_candidates(_consistent_two_draw_retention_records())
+    candidates = {candidate.algorithm: candidate for candidate in decision.candidates}
+
+    assert candidates["logistic"].eligible is False
+    assert any(
+        "not_all_biological_draws_improved" in reason
+        for reason in candidates["logistic"].eligibility_reasons
+    )
+    for algorithm in ("beta", "isotonic"):
+        candidate = candidates[algorithm]
+        assert candidate.eligible is True
+        assert candidate.eligibility_reasons == ()
+        assert candidate.brier_improved_mechanisms == ("symsim",)
+        assert candidate.brier_improved_biological_draws == (
+            "symsim/draw-01",
+            "symsim/draw-02",
+        )
+        assert candidate.brier_improved_technical_records == (
+            "symsim/draw-01/moderate",
+            "symsim/draw-01/severe",
+            "symsim/draw-02/moderate",
+            "symsim/draw-02/severe",
+        )
+    assert decision.selected_algorithm == "isotonic"
+
+
+def test_schema3_artifact_retains_exact_lodo_calibrators_for_development_use():
     from maskimpute.calibration import fit_development_calibration
+
+    records = _consistent_two_draw_retention_records()
+    artifact = fit_development_calibration(records)
+    payload = artifact.to_dict()
+
+    assert artifact.selected_algorithm == "isotonic"
+    folds = payload["development_holdout_calibrators"]
+    assert [(fold["mechanism"], fold["biological_id"]) for fold in folds] == [
+        ("symsim", "draw-01"),
+        ("symsim", "draw-02"),
+    ]
+    all_manifests = {record.manifest_sha256 for record in records}
+    for fold in folds:
+        held_out = set(fold["held_out_manifest_sha256s"])
+        training = set(fold["training_manifest_sha256s"])
+        assert held_out
+        assert held_out.isdisjoint(training)
+        assert held_out | training == all_manifests
+        assert fold["calibrator"]["algorithm"] == artifact.selected_algorithm
+
+    sample = np.array([0.03, 0.4, 0.91])
+    transformed = artifact.transform_for_development_holdout(
+        sample,
+        mechanism="symsim",
+        biological_id="draw-01",
+    )
+    fold = folds[0]["calibrator"]["parameters"]
+    np.testing.assert_allclose(
+        transformed,
+        np.interp(sample, fold["knots"], fold["values"]),
+    )
+    assert not np.array_equal(transformed, artifact.transform(sample))
+    assert not np.array_equal(
+        transformed,
+        artifact.transform_for_development_holdout(
+            sample,
+            mechanism="symsim",
+            biological_id="draw-02",
+        ),
+    )
+    with pytest.raises(ValueError, match="mechanism|holdout"):
+        artifact.transform_for_development_holdout(
+            sample,
+            mechanism="sergio",
+            biological_id="draw-01",
+        )
+    with pytest.raises(ValueError, match="biological|holdout"):
+        artifact.transform_for_development_holdout(
+            sample,
+            mechanism="symsim",
+            biological_id="draw-03",
+        )
+
+
+def test_fitted_artifact_is_deterministic_complete_and_score_only():
+    from maskimpute.calibration import (
+        CALIBRATION_CONTRACT_SHA256,
+        fit_development_calibration,
+    )
 
     records = _development_records()
 
@@ -682,15 +956,22 @@ def test_fitted_artifact_is_deterministic_complete_and_score_only():
 
     assert first.to_dict() == second.to_dict()
     payload = first.to_dict()
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
     assert payload["artifact_type"] == "maskimpute_prezero_calibration"
     assert payload["inference_features"] == ["p_pre_zero"]
     assert payload["selected_algorithm"] == payload["calibrator"]["algorithm"]
+    assert payload["retention_contract"] == {
+        "contract_id": "prezero-calibration-retention-development-amendment-v1",
+        "path": "study/calibration_contract.json",
+        "sha256": CALIBRATION_CONTRACT_SHA256,
+    }
     assert payload["truth_eligibility"] == {
         "accepted_truth_kind": "exact_pre_capture",
         "eligible_mechanisms": ["symsim"],
         "eligible_mechanism_count": 1,
-        "minimum_mechanisms_required": 3,
+        "minimum_biological_draws_improved": 2,
+        "minimum_exact_mechanisms_improved": 1,
+        "minimum_technical_records_improved": 4,
         "panel_limitations": {
             "semisynthetic": "proxy_truth_not_exact",
             "sergio": "undefined_for_continuous_truth",
@@ -703,6 +984,19 @@ def test_fitted_artifact_is_deterministic_complete_and_score_only():
         "beta",
         "isotonic",
     ]
+    for candidate in payload["selection"]["candidates"]:
+        assert tuple(candidate["biological_draw_metrics"]) == (
+            "symsim/draw-01",
+            "symsim/draw-02",
+        )
+        assert tuple(candidate["technical_record_metrics"]) == (
+            "symsim/draw-01/moderate",
+            "symsim/draw-01/severe",
+            "symsim/draw-02/moderate",
+            "symsim/draw-02/severe",
+        )
+        assert "brier_improved_biological_draws" in candidate
+        assert "brier_improved_technical_records" in candidate
     assert payload["data_scope"] == {
         "allowed_biological_ids": ["draw-01", "draw-02"],
         "data_role": "development",
@@ -720,6 +1014,28 @@ def test_fitted_artifact_is_deterministic_complete_and_score_only():
     transformed = first.transform(np.array([0.0, 0.2, 1.0]))
     assert transformed.shape == (3,)
     assert np.all(np.isfinite(transformed))
+
+
+def test_artifact_loader_rejects_lodo_fold_that_trains_on_held_out_truth(
+    tmp_path: Path,
+):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(
+        _consistent_two_draw_retention_records()
+    ).to_dict()
+    fold = payload["development_holdout_calibrators"][0]
+    fold["training_manifest_sha256s"].append(fold["held_out_manifest_sha256s"][0])
+    fold["training_manifest_sha256s"].sort()
+    _rehash_payload(payload)
+    path = tmp_path / "leaky-fold.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="held|disjoint|training|fold"):
+        load_calibration_artifact(path)
 
 
 def test_artifact_canonical_save_load_roundtrip_and_tamper_rejection(tmp_path: Path):
@@ -809,6 +1125,38 @@ def test_artifact_loader_rejects_boolean_schema_even_with_recomputed_digest(
     _canonical_write(path, payload)
 
     with pytest.raises(ValueError, match="schema"):
+        load_calibration_artifact(path)
+
+
+def test_artifact_loader_rejects_obsolete_schema2_after_amendment(tmp_path: Path):
+    from maskimpute.calibration import load_calibration_artifact
+
+    payload = {
+        "schema_version": 2,
+        "artifact_type": "maskimpute_prezero_calibration",
+    }
+    path = tmp_path / "obsolete-schema2.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="schema 2.*obsolete|obsolete.*schema 2"):
+        load_calibration_artifact(path)
+
+
+def test_artifact_loader_rejects_rehashed_amendment_contract_substitution(
+    tmp_path: Path,
+):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(_development_records()).to_dict()
+    payload["retention_contract"]["sha256"] = "0" * 64
+    _rehash_payload(payload)
+    path = tmp_path / "substituted-amendment.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="amendment|contract"):
         load_calibration_artifact(path)
 
 
@@ -951,6 +1299,26 @@ def test_artifact_loader_cross_checks_aggregate_and_mechanism_metric_counts(
     _canonical_write(path, payload)
 
     with pytest.raises(ValueError, match="aggregate.*count|mechanism.*metric"):
+        load_calibration_artifact(path)
+
+
+def test_artifact_loader_rejects_rehashed_cross_level_metric_contradiction(
+    tmp_path: Path,
+):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(_development_records()).to_dict()
+    record_id = "symsim/draw-01/moderate"
+    for candidate in payload["selection"]["candidates"]:
+        candidate["technical_record_metrics"][record_id]["brier"] += 0.01
+    _rehash_payload(payload)
+    path = tmp_path / "contradictory-level-metrics.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="metric|weighted|contradict"):
         load_calibration_artifact(path)
 
 

@@ -23,6 +23,13 @@ CALIBRATOR_ORDER = ("identity", "logistic", "beta", "isotonic")
 DEVELOPMENT_PROTOCOL_SHA256 = (
     "7cfa1b55458b5b2bc4c22e3a155086724586d95df40aa61c4b78b1a779794249"
 )
+CALIBRATION_CONTRACT_SHA256 = (
+    "c1cb47b86e1132ef080830c6b58bf7fa4aac524ca832a9e7e55b81d41fb41ef0"
+)
+_CALIBRATION_CONTRACT_ID = (
+    "prezero-calibration-retention-development-amendment-v1"
+)
+_CALIBRATION_CONTRACT_PATH = "study/calibration_contract.json"
 _DEVELOPMENT_NAMESPACE = "dev"
 _DEVELOPMENT_DATA_ROLE = "development"
 _DEVELOPMENT_BIOLOGICAL_IDS = ("draw-01", "draw-02")
@@ -33,7 +40,9 @@ _DEVELOPMENT_PANEL_KEYS = frozenset(
     for technical_view in _SYMSIM_TECHNICAL_VIEWS
 )
 _PRESPECIFIED_THRESHOLDS = {
-    "minimum_mechanisms_improved": 3,
+    "minimum_exact_mechanisms_improved": 1,
+    "minimum_biological_draws_improved": 2,
+    "minimum_technical_records_improved": 4,
     "brier_improvement_epsilon": 1e-6,
     "log_loss_worsening_tolerance": 1e-3,
     "calibration_slope_lower": 0.8,
@@ -562,6 +571,7 @@ class CalibrationFold:
     biological_id: str
     held_out_manifests: tuple[str, ...]
     training_manifests: tuple[str, ...]
+    calibrator: ScoreCalibrator
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,6 +633,7 @@ def cross_validate_calibrator(
                 biological_id=biological_id,
                 held_out_manifests=tuple(record.manifest_sha256 for record in held_out),
                 training_manifests=tuple(record.manifest_sha256 for record in training),
+                calibrator=calibrator,
             )
         )
     return CrossValidationResult(
@@ -759,18 +770,23 @@ def calibration_metrics(
 
 @dataclass(frozen=True, slots=True)
 class CalibrationThresholds:
-    minimum_mechanisms_improved: int = 3
+    minimum_exact_mechanisms_improved: int = 1
+    minimum_biological_draws_improved: int = 2
+    minimum_technical_records_improved: int = 4
     brier_improvement_epsilon: float = 1e-6
     log_loss_worsening_tolerance: float = 1e-3
     calibration_slope_lower: float = 0.8
     calibration_slope_upper: float = 1.2
 
     def __post_init__(self) -> None:
-        if (
-            type(self.minimum_mechanisms_improved) is not int
-            or self.minimum_mechanisms_improved <= 0
+        for name in (
+            "minimum_exact_mechanisms_improved",
+            "minimum_biological_draws_improved",
+            "minimum_technical_records_improved",
         ):
-            raise ValueError("minimum_mechanisms_improved must be positive")
+            value = getattr(self, name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be positive")
         for name in (
             "brier_improvement_epsilon",
             "log_loss_worsening_tolerance",
@@ -794,7 +810,15 @@ class CalibrationThresholds:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "minimum_mechanisms_improved": self.minimum_mechanisms_improved,
+            "minimum_exact_mechanisms_improved": (
+                self.minimum_exact_mechanisms_improved
+            ),
+            "minimum_biological_draws_improved": (
+                self.minimum_biological_draws_improved
+            ),
+            "minimum_technical_records_improved": (
+                self.minimum_technical_records_improved
+            ),
             "brier_improvement_epsilon": self.brier_improvement_epsilon,
             "log_loss_worsening_tolerance": self.log_loss_worsening_tolerance,
             "calibration_slope_lower": self.calibration_slope_lower,
@@ -806,7 +830,11 @@ def _validated_thresholds(value: object) -> CalibrationThresholds:
     if type(value) is not CalibrationThresholds:
         raise TypeError("thresholds must be an exact CalibrationThresholds value")
     return CalibrationThresholds(
-        minimum_mechanisms_improved=value.minimum_mechanisms_improved,
+        minimum_exact_mechanisms_improved=(
+            value.minimum_exact_mechanisms_improved
+        ),
+        minimum_biological_draws_improved=value.minimum_biological_draws_improved,
+        minimum_technical_records_improved=value.minimum_technical_records_improved,
         brier_improvement_epsilon=value.brier_improvement_epsilon,
         log_loss_worsening_tolerance=value.log_loss_worsening_tolerance,
         calibration_slope_lower=value.calibration_slope_lower,
@@ -818,30 +846,65 @@ def _validated_thresholds(value: object) -> CalibrationThresholds:
 class CandidateEvaluation:
     algorithm: str
     mechanism_metrics: tuple[tuple[str, CalibrationMetrics], ...]
+    biological_draw_metrics: tuple[tuple[str, CalibrationMetrics], ...]
+    technical_record_metrics: tuple[tuple[str, CalibrationMetrics], ...]
     aggregate_metrics: CalibrationMetrics
     fit_failures: tuple[str, ...]
     brier_improved_mechanisms: tuple[str, ...]
+    brier_improved_biological_draws: tuple[str, ...]
+    brier_improved_technical_records: tuple[str, ...]
     eligible: bool
     eligibility_reasons: tuple[str, ...]
 
     def __post_init__(self) -> None:
         if self.algorithm not in CALIBRATOR_ORDER:
             raise ValueError("unsupported candidate algorithm")
-        names = [name for name, _ in self.mechanism_metrics]
-        if not names or names != sorted(names) or len(set(names)) != len(names):
-            raise ValueError("mechanism_metrics must be unique and canonically sorted")
-        if any(
-            not isinstance(metric, CalibrationMetrics)
-            for _, metric in self.mechanism_metrics
-        ):
-            raise TypeError("mechanism_metrics contains an invalid value")
+        metric_groups = (
+            (self.mechanism_metrics, "mechanism_metrics"),
+            (self.biological_draw_metrics, "biological_draw_metrics"),
+            (self.technical_record_metrics, "technical_record_metrics"),
+        )
+        for metrics, name in metric_groups:
+            names = [identifier for identifier, _metric in metrics]
+            if (
+                not names
+                or any(not isinstance(identifier, str) or not identifier for identifier in names)
+                or names != sorted(names)
+                or len(set(names)) != len(names)
+            ):
+                raise ValueError(f"{name} must be unique and canonically sorted")
+            if any(not isinstance(metric, CalibrationMetrics) for _, metric in metrics):
+                raise TypeError(f"{name} contains an invalid value")
         if not isinstance(self.aggregate_metrics, CalibrationMetrics):
             raise TypeError("aggregate_metrics must be CalibrationMetrics")
         if type(self.eligible) is not bool:
             raise TypeError("eligible must be boolean")
+        improvement_groups = (
+            (
+                self.brier_improved_mechanisms,
+                {name for name, _metric in self.mechanism_metrics},
+                "brier_improved_mechanisms",
+            ),
+            (
+                self.brier_improved_biological_draws,
+                {name for name, _metric in self.biological_draw_metrics},
+                "brier_improved_biological_draws",
+            ),
+            (
+                self.brier_improved_technical_records,
+                {name for name, _metric in self.technical_record_metrics},
+                "brier_improved_technical_records",
+            ),
+        )
+        for identifiers, available, name in improvement_groups:
+            if (
+                tuple(sorted(identifiers)) != identifiers
+                or len(set(identifiers)) != len(identifiers)
+                or not set(identifiers).issubset(available)
+            ):
+                raise ValueError(f"{name} must be a canonical subset of metric IDs")
         for values, name in (
             (self.fit_failures, "fit_failures"),
-            (self.brier_improved_mechanisms, "brier_improved_mechanisms"),
             (self.eligibility_reasons, "eligibility_reasons"),
         ):
             if any(not isinstance(value, str) or not value for value in values):
@@ -853,9 +916,23 @@ class CandidateEvaluation:
             "mechanism_metrics": {
                 name: metric.to_dict() for name, metric in self.mechanism_metrics
             },
+            "biological_draw_metrics": {
+                name: metric.to_dict()
+                for name, metric in self.biological_draw_metrics
+            },
+            "technical_record_metrics": {
+                name: metric.to_dict()
+                for name, metric in self.technical_record_metrics
+            },
             "aggregate_metrics": self.aggregate_metrics.to_dict(),
             "fit_failures": list(self.fit_failures),
             "brier_improved_mechanisms": list(self.brier_improved_mechanisms),
+            "brier_improved_biological_draws": list(
+                self.brier_improved_biological_draws
+            ),
+            "brier_improved_technical_records": list(
+                self.brier_improved_technical_records
+            ),
             "eligible": self.eligible,
             "eligibility_reasons": list(self.eligibility_reasons),
         }
@@ -880,52 +957,84 @@ class CalibrationDecision:
             raise ValueError("selected calibration candidate is ineligible")
 
 
+def _technical_record_id(record: CalibrationRecord) -> str:
+    return f"{record.mechanism}/{record.biological_id}/{record.technical_view}"
+
+
+def _metrics_for_records(
+    records: tuple[CalibrationRecord, ...],
+    prediction_by_manifest: dict[str, tuple[float, ...]],
+    weights: dict[str, tuple[float, ...]],
+) -> CalibrationMetrics:
+    probability = np.concatenate(
+        [
+            np.asarray(prediction_by_manifest[record.manifest_sha256])
+            for record in records
+        ]
+    )
+    target = np.concatenate([np.asarray(record.target) for record in records])
+    sample_weights = np.concatenate(
+        [np.asarray(weights[record.manifest_sha256]) for record in records]
+    )
+    return calibration_metrics(probability, target, sample_weights)
+
+
 def _evaluate_cross_validation(
     records: tuple[CalibrationRecord, ...],
     result: CrossValidationResult,
 ) -> CandidateEvaluation:
     prediction_by_manifest = dict(result.predictions)
     weights = development_weights(records)
-    mechanism_metrics: list[tuple[str, CalibrationMetrics]] = []
-    all_probability: list[np.ndarray] = []
-    all_target: list[np.ndarray] = []
-    all_weights: list[np.ndarray] = []
-    for mechanism in sorted({record.mechanism for record in records}):
-        mechanism_records = tuple(
-            record for record in records if record.mechanism == mechanism
+    mechanism_metrics = tuple(
+        (
+            mechanism,
+            _metrics_for_records(
+                tuple(record for record in records if record.mechanism == mechanism),
+                prediction_by_manifest,
+                weights,
+            ),
         )
-        probability = np.concatenate(
-            [
-                np.asarray(prediction_by_manifest[record.manifest_sha256])
-                for record in mechanism_records
-            ]
+        for mechanism in sorted({record.mechanism for record in records})
+    )
+    biological_draw_metrics = tuple(
+        (
+            f"{mechanism}/{biological_id}",
+            _metrics_for_records(
+                tuple(
+                    record
+                    for record in records
+                    if (record.mechanism, record.biological_id)
+                    == (mechanism, biological_id)
+                ),
+                prediction_by_manifest,
+                weights,
+            ),
         )
-        target = np.concatenate(
-            [np.asarray(record.target) for record in mechanism_records]
+        for mechanism, biological_id in sorted(
+            {(record.mechanism, record.biological_id) for record in records}
         )
-        sample_weights = np.concatenate(
-            [
-                np.asarray(weights[record.manifest_sha256])
-                for record in mechanism_records
-            ]
+    )
+    technical_record_metrics = tuple(
+        (
+            _technical_record_id(record),
+            _metrics_for_records((record,), prediction_by_manifest, weights),
         )
-        mechanism_metrics.append(
-            (mechanism, calibration_metrics(probability, target, sample_weights))
-        )
-        all_probability.append(probability)
-        all_target.append(target)
-        all_weights.append(sample_weights)
-    aggregate = calibration_metrics(
-        np.concatenate(all_probability),
-        np.concatenate(all_target),
-        np.concatenate(all_weights),
+        for record in records
     )
     return CandidateEvaluation(
         algorithm=result.algorithm,
-        mechanism_metrics=tuple(mechanism_metrics),
-        aggregate_metrics=aggregate,
+        mechanism_metrics=mechanism_metrics,
+        biological_draw_metrics=biological_draw_metrics,
+        technical_record_metrics=technical_record_metrics,
+        aggregate_metrics=_metrics_for_records(
+            records,
+            prediction_by_manifest,
+            weights,
+        ),
         fit_failures=result.fit_failures,
         brier_improved_mechanisms=(),
+        brier_improved_biological_draws=(),
+        brier_improved_technical_records=(),
         eligible=result.algorithm == "identity",
         eligibility_reasons=("default_uncalibrated_score",)
         if result.algorithm == "identity"
@@ -937,7 +1046,12 @@ def retention_reasons(
     candidate: CandidateEvaluation,
     identity: CandidateEvaluation,
     thresholds: CalibrationThresholds,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
     """Apply the prespecified non-identity retention gate."""
 
     thresholds = _validated_thresholds(thresholds)
@@ -947,22 +1061,91 @@ def retention_reasons(
     identity_metrics = dict(identity.mechanism_metrics)
     if set(candidate_metrics) != set(identity_metrics):
         raise ValueError("candidate and identity mechanism sets differ")
+    candidate_draw_metrics = dict(candidate.biological_draw_metrics)
+    identity_draw_metrics = dict(identity.biological_draw_metrics)
+    if set(candidate_draw_metrics) != set(identity_draw_metrics):
+        raise ValueError("candidate and identity biological draw sets differ")
+    candidate_record_metrics = dict(candidate.technical_record_metrics)
+    identity_record_metrics = dict(identity.technical_record_metrics)
+    if set(candidate_record_metrics) != set(identity_record_metrics):
+        raise ValueError("candidate and identity technical record sets differ")
     reasons = [f"fold_fit_failure:{failure}" for failure in candidate.fit_failures]
-    if len(identity_metrics) < thresholds.minimum_mechanisms_improved:
+    if len(identity_metrics) < thresholds.minimum_exact_mechanisms_improved:
         reasons.append(
             "insufficient_eligible_exact_truth_mechanisms:"
-            f"{len(identity_metrics)}<{thresholds.minimum_mechanisms_improved}"
+            f"{len(identity_metrics)}<"
+            f"{thresholds.minimum_exact_mechanisms_improved}"
         )
-    improved = tuple(
+    improved_mechanisms = tuple(
         mechanism
         for mechanism in sorted(identity_metrics)
         if candidate_metrics[mechanism].brier
         <= identity_metrics[mechanism].brier - thresholds.brier_improvement_epsilon
     )
-    if len(improved) < thresholds.minimum_mechanisms_improved:
+    if len(improved_mechanisms) < thresholds.minimum_exact_mechanisms_improved:
         reasons.append(
-            "insufficient_mechanism_brier_improvement:"
-            f"{len(improved)}<{thresholds.minimum_mechanisms_improved}"
+            "insufficient_exact_mechanism_brier_improvement:"
+            f"{len(improved_mechanisms)}<"
+            f"{thresholds.minimum_exact_mechanisms_improved}"
+        )
+    missing_mechanisms = tuple(
+        sorted(set(identity_metrics).difference(improved_mechanisms))
+    )
+    if missing_mechanisms:
+        reasons.append(
+            "not_all_exact_mechanisms_improved:" + ",".join(missing_mechanisms)
+        )
+    if len(identity_draw_metrics) < thresholds.minimum_biological_draws_improved:
+        reasons.append(
+            "insufficient_independent_biological_draws:"
+            f"{len(identity_draw_metrics)}<"
+            f"{thresholds.minimum_biological_draws_improved}"
+        )
+    improved_draws = tuple(
+        identifier
+        for identifier in sorted(identity_draw_metrics)
+        if candidate_draw_metrics[identifier].brier
+        <= identity_draw_metrics[identifier].brier
+        - thresholds.brier_improvement_epsilon
+    )
+    if len(improved_draws) < thresholds.minimum_biological_draws_improved:
+        reasons.append(
+            "insufficient_biological_draw_brier_improvement:"
+            f"{len(improved_draws)}<"
+            f"{thresholds.minimum_biological_draws_improved}"
+        )
+    missing_draws = tuple(
+        sorted(set(identity_draw_metrics).difference(improved_draws))
+    )
+    if missing_draws:
+        reasons.append(
+            "not_all_biological_draws_improved:" + ",".join(missing_draws)
+        )
+    if len(identity_record_metrics) < thresholds.minimum_technical_records_improved:
+        reasons.append(
+            "insufficient_nested_technical_records:"
+            f"{len(identity_record_metrics)}<"
+            f"{thresholds.minimum_technical_records_improved}"
+        )
+    improved_records = tuple(
+        identifier
+        for identifier in sorted(identity_record_metrics)
+        if candidate_record_metrics[identifier].brier
+        <= identity_record_metrics[identifier].brier
+        - thresholds.brier_improvement_epsilon
+    )
+    if len(improved_records) < thresholds.minimum_technical_records_improved:
+        reasons.append(
+            "insufficient_technical_record_brier_improvement:"
+            f"{len(improved_records)}<"
+            f"{thresholds.minimum_technical_records_improved}"
+        )
+    missing_records = tuple(
+        sorted(set(identity_record_metrics).difference(improved_records))
+    )
+    if missing_records:
+        reasons.append(
+            "not_all_technical_records_improved:" + ",".join(missing_records)
         )
     if (
         candidate.aggregate_metrics.log_loss
@@ -983,6 +1166,29 @@ def retention_reasons(
             <= thresholds.calibration_slope_upper
         ):
             reasons.append(f"mechanism_calibration_slope_outside_tolerance:{mechanism}")
+    for identifier in sorted(identity_draw_metrics):
+        metrics = candidate_draw_metrics[identifier]
+        if (
+            metrics.log_loss
+            > identity_draw_metrics[identifier].log_loss
+            + thresholds.log_loss_worsening_tolerance
+        ):
+            reasons.append(f"biological_draw_log_loss_worsened:{identifier}")
+        if metrics.calibration_slope is None or not (
+            thresholds.calibration_slope_lower
+            <= metrics.calibration_slope
+            <= thresholds.calibration_slope_upper
+        ):
+            reasons.append(
+                f"biological_draw_calibration_slope_outside_tolerance:{identifier}"
+            )
+    for identifier in sorted(identity_record_metrics):
+        if (
+            candidate_record_metrics[identifier].log_loss
+            > identity_record_metrics[identifier].log_loss
+            + thresholds.log_loss_worsening_tolerance
+        ):
+            reasons.append(f"technical_record_log_loss_worsened:{identifier}")
     aggregate_slope = candidate.aggregate_metrics.calibration_slope
     if aggregate_slope is None or not (
         thresholds.calibration_slope_lower
@@ -990,7 +1196,12 @@ def retention_reasons(
         <= thresholds.calibration_slope_upper
     ):
         reasons.append("aggregate_calibration_slope_outside_tolerance")
-    return tuple(reasons), improved
+    return (
+        tuple(reasons),
+        improved_mechanisms,
+        improved_draws,
+        improved_records,
+    )
 
 
 def select_candidate(
@@ -1042,14 +1253,23 @@ def evaluate_calibration_candidates(
     identity = initial[0]
     evaluated = [identity]
     for candidate in initial[1:]:
-        reasons, improved = retention_reasons(candidate, identity, thresholds)
+        (
+            reasons,
+            improved_mechanisms,
+            improved_draws,
+            improved_records,
+        ) = retention_reasons(candidate, identity, thresholds)
         evaluated.append(
             CandidateEvaluation(
                 algorithm=candidate.algorithm,
                 mechanism_metrics=candidate.mechanism_metrics,
+                biological_draw_metrics=candidate.biological_draw_metrics,
+                technical_record_metrics=candidate.technical_record_metrics,
                 aggregate_metrics=candidate.aggregate_metrics,
                 fit_failures=candidate.fit_failures,
-                brier_improved_mechanisms=improved,
+                brier_improved_mechanisms=improved_mechanisms,
+                brier_improved_biological_draws=improved_draws,
+                brier_improved_technical_records=improved_records,
                 eligible=not reasons,
                 eligibility_reasons=reasons,
             )
@@ -1193,27 +1413,35 @@ def _candidate_from_dict(value: object) -> CandidateEvaluation:
         {
             "algorithm",
             "mechanism_metrics",
+            "biological_draw_metrics",
+            "technical_record_metrics",
             "aggregate_metrics",
             "fit_failures",
             "brier_improved_mechanisms",
+            "brier_improved_biological_draws",
+            "brier_improved_technical_records",
             "eligible",
             "eligibility_reasons",
         },
         "candidate",
     )
-    mechanism_payload = payload["mechanism_metrics"]
-    if not isinstance(mechanism_payload, dict) or not mechanism_payload:
-        raise ValueError("candidate mechanism_metrics must be a nonempty object")
-    mechanism_metrics = tuple(
-        (
-            name,
-            _metrics_from_dict(metric, f"candidate.mechanism_metrics.{name}"),
+    def metric_group(field: str) -> tuple[tuple[str, CalibrationMetrics], ...]:
+        values = payload[field]
+        if not isinstance(values, dict) or not values:
+            raise ValueError(f"candidate {field} must be a nonempty object")
+        return tuple(
+            (
+                name,
+                _metrics_from_dict(metric, f"candidate.{field}.{name}"),
+            )
+            for name, metric in sorted(values.items())
         )
-        for name, metric in sorted(mechanism_payload.items())
-    )
+
     return CandidateEvaluation(
         algorithm=payload["algorithm"],
-        mechanism_metrics=mechanism_metrics,
+        mechanism_metrics=metric_group("mechanism_metrics"),
+        biological_draw_metrics=metric_group("biological_draw_metrics"),
+        technical_record_metrics=metric_group("technical_record_metrics"),
         aggregate_metrics=_metrics_from_dict(
             payload["aggregate_metrics"],
             "candidate.aggregate_metrics",
@@ -1222,6 +1450,14 @@ def _candidate_from_dict(value: object) -> CandidateEvaluation:
         brier_improved_mechanisms=_string_list(
             payload["brier_improved_mechanisms"],
             "brier_improved_mechanisms",
+        ),
+        brier_improved_biological_draws=_string_list(
+            payload["brier_improved_biological_draws"],
+            "brier_improved_biological_draws",
+        ),
+        brier_improved_technical_records=_string_list(
+            payload["brier_improved_technical_records"],
+            "brier_improved_technical_records",
         ),
         eligible=payload["eligible"],
         eligibility_reasons=_string_list(
@@ -1235,7 +1471,9 @@ def _thresholds_from_dict(value: object) -> CalibrationThresholds:
     payload = _exact_keys(
         value,
         {
-            "minimum_mechanisms_improved",
+            "minimum_exact_mechanisms_improved",
+            "minimum_biological_draws_improved",
+            "minimum_technical_records_improved",
             "brier_improvement_epsilon",
             "log_loss_worsening_tolerance",
             "calibration_slope_lower",
@@ -1246,7 +1484,22 @@ def _thresholds_from_dict(value: object) -> CalibrationThresholds:
     return CalibrationThresholds(**payload)
 
 
-def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCalibrator]:
+def _validate_artifact_payload(
+    value: object,
+) -> tuple[
+    dict[str, Any],
+    ScoreCalibrator,
+    tuple[tuple[tuple[str, str], ScoreCalibrator], ...],
+]:
+    if (
+        isinstance(value, dict)
+        and type(value.get("schema_version")) is int
+        and value["schema_version"] == 2
+    ):
+        raise ValueError(
+            "calibration artifact schema 2 is obsolete after the development "
+            "retention amendment"
+        )
     payload = _exact_keys(
         value,
         {
@@ -1255,10 +1508,12 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
             "estimand",
             "inference_features",
             "data_scope",
+            "retention_contract",
             "selected_algorithm",
             "calibrator",
             "selection",
             "cross_validation",
+            "development_holdout_calibrators",
             "training",
             "truth_eligibility",
             "payload_sha256",
@@ -1272,7 +1527,10 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
     unsigned.pop("payload_sha256")
     if _canonical_digest(unsigned) != digest:
         raise ValueError("artifact payload digest mismatch")
-    if type(payload["schema_version"]) is not int or payload["schema_version"] != 2:
+    schema_version = payload["schema_version"]
+    if type(schema_version) is not int:
+        raise ValueError("unsupported calibration artifact schema")
+    if schema_version != 3:
         raise ValueError("unsupported calibration artifact schema")
     if payload["artifact_type"] != "maskimpute_prezero_calibration":
         raise ValueError("artifact_type is invalid")
@@ -1297,6 +1555,17 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         "protocol_sha256": DEVELOPMENT_PROTOCOL_SHA256,
     }:
         raise ValueError("calibration artifact is outside the development data scope")
+    retention_contract = _exact_keys(
+        payload["retention_contract"],
+        {"contract_id", "path", "sha256"},
+        "retention_contract",
+    )
+    if retention_contract != {
+        "contract_id": _CALIBRATION_CONTRACT_ID,
+        "path": _CALIBRATION_CONTRACT_PATH,
+        "sha256": CALIBRATION_CONTRACT_SHA256,
+    }:
+        raise ValueError("calibration retention amendment contract binding is invalid")
 
     truth_eligibility = _exact_keys(
         payload["truth_eligibility"],
@@ -1304,7 +1573,9 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
             "accepted_truth_kind",
             "eligible_mechanisms",
             "eligible_mechanism_count",
-            "minimum_mechanisms_required",
+            "minimum_exact_mechanisms_improved",
+            "minimum_biological_draws_improved",
+            "minimum_technical_records_improved",
             "panel_limitations",
         },
         "truth_eligibility",
@@ -1318,12 +1589,16 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         or truth_eligibility["eligible_mechanism_count"] != 1
     ):
         raise ValueError("eligible calibration mechanism count is invalid")
-    if (
-        type(truth_eligibility["minimum_mechanisms_required"]) is not int
-        or truth_eligibility["minimum_mechanisms_required"]
-        != _PRESPECIFIED_THRESHOLDS["minimum_mechanisms_improved"]
+    for field in (
+        "minimum_exact_mechanisms_improved",
+        "minimum_biological_draws_improved",
+        "minimum_technical_records_improved",
     ):
-        raise ValueError("minimum calibration mechanism count is invalid")
+        if (
+            type(truth_eligibility[field]) is not int
+            or truth_eligibility[field] != _PRESPECIFIED_THRESHOLDS[field]
+        ):
+            raise ValueError(f"{field} is invalid")
     if truth_eligibility["panel_limitations"] != {
         "semisynthetic": "proxy_truth_not_exact",
         "sergio": "undefined_for_continuous_truth",
@@ -1342,11 +1617,13 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
     if selection["candidate_order"] != list(CALIBRATOR_ORDER):
         raise ValueError("candidate_order is invalid")
     thresholds = _thresholds_from_dict(selection["thresholds"])
-    if (
-        selection["thresholds"]["minimum_mechanisms_improved"]
-        != truth_eligibility["minimum_mechanisms_required"]
+    for field in (
+        "minimum_exact_mechanisms_improved",
+        "minimum_biological_draws_improved",
+        "minimum_technical_records_improved",
     ):
-        raise ValueError("truth eligibility and selection threshold disagree")
+        if selection["thresholds"][field] != truth_eligibility[field]:
+            raise ValueError("truth eligibility and selection threshold disagree")
     if not isinstance(selection["candidates"], list):
         raise ValueError("selection.candidates must be an array")
     candidates = tuple(_candidate_from_dict(item) for item in selection["candidates"])
@@ -1359,6 +1636,24 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         for candidate in candidates
     ):
         raise ValueError("candidate mechanisms contradict exact-truth eligibility")
+    expected_draw_ids = tuple(
+        f"symsim/{biological_id}"
+        for biological_id in _DEVELOPMENT_BIOLOGICAL_IDS
+    )
+    expected_record_ids = tuple(
+        sorted(
+            f"symsim/{biological_id}/{technical_view}"
+            for biological_id, technical_view in _DEVELOPMENT_PANEL_KEYS
+        )
+    )
+    if any(
+        tuple(name for name, _metric in candidate.biological_draw_metrics)
+        != expected_draw_ids
+        or tuple(name for name, _metric in candidate.technical_record_metrics)
+        != expected_record_ids
+        for candidate in candidates
+    ):
+        raise ValueError("candidate draw or technical record metrics are incomplete")
     for candidate in candidates:
         mechanism_entry_count = sum(
             metric.n for _name, metric in candidate.mechanism_metrics
@@ -1367,16 +1662,81 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
             raise ValueError(
                 "candidate aggregate metric entry count contradicts mechanism metrics"
             )
+        draw_entry_count = sum(
+            metric.n for _name, metric in candidate.biological_draw_metrics
+        )
+        record_entry_count = sum(
+            metric.n for _name, metric in candidate.technical_record_metrics
+        )
+        if candidate.aggregate_metrics.n not in {
+            draw_entry_count,
+            record_entry_count,
+        } or draw_entry_count != record_entry_count:
+            raise ValueError(
+                "candidate aggregate count contradicts draw or technical record metrics"
+            )
+        record_metrics = dict(candidate.technical_record_metrics)
+        for draw_id, draw_metric in candidate.biological_draw_metrics:
+            nested_metrics = tuple(
+                metric
+                for record_id, metric in record_metrics.items()
+                if record_id.startswith(f"{draw_id}/")
+            )
+            if draw_metric.n != sum(metric.n for metric in nested_metrics):
+                raise ValueError(
+                    "candidate biological draw count contradicts technical records"
+                )
+            for field in ("brier", "log_loss"):
+                expected = math.fsum(
+                    getattr(metric, field) for metric in nested_metrics
+                ) / len(nested_metrics)
+                if not math.isclose(
+                    getattr(draw_metric, field),
+                    expected,
+                    rel_tol=1e-12,
+                    abs_tol=1e-12,
+                ):
+                    raise ValueError(
+                        "candidate biological draw metric contradicts equally "
+                        "weighted technical records"
+                    )
+        mechanism_metric = candidate.mechanism_metrics[0][1]
+        for field in ("brier", "log_loss"):
+            expected = math.fsum(
+                getattr(metric, field) for metric in record_metrics.values()
+            ) / len(record_metrics)
+            if not math.isclose(
+                getattr(mechanism_metric, field),
+                expected,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ) or not math.isclose(
+                getattr(candidate.aggregate_metrics, field),
+                expected,
+                rel_tol=1e-12,
+                abs_tol=1e-12,
+            ):
+                raise ValueError(
+                    "candidate aggregate or mechanism metric contradicts equally "
+                    "weighted technical records"
+                )
     identity = candidates[0]
     if (
         not identity.eligible
         or identity.fit_failures
         or identity.brier_improved_mechanisms
+        or identity.brier_improved_biological_draws
+        or identity.brier_improved_technical_records
         or identity.eligibility_reasons != ("default_uncalibrated_score",)
     ):
         raise ValueError("identity candidate semantics are invalid")
     for candidate in candidates[1:]:
-        expected_reasons, expected_improved = retention_reasons(
+        (
+            expected_reasons,
+            expected_improved_mechanisms,
+            expected_improved_draws,
+            expected_improved_records,
+        ) = retention_reasons(
             candidate,
             identity,
             thresholds,
@@ -1384,7 +1744,10 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         if (
             candidate.eligible is not (not expected_reasons)
             or candidate.eligibility_reasons != expected_reasons
-            or candidate.brier_improved_mechanisms != expected_improved
+            or candidate.brier_improved_mechanisms
+            != expected_improved_mechanisms
+            or candidate.brier_improved_biological_draws != expected_improved_draws
+            or candidate.brier_improved_technical_records != expected_improved_records
         ):
             raise ValueError(
                 "candidate retention eligibility was not derived correctly"
@@ -1416,6 +1779,7 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         raise ValueError("cross-validation groups must be a nonempty array")
     group_manifests: list[str] = []
     group_binding_by_manifest: dict[str, tuple[str, str, str]] = {}
+    group_manifests_by_key: dict[tuple[str, str], tuple[str, ...]] = {}
     previous_group: tuple[str, str] | None = None
     for index, item in enumerate(cross_validation["groups"]):
         group = _exact_keys(
@@ -1458,6 +1822,7 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
                 mechanism,
                 biological_id,
             )
+        group_manifests_by_key[group_key] = manifests
         group_manifests.extend(manifests)
     expected_group_keys = {
         ("symsim", biological_id) for biological_id in _DEVELOPMENT_BIOLOGICAL_IDS
@@ -1588,18 +1953,80 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         raise ValueError(
             "training record bindings do not cover the complete draw-view panel"
         )
-    return payload, calibrator
+    holdout_payload = payload["development_holdout_calibrators"]
+    if not isinstance(holdout_payload, list):
+        raise ValueError("development holdout calibrators must be an array")
+    holdout_calibrators: list[tuple[tuple[str, str], ScoreCalibrator]] = []
+    previous_holdout_key: tuple[str, str] | None = None
+    for index, value in enumerate(holdout_payload):
+        fold = _exact_keys(
+            value,
+            {
+                "mechanism",
+                "biological_id",
+                "held_out_manifest_sha256s",
+                "training_manifest_sha256s",
+                "calibrator",
+            },
+            f"development_holdout_calibrators[{index}]",
+        )
+        key = (fold["mechanism"], fold["biological_id"])
+        if key not in expected_group_keys or (
+            previous_holdout_key is not None and key <= previous_holdout_key
+        ):
+            raise ValueError("development holdout calibrators are not canonical")
+        previous_holdout_key = key
+        held_out = _string_list(
+            fold["held_out_manifest_sha256s"],
+            "held_out_manifest_sha256s",
+        )
+        training_manifests = _string_list(
+            fold["training_manifest_sha256s"],
+            "training_manifest_sha256s",
+        )
+        if (
+            tuple(sorted(held_out)) != held_out
+            or tuple(sorted(training_manifests)) != training_manifests
+            or len(set(held_out)) != len(held_out)
+            or len(set(training_manifests)) != len(training_manifests)
+            or any(not _SHA256.fullmatch(item) for item in (*held_out, *training_manifests))
+        ):
+            raise ValueError("development holdout fold manifests are not canonical")
+        if held_out != group_manifests_by_key[key]:
+            raise ValueError("development holdout manifests contradict fold group")
+        held_set = set(held_out)
+        training_set = set(training_manifests)
+        if (
+            not held_set.isdisjoint(training_set)
+            or held_set | training_set != set(manifests)
+            or training_set != set(manifests).difference(held_set)
+        ):
+            raise ValueError(
+                "development holdout fold training must exclude held-out truth"
+            )
+        fold_calibrator = _calibrator_from_dict(fold["calibrator"])
+        if fold_calibrator.algorithm != payload["selected_algorithm"]:
+            raise ValueError(
+                "development holdout calibrator algorithm differs from selection"
+            )
+        holdout_calibrators.append((key, fold_calibrator))
+    if tuple(key for key, _calibrator in holdout_calibrators) != tuple(
+        sorted(expected_group_keys)
+    ):
+        raise ValueError("development holdout calibrators do not cover every draw")
+    return payload, calibrator, tuple(holdout_calibrators)
 
 
 class CalibrationArtifact:
     """Canonical immutable fitted calibration artifact."""
 
-    __slots__ = ("_payload_bytes", "_calibrator")
+    __slots__ = ("_payload_bytes", "_calibrator", "_holdout_calibrators")
 
     def __init__(self, payload: object) -> None:
-        validated, calibrator = _validate_artifact_payload(payload)
+        validated, calibrator, holdout_calibrators = _validate_artifact_payload(payload)
         object.__setattr__(self, "_payload_bytes", _canonical_json_bytes(validated))
         object.__setattr__(self, "_calibrator", calibrator)
+        object.__setattr__(self, "_holdout_calibrators", holdout_calibrators)
 
     def __setattr__(self, name: str, value: object) -> None:
         raise AttributeError(f"cannot assign to immutable artifact field {name!r}")
@@ -1608,8 +2035,53 @@ class CalibrationArtifact:
     def selected_algorithm(self) -> str:
         return self._calibrator.algorithm
 
+    def _verified_calibrators(
+        self,
+    ) -> tuple[
+        ScoreCalibrator,
+        tuple[tuple[tuple[str, str], ScoreCalibrator], ...],
+    ]:
+        try:
+            payload = json.loads(self._payload_bytes)
+            _validated, calibrator, holdout_calibrators = _validate_artifact_payload(
+                payload
+            )
+        except Exception as exc:
+            raise ValueError("calibration artifact integrity check failed") from exc
+        if (
+            calibrator != self._calibrator
+            or holdout_calibrators != self._holdout_calibrators
+        ):
+            raise ValueError("calibration artifact integrity check failed")
+        return calibrator, holdout_calibrators
+
     def transform(self, p_pre_zero: object) -> np.ndarray:
-        return self._calibrator.transform(p_pre_zero)
+        calibrator, _holdout_calibrators = self._verified_calibrators()
+        return calibrator.transform(p_pre_zero)
+
+    def transform_for_development_holdout(
+        self,
+        p_pre_zero: object,
+        *,
+        mechanism: str,
+        biological_id: str,
+    ) -> np.ndarray:
+        """Apply only the LODO calibrator that excluded this development draw."""
+
+        if not isinstance(mechanism, str) or mechanism not in {"symsim"}:
+            raise ValueError("mechanism is outside the development holdout scope")
+        if (
+            not isinstance(biological_id, str)
+            or biological_id not in _DEVELOPMENT_BIOLOGICAL_IDS
+        ):
+            raise ValueError("biological_id is outside the development holdout scope")
+        _calibrator, holdout_calibrators = self._verified_calibrators()
+        by_group = dict(holdout_calibrators)
+        try:
+            fold_calibrator = by_group[(mechanism, biological_id)]
+        except KeyError as exc:
+            raise ValueError("development holdout calibrator is unavailable") from exc
+        return fold_calibrator.transform(p_pre_zero)
 
     def to_dict(self) -> dict[str, Any]:
         return json.loads(self._payload_bytes)
@@ -1646,12 +2118,23 @@ def _record_binding(record: CalibrationRecord) -> dict[str, str]:
     }
 
 
+def _verify_tracked_calibration_contract() -> None:
+    path = Path(__file__).resolve().parents[1] / _CALIBRATION_CONTRACT_PATH
+    try:
+        contract_bytes = path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError("tracked calibration amendment contract is unavailable") from exc
+    if hashlib.sha256(contract_bytes).hexdigest() != CALIBRATION_CONTRACT_SHA256:
+        raise ValueError("tracked calibration amendment contract digest differs")
+
+
 def fit_development_calibration(
     records: object,
     thresholds: CalibrationThresholds = CalibrationThresholds(),
 ) -> CalibrationArtifact:
     """Evaluate, select, and fit the retained calibrator on all development data."""
 
+    _verify_tracked_calibration_contract()
     thresholds = _validated_thresholds(thresholds)
     canonical = validate_calibration_records(records)
     decision = evaluate_calibration_candidates(canonical, thresholds)
@@ -1663,6 +2146,12 @@ def fit_development_calibration(
         target,
         sample_weights,
     )
+    selected_cross_validation = cross_validate_calibrator(
+        canonical,
+        decision.selected_algorithm,
+    )
+    if selected_cross_validation.fit_failures:
+        raise RuntimeError("selected calibrator contains a failed development fold")
     groups = []
     for mechanism, biological_id in sorted(
         {(record.mechanism, record.biological_id) for record in canonical}
@@ -1681,7 +2170,7 @@ def fit_development_calibration(
             }
         )
     unsigned: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "artifact_type": "maskimpute_prezero_calibration",
         "estimand": "pre_capture_zero_given_observed_zero",
         "inference_features": ["p_pre_zero"],
@@ -1691,11 +2180,24 @@ def fit_development_calibration(
             "namespace": _DEVELOPMENT_NAMESPACE,
             "protocol_sha256": DEVELOPMENT_PROTOCOL_SHA256,
         },
+        "retention_contract": {
+            "contract_id": _CALIBRATION_CONTRACT_ID,
+            "path": _CALIBRATION_CONTRACT_PATH,
+            "sha256": CALIBRATION_CONTRACT_SHA256,
+        },
         "truth_eligibility": {
             "accepted_truth_kind": "exact_pre_capture",
             "eligible_mechanisms": ["symsim"],
             "eligible_mechanism_count": 1,
-            "minimum_mechanisms_required": thresholds.minimum_mechanisms_improved,
+            "minimum_exact_mechanisms_improved": (
+                thresholds.minimum_exact_mechanisms_improved
+            ),
+            "minimum_biological_draws_improved": (
+                thresholds.minimum_biological_draws_improved
+            ),
+            "minimum_technical_records_improved": (
+                thresholds.minimum_technical_records_improved
+            ),
             "panel_limitations": {
                 "semisynthetic": "proxy_truth_not_exact",
                 "sergio": "undefined_for_continuous_truth",
@@ -1719,6 +2221,16 @@ def fit_development_calibration(
             "weighting": "mechanism_draw_record_entry_balanced",
             "groups": groups,
         },
+        "development_holdout_calibrators": [
+            {
+                "mechanism": fold.mechanism,
+                "biological_id": fold.biological_id,
+                "held_out_manifest_sha256s": sorted(fold.held_out_manifests),
+                "training_manifest_sha256s": sorted(fold.training_manifests),
+                "calibrator": fold.calibrator.to_dict(),
+            }
+            for fold in selected_cross_validation.folds
+        ],
         "training": {
             "record_count": len(canonical),
             "entry_count": sum(len(record.p_pre_zero) for record in canonical),
