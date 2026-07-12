@@ -67,6 +67,7 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
         run_capacity_matched_ae,
         run_maskimpute,
     )
+    from maskimpute_benchmark.methods import core_output_to_evaluator_counts
     from maskimpute_benchmark.methods.registry import load_method_registry
 
     counts = np.array(
@@ -126,6 +127,10 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
         maskimpute_to_evaluator_counts(method_input, candidate.snapshot.matrix),
         candidate.snapshot.matrix,
     )
+    np.testing.assert_array_equal(
+        core_output_to_evaluator_counts(method_input, candidate.snapshot),
+        candidate.snapshot.matrix,
+    )
     assert candidate.ablation_result.output_policy == "selective"
     assert candidate.ablation_result.p_pre_zero.shape == counts.shape
     assert candidate.ablation_result.diagnostics["score"]["artifact_integrity_verified"]
@@ -135,6 +140,10 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
     assert control.snapshot.method_id == "capacity-matched-ae"
     assert control.ablation_result.output_policy == "full_ungated"
     assert control.snapshot.matrix.shape == counts.shape
+    np.testing.assert_array_equal(
+        core_output_to_evaluator_counts(method_input, control.snapshot),
+        control.snapshot.matrix,
+    )
     assert candidate.command is None and control.command is None
     assert dict(candidate.environment_receipt)["device"] == "cpu"
 

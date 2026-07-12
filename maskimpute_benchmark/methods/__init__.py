@@ -54,6 +54,13 @@ from .magic import (
     magic_to_evaluator_counts,
     run_magic,
 )
+from .maskimpute import (
+    MaskImputeAdapterExecution,
+    finalize_maskimpute_output,
+    maskimpute_to_evaluator_counts,
+    run_capacity_matched_ae,
+    run_maskimpute,
+)
 from .observed import (
     AdapterExecution,
     AdapterUnavailableError,
@@ -94,6 +101,8 @@ from .scvi import (
 CORE_EVALUATOR_COUNT_CONVERTERS = MappingProxyType(
     {
         "observed": observed_to_evaluator_counts,
+        "capacity-matched-ae": maskimpute_to_evaluator_counts,
+        "maskimpute": maskimpute_to_evaluator_counts,
         "alra": alra_to_evaluator_counts,
         "magic": magic_to_evaluator_counts,
         "dca": dca_to_evaluator_counts,
@@ -104,6 +113,8 @@ CORE_EVALUATOR_COUNT_CONVERTERS = MappingProxyType(
 CORE_EVALUATOR_NATIVE_SCALES = MappingProxyType(
     {
         "observed": "raw_counts",
+        "capacity-matched-ae": "raw_counts",
+        "maskimpute": "raw_counts",
         "alra": "log1p_cp10k",
         "magic": "log1p_cp10k",
         "dca": "raw_counts",
@@ -248,6 +259,7 @@ __all__ = [
     "MethodSpec",
     "MethodStatusRow",
     "MAGICConfig",
+    "MaskImputeAdapterExecution",
     "MatchedBulkReference",
     "RECENT_EVALUATOR_COUNT_CONVERTERS",
     "RECENT_EVALUATOR_NATIVE_SCALES",
@@ -273,6 +285,7 @@ __all__ = [
     "finalize_d3impute_output",
     "finalize_dca_output",
     "finalize_magic_output",
+    "finalize_maskimpute_output",
     "finalize_saver_output",
     "finalize_scvi_output",
     "finalize_scziva_output",
@@ -280,6 +293,7 @@ __all__ = [
     "load_method_registry",
     "log1p_cp10k",
     "magic_to_evaluator_counts",
+    "maskimpute_to_evaluator_counts",
     "observed_to_evaluator_counts",
     "prepare_method_input",
     "prepare_matched_bulk_reference",
@@ -292,6 +306,8 @@ __all__ = [
     "run_d3impute",
     "run_dca",
     "run_magic",
+    "run_capacity_matched_ae",
+    "run_maskimpute",
     "run_observed",
     "run_saver",
     "run_scvi",
