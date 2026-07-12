@@ -1,0 +1,628 @@
+from __future__ import annotations
+
+from dataclasses import FrozenInstanceError, replace
+import json
+import os
+from pathlib import Path
+import subprocess
+
+import anndata as ad
+import numpy as np
+import pandas as pd
+import pytest
+
+import maskimpute_benchmark.simulators.native as native_module
+from maskimpute_benchmark.protocol import load_protocol
+from maskimpute_benchmark.schema import benchmark_dataset_sha256
+from maskimpute_benchmark.study import (
+    assert_final_runnable,
+    freeze_round,
+    materialize_final,
+)
+from maskimpute_benchmark.simulators.base import (
+    FinalManifestClaim,
+    SimulationArtifact,
+    SimulationContractError,
+    SimulationRequest,
+    biological_unit_id,
+    load_final_manifest_claim,
+    simulation_dataset_id,
+    validate_paired_simulation_requests,
+    validate_simulation_request,
+)
+from maskimpute_benchmark.simulators.native import (
+    NativeManifest,
+    seal_native_outputs,
+)
+
+
+PROTOCOL = load_protocol(Path("study/protocol.json"))
+
+
+def _git(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args], cwd=repo, check=True, capture_output=True, text=True
+    )
+    return completed.stdout.strip()
+
+
+@pytest.fixture
+def final_repo(tmp_path: Path) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.name", "Simulator Test")
+    _git(repo, "config", "user.email", "simulator@example.invalid")
+    (repo / ".gitignore").write_text("artifacts/\n", encoding="utf-8")
+    (repo / "config.json").write_text('{"method":"fixture"}\n', encoding="utf-8")
+    (repo / "environment.lock").write_text("python=3.11\n", encoding="utf-8")
+    (repo / "protocol.json").write_text(
+        Path("study/protocol.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "freeze simulator fixture")
+    round_dir = repo / "artifacts/study/round-001"
+    freeze_round(
+        repo,
+        round_dir,
+        repo / "config.json",
+        repo / "protocol.json",
+        environment_path=repo / "environment.lock",
+    )
+    return repo, round_dir
+
+
+def _request(tmp_path: Path, **changes: object) -> SimulationRequest:
+    values: dict[str, object] = {
+        "mechanism": "symsim",
+        "namespace": "dev",
+        "biological_id": "draw-01",
+        "biological_seed": 101,
+        "measurement_seed": 202,
+        "technical_view": "moderate",
+        "cells": PROTOCOL.development.cells,
+        "genes": PROTOCOL.development.genes,
+        "output_path": tmp_path / "dev" / "symsim" / "draw-01-moderate.h5ad",
+    }
+    values.update(changes)
+    return SimulationRequest(**values)
+
+
+def test_simulation_request_is_frozen_and_validates_development_contract(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+
+    validate_simulation_request(request, PROTOCOL)
+
+    with pytest.raises(FrozenInstanceError):
+        request.cells = 1  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "message"),
+    [
+        ("mechanism", "splatter", "mechanism"),
+        ("mechanism", "SymSim", "mechanism"),
+        ("namespace", "development", "namespace"),
+        ("namespace", "final", "final manifest claim"),
+        ("biological_id", "../draw", "biological_id"),
+        ("technical_view", "moderate/view", "technical_view"),
+        ("biological_seed", True, "biological_seed"),
+        ("biological_seed", -1, "biological_seed"),
+        ("measurement_seed", 2**63, "measurement_seed"),
+        ("cells", True, "cells"),
+        ("cells", 899, "dimensions"),
+        ("genes", 499, "dimensions"),
+        ("output_path", "result.h5ad", "output_path"),
+    ],
+)
+def test_request_fields_are_strictly_validated(
+    tmp_path: Path, field: str, invalid: object, message: str
+) -> None:
+    request = _request(tmp_path, **{field: invalid})
+
+    with pytest.raises(SimulationContractError, match=message):
+        validate_simulation_request(request, PROTOCOL)
+
+
+def test_biological_and_measurement_seeds_must_be_distinct(tmp_path: Path) -> None:
+    request = _request(tmp_path, biological_seed=101, measurement_seed=101)
+
+    with pytest.raises(SimulationContractError, match="distinct"):
+        validate_simulation_request(request, PROTOCOL)
+
+
+def test_request_output_path_must_be_canonical(tmp_path: Path) -> None:
+    request = _request(
+        tmp_path,
+        output_path=tmp_path / "dev" / ".." / "dev" / "output.h5ad",
+    )
+
+    with pytest.raises(SimulationContractError, match="canonical"):
+        validate_simulation_request(request, PROTOCOL)
+
+
+def test_deterministic_ids_bind_design_fields_but_not_seeds_or_labels(
+    tmp_path: Path,
+) -> None:
+    moderate = _request(tmp_path)
+    rerun = replace(moderate, biological_seed=303, measurement_seed=404)
+    severe = replace(moderate, technical_view="severe", measurement_seed=505)
+
+    assert simulation_dataset_id(moderate) == simulation_dataset_id(rerun)
+    assert simulation_dataset_id(moderate) != simulation_dataset_id(severe)
+    assert biological_unit_id(moderate) == biological_unit_id(severe)
+    assert moderate.independent_unit_id == severe.independent_unit_id
+    assert moderate.dataset_id == simulation_dataset_id(moderate)
+
+
+def test_paired_views_share_one_biological_unit_and_truth_seed(tmp_path: Path) -> None:
+    moderate = _request(tmp_path)
+    severe = replace(
+        moderate,
+        technical_view="severe",
+        measurement_seed=303,
+        output_path=tmp_path / "dev/symsim/draw-01-severe.h5ad",
+    )
+
+    validate_paired_simulation_requests((moderate, severe), PROTOCOL)
+
+    assert moderate.independent_unit_id == severe.independent_unit_id
+    assert moderate.dataset_id != severe.dataset_id
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"biological_id": "draw-02"}, "biological draw"),
+        ({"biological_seed": 404}, "biological seed"),
+        ({"technical_view": "moderate"}, "technical views"),
+        ({"measurement_seed": 202}, "measurement seeds"),
+        ({"mechanism": "sergio"}, "biological draw"),
+    ],
+)
+def test_paired_views_cannot_claim_independence_or_different_truth(
+    tmp_path: Path, changes: dict[str, object], message: str
+) -> None:
+    moderate = _request(tmp_path)
+    severe_changes: dict[str, object] = {
+        "technical_view": "severe",
+        "measurement_seed": 303,
+        "output_path": tmp_path / "dev/symsim/draw-01-severe.h5ad",
+    }
+    severe_changes.update(changes)
+    severe = replace(moderate, **severe_changes)
+
+    with pytest.raises(SimulationContractError, match=message):
+        validate_paired_simulation_requests((moderate, severe), PROTOCOL)
+
+
+def test_pair_contract_requires_exactly_two_views(tmp_path: Path) -> None:
+    with pytest.raises(SimulationContractError, match="exactly two"):
+        validate_paired_simulation_requests((_request(tmp_path),), PROTOCOL)
+
+
+def test_final_claim_cannot_be_forged_by_direct_construction() -> None:
+    with pytest.raises(TypeError):
+        FinalManifestClaim(  # type: ignore[call-arg]
+            round_id="round-001",
+            generator_seeds=(1, 2),
+            seed_manifest_sha256="0" * 64,
+            execution_claim_id="1" * 32,
+            round_dir=Path("/tmp/round-001"),
+        )
+    assert not hasattr(FinalManifestClaim, "_from_validated")
+
+
+def test_claimed_final_manifest_validates_final_request_without_consuming_claim(
+    final_repo: tuple[Path, Path],
+) -> None:
+    repo, round_dir = final_repo
+    materialize_final(round_dir, seed_count=4, repo=repo)
+    assert_final_runnable(repo, round_dir)
+    execution_before = (round_dir / "execution_claim.json").read_bytes()
+    manifest = json.loads((round_dir / "final_manifest.json").read_text())
+
+    first = load_final_manifest_claim(repo, round_dir)
+    second = load_final_manifest_claim(repo, round_dir)
+    request = SimulationRequest(
+        mechanism="symsim",
+        namespace="final",
+        biological_id="draw-01",
+        biological_seed=manifest["generator_seeds"][0],
+        measurement_seed=manifest["generator_seeds"][1],
+        technical_view="moderate",
+        cells=PROTOCOL.final.cells,
+        genes=PROTOCOL.final.genes,
+        output_path=(
+            round_dir / "results" / "final" / "symsim" / "draw-01-moderate.h5ad"
+        ),
+    )
+
+    validate_simulation_request(request, PROTOCOL, first)
+
+    assert first == second
+    assert (round_dir / "execution_claim.json").read_bytes() == execution_before
+
+
+def test_final_manifest_loader_requires_existing_execution_claim(
+    final_repo: tuple[Path, Path],
+) -> None:
+    repo, round_dir = final_repo
+    materialize_final(round_dir, seed_count=4, repo=repo)
+
+    with pytest.raises(SimulationContractError, match="claimed|running"):
+        load_final_manifest_claim(repo, round_dir)
+
+
+def test_final_manifest_loader_rejects_tampered_seed_manifest(
+    final_repo: tuple[Path, Path],
+) -> None:
+    repo, round_dir = final_repo
+    materialize_final(round_dir, seed_count=4, repo=repo)
+    assert_final_runnable(repo, round_dir)
+    path = round_dir / "final_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["generator_seeds"][0] = manifest["generator_seeds"][0] + 1
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(SimulationContractError, match="manifest|integrity"):
+        load_final_manifest_claim(repo, round_dir)
+
+
+def test_final_request_rejects_unsealed_seed_and_output_outside_round(
+    final_repo: tuple[Path, Path], tmp_path: Path
+) -> None:
+    repo, round_dir = final_repo
+    materialize_final(round_dir, seed_count=4, repo=repo)
+    assert_final_runnable(repo, round_dir)
+    claim = load_final_manifest_claim(repo, round_dir)
+    seeds = claim.generator_seeds
+    base = SimulationRequest(
+        mechanism="symsim",
+        namespace="final",
+        biological_id="draw-01",
+        biological_seed=seeds[0],
+        measurement_seed=seeds[1],
+        technical_view="moderate",
+        cells=PROTOCOL.final.cells,
+        genes=PROTOCOL.final.genes,
+        output_path=round_dir / "results/final/output.h5ad",
+    )
+
+    with pytest.raises(SimulationContractError, match="manifest"):
+        validate_simulation_request(
+            replace(base, biological_seed=max(seeds) + 1), PROTOCOL, claim
+        )
+    with pytest.raises(SimulationContractError, match="beneath"):
+        validate_simulation_request(
+            replace(base, output_path=tmp_path / "final/output.h5ad"),
+            PROTOCOL,
+            claim,
+        )
+    with pytest.raises(SimulationContractError, match="development"):
+        validate_simulation_request(
+            _request(tmp_path),
+            PROTOCOL,
+            claim,
+        )
+    with pytest.raises(SimulationContractError, match="output_path"):
+        validate_simulation_request(
+            replace(base, output_path="final/output.h5ad"),  # type: ignore[arg-type]
+            PROTOCOL,
+            claim,
+        )
+
+
+def test_native_outputs_are_sealed_in_a_canonical_immutable_manifest(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "observed.csv"
+    second = tmp_path / "truth.csv"
+    first.write_bytes(b"1,0\n0,2\n")
+    second.write_bytes(b"1,3\n4,2\n")
+    metadata = {"software": "SymSim", "parameters": {"capture": 0.2}}
+
+    forward = seal_native_outputs(
+        {"native/observed.csv": first, "native/truth.csv": second}, metadata
+    )
+    reverse = seal_native_outputs(
+        {"native/truth.csv": second, "native/observed.csv": first}, metadata
+    )
+    metadata["parameters"]["capture"] = 0.9
+
+    assert isinstance(forward, NativeManifest)
+    assert forward == reverse
+    assert forward.manifest_sha256 == reverse.manifest_sha256
+    assert [entry.path for entry in forward.files] == [
+        "native/observed.csv",
+        "native/truth.csv",
+    ]
+    assert forward.metadata == {
+        "parameters": {"capture": 0.2},
+        "software": "SymSim",
+    }
+    assert forward.as_dict()["manifest_sha256"] == forward.manifest_sha256
+    with pytest.raises(FrozenInstanceError):
+        forward.manifest_sha256 = "0" * 64  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        NativeManifest(  # type: ignore[call-arg]
+            schema_version=1,
+            files=forward.files,
+            _metadata_json=forward._metadata_json,
+            manifest_sha256=forward.manifest_sha256,
+        )
+
+
+@pytest.mark.parametrize(
+    ("logical_path", "message"),
+    [
+        ("/absolute.txt", "relative"),
+        ("../escape.txt", "relative"),
+        ("native/../escape.txt", "relative"),
+        ("native\\file.txt", "POSIX"),
+        ("", "relative"),
+    ],
+)
+def test_native_logical_paths_are_strictly_relative(
+    tmp_path: Path, logical_path: str, message: str
+) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("stable", encoding="utf-8")
+
+    with pytest.raises(SimulationContractError, match=message):
+        seal_native_outputs({logical_path: output}, {"software": "fixture"})
+
+
+def test_native_files_reject_duplicate_inodes_and_hardlinks(tmp_path: Path) -> None:
+    output = tmp_path / "output.txt"
+    alias = tmp_path / "alias.txt"
+    output.write_text("stable", encoding="utf-8")
+    os.link(output, alias)
+
+    with pytest.raises(SimulationContractError, match="hard link|duplicate"):
+        seal_native_outputs(
+            {"native/output.txt": output, "native/alias.txt": alias},
+            {"software": "fixture"},
+        )
+
+
+def test_native_files_reject_two_names_for_the_same_file(tmp_path: Path) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("stable", encoding="utf-8")
+
+    with pytest.raises(SimulationContractError, match="duplicate inode"):
+        seal_native_outputs(
+            {"native/a.txt": output, "native/b.txt": output},
+            {"software": "fixture"},
+        )
+
+
+def test_native_files_must_be_nonempty_path_mapping_of_regular_files(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "directory"
+    directory.mkdir()
+
+    with pytest.raises(SimulationContractError, match="nonempty"):
+        seal_native_outputs({}, {"software": "fixture"})
+    with pytest.raises(SimulationContractError, match="pathlib.Path"):
+        seal_native_outputs(
+            {"native/output.txt": str(directory)},  # type: ignore[dict-item]
+            {"software": "fixture"},
+        )
+    with pytest.raises(SimulationContractError, match="regular file"):
+        seal_native_outputs({"native/output.txt": directory}, {"software": "fixture"})
+
+
+def test_native_files_reject_symlinks_and_symlinked_parents(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    output = real / "output.txt"
+    output.write_text("stable", encoding="utf-8")
+    file_link = tmp_path / "file-link"
+    file_link.symlink_to(output)
+    parent_link = tmp_path / "parent-link"
+    parent_link.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(SimulationContractError, match="symlink"):
+        seal_native_outputs({"native/output.txt": file_link}, {"software": "fixture"})
+    with pytest.raises(SimulationContractError, match="symlink"):
+        seal_native_outputs(
+            {"native/output.txt": parent_link / "output.txt"},
+            {"software": "fixture"},
+        )
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"value": float("nan")},
+        {"value": float("inf")},
+        {1: "non-string key"},
+        {"value": Path("not-json")},
+    ],
+)
+def test_native_metadata_must_be_finite_canonical_json(
+    tmp_path: Path, metadata: object
+) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("stable", encoding="utf-8")
+
+    with pytest.raises(SimulationContractError, match="metadata"):
+        seal_native_outputs({"native/output.txt": output}, metadata)  # type: ignore[arg-type]
+
+
+def test_native_sealing_rejects_mutation_during_hashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "output.bin"
+    output.write_bytes(b"x" * (2 * 1024 * 1024))
+    real_read = native_module.os.read
+    mutated = False
+
+    def mutate_after_first_read(descriptor: int, size: int) -> bytes:
+        nonlocal mutated
+        data = real_read(descriptor, size)
+        if data and not mutated:
+            mutated = True
+            with output.open("ab") as destination:
+                destination.write(b"changed")
+                destination.flush()
+                os.fsync(destination.fileno())
+        return data
+
+    monkeypatch.setattr(native_module.os, "read", mutate_after_first_read)
+
+    with pytest.raises(SimulationContractError, match="changed while hashing"):
+        seal_native_outputs({"native/output.bin": output}, {"software": "fixture"})
+
+
+def _truth_dataset(native_manifest_sha256: str) -> ad.AnnData:
+    observed = np.asarray([[0, 2], [1, 0]], dtype=np.int64)
+    truth = np.asarray([[1, 2], [1, 3]], dtype=np.int64)
+    obs = pd.DataFrame(
+        {
+            "dataset_id": ["dataset-fixture"] * 2,
+            "mechanism": ["symsim"] * 2,
+            "condition": ["moderate"] * 2,
+            "biological_id": ["draw-01"] * 2,
+            "technical_view": ["moderate"] * 2,
+            "draw": [1, 1],
+            "library_size": [2, 1],
+        },
+        index=["cell-01", "cell-02"],
+    )
+    adata = ad.AnnData(
+        X=observed,
+        obs=obs,
+        var=pd.DataFrame(index=["gene-01", "gene-02"]),
+        layers={"pre_capture_counts": truth},
+    )
+    adata.uns.update(
+        {
+            "truth_kind": "exact_pre_capture",
+            "primary_truth_layer": "pre_capture_counts",
+            "provenance": {
+                "source": "SymSim",
+                "source_sha256": "a" * 64,
+                "software": "SymSim",
+                "software_version": "76a674b",
+                "parameters": {
+                    "native_manifest_sha256": native_manifest_sha256,
+                },
+                "seeds": {"biological": 101, "measurement": 202},
+            },
+        }
+    )
+    return adata
+
+
+def test_simulation_artifact_is_frozen_and_binds_validated_translation(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native", encoding="utf-8")
+    manifest = seal_native_outputs(
+        {"native/output.txt": output}, {"software": "SymSim"}
+    )
+    adata = _truth_dataset(manifest.manifest_sha256)
+    dataset_hash = benchmark_dataset_sha256(adata)
+
+    artifact = SimulationArtifact(adata, manifest, dataset_hash)
+
+    assert artifact.dataset_sha256 == dataset_hash
+    assert artifact.native_manifest.manifest_sha256 == manifest.manifest_sha256
+    original_value = int(artifact.adata.X[0, 0])
+    adata.X[0, 0] = 99
+    assert int(artifact.adata.X[0, 0]) == original_value
+    exposed = artifact.adata
+    exposed.X[0, 0] = 88
+    assert int(artifact.adata.X[0, 0]) == original_value
+    assert benchmark_dataset_sha256(artifact.adata) == dataset_hash
+    with pytest.raises(FrozenInstanceError):
+        artifact.dataset_sha256 = "0" * 64  # type: ignore[misc]
+
+
+def test_simulation_artifact_rejects_missing_native_manifest_binding(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native", encoding="utf-8")
+    manifest = seal_native_outputs(
+        {"native/output.txt": output}, {"software": "SymSim"}
+    )
+    adata = _truth_dataset("b" * 64)
+
+    with pytest.raises(SimulationContractError, match="native manifest"):
+        SimulationArtifact(adata, manifest, benchmark_dataset_sha256(adata))
+
+
+def test_simulation_artifact_rejects_dataset_hash_mismatch(tmp_path: Path) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native", encoding="utf-8")
+    manifest = seal_native_outputs(
+        {"native/output.txt": output}, {"software": "SymSim"}
+    )
+    adata = _truth_dataset(manifest.manifest_sha256)
+
+    with pytest.raises(SimulationContractError, match="dataset_sha256"):
+        SimulationArtifact(adata, manifest, "0" * 64)
+
+
+def test_simulation_artifact_rejects_forged_native_manifest(tmp_path: Path) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native", encoding="utf-8")
+    manifest = seal_native_outputs(
+        {"native/output.txt": output}, {"software": "SymSim"}
+    )
+    forged = replace(manifest, manifest_sha256="0" * 64)
+    adata = _truth_dataset("0" * 64)
+
+    with pytest.raises(SimulationContractError, match="native manifest"):
+        SimulationArtifact(adata, forged, benchmark_dataset_sha256(adata))
+
+
+def test_simulation_artifact_rechecks_native_bytes_after_translation(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native before translation", encoding="utf-8")
+    manifest = seal_native_outputs(
+        {"native/output.txt": output}, {"software": "SymSim"}
+    )
+    adata = _truth_dataset(manifest.manifest_sha256)
+    dataset_hash = benchmark_dataset_sha256(adata)
+    output.write_text("changed during translation", encoding="utf-8")
+
+    with pytest.raises(SimulationContractError, match="changed.*seal|native file"):
+        SimulationArtifact(adata, manifest, dataset_hash)
+
+
+def test_simulation_artifact_rejects_schema_invalid_truth_dataset(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native", encoding="utf-8")
+    manifest = seal_native_outputs(
+        {"native/output.txt": output}, {"software": "SymSim"}
+    )
+    adata = _truth_dataset(manifest.manifest_sha256)
+    del adata.obs["biological_id"]
+
+    with pytest.raises(SimulationContractError, match="translated AnnData"):
+        SimulationArtifact(adata, manifest, "0" * 64)
+
+
+def test_simulation_artifact_rejects_nonfinite_translation(tmp_path: Path) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native", encoding="utf-8")
+    manifest = seal_native_outputs(
+        {"native/output.txt": output}, {"software": "SymSim"}
+    )
+    adata = _truth_dataset(manifest.manifest_sha256)
+    adata.X = np.asarray([[np.nan, 2.0], [1.0, 0.0]])
+
+    with pytest.raises(SimulationContractError, match="translated AnnData"):
+        SimulationArtifact(adata, manifest, "0" * 64)
