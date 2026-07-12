@@ -89,6 +89,7 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
     from maskimpute import MaskImputeConfig, PreZeroCountModelConfig
     from maskimpute_benchmark.methods.maskimpute import (
         MaskImputeAdapterExecution,
+        _run_in_tree,
         maskimpute_to_evaluator_counts,
         run_capacity_matched_ae,
         run_maskimpute,
@@ -144,6 +145,18 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
         development_mechanism="symsim",
         development_biological_id="draw-01",
     )
+    direct_ablation = _run_in_tree(
+        methods.by_id("maskimpute"),
+        method_input,
+        variant_id="direct-score",
+        calibration_artifact=calibration,
+        seed=42,
+        config=config,
+        count_model_config=score_config,
+        device="cpu",
+        development_mechanism="symsim",
+        development_biological_id="draw-01",
+    )
 
     assert isinstance(candidate, MaskImputeAdapterExecution)
     assert candidate.snapshot.method_id == "maskimpute"
@@ -178,6 +191,11 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
         control.snapshot.matrix,
     )
     assert candidate.command is None and control.command is None
+    assert direct_ablation.snapshot.method_id == "maskimpute"
+    assert direct_ablation.ablation_result.diagnostics["ablation"]["id"] == (
+        "direct-score"
+    )
+    assert direct_ablation.ablation_result.diagnostics["score"]["source"] == "direct"
     assert dict(candidate.environment_receipt)["device"] == "cpu"
 
 

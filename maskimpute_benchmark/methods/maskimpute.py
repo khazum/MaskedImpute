@@ -94,9 +94,19 @@ def _run_in_tree(
         input_scale="raw_counts",
         output_scale="raw_counts",
     )
-    expected_method = (
-        "maskimpute" if variant_id == "maskimpute-reference" else "capacity-matched-ae"
-    )
+    if variant_id == "capacity-matched-ae":
+        expected_method = "capacity-matched-ae"
+    elif variant_id in {
+        "maskimpute-reference",
+        "direct-score",
+        "no-gate",
+        "no-pre-zero-regularizer",
+        "no-explicit-mask",
+        "full-denoising",
+    }:
+        expected_method = "maskimpute"
+    else:
+        raise ValueError("ablation variant is not a tracked in-tree execution")
     if spec.id != expected_method:
         raise ValueError("method specification and ablation variant differ")
     if not isinstance(method_input, MethodInput):
