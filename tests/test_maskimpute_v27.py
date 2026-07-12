@@ -24,6 +24,21 @@ class _MaskedArrayProtocol:
         )
 
 
+class _ChangingArrayProtocol:
+    def __init__(self, first, second):
+        self._arrays = (np.asarray(first), np.asarray(second))
+        self.calls = 0
+
+    def __array__(self, dtype=None, copy=None):
+        index = min(self.calls, 1)
+        self.calls += 1
+        return np.array(
+            self._arrays[index],
+            dtype=dtype,
+            copy=True if copy is None else copy,
+        )
+
+
 def test_v27_configuration_prespecifies_validation_and_early_stopping():
     from maskimpute import MaskImputeConfig
 
@@ -34,6 +49,14 @@ def test_v27_configuration_prespecifies_validation_and_early_stopping():
         (np.log1p(2.0), np.log1p(8.0), np.log1p(32.0))
     )
     assert config.early_stopping_min_delta == pytest.approx(0.0)
+
+
+def test_v27_configuration_bounds_seed_to_publication_int64_domain():
+    from maskimpute import MaskImputeConfig
+
+    assert MaskImputeConfig(seed=2**63 - 1).seed == 2**63 - 1
+    with pytest.raises(ValueError, match="seed"):
+        MaskImputeConfig(seed=2**63)
 
 
 def test_explicit_mask_token_makes_unavailable_payload_irrelevant():
@@ -92,6 +115,62 @@ def test_observed_library_normalization_has_an_explicit_inverse_contract():
     np.testing.assert_allclose(restored, counts, rtol=1e-12, atol=1e-12)
     np.testing.assert_array_equal(normalized[0], np.zeros(3))
     np.testing.assert_array_equal(restored[0], np.zeros(3))
+
+
+def test_corrupted_encoder_normalization_cannot_see_unavailable_target_magnitude():
+    from maskimpute.model import ExplicitMaskAutoencoder
+    from maskimpute.train import normalize_available_encoder_input
+
+    availability = np.array([[True, False, True, False]], dtype=np.bool_)
+    first = np.array([[2, 5, 3, 11]], dtype=np.int64)
+    changed_hidden_targets = np.array([[2, 500, 3, 900]], dtype=np.int64)
+
+    first_input, first_library = normalize_available_encoder_input(
+        first, availability, target=1_000.0
+    )
+    changed_input, changed_library = normalize_available_encoder_input(
+        changed_hidden_targets, availability, target=1_000.0
+    )
+
+    np.testing.assert_array_equal(first_library, [5.0])
+    np.testing.assert_array_equal(changed_library, [5.0])
+    np.testing.assert_array_equal(first_input, changed_input)
+    model = ExplicitMaskAutoencoder(n_genes=4, hidden_dims=(5,), latent_dim=2)
+    encoded_first = model.prepare_encoder_input(
+        torch.tensor(first_input, dtype=torch.float32),
+        torch.tensor(availability),
+    )
+    encoded_changed = model.prepare_encoder_input(
+        torch.tensor(changed_input, dtype=torch.float32),
+        torch.tensor(availability),
+    )
+    torch.testing.assert_close(encoded_first, encoded_changed)
+
+
+def test_encoder_availability_is_single_snapshot_and_rejects_hidden_masks():
+    from maskimpute.train import normalize_available_encoder_input
+
+    counts = np.array([[1, 2], [3, 4]], dtype=np.int64)
+    changing = _ChangingArrayProtocol(
+        np.array([[True, False], [False, True]]),
+        np.array([[False, True], [True, False]]),
+    )
+    normalized, _ = normalize_available_encoder_input(counts, changing, target=1_000.0)
+    assert changing.calls == 1
+    np.testing.assert_array_equal(normalized > 0, [[True, False], [False, True]])
+
+    masked_protocol = _MaskedArrayProtocol(
+        [[True, False], [False, True]],
+        [[False, True], [False, False]],
+    )
+    with pytest.raises(TypeError, match="masked"):
+        normalize_available_encoder_input(counts, masked_protocol, target=1_000.0)
+
+    nested = np.empty((2, 2), dtype=object)
+    nested[:] = False
+    nested[0, 0] = np.ma.array(True, mask=True)
+    with pytest.raises(TypeError, match="masked"):
+        normalize_available_encoder_input(counts, nested, target=1_000.0)
 
 
 @pytest.mark.parametrize(
@@ -409,7 +488,10 @@ def test_selective_imputation_preserves_positives_and_audits_training_contract()
 
     diagnostics = result.diagnostics
     assert diagnostics["method_version"] == "v27"
-    assert diagnostics["score_source"] == "external_count_model_p_pre_zero"
+    assert diagnostics["score_source"] == (
+        "caller_supplied_count_model_p_pre_zero_unverified"
+    )
+    assert diagnostics["score_provenance_verified"] is False
     assert diagnostics["normalization"]["target"] == pytest.approx(10_000.0)
     assert diagnostics["normalization"]["zero_library_policy"] == "preserve_all_zero"
     assert diagnostics["masks"]["inference_unavailable"] == "observed_count_equals_zero"
@@ -488,6 +570,26 @@ def test_count_and_score_dtype_metadata_are_rejected():
         validate_p_pre_zero(metadata_score, plain_counts.astype(np.float64))
 
 
+def test_stateful_array_protocol_is_materialized_exactly_once_before_validation():
+    from maskimpute.train import validate_observed_counts, validate_p_pre_zero
+
+    counts_protocol = _ChangingArrayProtocol(
+        _tiny_counts(),
+        np.full_like(_tiny_counts(), -1),
+    )
+    counts = validate_observed_counts(counts_protocol)
+    np.testing.assert_array_equal(counts, _tiny_counts())
+    assert counts_protocol.calls == 1
+
+    probability_protocol = _ChangingArrayProtocol(
+        _tiny_probability(_tiny_counts()),
+        np.full_like(_tiny_probability(_tiny_counts()), np.nan),
+    )
+    probability = validate_p_pre_zero(probability_protocol, counts)
+    np.testing.assert_array_equal(probability, _tiny_probability(_tiny_counts()))
+    assert probability_protocol.calls == 1
+
+
 def test_cpu_reruns_are_exactly_reproducible_for_the_same_seed():
     from maskimpute import impute_counts
 
@@ -502,6 +604,35 @@ def test_cpu_reruns_are_exactly_reproducible_for_the_same_seed():
     np.testing.assert_array_equal(first.denoised_counts, second.denoised_counts)
     np.testing.assert_array_equal(first.latent, second.latent)
     assert first.diagnostics == second.diagnostics
+
+
+def test_training_scopes_deterministic_algorithms_and_restores_caller_rng_state():
+    from maskimpute import impute_counts
+
+    previous_deterministic = torch.are_deterministic_algorithms_enabled()
+    previous_warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    previous_state = torch.random.get_rng_state().clone()
+    try:
+        torch.use_deterministic_algorithms(False)
+        torch.manual_seed(919)
+        caller_state = torch.random.get_rng_state().clone()
+        result = impute_counts(
+            _tiny_counts(),
+            _tiny_probability(_tiny_counts()),
+            config=_tiny_config(max_epochs=1, patience=1),
+            device="cpu",
+        )
+
+        assert not torch.are_deterministic_algorithms_enabled()
+        torch.testing.assert_close(torch.random.get_rng_state(), caller_state)
+        assert result.diagnostics["randomness"]["deterministic_algorithms"] is True
+        assert result.diagnostics["randomness"]["caller_rng_state_restored"] is True
+    finally:
+        torch.random.set_rng_state(previous_state)
+        torch.use_deterministic_algorithms(
+            previous_deterministic,
+            warn_only=previous_warn_only,
+        )
 
 
 def _nested_masked_matrix() -> np.ndarray:
@@ -574,9 +705,10 @@ def test_public_api_rejects_invalid_or_positive_entry_scores(mutator):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
-def test_cuda_smoke_returns_finite_outputs_without_accuracy_assumptions():
+def test_cuda_smoke_returns_finite_outputs_without_accuracy_assumptions(monkeypatch):
     from maskimpute import impute_counts
 
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     counts = _tiny_counts()
     result = impute_counts(
         counts,
@@ -588,3 +720,18 @@ def test_cuda_smoke_returns_finite_outputs_without_accuracy_assumptions():
     assert np.all(np.isfinite(result.selective_counts))
     assert np.all(np.isfinite(result.denoised_counts))
     assert np.all(np.isfinite(result.latent))
+    assert result.diagnostics["randomness"]["cublas_workspace_config"] == ":4096:8"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is unavailable")
+def test_cuda_fails_closed_without_deterministic_cublas_workspace(monkeypatch):
+    from maskimpute import impute_counts
+
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    with pytest.raises(RuntimeError, match="CUBLAS_WORKSPACE_CONFIG"):
+        impute_counts(
+            _tiny_counts(),
+            _tiny_probability(_tiny_counts()),
+            config=_tiny_config(max_epochs=1, patience=1),
+            device="cuda",
+        )

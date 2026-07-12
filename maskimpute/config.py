@@ -84,7 +84,10 @@ class MaskImputeConfig:
         )
         for name in ("latent_dim", "batch_size", "max_epochs", "patience"):
             object.__setattr__(self, name, _positive_int(getattr(self, name), name))
-        object.__setattr__(self, "seed", _nonnegative_int(self.seed, "seed"))
+        seed = _nonnegative_int(self.seed, "seed")
+        if seed >= 2**63:
+            raise ValueError("seed must be less than 2**63")
+        object.__setattr__(self, "seed", seed)
 
         for name in ("learning_rate", "normalization_target"):
             object.__setattr__(

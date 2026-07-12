@@ -111,9 +111,16 @@ def impute_counts(
 
     diagnostics = {
         "method_version": "v27",
-        "score_source": "external_count_model_p_pre_zero",
+        "score_source": "caller_supplied_count_model_p_pre_zero_unverified",
+        "score_provenance_verified": False,
         "normalization": {
-            "formula": "log1p(observed_count / observed_library_size * target)",
+            "target_formula": (
+                "log1p(observed_count / full_observed_library_size * target)"
+            ),
+            "encoder_formula": (
+                "log1p(available_observed_count / corrupted_available_library_size "
+                "* target)"
+            ),
             "inverse": "expm1(value) * observed_library_size / target",
             "target": config.normalization_target,
             "zero_library_policy": "preserve_all_zero",
@@ -147,6 +154,9 @@ def impute_counts(
             "model_seed": config.seed,
             "validation_mask_seed": outcome.validation_seed,
             "epoch_mask_seed": outcome.training_seed,
+            "deterministic_algorithms": outcome.deterministic_algorithms,
+            "caller_rng_state_restored": outcome.caller_rng_state_restored,
+            "cublas_workspace_config": outcome.cublas_workspace_config,
         },
         "device": outcome.device,
         "gate": {

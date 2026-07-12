@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 import copy
+from functools import wraps
 import hashlib
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -35,6 +38,9 @@ class TrainingOutcome:
     validation_seed: int
     training_seed: int
     device: str
+    deterministic_algorithms: bool
+    caller_rng_state_restored: bool
+    cublas_workspace_config: str | None
 
 
 _MAX_EXACT_FLOAT64_INTEGER = 2**53
@@ -108,7 +114,7 @@ def _numeric_matrix_to_dense(value: object, name: str) -> tuple[np.ndarray, np.n
     if sparse.issparse(value):
         dense = np.asarray(coordinates.toarray(), dtype=np.float64, order="C")
     else:
-        dense = np.array(value, dtype=np.float64, copy=True, order="C", subok=False)
+        dense = np.array(matrix, dtype=np.float64, copy=True, order="C", subok=False)
     return dense, entries
 
 
@@ -186,6 +192,41 @@ def normalize_observed_counts(
     np.divide(float(target), library_sizes, out=scale, where=library_sizes > 0)
     normalized = np.log1p(counts * scale[:, None])
     return normalized, library_sizes
+
+
+def normalize_available_encoder_input(
+    observed_counts: object,
+    availability: object,
+    *,
+    target: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Normalize only the count payload visible in a corrupted encoder view."""
+
+    counts = validate_observed_counts(observed_counts)
+    if _contains_masked_array(availability):
+        raise TypeError("availability must not contain masked arrays")
+    coerced = np.asanyarray(availability)
+    if np.ma.isMaskedArray(coerced):
+        raise TypeError("availability must not contain masked arrays")
+    if coerced.dtype.metadata is not None:
+        raise TypeError("availability dtype metadata is not supported")
+    available = np.array(coerced, copy=True, order="C", subok=False)
+    if available.dtype != np.bool_ or available.shape != counts.shape:
+        raise ValueError("availability must be boolean with the count-matrix shape")
+    if isinstance(target, bool) or not np.isfinite(target) or target <= 0:
+        raise ValueError("target must be positive and finite")
+
+    visible_counts = np.where(available, counts, 0.0)
+    visible_library_sizes = visible_counts.sum(axis=1, dtype=np.float64)
+    scale = np.zeros_like(visible_library_sizes)
+    np.divide(
+        float(target),
+        visible_library_sizes,
+        out=scale,
+        where=visible_library_sizes > 0,
+    )
+    normalized = np.log1p(visible_counts * scale[:, None])
+    return normalized, visible_library_sizes
 
 
 def invert_observed_normalization(
@@ -397,12 +438,63 @@ def _mask_hash(mask: np.ndarray) -> str:
     return hashlib.sha256(np.ascontiguousarray(mask).tobytes()).hexdigest()
 
 
-def _seed_torch(seed: int) -> None:
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+@contextmanager
+def _scoped_deterministic_torch(seed: int, device: torch.device):
+    previous_cpu_rng = torch.random.get_rng_state().clone()
+    previous_cuda_rng = (
+        tuple(state.clone() for state in torch.cuda.get_rng_state_all())
+        if device.type == "cuda"
+        else None
+    )
+    previous_deterministic = torch.are_deterministic_algorithms_enabled()
+    previous_warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    previous_cudnn_deterministic = torch.backends.cudnn.deterministic
+    previous_cudnn_benchmark = torch.backends.cudnn.benchmark
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=False)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.manual_seed(seed)
+        if device.type == "cuda":
+            torch.cuda.manual_seed_all(seed)
+        yield
+    finally:
+        torch.random.set_rng_state(previous_cpu_rng)
+        if previous_cuda_rng is not None:
+            torch.cuda.set_rng_state_all(previous_cuda_rng)
+        torch.backends.cudnn.deterministic = previous_cudnn_deterministic
+        torch.backends.cudnn.benchmark = previous_cudnn_benchmark
+        torch.use_deterministic_algorithms(
+            previous_deterministic,
+            warn_only=previous_warn_only,
+        )
 
 
+def _deterministic_training_scope(function):
+    @wraps(function)
+    def wrapped(
+        observed_counts: object,
+        p_pre_zero: object,
+        config: MaskImputeConfig,
+        device: str | torch.device,
+    ) -> TrainingOutcome:
+        selected_device = torch.device(device)
+        if selected_device.type == "cuda":
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA was requested but is not available")
+            workspace = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+            if workspace not in {":4096:8", ":16:8"}:
+                raise RuntimeError(
+                    "deterministic CUDA requires CUBLAS_WORKSPACE_CONFIG "
+                    "to be ':4096:8' or ':16:8'"
+                )
+        with _scoped_deterministic_torch(config.seed, selected_device):
+            return function(observed_counts, p_pre_zero, config, selected_device)
+
+    return wrapped
+
+
+@_deterministic_training_scope
 def train_v27(
     observed_counts: object,
     p_pre_zero: object,
@@ -437,7 +529,6 @@ def train_v27(
     selected_device = torch.device(device)
     if selected_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
-    _seed_torch(config.seed)
     model = ExplicitMaskAutoencoder(
         n_genes=counts.shape[1],
         hidden_dims=config.hidden_dims,
@@ -449,7 +540,7 @@ def train_v27(
         weight_decay=config.weight_decay,
     )
 
-    expression = torch.as_tensor(
+    target_expression = torch.as_tensor(
         normalized, dtype=torch.float32, device=selected_device
     )
     positive = torch.as_tensor(counts > 0, dtype=torch.bool, device=selected_device)
@@ -457,6 +548,22 @@ def train_v27(
     score = torch.as_tensor(probability, dtype=torch.float32, device=selected_device)
     fixed_validation = torch.as_tensor(
         validation_mask,
+        dtype=torch.bool,
+        device=selected_device,
+    )
+    base_availability_numpy = (counts > 0) & ~validation_mask
+    validation_input_numpy, _ = normalize_available_encoder_input(
+        counts,
+        base_availability_numpy,
+        target=config.normalization_target,
+    )
+    validation_input = torch.as_tensor(
+        validation_input_numpy,
+        dtype=torch.float32,
+        device=selected_device,
+    )
+    base_availability = torch.as_tensor(
+        base_availability_numpy,
         dtype=torch.bool,
         device=selected_device,
     )
@@ -485,8 +592,22 @@ def train_v27(
             dtype=torch.bool,
             device=selected_device,
         )
-        base_availability = positive & ~fixed_validation
-        corrupted_availability = base_availability & ~artificial
+        corrupted_availability_numpy = base_availability_numpy & ~epoch_mask
+        corrupted_input_numpy, _ = normalize_available_encoder_input(
+            counts,
+            corrupted_availability_numpy,
+            target=config.normalization_target,
+        )
+        corrupted_input = torch.as_tensor(
+            corrupted_input_numpy,
+            dtype=torch.float32,
+            device=selected_device,
+        )
+        corrupted_availability = torch.as_tensor(
+            corrupted_availability_numpy,
+            dtype=torch.bool,
+            device=selected_device,
+        )
 
         row_order = training_rng.permutation(counts.shape[0])
         batch_losses: list[float] = []
@@ -494,10 +615,13 @@ def train_v27(
             rows_numpy = row_order[start : start + config.batch_size]
             rows = torch.as_tensor(rows_numpy, dtype=torch.long, device=selected_device)
             optimizer.zero_grad(set_to_none=True)
-            prediction, _ = model(expression[rows], corrupted_availability[rows])
+            prediction, _ = model(
+                corrupted_input[rows],
+                corrupted_availability[rows],
+            )
             primary_loss = _masked_positive_loss(
                 prediction,
-                expression[rows],
+                target_expression[rows],
                 artificial[rows],
             )
             preservation_loss = natural_zero_preservation_loss(
@@ -515,10 +639,13 @@ def train_v27(
 
         model.eval()
         with torch.no_grad():
-            validation_prediction, _ = model(expression, base_availability)
+            validation_prediction, _ = model(
+                validation_input,
+                base_availability,
+            )
             validation_loss = _masked_positive_loss(
                 validation_prediction,
-                expression,
+                target_expression,
                 fixed_validation,
             )
         validation_value = float(validation_loss.detach().cpu())
@@ -556,4 +683,11 @@ def train_v27(
         validation_seed=validation_seed,
         training_seed=training_seed,
         device=str(selected_device),
+        deterministic_algorithms=True,
+        caller_rng_state_restored=True,
+        cublas_workspace_config=(
+            os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+            if selected_device.type == "cuda"
+            else None
+        ),
     )
