@@ -15,7 +15,7 @@ EXPECTED_VARIANTS = (
     "no-pre-zero-regularizer",
     "no-explicit-mask",
     "full-denoising",
-    "calibrated-score",
+    "direct-score",
 )
 
 
@@ -58,6 +58,59 @@ def _identity_calibration_artifact():
     return artifact
 
 
+def _nonidentity_calibration_artifact():
+    from scipy.special import expit
+
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+        fit_development_calibration,
+    )
+
+    levels = np.array([0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.96])
+    records = []
+    for index, (draw, view, intercept) in enumerate(
+        (
+            ("draw-01", "moderate", -1.1),
+            ("draw-01", "severe", -1.1),
+            ("draw-02", "moderate", -0.9),
+            ("draw-02", "severe", -0.9),
+        ),
+        start=5,
+    ):
+        calibrated = expit(
+            0.5 * np.log(levels) - 1.7 * np.log1p(-levels) + intercept
+        )
+        probabilities = []
+        targets = []
+        for probability, calibrated_probability in zip(
+            levels, calibrated, strict=True
+        ):
+            positives = min(49, max(1, round(50 * calibrated_probability)))
+            probabilities.extend([float(probability)] * 50)
+            targets.extend([1] * positives + [0] * (50 - positives))
+        dataset_sha = hashlib.sha256(f"{draw}:{view}:nonidentity".encode()).hexdigest()
+        records.append(
+            CalibrationRecord(
+                p_pre_zero=probabilities,
+                target=targets,
+                mechanism="symsim",
+                biological_id=draw,
+                manifest_sha256=f"{index:x}" * 64,
+                truth_kind="exact_pre_capture",
+                namespace="dev",
+                data_role="development",
+                technical_view=view,
+                dataset_id=f"dataset-{dataset_sha[:24]}",
+                dataset_sha256=dataset_sha,
+                protocol_sha256=DEVELOPMENT_PROTOCOL_SHA256,
+            )
+        )
+    artifact = fit_development_calibration(records)
+    assert artifact.selected_algorithm == "isotonic"
+    return artifact
+
+
 def test_tracked_ablation_registry_is_complete_and_prespecified():
     from maskimpute.ablations import load_ablation_registry
 
@@ -69,7 +122,7 @@ def test_tracked_ablation_registry_is_complete_and_prespecified():
     assert registry.parameter_budget == "exact_nominal_match"
     assert registry.optimizer_budget == "shared_frozen_candidate_budget"
     assert registry.preprocessing_budget == "shared_except_named_component"
-    assert registry.reference.score_source == "direct"
+    assert registry.reference.score_source == "retained_calibrator"
 
     by_id = registry.by_id
     assert by_id["capacity-matched-ae"].positive_masking == "uniform"
@@ -80,7 +133,7 @@ def test_tracked_ablation_registry_is_complete_and_prespecified():
     assert by_id["no-pre-zero-regularizer"].pre_zero_regularizer is False
     assert by_id["no-explicit-mask"].encoder_mode == "implicit_numeric_zero"
     assert by_id["full-denoising"].output_policy == "full_gated"
-    assert by_id["calibrated-score"].score_source == "retained_calibrator"
+    assert by_id["direct-score"].score_source == "direct"
 
 
 def test_ablation_registry_is_immutable_and_defensively_indexed():
@@ -386,7 +439,7 @@ def test_ablation_outputs_isolate_gate_and_selective_copying():
     )
 
 
-def test_direct_and_calibrated_score_variants_use_only_the_supplied_count_score():
+def test_retained_reference_and_direct_score_ablation_use_only_count_score():
     from maskimpute.ablations import load_ablation_registry, resolve_score
     from maskimpute.calibration import ScoreCalibrator
 
@@ -396,11 +449,11 @@ def test_direct_and_calibrated_score_variants_use_only_the_supplied_count_score(
     calibrator = ScoreCalibrator.logistic(intercept=-0.4, slope=0.7)
 
     reference = load_ablation_registry(Path("study/ablations.json")).reference
-    direct = resolve_score(raw, observed, reference, calibrator=calibrator)
-    calibrated = resolve_score(
+    calibrated = resolve_score(raw, observed, reference, calibrator=calibrator)
+    direct = resolve_score(
         raw,
         observed,
-        by_id["calibrated-score"],
+        by_id["direct-score"],
         calibrator=calibrator,
     )
 
@@ -414,7 +467,7 @@ def test_direct_and_calibrated_score_variants_use_only_the_supplied_count_score(
         resolve_score(
             raw,
             observed,
-            by_id["calibrated-score"],
+            reference,
             calibrator=None,
         )
 
@@ -429,7 +482,7 @@ def test_noncontrol_ablations_change_only_the_declared_component():
         "no-pre-zero-regularizer": {"pre_zero_regularizer"},
         "no-explicit-mask": {"encoder_mode"},
         "full-denoising": {"output_policy"},
-        "calibrated-score": {"score_source"},
+        "direct-score": {"score_source"},
     }
     fields = {
         "positive_masking",
@@ -476,6 +529,8 @@ def test_single_ablation_rejects_unverified_score_or_calibration():
             MaskImputeConfig(max_epochs=1, patience=1),
             "cpu",
             cell_ids=("cell-a", "cell-b"),
+            development_mechanism="symsim",
+            development_biological_id="draw-01",
         )
 
     score = fit_p_pre_zero_count_model(
@@ -492,7 +547,67 @@ def test_single_ablation_rejects_unverified_score_or_calibration():
             MaskImputeConfig(max_epochs=1, patience=1),
             "cpu",
             cell_ids=("cell-a", "cell-b"),
+            development_mechanism="symsim",
+            development_biological_id="draw-01",
         )
+
+
+def test_development_reference_uses_heldout_fold_not_all_development_calibrator():
+    from maskimpute import (
+        MaskImputeConfig,
+        PreZeroCountModelConfig,
+        fit_p_pre_zero_count_model,
+    )
+    from maskimpute.ablations import _fit_ablation_once, load_ablation_registry
+
+    counts = np.array(
+        [[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64
+    )
+    cell_ids = tuple(f"cell-{index}" for index in range(len(counts)))
+    score = fit_p_pre_zero_count_model(
+        counts,
+        cell_ids,
+        PreZeroCountModelConfig(n_folds=2, link_max_iter=25),
+    )
+    artifact = _nonidentity_calibration_artifact()
+    result = _fit_ablation_once(
+        counts,
+        score,
+        artifact,
+        load_ablation_registry(Path("study/ablations.json")).reference,
+        MaskImputeConfig(
+            hidden_dims=(5,),
+            latent_dim=2,
+            batch_size=2,
+            max_epochs=1,
+            patience=1,
+            seed=42,
+        ),
+        "cpu",
+        cell_ids=cell_ids,
+        development_mechanism="symsim",
+        development_biological_id="draw-01",
+    )
+    direct = score.score_for_counts(counts, cell_ids)
+    observed_zero = counts == 0
+    expected = np.zeros_like(direct)
+    expected[observed_zero] = artifact.transform_for_development_holdout(
+        direct[observed_zero],
+        mechanism="symsim",
+        biological_id="draw-01",
+    )
+    full = np.zeros_like(direct)
+    full[observed_zero] = artifact.transform(direct[observed_zero])
+
+    np.testing.assert_allclose(result.p_pre_zero, expected)
+    assert not np.array_equal(result.p_pre_zero, full)
+    assert result.diagnostics["score"]["calibration_scope"] == (
+        "leave_one_biological_draw_out"
+    )
+    assert result.diagnostics["score"]["calibration_holdout"] == {
+        "mechanism": "symsim",
+        "biological_id": "draw-01",
+    }
 
 
 def test_single_ablation_executes_model_mask_loss_score_and_output_contracts():
@@ -546,6 +661,8 @@ def test_single_ablation_executes_model_mask_loss_score_and_output_contracts():
             config,
             "cpu",
             cell_ids=cell_ids,
+            development_mechanism="symsim",
+            development_biological_id="draw-01",
         )
         for spec in specifications
     }
@@ -585,12 +702,12 @@ def test_single_ablation_executes_model_mask_loss_score_and_output_contracts():
         == "full_gated"
     )
     assert (
-        results["calibrated-score"].diagnostics["score"]["equivalence_reason"]
-        == "retained_identity_calibrator_equals_direct_score"
+        results["direct-score"].diagnostics["score"]["equivalence_reason"]
+        == "direct_cross_fitted_count_score"
     )
     assert (
         results["maskimpute-reference"].diagnostics["score"]["equivalence_reason"]
-        == "direct_cross_fitted_count_score"
+        == "retained_identity_calibrator_equals_direct_score"
     )
     reference_diagnostics = results["maskimpute-reference"].diagnostics
     assert reference_diagnostics["gate"] == {
@@ -602,11 +719,11 @@ def test_single_ablation_executes_model_mask_loss_score_and_output_contracts():
     assert reference_diagnostics["budget"]["base_config"]["gate_gamma"] == 1.0
     np.testing.assert_array_equal(
         results["maskimpute-reference"].p_pre_zero,
-        results["calibrated-score"].p_pre_zero,
+        results["direct-score"].p_pre_zero,
     )
     np.testing.assert_allclose(
         results["maskimpute-reference"].selective_counts,
-        results["calibrated-score"].selective_counts,
+        results["direct-score"].selective_counts,
         rtol=0,
         atol=0,
     )
@@ -618,7 +735,7 @@ def test_single_ablation_executes_model_mask_loss_score_and_output_contracts():
             "no-pre-zero-regularizer",
             "no-explicit-mask",
             "full-denoising",
-            "calibrated-score",
+            "direct-score",
         )
     }
     assert len(noncontrol_mask_hashes) == 1
@@ -627,7 +744,7 @@ def test_single_ablation_executes_model_mask_loss_score_and_output_contracts():
         "no-gate",
         "no-pre-zero-regularizer",
         "no-explicit-mask",
-        "calibrated-score",
+        "direct-score",
     ):
         output = results[variant_id].selective_counts
         np.testing.assert_array_equal(output[counts > 0], counts[counts > 0])

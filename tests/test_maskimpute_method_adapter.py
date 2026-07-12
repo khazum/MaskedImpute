@@ -130,6 +130,8 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
         config=config,
         count_model_config=score_config,
         device="cpu",
+        development_mechanism="symsim",
+        development_biological_id="draw-01",
     )
     control = run_capacity_matched_ae(
         methods.by_id("capacity-matched-ae"),
@@ -139,6 +141,8 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
         config=config,
         count_model_config=score_config,
         device="cpu",
+        development_mechanism="symsim",
+        development_biological_id="draw-01",
     )
 
     assert isinstance(candidate, MaskImputeAdapterExecution)
@@ -160,6 +164,9 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
     assert candidate.ablation_result.output_policy == "selective"
     assert candidate.ablation_result.p_pre_zero.shape == counts.shape
     assert candidate.ablation_result.diagnostics["score"]["artifact_integrity_verified"]
+    assert candidate.ablation_result.diagnostics["score"]["calibration_scope"] == (
+        "leave_one_biological_draw_out"
+    )
     assert not candidate.ablation_result.diagnostics["score"][
         "source_authorized_by_panel"
     ]
@@ -193,6 +200,8 @@ def test_maskimpute_adapter_rejects_seed_or_artifact_drift():
             config=config,
             count_model_config=PreZeroCountModelConfig(n_folds=2),
             device="cpu",
+            development_mechanism="symsim",
+            development_biological_id="draw-01",
         )
     with pytest.raises(TypeError, match="CalibrationArtifact"):
         run_maskimpute(
@@ -203,4 +212,6 @@ def test_maskimpute_adapter_rejects_seed_or_artifact_drift():
             config=config,
             count_model_config=PreZeroCountModelConfig(n_folds=2),
             device="cpu",
+            development_mechanism="symsim",
+            development_biological_id="draw-01",
         )

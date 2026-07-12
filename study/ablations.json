@@ -12,7 +12,7 @@
     "encoder_mode": "explicit_mask",
     "gate": "power_complement",
     "output_policy": "selective",
-    "score_source": "direct"
+    "score_source": "retained_calibrator"
   },
   "variants": [
     {
@@ -23,7 +23,7 @@
       "encoder_mode": "explicit_mask",
       "gate": "none",
       "output_policy": "full_ungated",
-      "score_source": "direct"
+      "score_source": "retained_calibrator"
     },
     {
       "id": "no-gate",
@@ -33,7 +33,7 @@
       "encoder_mode": "explicit_mask",
       "gate": "none",
       "output_policy": "selective",
-      "score_source": "direct"
+      "score_source": "retained_calibrator"
     },
     {
       "id": "no-pre-zero-regularizer",
@@ -43,7 +43,7 @@
       "encoder_mode": "explicit_mask",
       "gate": "power_complement",
       "output_policy": "selective",
-      "score_source": "direct"
+      "score_source": "retained_calibrator"
     },
     {
       "id": "no-explicit-mask",
@@ -53,7 +53,7 @@
       "encoder_mode": "implicit_numeric_zero",
       "gate": "power_complement",
       "output_policy": "selective",
-      "score_source": "direct"
+      "score_source": "retained_calibrator"
     },
     {
       "id": "full-denoising",
@@ -63,17 +63,17 @@
       "encoder_mode": "explicit_mask",
       "gate": "power_complement",
       "output_policy": "full_gated",
-      "score_source": "direct"
+      "score_source": "retained_calibrator"
     },
     {
-      "id": "calibrated-score",
+      "id": "direct-score",
       "changed_component": "score_source",
       "positive_masking": "log_count_stratified",
       "pre_zero_regularizer": true,
       "encoder_mode": "explicit_mask",
       "gate": "power_complement",
       "output_policy": "selective",
-      "score_source": "retained_calibrator"
+      "score_source": "direct"
     }
   ]
 }

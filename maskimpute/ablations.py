@@ -38,13 +38,13 @@ _VARIANT_ORDER = (
     "no-pre-zero-regularizer",
     "no-explicit-mask",
     "full-denoising",
-    "calibrated-score",
+    "direct-score",
 )
 _TRACKED_ABLATION_REGISTRY = (
     Path(__file__).resolve().parents[1] / "study" / "ablations.json"
 )
 _TRACKED_ABLATION_REGISTRY_SHA256 = (
-    "79b89fcdf39dd7881bfc08090f701fecb5439953873e60064dbc1bc7dc8d66b9"
+    "dd4da34e0ebe5e7eb349fac3ed89063781bcddf640b01601b9a3c82a2e43b26f"
 )
 _SPEC_FIELDS = {
     "id",
@@ -70,7 +70,7 @@ _EXPECTED_SINGLE_CHANGES: Mapping[str, frozenset[str]] = MappingProxyType(
         "no-pre-zero-regularizer": frozenset({"pre_zero_regularizer"}),
         "no-explicit-mask": frozenset({"encoder_mode"}),
         "full-denoising": frozenset({"output_policy"}),
-        "calibrated-score": frozenset({"score_source"}),
+        "direct-score": frozenset({"score_source"}),
     }
 )
 
@@ -155,7 +155,7 @@ class AblationSpec:
                 "encoder_mode": "explicit_mask",
                 "gate": "none",
                 "output_policy": "full_ungated",
-                "score_source": "direct",
+                "score_source": "retained_calibrator",
             }
             if any(getattr(self, field) != value for field, value in expected.items()):
                 raise ValueError("capacity-matched control bundle is not prespecified")
@@ -314,7 +314,7 @@ def _parse_ablation_registry_bytes(raw: bytes) -> AblationRegistry:
         "no-pre-zero-regularizer": "pre_zero_regularizer",
         "no-explicit-mask": "encoder_mode",
         "full-denoising": "output_policy",
-        "calibrated-score": "score_source",
+        "direct-score": "score_source",
     }
     for spec in variants:
         if spec.changed_component != expected_components[spec.id]:
@@ -638,6 +638,8 @@ def _fit_ablation_once(
     device: object,
     *,
     cell_ids: object,
+    development_mechanism: str,
+    development_biological_id: str,
 ):
     """Fit one development ablation from verified, truth-free score artifacts.
 
@@ -660,6 +662,15 @@ def _fit_ablation_once(
     config = replace(config)
     if config.seed not in registry.model_seeds:
         raise ValueError("config seed is outside the tracked ablation seed panel")
+    if development_mechanism not in {
+        "symsim",
+        "sergio",
+        "sparsim",
+        "semisynthetic",
+    }:
+        raise ValueError("development_mechanism is outside the tracked panel")
+    if development_biological_id not in {"draw-01", "draw-02"}:
+        raise ValueError("development_biological_id is outside the tracked panel")
     resolved_config = resolve_training_config(config, trusted_spec)
 
     counts = validate_observed_counts(observed_counts)
@@ -675,11 +686,49 @@ def _fit_ablation_once(
     calibration_payload = verified_calibration.to_dict()
 
     probability = np.array(direct_score, copy=True)
+    calibration_scope = "not_applicable_direct_score"
+    calibration_holdout = None
+    calibration_fold_receipt = None
     if trusted_spec.score_source == "retained_calibrator":
         observed_zero = counts == 0
-        probability[observed_zero] = verified_calibration.transform(
-            direct_score[observed_zero]
-        )
+        if development_mechanism == "symsim":
+            probability[observed_zero] = (
+                verified_calibration.transform_for_development_holdout(
+                    direct_score[observed_zero],
+                    mechanism=development_mechanism,
+                    biological_id=development_biological_id,
+                )
+            )
+            calibration_scope = "leave_one_biological_draw_out"
+            calibration_holdout = {
+                "mechanism": development_mechanism,
+                "biological_id": development_biological_id,
+            }
+            fold = next(
+                value
+                for value in calibration_payload[
+                    "development_holdout_calibrators"
+                ]
+                if value["mechanism"] == development_mechanism
+                and value["biological_id"] == development_biological_id
+            )
+            calibration_fold_receipt = {
+                "calibrator_algorithm": fold["calibrator"]["algorithm"],
+                "calibrator_sha256": _canonical_payload_sha256(
+                    fold["calibrator"]
+                ),
+                "held_out_manifest_sha256s": tuple(
+                    fold["held_out_manifest_sha256s"]
+                ),
+                "training_manifest_sha256s": tuple(
+                    fold["training_manifest_sha256s"]
+                ),
+            }
+        else:
+            probability[observed_zero] = verified_calibration.transform(
+                direct_score[observed_zero]
+            )
+            calibration_scope = "all_development_external_exact_truth_mechanism"
         probability[counts > 0] = 0.0
         probability = validate_p_pre_zero(probability, counts)
         if verified_calibration.selected_algorithm == "identity":
@@ -806,6 +855,9 @@ def _fit_ablation_once(
             "score_config_sha256": score_manifest["config_sha256"],
             "calibration_artifact_sha256": calibration_payload["payload_sha256"],
             "retained_calibrator": verified_calibration.selected_algorithm,
+            "calibration_scope": calibration_scope,
+            "calibration_holdout": calibration_holdout,
+            "calibration_fold_receipt": calibration_fold_receipt,
             "equivalence_reason": equivalence_reason,
         },
         "masks": {

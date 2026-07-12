@@ -85,6 +85,8 @@ def _run_in_tree(
     config: MaskImputeConfig,
     count_model_config: PreZeroCountModelConfig,
     device: str | torch.device,
+    development_mechanism: str,
+    development_biological_id: str,
 ) -> MaskImputeAdapterExecution:
     require_method_spec(
         spec,
@@ -132,6 +134,8 @@ def _run_in_tree(
         config,
         device,
         cell_ids=method_input.obs_ids,
+        development_mechanism=development_mechanism,
+        development_biological_id=development_biological_id,
     )
     snapshot = finalize_maskimpute_output(
         spec,
@@ -150,7 +154,7 @@ def _run_in_tree(
         ),
         CompatibilityEvent(
             "development_authority_boundary",
-            "adapter validates artifact integrity; the evaluator runner separately authorizes dataset/config/score/calibration hashes and complete run grid",
+            "adapter validates artifact integrity and applies the held-out draw calibrator for SymSim; the evaluator runner separately authorizes dataset/config/score/calibration hashes and the complete run grid",
         ),
         CompatibilityEvent(
             "evaluator_scale_conversion",
@@ -188,8 +192,10 @@ def run_maskimpute(
     config: MaskImputeConfig,
     count_model_config: PreZeroCountModelConfig,
     device: str | torch.device,
+    development_mechanism: str,
+    development_biological_id: str,
 ) -> MaskImputeAdapterExecution:
-    """Run the direct-score selective v27 candidate on a truth-free input."""
+    """Run the retained-calibrator selective v27 candidate on a truth-free input."""
 
     return _run_in_tree(
         spec,
@@ -200,6 +206,8 @@ def run_maskimpute(
         config=config,
         count_model_config=count_model_config,
         device=device,
+        development_mechanism=development_mechanism,
+        development_biological_id=development_biological_id,
     )
 
 
@@ -212,6 +220,8 @@ def run_capacity_matched_ae(
     config: MaskImputeConfig,
     count_model_config: PreZeroCountModelConfig,
     device: str | torch.device,
+    development_mechanism: str,
+    development_biological_id: str,
 ) -> MaskImputeAdapterExecution:
     """Run the prespecified full-output capacity-matched masked-AE control."""
 
@@ -224,6 +234,8 @@ def run_capacity_matched_ae(
         config=config,
         count_model_config=count_model_config,
         device=device,
+        development_mechanism=development_mechanism,
+        development_biological_id=development_biological_id,
     )
 
 
