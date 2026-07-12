@@ -37,6 +37,20 @@ def _hidden_dims(value: object) -> tuple[int, ...]:
     return result
 
 
+def _log_count_bin_edges(value: object) -> tuple[float, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
+        raise TypeError("log_count_bin_edges must be a sequence of finite values")
+    result = tuple(
+        _finite_float(item, "log_count_bin_edges entry", positive=True)
+        for item in value
+    )
+    if not result:
+        raise ValueError("log_count_bin_edges must not be empty")
+    if any(right <= left for left, right in zip(result, result[1:])):
+        raise ValueError("log_count_bin_edges must be strictly increasing")
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class MaskImputeConfig:
     """Configuration shared by MaskImpute training and inference."""
@@ -49,6 +63,13 @@ class MaskImputeConfig:
     max_epochs: int = 300
     patience: int = 30
     artificial_mask_fraction: float = 0.20
+    validation_fraction: float = 0.10
+    log_count_bin_edges: tuple[float, ...] = (
+        math.log1p(2.0),
+        math.log1p(8.0),
+        math.log1p(32.0),
+    )
+    early_stopping_min_delta: float = 0.0
     pre_zero_regularization: float = 1.0
     gate_gamma: float = 1.0
     normalization_target: float = 10_000.0
@@ -56,6 +77,11 @@ class MaskImputeConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "hidden_dims", _hidden_dims(self.hidden_dims))
+        object.__setattr__(
+            self,
+            "log_count_bin_edges",
+            _log_count_bin_edges(self.log_count_bin_edges),
+        )
         for name in ("latent_dim", "batch_size", "max_epochs", "patience"):
             object.__setattr__(self, name, _positive_int(getattr(self, name), name))
         object.__setattr__(self, "seed", _nonnegative_int(self.seed, "seed"))
@@ -66,7 +92,12 @@ class MaskImputeConfig:
                 name,
                 _finite_float(getattr(self, name), name, positive=True),
             )
-        for name in ("weight_decay", "pre_zero_regularization", "gate_gamma"):
+        for name in (
+            "weight_decay",
+            "early_stopping_min_delta",
+            "pre_zero_regularization",
+            "gate_gamma",
+        ):
             object.__setattr__(
                 self,
                 name,
@@ -81,3 +112,12 @@ class MaskImputeConfig:
         if fraction >= 1:
             raise ValueError("artificial_mask_fraction must be less than 1")
         object.__setattr__(self, "artificial_mask_fraction", fraction)
+
+        validation_fraction = _finite_float(
+            self.validation_fraction,
+            "validation_fraction",
+            positive=True,
+        )
+        if validation_fraction >= 1:
+            raise ValueError("validation_fraction must be less than 1")
+        object.__setattr__(self, "validation_fraction", validation_fraction)

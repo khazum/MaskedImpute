@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+ml = ["torch>=2.2,<3"]
 test = ["pytest>=8,<9"]
 
 [tool.setuptools.packages.find]
