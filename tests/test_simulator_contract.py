@@ -546,6 +546,67 @@ def test_final_request_rechecks_claim_after_output_path_use(
         validate_simulation_request(request, PROTOCOL, claim)
 
 
+def test_final_pair_rechecks_claim_after_pair_output_path_use(
+    final_repo: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, round_dir = final_repo
+    materialize_final(round_dir, seed_count=4, repo=repo)
+    assert_final_runnable(repo, round_dir)
+    claim = load_final_manifest_claim(repo, round_dir)
+    moderate = SimulationRequest(
+        mechanism="symsim",
+        namespace="final",
+        biological_id="draw-01",
+        biological_seed=claim.generator_seeds[0],
+        measurement_seed=claim.generator_seeds[1],
+        technical_view="moderate",
+        cells=PROTOCOL.final.cells,
+        genes=PROTOCOL.final.genes,
+        output_path=round_dir / "results/final/moderate.h5ad",
+    )
+    severe = replace(
+        moderate,
+        measurement_seed=claim.generator_seeds[2],
+        technical_view="severe",
+        output_path=round_dir / "results/final/severe.h5ad",
+    )
+    real_revalidate = base_module._revalidate_final_manifest_claim
+    real_resolve = Path.resolve
+    claim_checks = 0
+    pair_paths_are_active = False
+    transitioned = False
+
+    def revalidate_then_arm(
+        current_claim: FinalManifestClaim | None,
+    ) -> FinalManifestClaim:
+        nonlocal claim_checks, pair_paths_are_active
+        validated = real_revalidate(current_claim)
+        claim_checks += 1
+        if claim_checks == 4:
+            pair_paths_are_active = True
+        return validated
+
+    def resolve_then_supersede(self: Path, *args: object, **kwargs: object) -> Path:
+        nonlocal pair_paths_are_active, transitioned
+        resolved = real_resolve(self, *args, **kwargs)
+        if pair_paths_are_active and not transitioned and self == moderate.output_path:
+            pair_paths_are_active = False
+            transitioned = True
+            supersede_round(round_dir, "transition during pair path validation")
+        return resolved
+
+    monkeypatch.setattr(
+        base_module,
+        "_revalidate_final_manifest_claim",
+        revalidate_then_arm,
+    )
+    monkeypatch.setattr(Path, "resolve", resolve_then_supersede)
+
+    with pytest.raises(SimulationContractError, match="claim|running|superseded"):
+        validate_paired_simulation_requests((moderate, severe), PROTOCOL, claim)
+    assert transitioned
+
+
 def test_paired_requests_reject_output_aliases_after_resolution(tmp_path: Path) -> None:
     real = tmp_path / "real"
     real.mkdir()
@@ -563,6 +624,56 @@ def test_paired_requests_reject_output_aliases_after_resolution(tmp_path: Path) 
     )
 
     with pytest.raises(SimulationContractError, match="output paths"):
+        validate_paired_simulation_requests((moderate, severe), PROTOCOL)
+
+
+def test_paired_requests_reject_hard_linked_output_destinations(
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "dev/symsim"
+    output_root.mkdir(parents=True)
+    moderate_path = output_root / "moderate.h5ad"
+    severe_path = output_root / "severe.h5ad"
+    moderate_path.write_bytes(b"existing output")
+    os.link(moderate_path, severe_path)
+    moderate = _request(tmp_path, output_path=moderate_path)
+    severe = replace(
+        moderate,
+        technical_view="severe",
+        measurement_seed=303,
+        output_path=severe_path,
+    )
+
+    with pytest.raises(SimulationContractError, match="output paths|alias|inode"):
+        validate_paired_simulation_requests((moderate, severe), PROTOCOL)
+
+
+def test_paired_output_identity_inspection_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output_root = tmp_path / "dev/symsim"
+    output_root.mkdir(parents=True)
+    moderate_path = output_root / "moderate.h5ad"
+    severe_path = output_root / "severe.h5ad"
+    moderate_path.write_bytes(b"moderate")
+    severe_path.write_bytes(b"severe")
+    moderate = _request(tmp_path, output_path=moderate_path)
+    severe = replace(
+        moderate,
+        technical_view="severe",
+        measurement_seed=303,
+        output_path=severe_path,
+    )
+    real_lstat = Path.lstat
+
+    def deny_output_inspection(self: Path) -> os.stat_result:
+        if self == moderate_path:
+            raise PermissionError("injected output inspection failure")
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", deny_output_inspection)
+
+    with pytest.raises(SimulationContractError, match="output.*inspect"):
         validate_paired_simulation_requests((moderate, severe), PROTOCOL)
 
 
@@ -1048,6 +1159,58 @@ def test_simulation_artifact_binds_native_request_identity(tmp_path: Path) -> No
         output,
         request,
         request_identity=wrong_identity,
+    )
+    adata = _truth_dataset(request, manifest.manifest_sha256)
+
+    with pytest.raises(SimulationContractError, match="request identity"):
+        SimulationArtifact(
+            request,
+            adata,
+            manifest,
+            benchmark_dataset_sha256(adata),
+        )
+
+
+def test_simulation_artifact_rejects_boolean_seed_request_identity(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native", encoding="utf-8")
+    request = _artifact_request(tmp_path, biological_seed=1)
+    confused_identity = _request_identity(request)
+    confused_identity["biological_seed"] = True
+    manifest = _seal_for_request(
+        output,
+        request,
+        request_identity=confused_identity,
+    )
+    adata = _truth_dataset(request, manifest.manifest_sha256)
+
+    with pytest.raises(SimulationContractError, match="request identity"):
+        SimulationArtifact(
+            request,
+            adata,
+            manifest,
+            benchmark_dataset_sha256(adata),
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["biological_seed", "measurement_seed", "cells", "genes"],
+)
+def test_simulation_artifact_rejects_float_integer_request_identity(
+    tmp_path: Path, field: str
+) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native", encoding="utf-8")
+    request = _artifact_request(tmp_path)
+    confused_identity = _request_identity(request)
+    confused_identity[field] = float(confused_identity[field])
+    manifest = _seal_for_request(
+        output,
+        request,
+        request_identity=confused_identity,
     )
     adata = _truth_dataset(request, manifest.manifest_sha256)
 

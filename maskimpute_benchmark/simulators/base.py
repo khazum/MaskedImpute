@@ -88,9 +88,11 @@ class SimulationArtifact:
             raise TypeError("request must be a SimulationRequest")
         draw_index = _biological_draw_index(request.biological_id)
         revalidate_native_outputs(native_manifest)
-        if native_manifest.metadata.get(
-            "simulation_request"
-        ) != simulation_request_identity(request):
+        native_request = native_manifest.metadata.get("simulation_request")
+        expected_request = simulation_request_identity(request)
+        if not isinstance(native_request, Mapping) or canonical_sha256(
+            native_request
+        ) != canonical_sha256(expected_request):
             raise SimulationContractError(
                 "native manifest does not bind the exact simulation request identity"
             )
@@ -396,6 +398,18 @@ def _validate_final_output_path(
         )
 
 
+def _existing_output_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise SimulationContractError(
+            "paired technical-view output paths could not be inspected"
+        ) from error
+    return metadata.st_dev, metadata.st_ino
+
+
 def validate_simulation_request(
     request: SimulationRequest,
     protocol: Protocol,
@@ -524,10 +538,20 @@ def validate_paired_simulation_requests(
         raise SimulationContractError(
             "paired technical views must use distinct output paths"
         )
+    first_identity = _existing_output_identity(first_output)
+    second_identity = _existing_output_identity(second_output)
+    if first_identity is not None and first_identity == second_identity:
+        raise SimulationContractError(
+            "paired technical views must use distinct output paths and inodes"
+        )
     if first.independent_unit_id != second.independent_unit_id:
         raise SimulationContractError(
             "paired technical views cannot claim independent biological units"
         )
+    if first.namespace == protocol.final.namespace:
+        # Pair-level comparisons and path inspection occur after each request's
+        # own terminal check, so close transitions triggered during that work.
+        _revalidate_final_manifest_claim(final_manifest)
 
 
 def load_final_manifest_claim(repo: Path, round_dir: Path) -> FinalManifestClaim:
