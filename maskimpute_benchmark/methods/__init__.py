@@ -54,13 +54,6 @@ from .magic import (
     magic_to_evaluator_counts,
     run_magic,
 )
-from .maskimpute import (
-    MaskImputeAdapterExecution,
-    finalize_maskimpute_output,
-    maskimpute_to_evaluator_counts,
-    run_capacity_matched_ae,
-    run_maskimpute,
-)
 from .observed import (
     AdapterExecution,
     AdapterUnavailableError,
@@ -69,6 +62,7 @@ from .observed import (
     count_equivalent_to_log2_cp10k,
     log1p_cp10k,
     observed_to_evaluator_counts,
+    raw_output_to_count_equivalent,
     run_observed,
     verify_pinned_source,
 )
@@ -96,6 +90,15 @@ from .scvi import (
     run_scvi,
     scvi_to_evaluator_counts,
 )
+
+
+def maskimpute_to_evaluator_counts(
+    method_input: MethodInput,
+    native_output: object,
+) -> np.ndarray:
+    """Convert an in-tree raw output without importing the optional Torch stack."""
+
+    return raw_output_to_count_equivalent(method_input, native_output)
 
 
 CORE_EVALUATOR_COUNT_CONVERTERS = MappingProxyType(
@@ -234,6 +237,26 @@ def recent_output_to_evaluator_log2_cp10k(
 
     counts = recent_output_to_evaluator_counts(method_input, snapshot)
     return count_equivalent_to_log2_cp10k(counts)
+
+
+_LAZY_MASKIMPUTE_EXPORTS = frozenset(
+    {
+        "MaskImputeAdapterExecution",
+        "finalize_maskimpute_output",
+        "run_capacity_matched_ae",
+        "run_maskimpute",
+    }
+)
+
+
+def __getattr__(name: str):
+    if name in _LAZY_MASKIMPUTE_EXPORTS:
+        from importlib import import_module
+
+        value = getattr(import_module(".maskimpute", __name__), name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

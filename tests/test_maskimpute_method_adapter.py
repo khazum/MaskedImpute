@@ -2,9 +2,35 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
+
+
+def test_benchmark_method_registry_import_does_not_require_torch():
+    script = r"""
+import importlib.abc
+import sys
+class BlockTorch(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "torch" or fullname.startswith("torch."):
+            raise ModuleNotFoundError("torch import blocked by test")
+        return None
+sys.meta_path.insert(0, BlockTorch())
+import maskimpute_benchmark.methods as methods
+assert "maskimpute" in methods.CORE_EVALUATOR_COUNT_CONVERTERS
+assert "torch" not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
 
 
 def _method_input(counts: np.ndarray):
