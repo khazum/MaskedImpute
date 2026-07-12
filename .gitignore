@@ -27,6 +27,7 @@ htmlcov/
 # Build artifacts
 build/
 dist/
+artifacts/
 
 # Data outputs
 *.rds
