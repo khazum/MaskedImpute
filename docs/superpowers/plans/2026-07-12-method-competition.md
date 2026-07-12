@@ -159,6 +159,10 @@ All variants share parameter count, optimizer budget, seeds, and preprocessing u
 - Create: `maskimpute_benchmark/methods/scsdae.py`
 - Create: `maskimpute_benchmark/methods/sccr.py`
 - Create: `maskimpute_benchmark/methods/d3impute.py`
+- Create: `maskimpute_benchmark/methods/scziva.py`
+- Create: `maskimpute_benchmark/methods/afmf.py`
+- Create: `maskimpute_benchmark/methods/biaeimpute.py`
+- Create: `maskimpute_benchmark/methods/sctsi.py`
 - Create: `scripts/fetch_method_sources.py`
 - Test: `tests/test_recent_method_adapters.py`
 
@@ -166,13 +170,19 @@ All variants share parameter count, optimizer budget, seeds, and preprocessing u
 
 - scSDAE `fa7ded1080695e38e6193ef137dc8d635ae64ec9`;
 - scCR `f8ccf889bbdd7d22047716eb1d6ef793ce00260b`;
-- D3Impute `f8f247a54a7ff1fcfca3232b9c0016b6929b5825`.
+- D3Impute `f8f247a54a7ff1fcfca3232b9c0016b6929b5825`;
+- scZiva `e11e5677d9145e5359a6bbcdfd4b0a2f8f3efd60`;
+- afMF/SCImputation `fbbe74c3d92266576f3dc471be2f6d3be75788fd`;
+- BiAEImpute `66d9bb7419472b0c36922a2e843a0d0ecde4305a`;
+- scTsI `402cc9723696ede77d5864e51368c3d94be3a29c`.
 
 **Requirements:**
 
 - Integrate upstream behavior faithfully in isolated environments. Compatibility shims live in adapters and are logged; upstream checkouts remain pristine.
+- scZiva and afMF are required current same-input comparators. Their source commits, licenses, environment builds, output-scale conversions, and published default settings must be verified before freeze; an unsuccessful integration requires a signed technical reason and blocks an unqualified state-of-the-art claim.
+- BiAEImpute receives the same integration effort and budget as other learned methods. It may be marked unavailable only after a reproducible upstream or environment failure.
 - scCR's missing public graph utility is reconstructed only from its published algorithm/source call contract and covered by equivalence fixtures; otherwise status is `upstream_incomplete`.
-- D3Impute runs only when a prespecified matched bulk reference exists and is labeled external-reference. PbImpute is attempted only if D3Impute is unusable after a documented integration attempt.
+- D3Impute and scTsI run only when a prespecified matched bulk reference exists and are labeled external-reference. PbImpute is attempted only if D3Impute is unusable after a documented integration attempt.
 - scSDAE legacy TensorFlow compatibility is containerized; failure to build/run is reported, not silently replaced by a reimplementation.
 
 **Commit:** `feat: add recent imputation competitors`

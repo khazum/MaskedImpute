@@ -94,9 +94,9 @@ Candidate selection is Pareto-based; the historical `MSE + 2*Biozero-MSE` score 
 
 ## Baseline policy
 
-- The core same-input panel is observed counts, matched masked AE, MaskImpute, DCA, scVI, ALRA, MAGIC, SAVER, scSDAE, and scCR.
+- The core same-input panel is observed counts, matched masked AE, MaskImpute, DCA, scVI, ALRA, MAGIC, SAVER, scSDAE, scCR, scZiva, and afMF. scZiva is mandatory because its 2026 selective ZINB/VAE estimand directly overlaps MaskImpute; afMF is mandatory because its 2025 benchmark reports strong reconstruction and downstream-safety performance.
 - D3Impute is evaluated only on datasets with a prespecified matched bulk reference and is labeled an external-reference method. PbImpute substitutes only if D3Impute is technically unusable after a documented integration attempt.
-- scMAE and any newer directly applicable method discovered before freeze are included or given an explicit incompatibility rationale.
+- BiAEImpute receives a same-input adapter attempt. scTsI receives an external-reference adapter attempt only where a prespecified matched bulk profile is available. scMAE and any newer directly applicable method discovered before freeze are included or given an explicit incompatibility rationale.
 - Published defaults are the starting point. Development tuning uses a common maximum of 20 configurations or 8 GPU-hours per method, whichever comes first; CPU-only methods receive 24 wall-clock hours. Per-run final timeout is 6 hours and memory limit is 48 GB RAM/14 GB GPU.
 - A failed run is retried once only for a documented transient failure. Algorithmic failures remain in the status table.
 
