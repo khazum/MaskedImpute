@@ -3,6 +3,11 @@
 from typing import TYPE_CHECKING
 
 from .config import MaskImputeConfig
+from .count_model import (
+    PreZeroCountModelConfig,
+    PreZeroCountModelScore,
+    fit_p_pre_zero_count_model,
+)
 from .prezero import p_pre_zero_from_counts
 from .result import ImputationResult
 
@@ -12,6 +17,9 @@ if TYPE_CHECKING:
 __all__ = [
     "ImputationResult",
     "MaskImputeConfig",
+    "PreZeroCountModelConfig",
+    "PreZeroCountModelScore",
+    "fit_p_pre_zero_count_model",
     "impute_counts",
     "p_pre_zero_from_counts",
 ]

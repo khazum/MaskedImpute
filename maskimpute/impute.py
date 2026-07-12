@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from maskimpute.config import MaskImputeConfig
+from maskimpute.count_model import PreZeroCountModelScore
 from maskimpute.result import ImputationResult
 from maskimpute.train import (
     _numeric_matrix_to_dense,
@@ -67,7 +68,28 @@ def impute_counts(
     if not isinstance(config, MaskImputeConfig):
         raise TypeError("config must be a MaskImputeConfig")
     counts = validate_observed_counts(observed_counts)
-    probability = validate_p_pre_zero(p_pre_zero, counts)
+    if type(p_pre_zero) is PreZeroCountModelScore:
+        probability = validate_p_pre_zero(p_pre_zero.score_for_counts(counts), counts)
+        score_manifest = p_pre_zero.manifest
+        score_diagnostics = {
+            "score_source": "maskimpute_cross_fitted_count_only_p_pre_zero",
+            "score_provenance_verified": True,
+            "score_provenance": {
+                "artifact_type": "maskimpute_count_model_score",
+                "config_sha256": score_manifest["config_sha256"],
+                "cross_fitting": "balanced_sha256_cell_index_round_robin",
+                "effective_folds": score_manifest["cross_fitting"]["effective_folds"],
+                "fit_inputs": ("observed_counts",),
+                "input_sha256": score_manifest["input_sha256"],
+                "score_sha256": score_manifest["score_sha256"],
+            },
+        }
+    else:
+        probability = validate_p_pre_zero(p_pre_zero, counts)
+        score_diagnostics = {
+            "score_source": "caller_supplied_count_model_p_pre_zero_unverified",
+            "score_provenance_verified": False,
+        }
     outcome = train_v27(counts, probability, config, device)
 
     selected_device = next(outcome.model.parameters()).device
@@ -111,8 +133,7 @@ def impute_counts(
 
     diagnostics = {
         "method_version": "v27",
-        "score_source": "caller_supplied_count_model_p_pre_zero_unverified",
-        "score_provenance_verified": False,
+        **score_diagnostics,
         "normalization": {
             "target_formula": (
                 "log1p(observed_count / full_observed_library_size * target)"

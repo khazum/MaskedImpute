@@ -503,6 +503,105 @@ def test_selective_imputation_preserves_positives_and_audits_training_contract()
     assert diagnostics["device"] == "cpu"
 
 
+def test_exact_count_model_artifact_is_revalidated_and_reported_as_verified():
+    from maskimpute import fit_p_pre_zero_count_model, impute_counts
+
+    counts = _tiny_counts()
+    score = fit_p_pre_zero_count_model(counts)
+
+    result = impute_counts(
+        counts,
+        score,
+        config=_tiny_config(max_epochs=1, patience=1),
+        device="cpu",
+    )
+
+    np.testing.assert_array_equal(result.p_pre_zero, score.p_pre_zero)
+    diagnostics = result.diagnostics
+    assert diagnostics["score_source"] == (
+        "maskimpute_cross_fitted_count_only_p_pre_zero"
+    )
+    assert diagnostics["score_provenance_verified"] is True
+    assert diagnostics["score_provenance"] == {
+        "artifact_type": "maskimpute_count_model_score",
+        "config_sha256": score.config_sha256,
+        "cross_fitting": "balanced_sha256_cell_index_round_robin",
+        "effective_folds": len(score.fold_models),
+        "fit_inputs": ("observed_counts",),
+        "input_sha256": score.input_sha256,
+        "score_sha256": score.score_sha256,
+    }
+
+
+def test_exact_count_model_artifact_refuses_mismatched_imputation_counts():
+    from maskimpute import fit_p_pre_zero_count_model, impute_counts
+
+    counts = _tiny_counts()
+    score = fit_p_pre_zero_count_model(counts)
+    changed = counts.copy()
+    changed[0, 0] += 1
+
+    with pytest.raises(ValueError, match="does not match"):
+        impute_counts(
+            changed,
+            score,
+            config=_tiny_config(max_epochs=1, patience=1),
+            device="cpu",
+        )
+
+
+def test_verified_artifact_preserves_single_snapshot_count_input_boundary():
+    from maskimpute import fit_p_pre_zero_count_model, impute_counts
+
+    counts = _tiny_counts()
+    score = fit_p_pre_zero_count_model(counts)
+    protocol = _ChangingArrayProtocol(
+        counts,
+        np.full_like(counts, -1),
+    )
+
+    result = impute_counts(
+        protocol,
+        score,
+        config=_tiny_config(max_epochs=1, patience=1),
+        device="cpu",
+    )
+
+    assert protocol.calls == 1
+    assert result.diagnostics["score_provenance_verified"] is True
+
+
+def test_count_model_artifact_subclass_is_only_accepted_as_unverified_raw_score():
+    from maskimpute import (
+        PreZeroCountModelScore,
+        fit_p_pre_zero_count_model,
+        impute_counts,
+    )
+
+    score = fit_p_pre_zero_count_model(_tiny_counts())
+
+    class RawScoreSubclass(PreZeroCountModelScore):
+        def __array__(self, dtype=None, copy=None):
+            del copy
+            return np.asarray(score.p_pre_zero, dtype=dtype)
+
+    raw_subclass = object.__new__(RawScoreSubclass)
+    for slot in PreZeroCountModelScore.__slots__:
+        object.__setattr__(raw_subclass, slot, getattr(score, slot))
+
+    result = impute_counts(
+        _tiny_counts(),
+        raw_subclass,
+        config=_tiny_config(max_epochs=1, patience=1),
+        device="cpu",
+    )
+
+    assert result.diagnostics["score_provenance_verified"] is False
+    assert result.diagnostics["score_source"] == (
+        "caller_supplied_count_model_p_pre_zero_unverified"
+    )
+
+
 def test_sparse_input_and_zero_library_cells_follow_the_same_count_scale_contract():
     from maskimpute import impute_counts
 
