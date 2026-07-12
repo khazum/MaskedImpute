@@ -1,6 +1,7 @@
 from fnmatch import fnmatchcase
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+import pickle
 import subprocess
 import sys
 from types import MethodType
@@ -233,6 +234,34 @@ def test_result_copies_sparse_counts_into_read_only_csr_storage():
         assert not matrix.data.flags.writeable
         assert not matrix.indices.flags.writeable
         assert not matrix.indptr.flags.writeable
+
+
+def test_result_pickle_round_trip_preserves_sparse_snapshots_and_freezing():
+    from maskimpute import ImputationResult
+
+    result = ImputationResult(
+        sparse.csr_matrix([[2, 0], [0, 3]], dtype=np.int64),
+        sparse.csc_array([[2.0, 0.5], [0.25, 3.0]]),
+        np.array([[0.0, 0.8], [0.6, 0.0]]),
+        np.ones((2, 1)),
+        {"nested": {"trace": np.array([2.0, 1.0])}},
+    )
+
+    restored = pickle.loads(pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL))
+
+    assert sparse.isspmatrix_csr(restored.selective_counts)
+    assert isinstance(restored.denoised_counts, sparse.csr_array)
+    np.testing.assert_array_equal(restored.selective_counts.toarray(), [[2, 0], [0, 3]])
+    np.testing.assert_allclose(
+        restored.denoised_counts.toarray(), [[2.0, 0.5], [0.25, 3.0]]
+    )
+    np.testing.assert_array_equal(restored.diagnostics["nested"]["trace"], [2.0, 1.0])
+    for matrix in (restored.selective_counts, restored.denoised_counts):
+        assert not matrix.data.flags.writeable
+        assert not matrix.indices.flags.writeable
+        assert not matrix.indptr.flags.writeable
+    with pytest.raises(FrozenInstanceError):
+        restored.latent = np.zeros((2, 1))
 
 
 def test_result_accepts_dok_counts_without_requiring_array_backing_attributes():

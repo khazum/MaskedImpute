@@ -265,6 +265,22 @@ def _materialize_diagnostic(snapshot: Any) -> Any:
     raise TypeError("invalid private diagnostic snapshot")
 
 
+def _restore_imputation_result(
+    selective_counts: _ArraySnapshot | _SparseSnapshot,
+    denoised_counts: _ArraySnapshot | _SparseSnapshot,
+    p_pre_zero: _ArraySnapshot,
+    latent: _ArraySnapshot,
+    diagnostics: Any,
+) -> "ImputationResult":
+    return ImputationResult(
+        selective_counts=_materialize_matrix(selective_counts),
+        denoised_counts=_materialize_matrix(denoised_counts),
+        p_pre_zero=_materialize_array(p_pre_zero),
+        latent=_materialize_array(latent),
+        diagnostics=_materialize_diagnostic(diagnostics),
+    )
+
+
 class ImputationResult:
     """Outputs from a MaskImpute inference run."""
 
@@ -325,6 +341,18 @@ class ImputationResult:
 
     def __delattr__(self, name: str) -> None:
         raise FrozenInstanceError(f"cannot delete field {name!r}")
+
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        return (
+            _restore_imputation_result,
+            (
+                self._selective_counts,
+                self._denoised_counts,
+                self._p_pre_zero,
+                self._latent,
+                self._diagnostics,
+            ),
+        )
 
     @property
     def selective_counts(self) -> Any:

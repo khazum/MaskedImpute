@@ -231,6 +231,49 @@ def _observed_executor(request: ExecutionRequest) -> AdapterOutcome:
     )
 
 
+def _maskimpute_result_executor(request: ExecutionRequest) -> AdapterOutcome:
+    from maskimpute import ImputationResult
+    from maskimpute.ablations import AblationRunResult
+    from maskimpute_benchmark.methods import snapshot_method_output
+    from maskimpute_benchmark.methods.maskimpute import MaskImputeAdapterExecution
+
+    counts = request.method_input.counts
+    result = ImputationResult(
+        selective_counts=counts,
+        denoised_counts=np.asarray(counts, dtype=np.float64),
+        p_pre_zero=np.zeros(counts.shape, dtype=np.float64),
+        latent=np.ones((counts.shape[0], 1), dtype=np.float64),
+        diagnostics={"status": "spawned"},
+    )
+    snapshot = snapshot_method_output(
+        request.method_spec,
+        request.method_input,
+        result.selective_counts,
+        source_dataset_sha256=request.method_input.source_dataset_sha256,
+        output_scale=request.method_spec.output_scale,
+        obs_ids=request.method_input.obs_ids,
+        var_ids=request.method_input.var_ids,
+    )
+    execution = MaskImputeAdapterExecution(
+        snapshot=snapshot,
+        compatibility_log=(),
+        environment_receipt=(),
+        stdout=b"",
+        stderr=b"",
+        command=None,
+        ablation_result=AblationRunResult(
+            output_policy="selective",
+            _result=result,
+        ),
+    )
+    return AdapterOutcome.completed(
+        execution,
+        runtime_seconds=0.01,
+        peak_rss_bytes=1024,
+        peak_gpu_bytes=0,
+    )
+
+
 class _FixedResourceSampler:
     def __init__(self, *, rss: int | None, gpu: int | None) -> None:
         self.rss = rss
@@ -588,6 +631,44 @@ def test_spawned_executor_returns_a_bound_observed_snapshot() -> None:
     np.testing.assert_array_equal(
         outcome.execution.snapshot.matrix, method_input.counts
     )
+
+
+def test_spawned_executor_round_trips_maskimpute_result() -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("maskimpute")
+    authority = _authority(maskimpute_ready=True)
+    configuration = next(
+        value
+        for value in authority.configurations
+        if value.configuration_id == "v27-reference"
+    )
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=42,
+        configuration=configuration,
+        authority=authority,
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+
+    outcome = execute_adapter_in_spawned_process(
+        request,
+        _maskimpute_result_executor,
+        poll_interval_seconds=0.01,
+        resource_sampler=_FixedResourceSampler(rss=123_456, gpu=0),
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.execution is not None
+    ablation_result = outcome.execution.ablation_result
+    np.testing.assert_array_equal(
+        ablation_result.selective_counts,
+        request.method_input.counts,
+    )
+    assert ablation_result.diagnostics == {"status": "spawned"}
 
 
 def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environments() -> (
