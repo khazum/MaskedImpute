@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 
 _SAFE_ID = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+_DRAW_ID = re.compile(r"^draw-([0-9]+)$")
 _CLAIM_TOKEN = object()
 
 
@@ -85,6 +86,7 @@ class SimulationArtifact:
 
         if not isinstance(request, SimulationRequest):
             raise TypeError("request must be a SimulationRequest")
+        draw_index = _biological_draw_index(request.biological_id)
         revalidate_native_outputs(native_manifest)
         if native_manifest.metadata.get(
             "simulation_request"
@@ -111,6 +113,7 @@ class SimulationArtifact:
         for column, expected in (
             ("dataset_id", request.dataset_id),
             ("mechanism", request.mechanism),
+            ("condition", request.technical_view),
             ("biological_id", request.biological_id),
             ("technical_view", request.technical_view),
         ):
@@ -118,6 +121,10 @@ class SimulationArtifact:
                 raise SimulationContractError(
                     f"translated AnnData {column} does not match the simulation request"
                 )
+        if any(int(value) != draw_index for value in snapshot.obs["draw"].tolist()):
+            raise SimulationContractError(
+                "translated AnnData draw does not match the simulation request"
+            )
         provenance = snapshot.uns.get("provenance")
         parameters = (
             provenance.get("parameters") if isinstance(provenance, Mapping) else None
@@ -185,32 +192,35 @@ class SimulationArtifact:
         return self._native_manifest
 
 
-def _design_digest(kind: str, request: SimulationRequest, *, view: bool) -> str:
-    payload = {
-        "schema": f"maskimpute-{kind}-v2",
+def _biological_design(request: SimulationRequest) -> dict[str, object]:
+    return {
         "namespace": request.namespace,
         "mechanism": request.mechanism,
-        "biological_id": request.biological_id,
         "biological_seed": request.biological_seed,
         "cells": request.cells,
         "genes": request.genes,
     }
-    if view:
-        payload["technical_view"] = request.technical_view
-        payload["measurement_seed"] = request.measurement_seed
-    return canonical_sha256(payload)[:24]
 
 
 def simulation_dataset_id(request: SimulationRequest) -> str:
     """Return the stable ID for one exact seeded technical view."""
 
-    return f"dataset-{_design_digest('simulation-dataset', request, view=True)}"
+    payload = {
+        "schema": "maskimpute-simulation-dataset-v3",
+        "biological_unit": _biological_design(request),
+        "measurement_seed": request.measurement_seed,
+    }
+    return f"dataset-{canonical_sha256(payload)[:24]}"
 
 
 def biological_unit_id(request: SimulationRequest) -> str:
     """Return the unit shared by paired technical views of one biological draw."""
 
-    return f"biological-{_design_digest('biological-unit', request, view=False)}"
+    payload = {
+        "schema": "maskimpute-biological-unit-v3",
+        **_biological_design(request),
+    }
+    return f"biological-{canonical_sha256(payload)[:24]}"
 
 
 def simulation_request_identity(request: SimulationRequest) -> dict[str, object]:
@@ -240,6 +250,26 @@ def _validate_safe_id(value: object, name: str) -> None:
         raise SimulationContractError(
             f"{name} must be a safe lowercase hyphen-separated identifier"
         )
+
+
+def _biological_draw_index(value: object, maximum: int | None = None) -> int:
+    _validate_safe_id(value, "biological_id")
+    assert isinstance(value, str)
+    match = _DRAW_ID.fullmatch(value)
+    if match is None:
+        raise SimulationContractError(
+            "biological_id must use the canonical draw-{index:02d} form"
+        )
+    index = int(match.group(1))
+    if index <= 0 or value != f"draw-{index:02d}":
+        raise SimulationContractError(
+            "biological_id must use the canonical draw-{index:02d} form"
+        )
+    if maximum is not None and index > maximum:
+        raise SimulationContractError(
+            "biological_id draw index exceeds the active protocol namespace"
+        )
+    return index
 
 
 def _validate_seed(value: object, name: str) -> None:
@@ -380,7 +410,6 @@ def validate_simulation_request(
     if request.mechanism not in protocol.mechanisms:
         raise SimulationContractError("mechanism is not in the publication protocol")
     _validate_safe_id(request.mechanism, "mechanism")
-    _validate_safe_id(request.biological_id, "biological_id")
     _validate_safe_id(request.technical_view, "technical_view")
     _validate_seed(request.biological_seed, "biological_seed")
     _validate_seed(request.measurement_seed, "measurement_seed")
@@ -392,6 +421,7 @@ def validate_simulation_request(
         raise SimulationContractError("cells must be a positive integer")
     if type(request.genes) is not int or request.genes <= 0:
         raise SimulationContractError("genes must be a positive integer")
+    validated_final_claim: FinalManifestClaim | None = None
     if request.namespace == protocol.development.namespace:
         if final_manifest is not None:
             raise SimulationContractError(
@@ -399,33 +429,42 @@ def validate_simulation_request(
             )
         _validate_output_path(request)
         expected = (protocol.development.cells, protocol.development.genes)
+        maximum_draw = protocol.development.draws_per_condition
     elif request.namespace == protocol.final.namespace:
-        final_manifest = _revalidate_final_manifest_claim(final_manifest)
+        validated_final_claim = _revalidate_final_manifest_claim(final_manifest)
         if _protocol_semantic_sha256(protocol) != (
-            final_manifest._protocol_semantic_sha256
+            validated_final_claim._protocol_semantic_sha256
         ):
             raise SimulationContractError(
                 "provided protocol does not match the exact frozen protocol"
             )
         if (
-            request.biological_seed not in final_manifest.generator_seeds
-            or request.measurement_seed not in final_manifest.generator_seeds
+            request.biological_seed not in validated_final_claim.generator_seeds
+            or request.measurement_seed not in validated_final_claim.generator_seeds
         ):
             raise SimulationContractError(
                 "final biological and measurement seeds must come from the manifest"
             )
         _validate_output_path(request)
-        _validate_final_output_path(request, final_manifest)
+        _validate_final_output_path(request, validated_final_claim)
         expected = (protocol.final.cells, protocol.final.genes)
+        maximum_draw = protocol.final.draws_per_condition
     else:
         raise SimulationContractError(
             "namespace must be exactly the development or final protocol namespace"
         )
 
+    _biological_draw_index(request.biological_id, maximum_draw)
     if (request.cells, request.genes) != expected:
         raise SimulationContractError(
             f"request dimensions must exactly match protocol dimensions {expected}"
         )
+    if validated_final_claim is not None:
+        # Close deterministic transitions triggered during protocol, path, or
+        # dimension use.  A transition immediately after this function returns
+        # is irreducible here and remains covered by downstream state and result
+        # integrity checks; simulation itself must not hold the lifecycle lock.
+        _revalidate_final_manifest_claim(validated_final_claim)
 
 
 def validate_paired_simulation_requests(

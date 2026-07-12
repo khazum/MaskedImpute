@@ -146,18 +146,36 @@ def test_request_output_path_must_be_canonical(tmp_path: Path) -> None:
         validate_simulation_request(request, PROTOCOL)
 
 
+@pytest.mark.parametrize(
+    "biological_id",
+    ["draw-00", "draw-1", "draw-001", "draw-03", "sample-01"],
+)
+def test_development_biological_id_is_canonical_and_within_protocol_draws(
+    tmp_path: Path, biological_id: str
+) -> None:
+    request = _request(tmp_path, biological_id=biological_id)
+
+    with pytest.raises(SimulationContractError, match="biological_id|draw"):
+        validate_simulation_request(request, PROTOCOL)
+
+
 def test_deterministic_ids_bind_seeded_design_fields(
     tmp_path: Path,
 ) -> None:
     moderate = _request(tmp_path)
     rerun = replace(moderate, biological_seed=303, measurement_seed=404)
     remeasured = replace(moderate, measurement_seed=404)
+    relabeled_draw = replace(moderate, biological_id="draw-02")
+    relabeled_view = replace(moderate, technical_view="severe")
     severe = replace(moderate, technical_view="severe", measurement_seed=505)
 
     assert simulation_dataset_id(moderate) != simulation_dataset_id(rerun)
     assert biological_unit_id(moderate) != biological_unit_id(rerun)
     assert simulation_dataset_id(moderate) != simulation_dataset_id(remeasured)
     assert biological_unit_id(moderate) == biological_unit_id(remeasured)
+    assert biological_unit_id(moderate) == biological_unit_id(relabeled_draw)
+    assert simulation_dataset_id(moderate) == simulation_dataset_id(relabeled_draw)
+    assert simulation_dataset_id(moderate) == simulation_dataset_id(relabeled_view)
     assert simulation_dataset_id(moderate) != simulation_dataset_id(severe)
     assert biological_unit_id(moderate) == biological_unit_id(severe)
     assert moderate.independent_unit_id == severe.independent_unit_id
@@ -285,6 +303,29 @@ def test_claimed_final_manifest_validates_final_request_without_consuming_claim(
 
     assert first == second
     assert (round_dir / "execution_claim.json").read_bytes() == execution_before
+
+
+def test_final_biological_id_cannot_exceed_protocol_draw_count(
+    final_repo: tuple[Path, Path],
+) -> None:
+    repo, round_dir = final_repo
+    materialize_final(round_dir, seed_count=4, repo=repo)
+    assert_final_runnable(repo, round_dir)
+    claim = load_final_manifest_claim(repo, round_dir)
+    request = SimulationRequest(
+        mechanism="symsim",
+        namespace="final",
+        biological_id="draw-06",
+        biological_seed=claim.generator_seeds[0],
+        measurement_seed=claim.generator_seeds[1],
+        technical_view="moderate",
+        cells=PROTOCOL.final.cells,
+        genes=PROTOCOL.final.genes,
+        output_path=round_dir / "results/final/output.h5ad",
+    )
+
+    with pytest.raises(SimulationContractError, match="biological_id|draw"):
+        validate_simulation_request(request, PROTOCOL, claim)
 
 
 @pytest.mark.parametrize("terminal_state", ["superseded", "evaluated"])
@@ -466,6 +507,42 @@ def test_final_output_rejects_symlinked_results_path_components(
     )
 
     with pytest.raises(SimulationContractError, match="symlink|integrity|claim"):
+        validate_simulation_request(request, PROTOCOL, claim)
+
+
+def test_final_request_rechecks_claim_after_output_path_use(
+    final_repo: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, round_dir = final_repo
+    materialize_final(round_dir, seed_count=4, repo=repo)
+    assert_final_runnable(repo, round_dir)
+    claim = load_final_manifest_claim(repo, round_dir)
+    request = SimulationRequest(
+        mechanism="symsim",
+        namespace="final",
+        biological_id="draw-01",
+        biological_seed=claim.generator_seeds[0],
+        measurement_seed=claim.generator_seeds[1],
+        technical_view="moderate",
+        cells=PROTOCOL.final.cells,
+        genes=PROTOCOL.final.genes,
+        output_path=round_dir / "results/final/output.h5ad",
+    )
+    real_validate = base_module._validate_final_output_path
+
+    def validate_then_supersede(
+        current_request: SimulationRequest, current_claim: FinalManifestClaim
+    ) -> None:
+        real_validate(current_request, current_claim)
+        supersede_round(round_dir, "transition during simulator validation")
+
+    monkeypatch.setattr(
+        base_module,
+        "_validate_final_output_path",
+        validate_then_supersede,
+    )
+
+    with pytest.raises(SimulationContractError, match="claim|running|superseded"):
         validate_simulation_request(request, PROTOCOL, claim)
 
 
@@ -920,8 +997,10 @@ def test_simulation_artifact_rejects_nonfinite_translation(tmp_path: Path) -> No
         ("shape", "shape"),
         ("dataset_id", "dataset_id"),
         ("mechanism", "mechanism"),
+        ("condition", "condition"),
         ("biological_id", "biological_id"),
         ("technical_view", "technical_view"),
+        ("draw", "draw"),
         ("biological_seed", "biological seed"),
         ("measurement_seed", "measurement seed"),
     ],
@@ -940,8 +1019,16 @@ def test_simulation_artifact_binds_request_end_to_end(
         adata.uns["provenance"]["parameters"]["native_manifest_sha256"] = (
             manifest.manifest_sha256
         )
-    elif mismatch in {"dataset_id", "mechanism", "biological_id", "technical_view"}:
+    elif mismatch in {
+        "dataset_id",
+        "mechanism",
+        "condition",
+        "biological_id",
+        "technical_view",
+    }:
         adata.obs[mismatch] = ["wrong-value"] * adata.n_obs
+    elif mismatch == "draw":
+        adata.obs["draw"] = [999] * adata.n_obs
     else:
         seed_name = mismatch.removesuffix("_seed")
         adata.uns["provenance"]["seeds"][seed_name] += 1
