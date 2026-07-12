@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "model_seeds": [42, 43, 44],
+  "parameter_budget": "exact_nominal_match",
+  "optimizer_budget": "shared_frozen_candidate_budget",
+  "preprocessing_budget": "shared_except_named_component",
+  "reference": {
+    "id": "maskimpute-reference",
+    "changed_component": "reference",
+    "positive_masking": "log_count_stratified",
+    "pre_zero_regularizer": true,
+    "encoder_mode": "explicit_mask",
+    "gate": "power_complement",
+    "output_policy": "selective",
+    "score_source": "retained_calibrator"
+  },
+  "variants": [
+    {
+      "id": "capacity-matched-ae",
+      "changed_component": "control_bundle",
+      "positive_masking": "uniform",
+      "pre_zero_regularizer": false,
+      "encoder_mode": "explicit_mask",
+      "gate": "none",
+      "output_policy": "full_ungated",
+      "score_source": "direct"
+    },
+    {
+      "id": "no-gate",
+      "changed_component": "gate",
+      "positive_masking": "log_count_stratified",
+      "pre_zero_regularizer": true,
+      "encoder_mode": "explicit_mask",
+      "gate": "none",
+      "output_policy": "selective",
+      "score_source": "retained_calibrator"
+    },
+    {
+      "id": "no-pre-zero-regularizer",
+      "changed_component": "pre_zero_regularizer",
+      "positive_masking": "log_count_stratified",
+      "pre_zero_regularizer": false,
+      "encoder_mode": "explicit_mask",
+      "gate": "power_complement",
+      "output_policy": "selective",
+      "score_source": "retained_calibrator"
+    },
+    {
+      "id": "no-explicit-mask",
+      "changed_component": "encoder_mode",
+      "positive_masking": "log_count_stratified",
+      "pre_zero_regularizer": true,
+      "encoder_mode": "implicit_numeric_zero",
+      "gate": "power_complement",
+      "output_policy": "selective",
+      "score_source": "retained_calibrator"
+    },
+    {
+      "id": "full-denoising",
+      "changed_component": "output_policy",
+      "positive_masking": "log_count_stratified",
+      "pre_zero_regularizer": true,
+      "encoder_mode": "explicit_mask",
+      "gate": "power_complement",
+      "output_policy": "full_gated",
+      "score_source": "retained_calibrator"
+    },
+    {
+      "id": "direct-score",
+      "changed_component": "score_source",
+      "positive_masking": "log_count_stratified",
+      "pre_zero_regularizer": true,
+      "encoder_mode": "explicit_mask",
+      "gate": "power_complement",
+      "output_policy": "selective",
+      "score_source": "direct"
+    },
+    {
+      "id": "calibrated-score",
+      "changed_component": "score_source_control",
+      "positive_masking": "log_count_stratified",
+      "pre_zero_regularizer": true,
+      "encoder_mode": "explicit_mask",
+      "gate": "power_complement",
+      "output_policy": "selective",
+      "score_source": "retained_calibrator"
+    }
+  ]
+}
