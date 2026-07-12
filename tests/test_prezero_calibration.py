@@ -185,6 +185,22 @@ def test_calibrator_formula_oracles_are_monotone_and_finite_at_extremes():
         assert np.all(np.diff(transformed) >= 0)
 
 
+def test_extreme_finite_calibrator_coefficients_transform_without_warnings():
+    from maskimpute.calibration import ScoreCalibrator
+
+    probability = np.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    calibrators = (
+        ScoreCalibrator.logistic(intercept=0.0, slope=1e308),
+        ScoreCalibrator.beta(a=1e308, b=1e308, intercept=0.0),
+    )
+
+    for calibrator in calibrators:
+        transformed = calibrator.transform(probability)
+        assert np.all(np.isfinite(transformed))
+        assert np.all((0 <= transformed) & (transformed <= 1))
+        assert np.all(np.diff(transformed) >= 0)
+
+
 @pytest.mark.parametrize(
     "factory_arguments",
     [
@@ -262,6 +278,7 @@ def test_development_weights_balance_draws_records_and_entries():
             "b",
             probabilities=(0.1, 0.2, 0.8, 0.9),
             targets=(0, 0, 1, 1),
+            technical_view="severe",
         ),
         _record("symsim", "draw-02", "c", probabilities=(0.1, 0.9)),
         _record(
@@ -287,23 +304,49 @@ def test_development_weights_balance_draws_records_and_entries():
 def test_records_reject_duplicate_manifest_and_are_order_canonical():
     from maskimpute.calibration import validate_calibration_records
 
-    first = _record("symsim", "draw-02", "b")
+    first = _record("symsim", "draw-02", "b", technical_view="severe")
     second = _record("symsim", "draw-01", "a")
+    third = _record("symsim", "draw-01", "c", technical_view="severe")
+    fourth = _record("symsim", "draw-02", "d")
 
-    canonical = validate_calibration_records((first, second))
+    canonical = validate_calibration_records((first, second, third, fourth))
 
-    assert canonical == (second, first)
+    assert canonical == (second, third, fourth, first)
     with pytest.raises(ValueError, match="duplicate.*manifest"):
         validate_calibration_records((first, first))
+
+
+@pytest.mark.parametrize("restriction", ["missing-view", "duplicate-view"])
+def test_records_require_the_exact_prespecified_draw_view_panel(restriction):
+    from maskimpute.calibration import validate_calibration_records
+
+    records = list(_development_records())
+    if restriction == "missing-view":
+        records.pop()
+    else:
+        records[-1] = _record(
+            "symsim",
+            "draw-02",
+            "5",
+            technical_view="moderate",
+        )
+
+    with pytest.raises(ValueError, match="complete.*draw-view panel"):
+        validate_calibration_records(records)
 
 
 def test_lodo_folds_hold_out_entire_mechanism_biological_draw_without_leakage():
     from maskimpute.calibration import cross_validate_calibrator
 
     records = tuple(
-        _record(mechanism, f"draw-0{draw}", manifest)
-        for draw, manifest in ((1, "a"), (2, "b"))
-        for mechanism in ("symsim",)
+        _record(
+            "symsim",
+            f"draw-0{draw}",
+            manifest,
+            technical_view=technical_view,
+        )
+        for draw, manifests in ((1, ("a", "b")), (2, ("c", "d")))
+        for technical_view, manifest in zip(("moderate", "severe"), manifests)
     )
 
     first = cross_validate_calibrator(records, "isotonic")
@@ -522,6 +565,29 @@ def test_publication_calibration_thresholds_cannot_be_weakened_or_changed(overri
         CalibrationThresholds(**override)
 
 
+def test_public_calibration_functions_revalidate_mutated_or_duck_typed_thresholds():
+    from maskimpute.calibration import (
+        CalibrationThresholds,
+        evaluate_calibration_candidates,
+        fit_development_calibration,
+    )
+
+    mutated = CalibrationThresholds()
+    object.__setattr__(mutated, "minimum_mechanisms_improved", 1)
+
+    class LooseThresholds:
+        minimum_mechanisms_improved = 1
+        brier_improvement_epsilon = 0.0
+        log_loss_worsening_tolerance = 1.0
+        calibration_slope_lower = 0.0
+        calibration_slope_upper = 10.0
+
+    with pytest.raises((TypeError, ValueError), match="threshold|prespecified"):
+        evaluate_calibration_candidates(_development_records(), mutated)
+    with pytest.raises((TypeError, ValueError), match="threshold|prespecified"):
+        fit_development_calibration(_development_records(), LooseThresholds())
+
+
 def test_selection_is_deterministic_and_retains_every_candidate_report():
     from maskimpute.calibration import select_candidate
 
@@ -656,6 +722,7 @@ def test_artifact_canonical_save_load_roundtrip_and_tamper_rejection(tmp_path: P
 
     assert loaded.to_dict() == artifact.to_dict()
     assert output.read_bytes().endswith(b"\n")
+    assert output.stat().st_nlink == 1
     with pytest.raises(FileExistsError):
         save_calibration_artifact(output, artifact)
 
@@ -795,6 +862,80 @@ def test_artifact_loader_rejects_rehashed_final_namespace_scope(tmp_path: Path):
     _canonical_write(path, payload)
 
     with pytest.raises(ValueError, match="development|scope|namespace"):
+        load_calibration_artifact(path)
+
+
+@pytest.mark.parametrize("restriction", ["draw-01-only", "moderate-only"])
+def test_artifact_loader_requires_complete_development_draw_view_panel(
+    tmp_path: Path,
+    restriction: str,
+):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(_development_records()).to_dict()
+    bindings = payload["training"]["record_bindings"]
+    if restriction == "draw-01-only":
+        bindings = [item for item in bindings if item["biological_id"] == "draw-01"]
+    else:
+        bindings = [item for item in bindings if item["technical_view"] == "moderate"]
+    manifests = sorted(item["manifest_sha256"] for item in bindings)
+    groups = []
+    for group in payload["cross_validation"]["groups"]:
+        retained = [
+            manifest for manifest in group["manifest_sha256s"] if manifest in manifests
+        ]
+        if retained:
+            groups.append({**group, "manifest_sha256s": retained})
+    payload["training"]["record_bindings"] = bindings
+    payload["training"]["manifest_sha256s"] = manifests
+    payload["training"]["record_count"] = len(bindings)
+    payload["training"]["entry_count"] = 4 * len(bindings)
+    payload["cross_validation"]["groups"] = groups
+    _rehash_payload(payload)
+    path = tmp_path / f"incomplete-{restriction}.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="draw|view|complete|record|scope"):
+        load_calibration_artifact(path)
+
+
+def test_artifact_loader_cross_checks_entry_count_against_candidate_metrics(
+    tmp_path: Path,
+):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(_development_records()).to_dict()
+    payload["training"]["entry_count"] = 1
+    _rehash_payload(payload)
+    path = tmp_path / "false-entry-count.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="entry|metric|count"):
+        load_calibration_artifact(path)
+
+
+def test_artifact_loader_cross_checks_aggregate_and_mechanism_metric_counts(
+    tmp_path: Path,
+):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(_development_records()).to_dict()
+    payload["selection"]["candidates"][0]["aggregate_metrics"]["n"] += 1
+    payload["training"]["entry_count"] += 1
+    _rehash_payload(payload)
+    path = tmp_path / "contradictory-metric-counts.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="aggregate.*count|mechanism.*metric"):
         load_calibration_artifact(path)
 
 
@@ -1008,9 +1149,11 @@ def test_calibration_save_rejects_symlinked_output_parent(tmp_path: Path):
     assert not (real_parent / "calibration.json").exists()
 
 
+@pytest.mark.parametrize("failure_call", [2, 3])
 def test_directory_fsync_failure_rolls_back_published_artifact(
     tmp_path: Path,
     monkeypatch,
+    failure_call: int,
 ):
     import maskimpute.calibration as module
 
@@ -1022,7 +1165,7 @@ def test_directory_fsync_failure_rolls_back_published_artifact(
     def fail_directory_fsync(descriptor):
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == failure_call:
             raise OSError("injected directory fsync failure")
         return real_fsync(descriptor)
 
@@ -1031,5 +1174,33 @@ def test_directory_fsync_failure_rolls_back_published_artifact(
     with pytest.raises(OSError, match="directory fsync"):
         module.save_calibration_artifact(output, artifact)
 
+    assert not output.exists()
+    assert not list(tmp_path.glob(".calibration.json.*.tmp"))
+
+
+def test_temporary_unlink_failure_rolls_back_instead_of_reporting_success(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import maskimpute.calibration as module
+
+    artifact = module.fit_development_calibration(_development_records())
+    output = tmp_path / "calibration.json"
+    real_unlink = module.os.unlink
+    injected = False
+
+    def fail_first_temporary_unlink(path, *args, **kwargs):
+        nonlocal injected
+        if not injected and str(path).startswith(".calibration.json."):
+            injected = True
+            raise OSError("injected temporary unlink failure")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "unlink", fail_first_temporary_unlink)
+
+    with pytest.raises(OSError, match="temporary unlink"):
+        module.save_calibration_artifact(output, artifact)
+
+    assert injected is True
     assert not output.exists()
     assert not list(tmp_path.glob(".calibration.json.*.tmp"))

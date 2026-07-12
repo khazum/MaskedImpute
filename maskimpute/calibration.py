@@ -27,6 +27,11 @@ _DEVELOPMENT_NAMESPACE = "dev"
 _DEVELOPMENT_DATA_ROLE = "development"
 _DEVELOPMENT_BIOLOGICAL_IDS = ("draw-01", "draw-02")
 _SYMSIM_TECHNICAL_VIEWS = ("moderate", "severe")
+_DEVELOPMENT_PANEL_KEYS = frozenset(
+    (biological_id, technical_view)
+    for biological_id in _DEVELOPMENT_BIOLOGICAL_IDS
+    for technical_view in _SYMSIM_TECHNICAL_VIEWS
+)
 _PRESPECIFIED_THRESHOLDS = {
     "minimum_mechanisms_improved": 3,
     "brier_improvement_epsilon": 1e-6,
@@ -164,6 +169,21 @@ def _finite_coefficient(value: object, name: str, *, nonnegative: bool) -> float
     return result
 
 
+def _bounded_linear_predictor(
+    features: np.ndarray,
+    coefficients: tuple[float, ...],
+) -> np.ndarray:
+    """Evaluate a small linear model without overflowing finite coefficients."""
+
+    coefficient = np.asarray(coefficients, dtype=np.float64)
+    scale = float(np.max(np.abs(coefficient)))
+    if scale == 0:
+        return np.zeros(features.shape[0], dtype=np.float64)
+    reduced = features @ (coefficient / scale)
+    limit = np.finfo(np.float64).max / max(scale, 1.0)
+    return np.clip(reduced, -limit, limit) * scale
+
+
 @dataclass(frozen=True, slots=True)
 class ScoreCalibrator:
     """Immutable monotone transformation of a count-derived score only."""
@@ -252,10 +272,20 @@ class ScoreCalibrator:
         clipped = np.clip(probability, PROBABILITY_CLIP, 1 - PROBABILITY_CLIP)
         if self.algorithm == "logistic":
             intercept, slope = self.coefficients
-            return expit(intercept + slope * logit(clipped))
+            features = np.column_stack((np.ones(clipped.size), logit(clipped).ravel()))
+            linear = _bounded_linear_predictor(features, (intercept, slope))
+            return expit(linear).reshape(probability.shape)
         if self.algorithm == "beta":
             a, b, intercept = self.coefficients
-            return expit(intercept + a * np.log(clipped) - b * np.log1p(-clipped))
+            features = np.column_stack(
+                (
+                    np.log(clipped).ravel(),
+                    -np.log1p(-clipped).ravel(),
+                    np.ones(clipped.size),
+                )
+            )
+            linear = _bounded_linear_predictor(features, (a, b, intercept))
+            return expit(linear).reshape(probability.shape)
         flattened = np.interp(
             probability.ravel(),
             np.asarray(self.knots),
@@ -414,11 +444,11 @@ def fit_score_calibrator(
     return _fit_parametric(algorithm, probability, labels, sample_weights)
 
 
-def validate_calibration_records(
+def _canonical_calibration_records(
     records: object,
+    *,
+    require_complete_panel: bool,
 ) -> tuple[CalibrationRecord, ...]:
-    """Return records in canonical order after rejecting duplicate manifests."""
-
     if isinstance(records, (str, bytes)):
         raise TypeError("records must be a sequence of CalibrationRecord values")
     try:
@@ -437,6 +467,14 @@ def validate_calibration_records(
     dataset_ids = [record.dataset_id for record in values]
     if len(set(dataset_ids)) != len(dataset_ids):
         raise ValueError("duplicate calibration record dataset_id")
+    panel_keys = [(record.biological_id, record.technical_view) for record in values]
+    if require_complete_panel and (
+        len(panel_keys) != len(set(panel_keys))
+        or set(panel_keys) != set(_DEVELOPMENT_PANEL_KEYS)
+    ):
+        raise ValueError(
+            "calibration records must contain the complete prespecified draw-view panel"
+        )
     return tuple(
         sorted(
             values,
@@ -452,12 +490,23 @@ def validate_calibration_records(
     )
 
 
-def development_weights(
+def validate_calibration_records(
     records: object,
-) -> dict[str, tuple[float, ...]]:
-    """Assign equal mechanism, draw, record, and within-record influence."""
+) -> tuple[CalibrationRecord, ...]:
+    """Return the complete development panel in canonical order."""
 
-    canonical = validate_calibration_records(records)
+    return _canonical_calibration_records(records, require_complete_panel=True)
+
+
+def _development_weights(
+    records: object,
+    *,
+    require_complete_panel: bool,
+) -> dict[str, tuple[float, ...]]:
+    canonical = _canonical_calibration_records(
+        records,
+        require_complete_panel=require_complete_panel,
+    )
     mechanisms = sorted({record.mechanism for record in canonical})
     result: dict[str, tuple[float, ...]] = {}
     for mechanism in mechanisms:
@@ -478,6 +527,14 @@ def development_weights(
                     record.p_pre_zero
                 )
     return result
+
+
+def development_weights(
+    records: object,
+) -> dict[str, tuple[float, ...]]:
+    """Assign equal mechanism, draw, record, and within-record influence."""
+
+    return _development_weights(records, require_complete_panel=True)
 
 
 def _stack_records(
@@ -534,7 +591,10 @@ def cross_validate_calibrator(
             if (record.mechanism, record.biological_id) == (mechanism, biological_id)
         )
         training = tuple(record for record in canonical if record not in held_out)
-        training_weights = development_weights(training)
+        training_weights = _development_weights(
+            training,
+            require_complete_panel=False,
+        )
         train_probability, train_target, train_weight = _stack_records(
             training,
             training_weights,
@@ -739,6 +799,18 @@ class CalibrationThresholds:
         }
 
 
+def _validated_thresholds(value: object) -> CalibrationThresholds:
+    if type(value) is not CalibrationThresholds:
+        raise TypeError("thresholds must be an exact CalibrationThresholds value")
+    return CalibrationThresholds(
+        minimum_mechanisms_improved=value.minimum_mechanisms_improved,
+        brier_improvement_epsilon=value.brier_improvement_epsilon,
+        log_loss_worsening_tolerance=value.log_loss_worsening_tolerance,
+        calibration_slope_lower=value.calibration_slope_lower,
+        calibration_slope_upper=value.calibration_slope_upper,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateEvaluation:
     algorithm: str
@@ -865,6 +937,7 @@ def retention_reasons(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Apply the prespecified non-identity retention gate."""
 
+    thresholds = _validated_thresholds(thresholds)
     if candidate.algorithm == "identity":
         raise ValueError("identity is the default and does not pass a retention gate")
     candidate_metrics = dict(candidate.mechanism_metrics)
@@ -954,6 +1027,7 @@ def evaluate_calibration_candidates(
 ) -> CalibrationDecision:
     """Cross-validate all candidates and apply the retention decision."""
 
+    thresholds = _validated_thresholds(thresholds)
     canonical = validate_calibration_records(records)
     initial = tuple(
         _evaluate_cross_validation(
@@ -1282,6 +1356,14 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         for candidate in candidates
     ):
         raise ValueError("candidate mechanisms contradict exact-truth eligibility")
+    for candidate in candidates:
+        mechanism_entry_count = sum(
+            metric.n for _name, metric in candidate.mechanism_metrics
+        )
+        if candidate.aggregate_metrics.n != mechanism_entry_count:
+            raise ValueError(
+                "candidate aggregate metric entry count contradicts mechanism metrics"
+            )
     identity = candidates[0]
     if (
         not identity.eligible
@@ -1374,6 +1456,16 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
                 biological_id,
             )
         group_manifests.extend(manifests)
+    expected_group_keys = {
+        ("symsim", biological_id) for biological_id in _DEVELOPMENT_BIOLOGICAL_IDS
+    }
+    if set(group_binding_by_manifest.values()) != {
+        (_DEVELOPMENT_NAMESPACE, mechanism, biological_id)
+        for mechanism, biological_id in expected_group_keys
+    } or len(cross_validation["groups"]) != len(expected_group_keys):
+        raise ValueError(
+            "cross-validation groups do not cover the complete development draw panel"
+        )
 
     training = _exact_keys(
         payload["training"],
@@ -1386,8 +1478,12 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         },
         "training",
     )
-    if type(training["record_count"]) is not int or training["record_count"] <= 0:
-        raise ValueError("training.record_count must be positive")
+    if type(training["record_count"]) is not int or training["record_count"] != len(
+        _DEVELOPMENT_PANEL_KEYS
+    ):
+        raise ValueError(
+            "training.record_count must match the complete draw-view panel"
+        )
     if type(training["entry_count"]) is not int or training["entry_count"] <= 0:
         raise ValueError("training.entry_count must be positive")
     if not isinstance(training["record_digest_sha256"], str) or not _SHA256.fullmatch(
@@ -1401,6 +1497,13 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         raise ValueError("training manifest hash is invalid")
     if training["record_count"] != len(manifests):
         raise ValueError("training record count does not match manifests")
+    if any(
+        candidate.aggregate_metrics.n != training["entry_count"]
+        for candidate in candidates
+    ):
+        raise ValueError(
+            "training entry count does not match candidate aggregate metric counts"
+        )
     if tuple(sorted(group_manifests)) != manifests:
         raise ValueError("cross-validation and training manifests differ")
     binding_payload = training["record_bindings"]
@@ -1409,6 +1512,7 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
     previous_binding_key: tuple[str, ...] | None = None
     binding_manifests: list[str] = []
     dataset_ids: list[str] = []
+    binding_panel_keys: list[tuple[str, str]] = []
     for index, value in enumerate(binding_payload):
         binding = _exact_keys(
             value,
@@ -1464,10 +1568,17 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
             raise ValueError("training binding contradicts cross-validation group")
         binding_manifests.append(manifest_sha256)
         dataset_ids.append(dataset_id)
+        binding_panel_keys.append((binding["biological_id"], binding["technical_view"]))
     if tuple(sorted(binding_manifests)) != manifests:
         raise ValueError("training record bindings differ from manifests")
     if len(set(dataset_ids)) != len(dataset_ids):
         raise ValueError("training record bindings contain duplicate dataset IDs")
+    if len(binding_panel_keys) != len(set(binding_panel_keys)) or set(
+        binding_panel_keys
+    ) != set(_DEVELOPMENT_PANEL_KEYS):
+        raise ValueError(
+            "training record bindings do not cover the complete draw-view panel"
+        )
     return payload, calibrator
 
 
@@ -1532,6 +1643,7 @@ def fit_development_calibration(
 ) -> CalibrationArtifact:
     """Evaluate, select, and fit the retained calibrator on all development data."""
 
+    thresholds = _validated_thresholds(thresholds)
     canonical = validate_calibration_records(records)
     decision = evaluate_calibration_candidates(canonical, thresholds)
     weights = development_weights(canonical)
@@ -1807,8 +1919,10 @@ def save_calibration_artifact(
     )
     parent_descriptor = os.open(output.parent, parent_flags)
     descriptor = -1
-    temporary: Path | None = None
+    temporary_name: str | None = None
     published = False
+    publication_identity: tuple[int, int] | None = None
+    temporary_removed = False
     try:
         _verify_open_directory(output.parent, parent_descriptor)
         descriptor, temporary_name = tempfile.mkstemp(
@@ -1816,17 +1930,29 @@ def save_calibration_artifact(
             suffix=".tmp",
             dir=output.parent,
         )
-        temporary = Path(temporary_name)
+        temporary_path = Path(temporary_name)
+        temporary_name = temporary_path.name
         destination = os.fdopen(descriptor, "wb")
         descriptor = -1
         with destination:
             destination.write(artifact._payload_bytes)
             destination.flush()
             os.fsync(destination.fileno())
+        temporary_metadata = os.stat(
+            temporary_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(temporary_metadata.st_mode):
+            raise OSError("calibration temporary artifact is not a regular file")
+        publication_identity = (
+            temporary_metadata.st_dev,
+            temporary_metadata.st_ino,
+        )
         _verify_open_directory(output.parent, parent_descriptor)
         _reject_symlink_components(output)
         os.link(
-            temporary.name,
+            temporary_name,
             output.name,
             src_dir_fd=parent_descriptor,
             dst_dir_fd=parent_descriptor,
@@ -1836,23 +1962,37 @@ def save_calibration_artifact(
         _verify_open_directory(output.parent, parent_descriptor)
         os.fsync(parent_descriptor)
         _verify_open_directory(output.parent, parent_descriptor)
+        os.unlink(temporary_name, dir_fd=parent_descriptor)
+        temporary_removed = True
+        os.fsync(parent_descriptor)
+        _verify_open_directory(output.parent, parent_descriptor)
+        output_metadata = os.stat(
+            output.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(output_metadata.st_mode)
+            or output_metadata.st_nlink != 1
+            or (output_metadata.st_dev, output_metadata.st_ino) != publication_identity
+        ):
+            raise OSError("published calibration artifact identity changed")
     except BaseException:
-        if published and temporary is not None:
+        if published and publication_identity is not None:
             try:
-                temporary_metadata = os.stat(
-                    temporary.name,
-                    dir_fd=parent_descriptor,
-                    follow_symlinks=False,
-                )
                 output_metadata = os.stat(
                     output.name,
                     dir_fd=parent_descriptor,
                     follow_symlinks=False,
                 )
-                if stat.S_ISREG(output_metadata.st_mode) and (
-                    temporary_metadata.st_dev,
-                    temporary_metadata.st_ino,
-                ) == (output_metadata.st_dev, output_metadata.st_ino):
+                if (
+                    stat.S_ISREG(output_metadata.st_mode)
+                    and (
+                        output_metadata.st_dev,
+                        output_metadata.st_ino,
+                    )
+                    == publication_identity
+                ):
                     os.unlink(output.name, dir_fd=parent_descriptor)
                     try:
                         os.fsync(parent_descriptor)
@@ -1864,9 +2004,9 @@ def save_calibration_artifact(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        if temporary is not None:
+        if temporary_name is not None and not temporary_removed:
             try:
-                os.unlink(temporary.name, dir_fd=parent_descriptor)
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
                 os.fsync(parent_descriptor)
             except FileNotFoundError:
                 pass
