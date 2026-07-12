@@ -75,14 +75,14 @@
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
       "integration_status": "pending",
-      "integration_reason": "adapter_and_environment_not_yet_verified"
+      "integration_reason": "pinned_adapter_tiny_smoke_passed_with_rank_override_environment_lock_pending"
     },
     {
       "id": "magic",
       "display_name": "MAGIC",
       "role": "competitor",
       "track": "same_input",
-      "input_scale": "raw_counts",
+      "input_scale": "log1p_cp10k",
       "output_scale": "log1p_cp10k",
       "stochastic": true,
       "seed_policy": "required",
@@ -94,7 +94,7 @@
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
       "integration_status": "pending",
-      "integration_reason": "adapter_and_environment_not_yet_verified"
+      "integration_reason": "pinned_adapter_smoke_passed_environment_lock_pending"
     },
     {
       "id": "dca",
@@ -113,7 +113,7 @@
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
       "integration_status": "pending",
-      "integration_reason": "adapter_and_environment_not_yet_verified"
+      "integration_reason": "pinned_adapter_tiny_smoke_passed_with_training_override_environment_lock_pending"
     },
     {
       "id": "scvi",
@@ -132,7 +132,7 @@
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
       "integration_status": "pending",
-      "integration_reason": "adapter_and_environment_not_yet_verified"
+      "integration_reason": "adapter_contract_verified_pinned_source_requires_python_3_12_or_newer_dependency_environment_not_built"
     },
     {
       "id": "saver",
@@ -151,7 +151,7 @@
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
       "integration_status": "pending",
-      "integration_reason": "adapter_and_environment_not_yet_verified"
+      "integration_reason": "pinned_adapter_tiny_smoke_passed_with_temporary_unlocked_r_dependencies_environment_lock_pending"
     },
     {
       "id": "scimpute",
