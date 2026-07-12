@@ -57,31 +57,38 @@ def impute_counts(
     p_pre_zero: object,
     config: MaskImputeConfig = MaskImputeConfig(),
     device: str | torch.device = "cpu",
+    *,
+    cell_ids: object | None = None,
 ) -> ImputationResult:
     """Fit v27 and selectively impute observed zeros.
 
     Parameters are intentionally limited to raw observed counts and an external
-    count-model score.  No evaluator truth, labels, annotations, or
-    reconstruction-derived score can enter this interface.
+    count-model score.  Exact verified score artifacts additionally require the
+    same external ``cell_ids`` used during score fitting.  No evaluator truth,
+    labels, annotations, or reconstruction-derived score can enter this interface.
     """
 
     if not isinstance(config, MaskImputeConfig):
         raise TypeError("config must be a MaskImputeConfig")
     counts = validate_observed_counts(observed_counts)
     if type(p_pre_zero) is PreZeroCountModelScore:
-        probability = validate_p_pre_zero(p_pre_zero.score_for_counts(counts), counts)
+        probability = validate_p_pre_zero(
+            p_pre_zero.score_for_counts(counts, cell_ids),
+            counts,
+        )
         score_manifest = p_pre_zero.manifest
+        cell_identity = score_manifest["cell_identity"]
         score_diagnostics = {
             "score_source": "maskimpute_cross_fitted_count_only_p_pre_zero",
             "score_provenance_verified": True,
             "score_provenance": {
                 "artifact_type": "maskimpute_count_model_score",
+                "cell_ids_sha256": cell_identity["digest_sha256"],
+                "cell_id_source": cell_identity["source"],
                 "config_sha256": score_manifest["config_sha256"],
-                "cross_fitting": (
-                    "balanced_sha256_row_content_order_round_robin_index_ties"
-                ),
+                "cross_fitting": cell_identity["assignment"],
                 "effective_folds": score_manifest["cross_fitting"]["effective_folds"],
-                "fit_inputs": ("observed_counts",),
+                "fit_inputs": ("observed_counts", "cell_ids"),
                 "input_sha256": score_manifest["input_sha256"],
                 "score_sha256": score_manifest["score_sha256"],
             },

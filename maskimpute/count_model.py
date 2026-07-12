@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import hashlib
 import json
@@ -226,6 +227,40 @@ def _counts_sha256(counts: np.ndarray) -> str:
     return _sha256_bytes(_canonical_counts_bytes(counts))
 
 
+def _validated_cell_ids(cell_ids: object, cell_count: int) -> tuple[str, ...]:
+    if isinstance(cell_ids, (str, bytes)) or not isinstance(cell_ids, Sequence):
+        raise TypeError("cell_ids must be an ordered finite sequence of strings")
+    snapshot = tuple(cell_ids)
+    if len(snapshot) != cell_count:
+        raise ValueError("cell_ids length must match observed_counts rows")
+    if any(type(cell_id) is not str for cell_id in snapshot):
+        raise TypeError("cell_ids must contain exact strings")
+    if any(not cell_id or cell_id.isspace() for cell_id in snapshot):
+        raise ValueError("cell_ids must contain nonempty, non-whitespace strings")
+    if len(set(snapshot)) != len(snapshot):
+        raise ValueError("cell_ids must be unique")
+    try:
+        for cell_id in snapshot:
+            cell_id.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("cell_ids must contain valid UTF-8 strings") from error
+    return snapshot
+
+
+def _canonical_cell_ids_bytes(cell_ids: tuple[str, ...]) -> bytes:
+    payload = bytearray(b"maskimpute-external-cell-ids-v1\0")
+    payload.extend(struct.pack("<Q", len(cell_ids)))
+    for cell_id in cell_ids:
+        encoded = cell_id.encode("utf-8")
+        payload.extend(struct.pack("<Q", len(encoded)))
+        payload.extend(encoded)
+    return bytes(payload)
+
+
+def _cell_ids_sha256(cell_ids: tuple[str, ...]) -> str:
+    return _sha256_bytes(_canonical_cell_ids_bytes(cell_ids))
+
+
 def _config_payload(config: PreZeroCountModelConfig) -> dict[str, object]:
     return {
         "dispersion_prior_strength": config.dispersion_prior_strength,
@@ -241,25 +276,24 @@ def _config_payload(config: PreZeroCountModelConfig) -> dict[str, object]:
 
 
 def _balanced_fold_ids(
-    counts: np.ndarray,
+    cell_ids: tuple[str, ...],
     effective_folds: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    canonical_rows = np.asarray(counts, dtype="<u8", order="C")
-    domain = b"maskimpute-count-model-row-fold-v2\0" + struct.pack(
-        "<Q", counts.shape[1]
-    )
+    domain = b"maskimpute-count-model-external-cell-fold-v1\0"
     keys = []
-    for index in range(counts.shape[0]):
-        row_bytes = canonical_rows[index].tobytes(order="C")
+    for index, cell_id in enumerate(cell_ids):
+        encoded = cell_id.encode("utf-8")
         keys.append(
             (
-                hashlib.sha256(domain + row_bytes).digest(),
-                row_bytes,
+                hashlib.sha256(
+                    domain + struct.pack("<Q", len(encoded)) + encoded
+                ).digest(),
+                encoded,
                 index,
             )
         )
     order = np.asarray([index for _, _, index in sorted(keys)], dtype=np.int64)
-    fold_ids = np.empty(counts.shape[0], dtype=np.int64)
+    fold_ids = np.empty(len(cell_ids), dtype=np.int64)
     for position, index in enumerate(order):
         fold_ids[index] = position % effective_folds
     return fold_ids, order
@@ -751,6 +785,8 @@ class PreZeroCountModelScore:
 
     __slots__ = (
         "_alpha",
+        "_cell_ids",
+        "_cell_ids_sha256",
         "_config_bytes",
         "_config_sha256",
         "_fold_ids",
@@ -811,6 +847,11 @@ class PreZeroCountModelScore:
         return self._input_sha256
 
     @property
+    def cell_ids_sha256(self) -> str:
+        self._verify_integrity()
+        return self._cell_ids_sha256
+
+    @property
     def config_sha256(self) -> str:
         self._verify_integrity()
         return self._config_sha256
@@ -836,15 +877,17 @@ class PreZeroCountModelScore:
                 "pi": _array_binding(self._pi),
             },
             "artifact_type": "maskimpute_count_model_score",
+            "cell_identity": {
+                "assignment": ("balanced_sha256_external_cell_id_order_round_robin"),
+                "canonical_training_order": "sha256_external_cell_id",
+                "cell_count": len(self._cell_ids),
+                "digest_sha256": self._cell_ids_sha256,
+                "source": "caller_supplied_external_cell_ids",
+            },
             "config": config,
             "config_sha256": self._config_sha256,
             "cross_fitting": {
-                "assignment": (
-                    "balanced_sha256_row_content_order_round_robin_index_ties"
-                ),
-                "duplicate_row_tie_breaker": (
-                    "input_row_index_for_identical_canonical_rows"
-                ),
+                "assignment": ("balanced_sha256_external_cell_id_order_round_robin"),
                 "effective_folds": len(self._fold_models),
                 "fold_models": [_fold_payload(record) for record in self._fold_models],
             },
@@ -870,6 +913,17 @@ class PreZeroCountModelScore:
         if type(self) is not PreZeroCountModelScore:
             raise TypeError("verified scores require the exact PreZeroCountModelScore")
         try:
+            if (
+                type(self._cell_ids) is not tuple
+                or any(
+                    type(cell_id) is not str or not cell_id
+                    for cell_id in self._cell_ids
+                )
+                or len(set(self._cell_ids)) != len(self._cell_ids)
+                or len(self._cell_ids) != self._shape[0]
+                or _cell_ids_sha256(self._cell_ids) != self._cell_ids_sha256
+            ):
+                raise ValueError("cell identity digest mismatch")
             if _sha256_bytes(self._config_bytes) != self._config_sha256:
                 raise ValueError("configuration digest mismatch")
             unsigned = self._unsigned_manifest()
@@ -884,11 +938,20 @@ class PreZeroCountModelScore:
         except Exception as error:
             raise ValueError("count-model score integrity check failed") from error
 
-    def score_for_counts(self, observed_counts: object) -> np.ndarray:
-        """Return the score only when freshly validated counts match its binding."""
+    def score_for_counts(
+        self,
+        observed_counts: object,
+        cell_ids: object,
+    ) -> np.ndarray:
+        """Return the score only when counts and external cell IDs match."""
 
         self._verify_integrity()
         counts = _validated_counts(observed_counts)
+        validated_cell_ids = _validated_cell_ids(cell_ids, counts.shape[0])
+        if validated_cell_ids != self._cell_ids:
+            raise ValueError(
+                "cell_ids does not match the bound external cell identities"
+            )
         if _counts_sha256(counts) != self._input_sha256:
             raise ValueError(
                 "observed_counts does not match the bound count-model input"
@@ -896,7 +959,7 @@ class PreZeroCountModelScore:
         try:
             config_payload = json.loads(self._config_bytes)
             config = PreZeroCountModelConfig(**config_payload)
-            expected = _fit_validated_count_model(counts, config)
+            expected = _fit_validated_count_model(counts, validated_cell_ids, config)
         except Exception as error:
             raise ValueError(
                 "count-model score derivation verification failed"
@@ -909,6 +972,7 @@ class PreZeroCountModelScore:
 def _build_score(
     *,
     counts: np.ndarray,
+    cell_ids: tuple[str, ...],
     config: PreZeroCountModelConfig,
     input_sha256: str,
     fold_ids: np.ndarray,
@@ -922,6 +986,8 @@ def _build_score(
     config_bytes = _canonical_json_bytes(_config_payload(config))
     object.__setattr__(score, "_shape", tuple(counts.shape))
     object.__setattr__(score, "_input_sha256", input_sha256)
+    object.__setattr__(score, "_cell_ids", cell_ids)
+    object.__setattr__(score, "_cell_ids_sha256", _cell_ids_sha256(cell_ids))
     object.__setattr__(score, "_config_bytes", config_bytes)
     object.__setattr__(score, "_config_sha256", _sha256_bytes(config_bytes))
     object.__setattr__(score, "_p_pre_zero", _snapshot_array(p_pre_zero, "<f8"))
@@ -947,6 +1013,8 @@ def _same_score_derivation(
     if (
         actual._shape != expected._shape
         or actual._input_sha256 != expected._input_sha256
+        or actual._cell_ids != expected._cell_ids
+        or actual._cell_ids_sha256 != expected._cell_ids_sha256
         or actual._config_bytes != expected._config_bytes
         or actual._config_sha256 != expected._config_sha256
         or actual._score_sha256 != expected._score_sha256
@@ -976,11 +1044,12 @@ def _same_score_derivation(
 
 def _fit_validated_count_model(
     counts: np.ndarray,
+    cell_ids: tuple[str, ...],
     config: PreZeroCountModelConfig,
 ) -> PreZeroCountModelScore:
     input_sha256 = _counts_sha256(counts)
     effective_folds = min(config.n_folds, counts.shape[0])
-    fold_ids, canonical_row_order = _balanced_fold_ids(counts, effective_folds)
+    fold_ids, canonical_row_order = _balanced_fold_ids(cell_ids, effective_folds)
 
     p_pre_zero = np.empty(counts.shape, dtype=np.float64)
     mu = np.empty(counts.shape, dtype=np.float64)
@@ -1060,6 +1129,7 @@ def _fit_validated_count_model(
         raise FloatingPointError("count-model parameter support check failed")
     return _build_score(
         counts=counts,
+        cell_ids=cell_ids,
         config=config,
         input_sha256=input_sha256,
         fold_ids=fold_ids,
@@ -1073,16 +1143,16 @@ def _fit_validated_count_model(
 
 def fit_p_pre_zero_count_model(
     observed_counts: object,
+    cell_ids: object,
     config: PreZeroCountModelConfig = PreZeroCountModelConfig(),
 ) -> PreZeroCountModelScore:
-    """Fit cross-fitted pre-capture-zero probabilities from counts alone.
+    """Fit cross-fitted pre-capture-zero probabilities from counts and cell IDs.
 
-    Fold ordering hashes canonical row content, so distinct-cell results are
-    equivariant to row permutations.  Exact duplicate rows cannot be assigned
-    persistent identities without external cell IDs and therefore use current
-    input row index as their deterministic tie breaker.  Cross-fitting prevents
-    cell self-fit but does not identify count-zero versus loss components from
-    counts alone; this score is the posterior under the disclosed fitted
+    ``cell_ids`` must be unique, nonempty external identifiers paired row-for-row
+    with ``observed_counts``.  Their hashes define balanced fold membership and
+    canonical training order independently of count content.  Cross-fitting
+    prevents cell self-fit but does not identify count-zero versus loss components
+    from counts alone; this score is the posterior under the disclosed fitted
     NB2-plus-loss model.
     """
 
@@ -1093,4 +1163,5 @@ def fit_p_pre_zero_count_model(
     except (TypeError, ValueError) as error:
         raise type(error)(f"config revalidation failed: {error}") from error
     counts = _validated_counts(observed_counts)
-    return _fit_validated_count_model(counts, config)
+    validated_cell_ids = _validated_cell_ids(cell_ids, counts.shape[0])
+    return _fit_validated_count_model(counts, validated_cell_ids, config)

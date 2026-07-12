@@ -1,7 +1,10 @@
 from fnmatch import fnmatchcase
 from dataclasses import FrozenInstanceError
 from pathlib import Path
+import subprocess
+import sys
 import tomllib
+from types import MethodType
 
 import numpy as np
 import pytest
@@ -538,20 +541,83 @@ def test_pre_zero_accepts_integral_float_unsigned_and_sparse_raw_counts():
     )
 
 
-def test_pre_zero_accepts_dok_sparse_raw_counts():
+def test_pre_zero_accepts_every_supported_exact_sparse_storage_type():
     from maskimpute import p_pre_zero_from_counts
 
-    observed = sparse.dok_matrix((1, 2), dtype=np.int64)
-    observed[0, 1] = 2
     expected = p_pre_zero_from_counts(np.array([[0, 2]]), 2, 0, 0.2)
+    for name in (
+        "bsr_matrix",
+        "coo_matrix",
+        "csc_matrix",
+        "csr_matrix",
+        "dia_matrix",
+        "dok_matrix",
+        "lil_matrix",
+        "bsr_array",
+        "coo_array",
+        "csc_array",
+        "csr_array",
+        "dia_array",
+        "dok_array",
+        "lil_array",
+    ):
+        constructor = getattr(sparse, name, None)
+        if constructor is not None:
+            observed = constructor(np.array([[0, 2]], dtype=np.int64))
+            np.testing.assert_array_equal(
+                p_pre_zero_from_counts(observed, 2, 0, 0.2),
+                expected,
+            )
 
-    np.testing.assert_array_equal(
-        p_pre_zero_from_counts(observed, 2, 0, 0.2),
-        expected,
+
+def test_pre_zero_rejects_sparse_conversion_shadows_without_execution():
+    from maskimpute import p_pre_zero_from_counts
+
+    observed = sparse.coo_matrix([[0, 2]])
+    calls = {"copy": 0, "tocoo": 0, "tocsr": 0, "toarray": 0}
+
+    def hostile_for(name):
+        def hostile(self, *args, **kwargs):
+            del self, args, kwargs
+            calls[name] += 1
+            raise AssertionError("sparse conversion hook must never execute")
+
+        return hostile
+
+    for current_name in tuple(calls):
+        setattr(observed, current_name, MethodType(hostile_for(current_name), observed))
+
+    with pytest.raises(TypeError, match="callable sparse instance shadow"):
+        p_pre_zero_from_counts(observed, 2, 0, 0.2)
+    assert calls == {"copy": 0, "tocoo": 0, "tocsr": 0, "toarray": 0}
+
+
+def test_pre_zero_rejects_malformed_csr_before_scipy_conversion():
+    script = """\
+import numpy as np
+from scipy import sparse
+from maskimpute import p_pre_zero_from_counts
+
+observed = sparse.csr_matrix(np.array([[0, 2], [1, 0]], dtype=np.int64))
+observed.indptr[-1] = 1_000_000
+try:
+    p_pre_zero_from_counts(observed, 2.0, 0.0, 0.2)
+except ValueError as error:
+    assert "invalid sparse structure" in str(error), error
+else:
+    raise AssertionError("malformed CSR was accepted")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
     )
-    np.testing.assert_array_equal(
-        p_pre_zero_from_counts(sparse.csr_matrix([[0, 2]]), 2, 0, 0.2),
-        expected,
+
+    assert completed.returncode == 0, (
+        f"returncode={completed.returncode}\nstdout={completed.stdout}\n"
+        f"stderr={completed.stderr}"
     )
 
 

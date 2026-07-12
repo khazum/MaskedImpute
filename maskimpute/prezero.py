@@ -5,6 +5,8 @@ from collections.abc import Mapping
 import numpy as np
 from scipy import sparse
 
+from maskimpute.sparse_input import sparse_coordinate_snapshot
+
 
 def _reject_unsafe_container_values(value, name):
     """Reject masks and dtype metadata before array/sparse coercion can erase them."""
@@ -63,27 +65,17 @@ def _reject_dtype_metadata(dtype, name):
         raise TypeError(f"{name} must not contain dtype metadata")
 
 
-def _reject_sparse_duplicate_coordinates(value, name):
-    coordinates = value.tocoo(copy=True)
-    if coordinates.nnz < 2:
-        return
-    order = np.lexsort((coordinates.col, coordinates.row))
-    rows = coordinates.row[order]
-    columns = coordinates.col[order]
-    if np.any((rows[1:] == rows[:-1]) & (columns[1:] == columns[:-1])):
-        raise ValueError(f"{name} must not contain duplicate sparse coordinates")
-
-
 def _observed_array(value):
-    _reject_unsafe_container_values(value, "observed_counts")
     if sparse.issparse(value):
-        matrix = value.copy()
-        _reject_sparse_duplicate_coordinates(matrix, "observed_counts")
-        matrix = matrix.tocsr(copy=True)
-        entries = matrix.data
-        dtype = matrix.dtype
-        observed = matrix.toarray()
+        entries, rows, columns, shape = sparse_coordinate_snapshot(
+            value,
+            "observed_counts",
+        )
+        dtype = entries.dtype
+        observed = np.zeros(shape, dtype=dtype)
+        observed[rows, columns] = entries
     else:
+        _reject_unsafe_container_values(value, "observed_counts")
         observed = np.asanyarray(value)
         if np.ma.isMaskedArray(observed):
             raise TypeError("observed_counts must not contain masked values")
@@ -105,9 +97,9 @@ def _observed_array(value):
 
 
 def _model_parameter(value, name, shape, *, upper=None):
-    _reject_unsafe_container_values(value, name)
     if sparse.issparse(value):
         raise TypeError(f"{name} must be a dense real number or array")
+    _reject_unsafe_container_values(value, name)
     original = np.asanyarray(value)
     if np.ma.isMaskedArray(original):
         raise TypeError(f"{name} must not contain masked values")

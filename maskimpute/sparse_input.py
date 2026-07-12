@@ -214,6 +214,87 @@ def _structure_error(name: str, detail: str) -> ValueError:
     return ValueError(f"{name} has invalid sparse structure: {detail}")
 
 
+def _same_real_scalar(left: object, right: object) -> bool:
+    left_inexact = isinstance(left, (float, np.inexact))
+    right_inexact = isinstance(right, (float, np.inexact))
+    left_nan = left_inexact and bool(np.isnan(left))
+    right_nan = right_inexact and bool(np.isnan(right))
+    if left_nan or right_nan:
+        return left_nan and right_nan
+    left_infinite = left_inexact and bool(np.isinf(left))
+    right_infinite = right_inexact and bool(np.isinf(right))
+    if left_infinite or right_infinite:
+        return left_infinite and right_infinite and bool(left == right)
+
+    def exact_ratio(value: object) -> tuple[int, int]:
+        if isinstance(value, (bool, int, np.bool_, np.integer)):
+            return int(value), 1
+        numerator, denominator = value.as_integer_ratio()
+        return int(numerator), int(denominator)
+
+    return exact_ratio(left) == exact_ratio(right)
+
+
+def _scalar_losslessly_compatible(value: object, dtype: np.dtype) -> bool:
+    kind = dtype.kind
+    is_complex = isinstance(value, (complex, np.complexfloating))
+    real = value.real if is_complex else value
+    imaginary = value.imag if is_complex else 0
+
+    if is_complex and kind != "c":
+        return False
+    if kind != "c" and not _same_real_scalar(imaginary, 0):
+        return False
+    if kind in "iu":
+        if isinstance(real, (bool, int, np.bool_, np.integer)):
+            integer = int(real)
+        else:
+            if not bool(np.isfinite(real)) or real != np.floor(real):
+                return False
+            integer = int(real)
+        limits = np.iinfo(dtype)
+        return limits.min <= integer <= limits.max
+    if kind == "b":
+        return _same_real_scalar(real, 0) or _same_real_scalar(real, 1)
+
+    components = (real, imaginary) if kind == "c" else (real,)
+    component_dtype = np.empty((), dtype=dtype).real.dtype
+    maximum = np.finfo(component_dtype).max
+    for component in components:
+        finite = (
+            True
+            if isinstance(component, (bool, int, np.bool_, np.integer))
+            else bool(np.isfinite(component))
+        )
+        if finite and abs(component) > maximum:
+            return False
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            converted = dtype.type(value)
+    except (FloatingPointError, OverflowError, TypeError, ValueError):
+        return False
+    if kind == "c":
+        return _same_real_scalar(converted.real, real) and _same_real_scalar(
+            converted.imag,
+            imaginary,
+        )
+    return _same_real_scalar(converted, real)
+
+
+def _lossless_scalar_array(
+    values: list[object],
+    dtype: np.dtype,
+    name: str,
+    format_name: str,
+) -> np.ndarray:
+    if any(not _scalar_losslessly_compatible(value, dtype) for value in values):
+        raise _structure_error(
+            name,
+            f"{format_name} scalar is not losslessly compatible with declared dtype",
+        )
+    return np.asarray(values, dtype=dtype)
+
+
 def _integer_array_snapshot(
     value: np.ndarray,
     name: str,
@@ -423,7 +504,7 @@ def _dok_coordinate_snapshot(
         columns.append(column)
         values.append(item)
     return (
-        np.asarray(values, dtype=dtype),
+        _lossless_scalar_array(values, dtype, name, "DOK"),
         np.asarray(rows, dtype=np.int64),
         np.asarray(columns, dtype=np.int64),
     )
@@ -474,7 +555,7 @@ def _lil_coordinate_snapshot(
         columns.extend(integer_indices)
         values.extend(row_data)
     return (
-        np.asarray(values, dtype=dtype),
+        _lossless_scalar_array(values, dtype, name, "LIL"),
         np.asarray(rows, dtype=np.int64),
         np.asarray(columns, dtype=np.int64),
     )
@@ -534,7 +615,10 @@ def _native_coordinate_snapshot(
             (ordered_rows[1:] == ordered_rows[:-1])
             & (ordered_columns[1:] == ordered_columns[:-1])
         ):
-            raise _structure_error(name, "duplicate coordinates are not supported")
+            raise _structure_error(
+                name,
+                "duplicate sparse coordinates are not supported",
+            )
     return data, rows, columns
 
 

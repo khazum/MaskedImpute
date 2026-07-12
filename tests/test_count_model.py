@@ -1,5 +1,7 @@
 import dataclasses
+from collections.abc import Sequence
 import hashlib
+import inspect
 import json
 import subprocess
 import sys
@@ -46,6 +48,27 @@ def _counts() -> np.ndarray:
     )
 
 
+def _cell_ids(count: int = 6) -> tuple[str, ...]:
+    return tuple(f"external-cell-{index:03d}" for index in range(count))
+
+
+class _StatefulCellIds(Sequence):
+    def __init__(self, first: tuple[str, ...], second: tuple[str, ...]):
+        self._values = (first, second)
+        self.calls = 0
+
+    def __len__(self):
+        return len(self._values[0])
+
+    def __getitem__(self, index):
+        return self._values[0][index]
+
+    def __iter__(self):
+        index = min(self.calls, 1)
+        self.calls += 1
+        return iter(self._values[index])
+
+
 def test_count_model_public_api_imports_without_torch():
     script = r"""
 import builtins
@@ -75,6 +98,91 @@ assert fit_p_pre_zero_count_model.__module__ == "maskimpute.count_model"
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_count_model_public_api_requires_external_cell_ids():
+    from maskimpute import fit_p_pre_zero_count_model
+    from maskimpute.count_model import PreZeroCountModelScore
+
+    assert tuple(inspect.signature(fit_p_pre_zero_count_model).parameters) == (
+        "observed_counts",
+        "cell_ids",
+        "config",
+    )
+    assert tuple(
+        inspect.signature(PreZeroCountModelScore.score_for_counts).parameters
+    ) == (
+        "self",
+        "observed_counts",
+        "cell_ids",
+    )
+    with pytest.raises(TypeError):
+        fit_p_pre_zero_count_model(_counts())
+
+
+@pytest.mark.parametrize(
+    "cell_ids",
+    [
+        (),
+        _cell_ids(5),
+        (*_cell_ids(5), "external-cell-004"),
+        (*_cell_ids(5), ""),
+        (*_cell_ids(5), " \t"),
+        (*_cell_ids(5), 6),
+        (*_cell_ids(5), "\ud800"),
+        "six-cell-identifiers",
+        {"cell-0", "cell-1", "cell-2", "cell-3", "cell-4", "cell-5"},
+        (value for value in _cell_ids()),
+    ],
+)
+def test_external_cell_ids_are_strict_unique_nonempty_ordered_strings(cell_ids):
+    from maskimpute import fit_p_pre_zero_count_model
+
+    with pytest.raises((TypeError, ValueError), match="cell_ids"):
+        fit_p_pre_zero_count_model(_counts(), cell_ids)
+
+
+def test_cell_ids_are_snapshotted_once_and_bound_without_exposing_values():
+    from maskimpute import fit_p_pre_zero_count_model
+
+    original = _cell_ids()
+    protocol = _StatefulCellIds(
+        original,
+        tuple(f"swapped-{index}" for index in range(len(original))),
+    )
+
+    score = fit_p_pre_zero_count_model(_counts(), protocol)
+
+    assert protocol.calls == 1
+    identity = score.manifest["cell_identity"]
+    assert identity == {
+        "assignment": "balanced_sha256_external_cell_id_order_round_robin",
+        "canonical_training_order": "sha256_external_cell_id",
+        "cell_count": len(original),
+        "digest_sha256": score.cell_ids_sha256,
+        "source": "caller_supplied_external_cell_ids",
+    }
+    assert not any(value in json.dumps(score.manifest) for value in original)
+    verification_protocol = _StatefulCellIds(
+        original,
+        tuple(f"verification-swap-{index}" for index in range(len(original))),
+    )
+    np.testing.assert_array_equal(
+        score.score_for_counts(_counts(), verification_protocol),
+        score.p_pre_zero,
+    )
+    assert verification_protocol.calls == 1
+
+
+def test_score_verification_requires_exact_bound_cell_ids():
+    from maskimpute import fit_p_pre_zero_count_model
+
+    score = fit_p_pre_zero_count_model(_counts(), _cell_ids())
+    reordered = list(_cell_ids())
+    reordered[0], reordered[1] = reordered[1], reordered[0]
+
+    with pytest.raises(ValueError, match="cell_ids.*match"):
+        score.score_for_counts(_counts(), reordered)
 
 
 def test_count_model_config_is_strict_and_immutable():
@@ -127,7 +235,7 @@ def test_cross_fitted_score_has_finite_supported_audit_arrays():
     from maskimpute import fit_p_pre_zero_count_model
 
     counts = _counts()
-    score = fit_p_pre_zero_count_model(counts)
+    score = fit_p_pre_zero_count_model(counts, _cell_ids(len(counts)))
 
     assert score.shape == counts.shape
     assert len(score.fold_models) == 5
@@ -175,6 +283,7 @@ def test_score_equals_public_bayes_formula_and_uses_effective_fold_count():
     counts = _counts()[:3]
     score = fit_p_pre_zero_count_model(
         counts,
+        _cell_ids(len(counts)),
         PreZeroCountModelConfig(n_folds=9),
     )
 
@@ -189,9 +298,9 @@ def test_fit_is_exactly_deterministic_and_does_not_consume_numpy_rng():
 
     np.random.seed(913)
     state = np.random.get_state()
-    first = fit_p_pre_zero_count_model(_counts())
+    first = fit_p_pre_zero_count_model(_counts(), _cell_ids())
     after = np.random.get_state()
-    second = fit_p_pre_zero_count_model(_counts())
+    second = fit_p_pre_zero_count_model(_counts(), _cell_ids())
 
     assert state[0] == after[0]
     np.testing.assert_array_equal(state[1], after[1])
@@ -211,11 +320,17 @@ def test_leave_one_out_fold_parameters_exclude_the_held_out_cell():
     from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
 
     counts = _counts()[:4]
+    cell_ids = _cell_ids(len(counts))
     config = PreZeroCountModelConfig(n_folds=4)
-    baseline = fit_p_pre_zero_count_model(counts, config)
+    baseline = fit_p_pre_zero_count_model(counts, cell_ids, config)
     changed_counts = counts.copy()
     changed_counts[2] = np.array([80, 0, 0, 20])
-    changed = fit_p_pre_zero_count_model(changed_counts, config)
+    changed = fit_p_pre_zero_count_model(changed_counts, cell_ids, config)
+
+    np.testing.assert_array_equal(baseline.fold_ids, changed.fold_ids)
+    assert tuple(record.held_out_indices for record in baseline.fold_models) == tuple(
+        record.held_out_indices for record in changed.fold_models
+    )
 
     baseline_fold = next(
         record for record in baseline.fold_models if record.held_out_indices == (2,)
@@ -236,15 +351,43 @@ def test_leave_one_out_fold_parameters_exclude_the_held_out_cell():
     assert baseline_fold.link_slope == changed_fold.link_slope
 
 
-def test_balanced_fold_assignment_is_equivariant_for_distinct_row_permutations():
+def test_held_out_score_is_exactly_invariant_to_positive_redistribution():
     from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
 
-    counts = _counts()
+    counts = _counts()[:4]
+    cell_ids = _cell_ids(len(counts))
+    config = PreZeroCountModelConfig(n_folds=4)
+    baseline = fit_p_pre_zero_count_model(counts, cell_ids, config)
+    changed_counts = counts.copy()
+    changed_counts[2] = np.array([1, 3, 0, 0])
+    changed = fit_p_pre_zero_count_model(changed_counts, cell_ids, config)
+
+    assert counts[2].sum() == changed_counts[2].sum()
+    np.testing.assert_array_equal(counts[2] > 0, changed_counts[2] > 0)
+    np.testing.assert_array_equal(baseline.fold_ids, changed.fold_ids)
+    for baseline_value, changed_value in (
+        (baseline.p_pre_zero[2], changed.p_pre_zero[2]),
+        (baseline.mu[2], changed.mu[2]),
+        (baseline.alpha[2], changed.alpha[2]),
+        (baseline.pi[2], changed.pi[2]),
+    ):
+        np.testing.assert_array_equal(baseline_value, changed_value)
+
+
+def test_balanced_fold_assignment_is_exactly_equivariant_for_paired_permutations():
+    from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
+
+    counts = np.vstack([_counts(), _counts()[[0, 2]]])
+    cell_ids = _cell_ids(len(counts))
     config = PreZeroCountModelConfig(n_folds=3)
-    baseline = fit_p_pre_zero_count_model(counts, config)
-    permutation = np.array([4, 1, 5, 0, 3, 2], dtype=np.int64)
+    baseline = fit_p_pre_zero_count_model(counts, cell_ids, config)
+    permutation = np.array([6, 4, 1, 7, 5, 0, 3, 2], dtype=np.int64)
     inverse = np.argsort(permutation)
-    permuted = fit_p_pre_zero_count_model(counts[permutation], config)
+    permuted = fit_p_pre_zero_count_model(
+        counts[permutation],
+        tuple(cell_ids[index] for index in permutation),
+        config,
+    )
 
     np.testing.assert_array_equal(baseline.fold_ids, permuted.fold_ids[inverse])
     np.testing.assert_array_equal(baseline.p_pre_zero, permuted.p_pre_zero[inverse])
@@ -271,7 +414,7 @@ def test_balanced_fold_assignment_is_equivariant_for_distinct_row_permutations()
         assert baseline_fold.link_slope == permuted_fold.link_slope
 
 
-def test_duplicate_row_fold_ties_use_current_index_deterministically():
+def test_duplicate_count_rows_use_unique_external_ids_without_index_ties():
     from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
 
     counts = np.array(
@@ -285,15 +428,37 @@ def test_duplicate_row_fold_ties_use_current_index_deterministically():
         ],
         dtype=np.int64,
     )
+    cell_ids = _cell_ids(len(counts))
     config = PreZeroCountModelConfig(n_folds=3)
 
-    first = fit_p_pre_zero_count_model(counts, config)
-    second = fit_p_pre_zero_count_model(counts, config)
+    first = fit_p_pre_zero_count_model(counts, cell_ids, config)
+    second = fit_p_pre_zero_count_model(counts, cell_ids, config)
 
     np.testing.assert_array_equal(first.fold_ids, second.fold_ids)
     np.testing.assert_array_equal(first.p_pre_zero, second.p_pre_zero)
-    assert first.manifest["cross_fitting"]["duplicate_row_tie_breaker"] == (
-        "input_row_index_for_identical_canonical_rows"
+    assert first.manifest["cross_fitting"]["assignment"] == (
+        "balanced_sha256_external_cell_id_order_round_robin"
+    )
+    assert "duplicate_row_tie_breaker" not in first.manifest["cross_fitting"]
+
+
+def test_fixed_cell_ids_make_fold_membership_independent_of_count_content():
+    from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
+
+    counts = _counts()
+    cell_ids = _cell_ids()
+    config = PreZeroCountModelConfig(n_folds=3)
+    baseline = fit_p_pre_zero_count_model(counts, cell_ids, config)
+    changed_counts = counts.copy()
+    changed_counts[[0, 1, 4]] = np.array(
+        [[0, 0, 0, 0], [100, 50, 25, 12], [9, 0, 0, 0]],
+        dtype=np.int64,
+    )
+    changed = fit_p_pre_zero_count_model(changed_counts, cell_ids, config)
+
+    np.testing.assert_array_equal(baseline.fold_ids, changed.fold_ids)
+    assert tuple(record.held_out_indices for record in baseline.fold_models) == tuple(
+        record.held_out_indices for record in changed.fold_models
     )
 
 
@@ -301,10 +466,11 @@ def test_equivalent_dense_and_sparse_inputs_have_identical_results_and_digests()
     from maskimpute import fit_p_pre_zero_count_model
 
     counts = _counts()
-    dense = fit_p_pre_zero_count_model(counts.astype(np.float64))
+    cell_ids = _cell_ids(len(counts))
+    dense = fit_p_pre_zero_count_model(counts.astype(np.float64), cell_ids)
 
     for constructor in _SPARSE_CONSTRUCTORS:
-        encoded = fit_p_pre_zero_count_model(constructor(counts))
+        encoded = fit_p_pre_zero_count_model(constructor(counts), cell_ids)
         np.testing.assert_array_equal(encoded.p_pre_zero, dense.p_pre_zero)
         np.testing.assert_array_equal(encoded.mu, dense.mu)
         np.testing.assert_array_equal(encoded.alpha, dense.alpha)
@@ -320,7 +486,7 @@ def test_score_arrays_and_fresh_manifest_are_immutable_snapshots():
     from maskimpute import fit_p_pre_zero_count_model
 
     counts = _counts()
-    score = fit_p_pre_zero_count_model(counts)
+    score = fit_p_pre_zero_count_model(counts, _cell_ids(len(counts)))
     original = score.p_pre_zero.copy()
     counts[:] = 999
 
@@ -351,7 +517,7 @@ def test_score_arrays_and_fresh_manifest_are_immutable_snapshots():
 def test_manifest_digests_bind_canonical_config_model_and_score_payload():
     from maskimpute import fit_p_pre_zero_count_model
 
-    score = fit_p_pre_zero_count_model(_counts())
+    score = fit_p_pre_zero_count_model(_counts(), _cell_ids())
     manifest = score.manifest
     unsigned = dict(manifest)
     unsigned.pop("score_sha256")
@@ -387,24 +553,25 @@ def test_score_for_counts_revalidates_exact_canonical_input():
     from maskimpute import fit_p_pre_zero_count_model
 
     counts = _counts()
-    score = fit_p_pre_zero_count_model(counts)
+    cell_ids = _cell_ids(len(counts))
+    score = fit_p_pre_zero_count_model(counts, cell_ids)
 
     np.testing.assert_array_equal(
-        score.score_for_counts(counts.copy()), score.p_pre_zero
+        score.score_for_counts(counts.copy(), cell_ids), score.p_pre_zero
     )
     np.testing.assert_array_equal(
-        score.score_for_counts(sparse.csr_matrix(counts)), score.p_pre_zero
+        score.score_for_counts(sparse.csr_matrix(counts), cell_ids), score.p_pre_zero
     )
     changed = counts.copy()
     changed[0, 0] += 1
     with pytest.raises(ValueError, match="does not match"):
-        score.score_for_counts(changed)
+        score.score_for_counts(changed, cell_ids)
 
 
 def test_score_rejects_subclass_and_detects_internal_digest_tampering():
     from maskimpute import PreZeroCountModelScore, fit_p_pre_zero_count_model
 
-    score = fit_p_pre_zero_count_model(_counts())
+    score = fit_p_pre_zero_count_model(_counts(), _cell_ids())
 
     class ScoreSubclass(PreZeroCountModelScore):
         pass
@@ -413,15 +580,15 @@ def test_score_rejects_subclass_and_detects_internal_digest_tampering():
     for slot in PreZeroCountModelScore.__slots__:
         object.__setattr__(forged, slot, getattr(score, slot))
     with pytest.raises(TypeError, match="exact PreZeroCountModelScore"):
-        forged.score_for_counts(_counts())
+        forged.score_for_counts(_counts(), _cell_ids())
 
     object.__setattr__(score, "_score_sha256", "0" * 64)
     with pytest.raises(ValueError, match="integrity"):
-        score.score_for_counts(_counts())
+        score.score_for_counts(_counts(), _cell_ids())
     with pytest.raises(ValueError, match="integrity"):
         _ = score.p_pre_zero
 
-    malformed = fit_p_pre_zero_count_model(_counts())
+    malformed = fit_p_pre_zero_count_model(_counts(), _cell_ids())
     object.__setattr__(malformed, "_config_bytes", None)
     with pytest.raises(ValueError, match="integrity"):
         _ = malformed.manifest
@@ -436,7 +603,8 @@ def test_rehashed_forged_score_fails_derivation_verification():
     )
 
     counts = _counts()
-    score = fit_p_pre_zero_count_model(counts)
+    cell_ids = _cell_ids(len(counts))
+    score = fit_p_pre_zero_count_model(counts, cell_ids)
     forged_probability = score.p_pre_zero.copy()
     forged_probability[counts == 0] = 0.125
     object.__setattr__(
@@ -453,7 +621,7 @@ def test_rehashed_forged_score_fails_derivation_verification():
 
     assert score.manifest["score_sha256"] == score_sha256
     with pytest.raises(ValueError, match="derivation"):
-        score.score_for_counts(counts)
+        score.score_for_counts(counts, cell_ids)
 
 
 def test_fit_revalidates_config_after_low_level_mutation():
@@ -463,7 +631,7 @@ def test_fit_revalidates_config_after_low_level_mutation():
     object.__setattr__(config, "n_folds", 1)
 
     with pytest.raises((TypeError, ValueError), match="config|n_folds"):
-        fit_p_pre_zero_count_model(_counts(), config)
+        fit_p_pre_zero_count_model(_counts(), _cell_ids(), config)
 
 
 def test_extreme_finite_shrinkage_strengths_remain_warning_free_and_finite():
@@ -479,6 +647,7 @@ def test_extreme_finite_shrinkage_strengths_remain_warning_free_and_finite():
     )
     score = fit_p_pre_zero_count_model(
         counts,
+        _cell_ids(len(counts)),
         PreZeroCountModelConfig(
             n_folds=3,
             mean_prior_strength=1e308,
@@ -532,10 +701,12 @@ def test_single_class_folds_use_explicit_warning_free_fallbacks(counts, fallback
 
     first = fit_p_pre_zero_count_model(
         counts,
+        _cell_ids(len(counts)),
         PreZeroCountModelConfig(n_folds=3),
     )
     second = fit_p_pre_zero_count_model(
         counts,
+        _cell_ids(len(counts)),
         PreZeroCountModelConfig(n_folds=3),
     )
 
@@ -560,6 +731,7 @@ def test_constant_log_mean_fold_records_explicit_fallback_and_finite_scores():
     )
     score = fit_p_pre_zero_count_model(
         counts,
+        _cell_ids(len(counts)),
         PreZeroCountModelConfig(
             n_folds=2,
             use_library_size_exposure=False,
@@ -594,6 +766,7 @@ def test_fitted_zero_link_is_monotone_nonincreasing_in_log_mean():
     )
     score = fit_p_pre_zero_count_model(
         counts,
+        _cell_ids(len(counts)),
         PreZeroCountModelConfig(n_folds=3),
     )
 
@@ -621,9 +794,9 @@ def test_custom_dense_array_protocol_is_materialized_exactly_once():
         _counts(),
         np.full(_counts().shape, -1, dtype=np.int64),
     )
-    expected = fit_p_pre_zero_count_model(_counts())
+    expected = fit_p_pre_zero_count_model(_counts(), _cell_ids())
 
-    actual = fit_p_pre_zero_count_model(protocol)
+    actual = fit_p_pre_zero_count_model(protocol, _cell_ids())
 
     assert protocol.calls == 1
     assert actual.input_sha256 == expected.input_sha256
@@ -661,7 +834,7 @@ def test_count_model_rejects_ambiguous_or_lossy_count_inputs(invalid):
     from maskimpute import fit_p_pre_zero_count_model
 
     with pytest.raises((TypeError, ValueError)):
-        fit_p_pre_zero_count_model(invalid)
+        fit_p_pre_zero_count_model(invalid, _cell_ids(2))
 
 
 def test_sparse_subclass_is_rejected_without_invoking_conversion_hook():
@@ -677,7 +850,7 @@ def test_sparse_subclass_is_rejected_without_invoking_conversion_hook():
     counts = HostileSparse(_counts())
 
     with pytest.raises(TypeError, match="exact supported SciPy sparse type"):
-        fit_p_pre_zero_count_model(counts)
+        fit_p_pre_zero_count_model(counts, _cell_ids())
     assert HostileSparse.calls == 0
 
 
@@ -698,7 +871,7 @@ def test_exact_coo_copy_shadow_cannot_swap_the_validated_count_snapshot():
     counts.copy = MethodType(hostile_copy, counts)
 
     with pytest.raises(TypeError, match="callable sparse instance shadow"):
-        fit_p_pre_zero_count_model(counts)
+        fit_p_pre_zero_count_model(counts, _cell_ids())
     assert calls == 0
 
 
@@ -727,7 +900,7 @@ def test_exact_dok_stateful_dict_storage_is_rejected_before_iteration():
     stored._dict = StatefulDict(stored._dict)
 
     with pytest.raises(TypeError, match="trusted internal sparse storage"):
-        fit_p_pre_zero_count_model(stored)
+        fit_p_pre_zero_count_model(stored, _cell_ids())
     assert calls == {"items": 0, "keys": 0, "values": 0}
 
 
@@ -754,7 +927,7 @@ def test_sparse_internal_array_subclasses_are_rejected_before_conversion(
     setattr(counts, storage_name, getattr(counts, storage_name).view(ArraySubclass))
 
     with pytest.raises(TypeError, match="trusted internal sparse storage"):
-        fit_p_pre_zero_count_model(counts)
+        fit_p_pre_zero_count_model(counts, _cell_ids())
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -774,7 +947,7 @@ def test_lil_internal_storage_requires_exact_object_arrays_and_lists(nested):
         counts.data = counts.data.view(ArraySubclass)
 
     with pytest.raises(TypeError, match="trusted internal sparse storage"):
-        fit_p_pre_zero_count_model(counts)
+        fit_p_pre_zero_count_model(counts, _cell_ids())
 
 
 @pytest.mark.parametrize(
@@ -834,7 +1007,7 @@ from maskimpute import fit_p_pre_zero_count_model
 {setup}
 {mutation}
 try:
-    fit_p_pre_zero_count_model(x)
+    fit_p_pre_zero_count_model(x, ("external-cell-0", "external-cell-1"))
 except ValueError as error:
     assert "invalid sparse structure" in str(error), error
 else:
@@ -885,7 +1058,7 @@ def test_format_specific_callable_sparse_shadows_are_rejected_before_use(
     setattr(counts, method_name, MethodType(hostile_method, counts))
 
     with pytest.raises(TypeError, match="callable sparse instance shadow"):
-        fit_p_pre_zero_count_model(counts)
+        fit_p_pre_zero_count_model(counts, _cell_ids())
     assert calls == 0
 
 
@@ -905,7 +1078,7 @@ def test_exact_sparse_instance_conversion_hook_is_rejected_without_execution():
     counts.tocoo = MethodType(hostile_tocoo, counts)
 
     with pytest.raises(TypeError, match="callable sparse instance shadow"):
-        fit_p_pre_zero_count_model(counts)
+        fit_p_pre_zero_count_model(counts, _cell_ids())
     assert calls == 0
 
 
@@ -916,4 +1089,33 @@ def test_nested_masked_sparse_storage_is_rejected_before_conversion():
     counts.data[0][0] = np.ma.array(1, mask=True)
 
     with pytest.raises(TypeError, match="masked"):
-        fit_p_pre_zero_count_model(counts)
+        fit_p_pre_zero_count_model(counts, _cell_ids(2))
+
+
+@pytest.mark.parametrize(
+    "constructor_name",
+    ["dok_matrix", "lil_matrix", "dok_array", "lil_array"],
+)
+@pytest.mark.parametrize(
+    ("declared_dtype", "stored_scalar"),
+    [(np.int64, 1.5), (np.float32, 0.1)],
+)
+def test_sparse_declared_dtype_rejects_nonlossless_internal_scalar(
+    constructor_name,
+    declared_dtype,
+    stored_scalar,
+):
+    from maskimpute import fit_p_pre_zero_count_model
+
+    constructor = getattr(sparse, constructor_name, None)
+    if constructor is None:
+        pytest.skip(f"SciPy does not provide {constructor_name}")
+    counts = constructor(np.array([[1, 0], [0, 2]], dtype=declared_dtype))
+    if constructor_name.startswith("dok"):
+        counts._dict[(0, 1)] = stored_scalar
+    else:
+        counts.rows[0].append(1)
+        counts.data[0].append(stored_scalar)
+
+    with pytest.raises(ValueError, match="losslessly compatible.*dtype"):
+        fit_p_pre_zero_count_model(counts, _cell_ids(2))

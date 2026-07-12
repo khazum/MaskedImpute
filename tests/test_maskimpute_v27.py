@@ -385,6 +385,10 @@ def _tiny_counts() -> np.ndarray:
     )
 
 
+def _tiny_cell_ids() -> tuple[str, ...]:
+    return tuple(f"external-v27-cell-{index}" for index in range(len(_tiny_counts())))
+
+
 def _tiny_probability(counts: np.ndarray) -> np.ndarray:
     return np.where(counts == 0, 0.75, 0.0)
 
@@ -414,6 +418,7 @@ def test_public_imputation_signature_has_no_evaluator_side_channels():
         "p_pre_zero",
         "config",
         "device",
+        "cell_ids",
     )
 
 
@@ -507,13 +512,15 @@ def test_exact_count_model_artifact_is_revalidated_and_reported_as_verified():
     from maskimpute import fit_p_pre_zero_count_model, impute_counts
 
     counts = _tiny_counts()
-    score = fit_p_pre_zero_count_model(counts)
+    cell_ids = _tiny_cell_ids()
+    score = fit_p_pre_zero_count_model(counts, cell_ids)
 
     result = impute_counts(
         counts,
         score,
         config=_tiny_config(max_epochs=1, patience=1),
         device="cpu",
+        cell_ids=cell_ids,
     )
 
     np.testing.assert_array_equal(result.p_pre_zero, score.p_pre_zero)
@@ -524,10 +531,12 @@ def test_exact_count_model_artifact_is_revalidated_and_reported_as_verified():
     assert diagnostics["score_provenance_verified"] is True
     assert diagnostics["score_provenance"] == {
         "artifact_type": "maskimpute_count_model_score",
+        "cell_ids_sha256": score.cell_ids_sha256,
+        "cell_id_source": "caller_supplied_external_cell_ids",
         "config_sha256": score.config_sha256,
-        "cross_fitting": ("balanced_sha256_row_content_order_round_robin_index_ties"),
+        "cross_fitting": ("balanced_sha256_external_cell_id_order_round_robin"),
         "effective_folds": len(score.fold_models),
-        "fit_inputs": ("observed_counts",),
+        "fit_inputs": ("observed_counts", "cell_ids"),
         "input_sha256": score.input_sha256,
         "score_sha256": score.score_sha256,
     }
@@ -537,7 +546,8 @@ def test_exact_count_model_artifact_refuses_mismatched_imputation_counts():
     from maskimpute import fit_p_pre_zero_count_model, impute_counts
 
     counts = _tiny_counts()
-    score = fit_p_pre_zero_count_model(counts)
+    cell_ids = _tiny_cell_ids()
+    score = fit_p_pre_zero_count_model(counts, cell_ids)
     changed = counts.copy()
     changed[0, 0] += 1
 
@@ -547,6 +557,34 @@ def test_exact_count_model_artifact_refuses_mismatched_imputation_counts():
             score,
             config=_tiny_config(max_epochs=1, patience=1),
             device="cpu",
+            cell_ids=cell_ids,
+        )
+
+
+def test_exact_count_model_artifact_requires_exact_bound_cell_ids_at_imputation():
+    from maskimpute import fit_p_pre_zero_count_model, impute_counts
+
+    counts = _tiny_counts()
+    cell_ids = _tiny_cell_ids()
+    score = fit_p_pre_zero_count_model(counts, cell_ids)
+
+    with pytest.raises((TypeError, ValueError), match="cell_ids"):
+        impute_counts(
+            counts,
+            score,
+            config=_tiny_config(max_epochs=1, patience=1),
+            device="cpu",
+        )
+
+    reordered = list(cell_ids)
+    reordered[0], reordered[1] = reordered[1], reordered[0]
+    with pytest.raises(ValueError, match="cell_ids.*match"):
+        impute_counts(
+            counts,
+            score,
+            config=_tiny_config(max_epochs=1, patience=1),
+            device="cpu",
+            cell_ids=reordered,
         )
 
 
@@ -559,7 +597,8 @@ def test_rehashed_forged_count_model_artifact_is_never_reported_verified():
     )
 
     counts = _tiny_counts()
-    score = fit_p_pre_zero_count_model(counts)
+    cell_ids = _tiny_cell_ids()
+    score = fit_p_pre_zero_count_model(counts, cell_ids)
     forged_probability = score.p_pre_zero.copy()
     forged_probability[counts == 0] = 0.25
     object.__setattr__(
@@ -580,6 +619,7 @@ def test_rehashed_forged_count_model_artifact_is_never_reported_verified():
             score,
             config=_tiny_config(max_epochs=1, patience=1),
             device="cpu",
+            cell_ids=cell_ids,
         )
 
 
@@ -591,7 +631,8 @@ def test_exact_coo_copy_shadow_cannot_swap_verified_imputation_counts():
     stored = _tiny_counts()
     swapped = stored.copy()
     swapped[0, 0] += 9
-    score = fit_p_pre_zero_count_model(swapped)
+    cell_ids = _tiny_cell_ids()
+    score = fit_p_pre_zero_count_model(swapped, cell_ids)
     counts = sparse.coo_matrix(stored)
     calls = 0
 
@@ -608,6 +649,7 @@ def test_exact_coo_copy_shadow_cannot_swap_verified_imputation_counts():
             score,
             config=_tiny_config(max_epochs=1, patience=1),
             device="cpu",
+            cell_ids=cell_ids,
         )
     assert calls == 0
 
@@ -641,11 +683,33 @@ def test_stateful_dok_storage_is_rejected_at_v27_count_boundary_before_iteration
     assert calls == {"items": 0, "keys": 0, "values": 0}
 
 
+@pytest.mark.parametrize(
+    "constructor_name",
+    ["dok_matrix", "lil_matrix", "dok_array", "lil_array"],
+)
+def test_v27_rejects_fractional_scalar_in_integer_sparse_storage(constructor_name):
+    from maskimpute.train import validate_observed_counts
+
+    constructor = getattr(sparse, constructor_name, None)
+    if constructor is None:
+        pytest.skip(f"SciPy does not provide {constructor_name}")
+    counts = constructor(np.array([[1, 0], [0, 2]], dtype=np.int64))
+    if constructor_name.startswith("dok"):
+        counts._dict[(0, 1)] = 1.5
+    else:
+        counts.rows[0].append(1)
+        counts.data[0].append(1.5)
+
+    with pytest.raises(ValueError, match="losslessly compatible.*dtype"):
+        validate_observed_counts(counts)
+
+
 def test_verified_artifact_preserves_single_snapshot_count_input_boundary():
     from maskimpute import fit_p_pre_zero_count_model, impute_counts
 
     counts = _tiny_counts()
-    score = fit_p_pre_zero_count_model(counts)
+    cell_ids = _tiny_cell_ids()
+    score = fit_p_pre_zero_count_model(counts, cell_ids)
     protocol = _ChangingArrayProtocol(
         counts,
         np.full_like(counts, -1),
@@ -656,6 +720,7 @@ def test_verified_artifact_preserves_single_snapshot_count_input_boundary():
         score,
         config=_tiny_config(max_epochs=1, patience=1),
         device="cpu",
+        cell_ids=cell_ids,
     )
 
     assert protocol.calls == 1
@@ -669,7 +734,7 @@ def test_count_model_artifact_subclass_is_only_accepted_as_unverified_raw_score(
         impute_counts,
     )
 
-    score = fit_p_pre_zero_count_model(_tiny_counts())
+    score = fit_p_pre_zero_count_model(_tiny_counts(), _tiny_cell_ids())
 
     class RawScoreSubclass(PreZeroCountModelScore):
         def __array__(self, dtype=None, copy=None):
