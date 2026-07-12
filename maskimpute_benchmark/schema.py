@@ -58,9 +58,7 @@ EVALUATOR_LAYERS = frozenset(
 _DISCRETE_LAYERS = frozenset(
     {"pre_capture_counts", "reference_counts", "heldout_counts"}
 )
-_CONTINUOUS_PRIMARY_LAYERS = frozenset(
-    {"latent_expression", "pre_dropout_expression"}
-)
+_CONTINUOUS_PRIMARY_LAYERS = frozenset({"latent_expression", "pre_dropout_expression"})
 _PROVENANCE_FIELDS = (
     "source",
     "source_sha256",
@@ -157,8 +155,7 @@ def _validate_nonnegative_matrix(
     finite_nonnegative = np.isfinite(values).all() and bool((values >= 0).all())
     if integer:
         if not finite_nonnegative or (
-            values.dtype.kind == "f"
-            and not bool((values == np.floor(values)).all())
+            values.dtype.kind == "f" and not bool((values == np.floor(values)).all())
         ):
             raise ValueError(f"{name} must contain finite nonnegative integers")
         if values.dtype.kind == "f" and bool(
@@ -244,21 +241,67 @@ def _validate_obs(adata: ad.AnnData) -> None:
         raise ValueError("library_size must exactly equal observed-count row sums")
 
 
-def _require_canonical_json(value: object, name: str) -> None:
-    def validate_keys(item: object) -> None:
-        if isinstance(item, Mapping):
-            if not all(isinstance(key, str) for key in item):
-                raise ValueError(f"{name} must be canonical JSON with string object keys")
-            for nested in item.values():
-                validate_keys(nested)
-        elif isinstance(item, (list, tuple)):
-            for nested in item:
-                validate_keys(nested)
+def _canonical_json_value(
+    value: object,
+    name: str,
+    _active: set[int] | None = None,
+) -> object:
+    """Normalize AnnData's NumPy-backed JSON scalars without weakening JSON."""
 
-    validate_keys(value)
+    if _active is None:
+        _active = set()
+    if np.ma.isMaskedArray(value):
+        raise ValueError(f"{name} must be canonical JSON")
+    if isinstance(value, np.ndarray):
+        if value.dtype.metadata is not None:
+            raise ValueError(f"{name} must be canonical JSON")
+        identity = id(value)
+        if identity in _active:
+            raise ValueError(f"{name} must be canonical JSON")
+        _active.add(identity)
+        try:
+            return _canonical_json_value(value.tolist(), name, _active)
+        finally:
+            _active.remove(identity)
+    if isinstance(value, np.generic):
+        if value.dtype.metadata is not None:
+            raise ValueError(f"{name} must be canonical JSON")
+        return _canonical_json_value(value.item(), name, _active)
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError(f"{name} must be canonical JSON with string object keys")
+        identity = id(value)
+        if identity in _active:
+            raise ValueError(f"{name} must be canonical JSON")
+        _active.add(identity)
+        try:
+            return {
+                key: _canonical_json_value(nested, name, _active)
+                for key, nested in value.items()
+            }
+        finally:
+            _active.remove(identity)
+    if isinstance(value, (list, tuple)):
+        identity = id(value)
+        if identity in _active:
+            raise ValueError(f"{name} must be canonical JSON")
+        _active.add(identity)
+        try:
+            return [_canonical_json_value(nested, name, _active) for nested in value]
+        finally:
+            _active.remove(identity)
+    if value is None or type(value) in {bool, int, str}:
+        return value
+    if type(value) is float and math.isfinite(value):
+        return value
+    raise ValueError(f"{name} must be canonical JSON")
+
+
+def _require_canonical_json(value: object, name: str) -> None:
+    normalized = _canonical_json_value(value, name)
     try:
         json.dumps(
-            value,
+            normalized,
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=False,
@@ -438,15 +481,16 @@ def _validate_covariate_series(series: pd.Series, axis: str, name: str) -> None:
             raise ValueError(f"{label} must contain immutable scalar values") from error
         if np.isfinite(values).all():
             return
-    raise ValueError(
-        f"{label} must use a supported immutable scalar covariate dtype"
-    )
+    raise ValueError(f"{label} must use a supported immutable scalar covariate dtype")
 
 
 def _parse_allowed_covariates(adata: ad.AnnData) -> tuple[list[str], list[str]]:
     declaration = adata.uns.get("allowed_covariates")
     if declaration is None:
         return [], []
+    declaration = _canonical_json_value(
+        declaration, "allowed_covariates canonical JSON"
+    )
     if isinstance(declaration, Mapping):
         extra = set(declaration) - {"obs", "var"}
         if extra:
@@ -463,7 +507,9 @@ def _parse_allowed_covariates(adata: ad.AnnData) -> tuple[list[str], list[str]]:
             or isinstance(names, (str, bytes))
             or not all(isinstance(name, str) and name for name in names)
         ):
-            raise ValueError(f"allowed_covariates {axis} must be a list of column names")
+            raise ValueError(
+                f"allowed_covariates {axis} must be a list of column names"
+            )
         result = list(names)
         if len(result) != len(set(result)):
             raise ValueError(f"allowed_covariates {axis} contains duplicate columns")
@@ -632,7 +678,9 @@ def benchmark_dataset_sha256(adata: ad.AnnData) -> str:
     validate_benchmark_dataset(adata)
     layers = _raw_layers(adata)
     bound_uns = {
-        key: deepcopy(adata.uns[key])
+        key: _canonical_json_value(
+            deepcopy(adata.uns[key]), f"uns.{key} canonical JSON"
+        )
         for key in (
             "truth_kind",
             "primary_truth_layer",
@@ -647,9 +695,7 @@ def benchmark_dataset_sha256(adata: ad.AnnData) -> str:
         "shape": list(adata.shape),
         "observed_sha256": _matrix_sha256(adata.X, discrete=True),
         "layers": {
-            name: _matrix_sha256(
-                layers[name], discrete=name in _DISCRETE_LAYERS
-            )
+            name: _matrix_sha256(layers[name], discrete=name in _DISCRETE_LAYERS)
             for name in sorted(layers)
         },
         "obs_ids": [_normalise_scalar(value) for value in adata.obs_names],

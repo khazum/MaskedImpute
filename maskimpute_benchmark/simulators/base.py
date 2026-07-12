@@ -10,6 +10,8 @@ import re
 import stat
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from ..protocol import Protocol, canonical_sha256, load_protocol
 
 if TYPE_CHECKING:
@@ -137,7 +139,11 @@ class SimulationArtifact:
             ("measurement", request.measurement_seed),
         ):
             observed_seed = seeds.get(name) if isinstance(seeds, Mapping) else None
-            if type(observed_seed) is not int or observed_seed != expected:
+            if (
+                isinstance(observed_seed, (bool, np.bool_))
+                or not isinstance(observed_seed, (int, np.integer))
+                or int(observed_seed) != expected
+            ):
                 raise SimulationContractError(
                     f"translated AnnData {name} seed does not match the simulation request"
                 )

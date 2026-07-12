@@ -75,7 +75,14 @@ def _dataset(
     if truth_kind is TruthKind.EXACT_PRE_CAPTURE:
         layer = primary_truth_layer or "pre_capture_counts"
         dataset.layers[layer] = OBSERVED + np.array(
-            [[0, 2, 0, 0], [1, 0, 2, 0], [0, 1, 0, 3], [2, 0, 1, 0], [0, 1, 4, 0], [1, 0, 0, 2]]
+            [
+                [0, 2, 0, 0],
+                [1, 0, 2, 0],
+                [0, 1, 0, 3],
+                [2, 0, 1, 0],
+                [0, 1, 4, 0],
+                [1, 0, 0, 2],
+            ]
         )
     elif truth_kind is TruthKind.EXACT_CONTINUOUS:
         layer = primary_truth_layer or "latent_expression"
@@ -130,12 +137,16 @@ def test_observed_counts_must_be_finite_nonnegative_integers(value: float) -> No
     observed[0, 0] = value
     dataset.X = observed
 
-    with pytest.raises(ValueError, match="observed counts.*finite nonnegative integers"):
+    with pytest.raises(
+        ValueError, match="observed counts.*finite nonnegative integers"
+    ):
         validate_benchmark_dataset(dataset)
 
 
 @pytest.mark.parametrize("dtype", [object, "U8", "S8", np.complex128, np.longdouble])
-@pytest.mark.parametrize("matrix_role", ["observed", "discrete_truth", "continuous_truth"])
+@pytest.mark.parametrize(
+    "matrix_role", ["observed", "discrete_truth", "continuous_truth"]
+)
 def test_matrices_reject_non_native_or_wider_than_float64_dtypes(
     dtype, matrix_role: str
 ) -> None:
@@ -176,7 +187,9 @@ def test_discrete_float_counts_must_fit_uint64() -> None:
         validate_benchmark_dataset(dataset)
 
 
-@pytest.mark.parametrize("truth_kind", [TruthKind.EXACT_PRE_CAPTURE, TruthKind.PROXY_HIGH_DEPTH])
+@pytest.mark.parametrize(
+    "truth_kind", [TruthKind.EXACT_PRE_CAPTURE, TruthKind.PROXY_HIGH_DEPTH]
+)
 def test_discrete_truth_must_be_integer(truth_kind: TruthKind) -> None:
     dataset = _dataset(truth_kind)
     layer = dataset.uns["primary_truth_layer"]
@@ -478,6 +491,66 @@ def test_dataset_hash_binds_truth_metadata_ids_and_provenance() -> None:
     changed_id = dataset.copy()
     changed_id.obs_names = ["replacement", *changed_id.obs_names[1:]]
     assert benchmark_dataset_sha256(changed_id) != original
+
+
+def test_h5ad_roundtrip_canonicalizes_provenance_and_stabilizes_dataset_hash(
+    tmp_path,
+) -> None:
+    dataset = _dataset()
+    dataset.uns["provenance"]["parameters"]["integer_sequence"] = [1, 2, 3]
+    path = tmp_path / "dataset.h5ad"
+    second_path = tmp_path / "dataset-second.h5ad"
+
+    dataset.write_h5ad(path)
+    persisted = ad.read_h5ad(path)
+    persisted.write_h5ad(second_path)
+    persisted_again = ad.read_h5ad(second_path)
+
+    assert validate_benchmark_dataset(persisted) is None
+    assert benchmark_dataset_sha256(persisted_again) == benchmark_dataset_sha256(
+        persisted
+    )
+
+
+def test_numpy_json_scalars_and_arrays_have_builtin_json_semantics() -> None:
+    builtin = _dataset()
+    numpy_backed = _dataset()
+    builtin.uns["provenance"]["parameters"]["values"] = [1, 2.5, True]
+    # Numeric JSON types remain type-sensitive: construct the exact scalar
+    # equivalents that AnnData 0.11 returns after an H5AD round trip.
+    numpy_backed.uns["provenance"]["parameters"]["values"] = [
+        np.int64(1),
+        np.float64(2.5),
+        np.bool_(True),
+    ]
+
+    assert benchmark_dataset_sha256(numpy_backed) == benchmark_dataset_sha256(builtin)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        np.ma.array([1, 2], mask=[False, True]),
+        np.array([object()], dtype=object),
+        np.array([1.0, np.nan]),
+    ],
+)
+def test_provenance_rejects_non_json_numpy_containers(invalid) -> None:
+    dataset = _dataset()
+    dataset.uns["provenance"]["parameters"]["invalid"] = invalid
+
+    with pytest.raises(ValueError, match="canonical JSON"):
+        validate_benchmark_dataset(dataset)
+
+
+def test_provenance_rejects_cyclic_json_containers() -> None:
+    dataset = _dataset()
+    cycle: list[object] = []
+    cycle.append(cycle)
+    dataset.uns["provenance"]["parameters"]["cycle"] = cycle
+
+    with pytest.raises(ValueError, match="canonical JSON"):
+        validate_benchmark_dataset(dataset)
 
 
 def test_dataset_hash_is_lossless_for_integers_above_float_precision() -> None:
