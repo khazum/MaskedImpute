@@ -59,18 +59,36 @@ def impute_counts(
     device: str | torch.device = "cpu",
     *,
     cell_ids: object | None = None,
+    calibration_artifact: object | None = None,
 ) -> ImputationResult:
     """Fit v27 and selectively impute observed zeros.
 
-    Parameters are intentionally limited to raw observed counts and an external
-    count-model score.  Exact verified score artifacts additionally require the
-    same external ``cell_ids`` used during score fitting.  No evaluator truth,
-    labels, annotations, or reconstruction-derived score can enter this interface.
+    Parameters are intentionally limited to raw observed counts, an external
+    count-model score, and the optional retained development calibration.
+    Exact verified score artifacts additionally require the same external
+    ``cell_ids`` used during score fitting. The public calibrator applies the
+    all-development fit intended for external or frozen-final inference;
+    development benchmarking uses its separate held-out-draw adapter path. No
+    evaluator truth, labels, annotations, or reconstruction-derived score can
+    enter this interface.
     """
 
     if not isinstance(config, MaskImputeConfig):
         raise TypeError("config must be a MaskImputeConfig")
     counts = validate_observed_counts(observed_counts)
+    verified_calibration = None
+    if calibration_artifact is not None:
+        from maskimpute.calibration import CalibrationArtifact
+
+        if type(calibration_artifact) is not CalibrationArtifact:
+            raise TypeError(
+                "calibration_artifact must be an exact CalibrationArtifact"
+            )
+        if type(p_pre_zero) is not PreZeroCountModelScore:
+            raise TypeError(
+                "retained calibration requires an exact PreZeroCountModelScore"
+            )
+        verified_calibration = CalibrationArtifact(calibration_artifact.to_dict())
     if type(p_pre_zero) is PreZeroCountModelScore:
         probability = validate_p_pre_zero(
             p_pre_zero.score_for_counts(counts, cell_ids),
@@ -98,6 +116,25 @@ def impute_counts(
         score_diagnostics = {
             "score_source": "caller_supplied_count_model_p_pre_zero_unverified",
             "score_provenance_verified": False,
+        }
+    if verified_calibration is not None:
+        calibration_payload = verified_calibration.to_dict()
+        calibrated = np.zeros_like(probability)
+        observed_zero = counts == 0
+        calibrated[observed_zero] = verified_calibration.transform(
+            probability[observed_zero]
+        )
+        probability = validate_p_pre_zero(calibrated, counts)
+        score_diagnostics["score_source"] = (
+            "maskimpute_retained_calibrated_cross_fitted_count_only_p_pre_zero"
+        )
+        score_diagnostics["score_calibration"] = {
+            "algorithm": verified_calibration.selected_algorithm,
+            "artifact_payload_sha256": calibration_payload["payload_sha256"],
+            "scope": "all_development_fit_for_external_or_final_inference",
+            "training_manifest_sha256s": tuple(
+                calibration_payload["training"]["manifest_sha256s"]
+            ),
         }
     outcome = train_v27(counts, probability, config, device)
 

@@ -766,6 +766,7 @@ def test_single_ablation_executes_model_mask_loss_score_and_output_contracts():
         config,
         "cpu",
         cell_ids=cell_ids,
+        calibration_artifact=calibration,
     )
     reference = results["maskimpute-reference"]
     np.testing.assert_allclose(reference.selective_counts, production.selective_counts)

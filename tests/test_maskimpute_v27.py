@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import inspect
 
 import numpy as np
 import pytest
 from scipy import sparse
+from scipy.special import expit
 
 
 torch = pytest.importorskip("torch")
@@ -389,6 +391,55 @@ def _tiny_cell_ids() -> tuple[str, ...]:
     return tuple(f"external-v27-cell-{index}" for index in range(len(_tiny_counts())))
 
 
+def _retained_nonidentity_calibration_artifact():
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+        fit_development_calibration,
+    )
+
+    levels = np.array([0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.96])
+    records = []
+    for index, (draw, view, intercept) in enumerate(
+        (
+            ("draw-01", "moderate", -1.1),
+            ("draw-01", "severe", -1.1),
+            ("draw-02", "moderate", -0.9),
+            ("draw-02", "severe", -0.9),
+        ),
+        start=5,
+    ):
+        calibrated = expit(
+            0.5 * np.log(levels) - 1.7 * np.log1p(-levels) + intercept
+        )
+        probability = []
+        target = []
+        for raw, expected in zip(levels, calibrated, strict=True):
+            positives = min(49, max(1, round(50 * expected)))
+            probability.extend([float(raw)] * 50)
+            target.extend([1] * positives + [0] * (50 - positives))
+        dataset_sha = hashlib.sha256(f"{draw}:{view}:retained".encode()).hexdigest()
+        records.append(
+            CalibrationRecord(
+                p_pre_zero=probability,
+                target=target,
+                mechanism="symsim",
+                biological_id=draw,
+                manifest_sha256=f"{index:x}" * 64,
+                truth_kind="exact_pre_capture",
+                namespace="dev",
+                data_role="development",
+                technical_view=view,
+                dataset_id=f"dataset-{dataset_sha[:24]}",
+                dataset_sha256=dataset_sha,
+                protocol_sha256=DEVELOPMENT_PROTOCOL_SHA256,
+            )
+        )
+    artifact = fit_development_calibration(records)
+    assert artifact.selected_algorithm == "isotonic"
+    return artifact
+
+
 def _tiny_probability(counts: np.ndarray) -> np.ndarray:
     return np.where(counts == 0, 0.75, 0.0)
 
@@ -419,6 +470,7 @@ def test_public_imputation_signature_has_no_evaluator_side_channels():
         "config",
         "device",
         "cell_ids",
+        "calibration_artifact",
     )
 
 
@@ -540,6 +592,72 @@ def test_exact_count_model_artifact_is_revalidated_and_reported_as_verified():
         "input_sha256": score.input_sha256,
         "score_sha256": score.score_sha256,
     }
+
+
+def test_public_reference_applies_retained_all_development_calibrator():
+    from maskimpute import fit_p_pre_zero_count_model, impute_counts
+
+    counts = _tiny_counts()
+    cell_ids = _tiny_cell_ids()
+    score = fit_p_pre_zero_count_model(counts, cell_ids)
+    calibration = _retained_nonidentity_calibration_artifact()
+
+    result = impute_counts(
+        counts,
+        score,
+        config=_tiny_config(max_epochs=1, patience=1),
+        device="cpu",
+        cell_ids=cell_ids,
+        calibration_artifact=calibration,
+    )
+
+    expected = np.zeros_like(score.p_pre_zero)
+    observed_zero = counts == 0
+    expected[observed_zero] = calibration.transform(
+        score.p_pre_zero[observed_zero]
+    )
+    np.testing.assert_allclose(result.p_pre_zero, expected)
+    assert not np.array_equal(result.p_pre_zero, score.p_pre_zero)
+    diagnostics = result.diagnostics
+    assert diagnostics["score_source"] == (
+        "maskimpute_retained_calibrated_cross_fitted_count_only_p_pre_zero"
+    )
+    assert diagnostics["score_calibration"] == {
+        "algorithm": "isotonic",
+        "artifact_payload_sha256": calibration.to_dict()["payload_sha256"],
+        "scope": "all_development_fit_for_external_or_final_inference",
+        "training_manifest_sha256s": tuple(
+            calibration.to_dict()["training"]["manifest_sha256s"]
+        ),
+    }
+
+
+def test_public_calibration_requires_exact_score_and_artifact():
+    from maskimpute import fit_p_pre_zero_count_model, impute_counts
+
+    counts = _tiny_counts()
+    cell_ids = _tiny_cell_ids()
+    score = fit_p_pre_zero_count_model(counts, cell_ids)
+    calibration = _retained_nonidentity_calibration_artifact()
+    config = _tiny_config(max_epochs=1, patience=1)
+
+    with pytest.raises(TypeError, match="PreZeroCountModelScore"):
+        impute_counts(
+            counts,
+            score.p_pre_zero,
+            config=config,
+            device="cpu",
+            calibration_artifact=calibration,
+        )
+    with pytest.raises(TypeError, match="CalibrationArtifact"):
+        impute_counts(
+            counts,
+            score,
+            config=config,
+            device="cpu",
+            cell_ids=cell_ids,
+            calibration_artifact=object(),
+        )
 
 
 def test_exact_count_model_artifact_refuses_mismatched_imputation_counts():
