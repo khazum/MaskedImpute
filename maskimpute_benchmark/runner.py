@@ -52,7 +52,7 @@ _TRACKED_V28_REVISION_SHA256 = (
 )
 _V28_SELECTION_INPUT_PATH = (
     Path(__file__).resolve().parents[1]
-    / "artifacts/study/development/evaluation/selection_input.json"
+    / "artifacts/study/development/evaluation/development_selection_input.json"
 )
 _V28_SELECTION_REPORT_PATH = (
     Path(__file__).resolve().parents[1]
@@ -820,10 +820,20 @@ def load_v28_revision_authority() -> RunnerAuthority:
     revision_sha256 = hashlib.sha256(revision_bytes).hexdigest()
     if revision_sha256 != _TRACKED_V28_REVISION_SHA256:
         raise RunnerContractError("tracked v28 revision authority checksum differs")
-    revision = _load_strict_json(
-        _TRACKED_V28_REVISION_PATH,
-        "v28 revision authority",
-    )
+    try:
+        revision = json.loads(
+            revision_bytes.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+    except RunnerContractError:
+        raise
+    except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise RunnerContractError(f"invalid v28 revision authority: {error}") from error
+    if not isinstance(revision, dict):
+        raise RunnerContractError("v28 revision authority must be a JSON object")
+    if revision_bytes != json.dumps(revision, indent=2).encode("utf-8") + b"\n":
+        raise RunnerContractError("v28 revision authority is not canonical tracked JSON")
     expected_fields = {
         "schema_version",
         "status",
@@ -926,20 +936,30 @@ def load_v28_revision_authority() -> RunnerAuthority:
 
 
 def _secure_canonical_artifact(path: Path, name: str) -> tuple[dict[str, Any], str]:
+    descriptor: int | None = None
     try:
-        metadata = path.lstat()
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        metadata = os.fstat(descriptor)
         if (
             not stat.S_ISREG(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
             or metadata.st_nlink != 1
             or metadata.st_mode & 0o002
         ):
             raise RunnerContractError(f"{name} is not a secure unique regular file")
-        raw = path.read_bytes()
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        raw = b"".join(chunks)
     except RunnerContractError:
         raise
     except OSError as error:
         raise RunnerContractError(f"{name} is unavailable") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     try:
         payload = json.loads(
             raw.decode("utf-8"),

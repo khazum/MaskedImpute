@@ -102,10 +102,25 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def main() -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=REPOSITORY_ROOT
+        / "artifacts/study/development/evaluation/development_selection_input.json",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=REPOSITORY_ROOT
+        / "artifacts/study/development/evaluation/selection_report.json",
+    )
+    return parser
+
+
+def main() -> int:
+    parser = _parser()
     arguments = parser.parse_args()
     if arguments.input.resolve() == arguments.output.resolve():
         parser.error("--input and --output must differ")

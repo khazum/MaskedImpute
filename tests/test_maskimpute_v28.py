@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 import json
+import importlib.util
 
 import numpy as np
 import pytest
@@ -778,3 +779,21 @@ def test_tracked_v28_revision_authority_builds_reachable_fixed_plan(tmp_path) ->
         value.configuration_id == "v28-c01-nb-parent-c03"
         for value in plan.configurations
     )
+
+
+def test_selection_cli_and_v28_activation_share_canonical_fixed_paths() -> None:
+    import maskimpute_benchmark.runner as runner
+
+    specification = importlib.util.spec_from_file_location(
+        "v28_selection_script",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert specification is not None and specification.loader is not None
+    script = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(script)
+    arguments = script._parser().parse_args([])
+
+    assert arguments.input == runner._V28_SELECTION_INPUT_PATH
+    assert arguments.output == runner._V28_SELECTION_REPORT_PATH
+    assert arguments.input.name == "development_selection_input.json"
+    assert arguments.output.name == "selection_report.json"
