@@ -106,15 +106,62 @@ Primary exact-truth endpoints are overall MSE, induced-dropout MSE, pre-dropout-
 
 For each method and biological draw, stochastic-seed metrics are averaged first and paired moderate/severe technical views are then averaged for the across-view primary comparison. A technical view never creates an additional independent unit. The hierarchical bootstrap resamples mechanisms and `biological_id` values within mechanism; model seeds are resampled only inside their biological draw to propagate optimization uncertainty. View-stratified analyses retain the same biological unit. Report median paired percent change, 95% percentile interval, probability of improvement, Holm-adjusted two-sided paired p-values, and the count of independent biological draws won. Report between-draw, between-view, and within-draw seed variance separately.
 
-Final success is not defined as winning every metric. The publication claim may say “competitive” only if the frozen method has median rank at most 2 on the three efficacy endpoints, is Pareto non-dominated, and passes every safety gate. Stronger superiority language requires a multiplicity-corrected 95% interval excluding zero against the strongest applicable competitor on the named endpoint.
+Final success is not defined as winning every metric. The publication claim may say “competitive” only if the frozen method has median rank at most 2 on the three efficacy endpoints, is Pareto non-dominated, and passes every safety gate. Stronger superiority language requires a multiplicity-corrected 95% interval excluding zero against the strongest applicable competitor on the named endpoint. This statistical claim gate is not, by itself, a guarantee of fit for a Genome Biology Methodology article: submission under that article type also requires the authors to make and support the editorial case that the method is a clear advance over the current state of the art. If the frozen evidence supports competitiveness but not a clear advance, the result remains valid, but the authors must make a presubmission enquiry or reconsider the article type or venue rather than strengthening the claim.
 
 ## Genome Biology manuscript contract
 
-Use the Springer Nature LaTeX template and this Methodology order: title page; unstructured abstract of at most 100 words; 3–10 keywords; Background; Results; Discussion; Conclusions; Methods; Abbreviations; Declarations; References; Additional-file descriptions.
+The venue rules in this section were verified on 12 July 2026 against the official [Genome Biology Methodology instructions](https://link.springer.com/journal/13059/submission-guidelines/methodology), [Genome Biology general submission guidelines](https://link.springer.com/journal/13059/submission-guidelines), [BMC editorial policies](https://link.springer.com/brands/bmc/editorial-policies), and [BioMed Central Minimum Standards of Reporting Checklist](https://resource-cms.springernature.com/springer-cms/rest/v1/content/7117202/data/v2). They must be rechecked immediately before submission because publisher requirements can change.
 
-The main Results must show the multi-mechanism benchmark, direct zero-score validation, orthogonal molecular validation, ablations, and resource scaling. The Discussion must lead with when selective imputation helps, when observed counts should be preferred, simulator limitations, and external-reference tradeoffs. All claims are generated from final machine-readable assets. Restore non-anonymous author metadata only from user-provided values; never invent names, affiliations, funding, ethics determinations, contributions, repository DOI, or competing-interest declarations.
+### Journal-mandated Methodology fit
 
-Required reproducibility assets are an OSI license, public source URL placeholder clearly marked for author completion, archived-release/DOI placeholder, pinned Python and R environments, container recipe, dataset accession ledger, exact commands, raw long-form results, machine-readable tables, and an end-to-end smoke workflow. Remove the tracked virtual environment and replace it with lockfiles.
+- The paper must describe an outstanding novel method useful to a wide genomics or post-genomics audience and demonstrate a clear advance over existing state-of-the-art methods side by side where possible.
+- Computational comparisons must use the same datasets. Where possible, evaluation should include synthetic or other known-ground-truth data and a demonstration of utility on real data. The benchmark's matched inputs, four truth mechanisms, and orthogonal real-data validation implement this requirement.
+- The paper must foreground a substantive methodological contribution. A new implementation of an existing method or a pipeline of existing methods is more consistent with the journal's Software article type.
+
+### Journal-mandated structure and author information
+
+Use this Methodology order: title page; unstructured abstract; keywords; Background; Results; Discussion; Conclusions; Methods after Conclusions; Abbreviations; Declarations; References. The abstract must not exceed 100 words, must not cite references, and must minimize abbreviations. Supply 3–10 keywords.
+
+The title page must give every author's full name, institutional address, and email address and identify the corresponding author. Genome Biology uses single-anonymous review: reviewers see author names and affiliations, so the submission manuscript is not anonymized. Author order, authorship eligibility, approval, accountability, and contributions remain human decisions. Large language models cannot be authors. Substantive LLM use beyond AI-assisted copy editing must be described in Methods, and the human authors remain accountable for the final text and research.
+
+Methods must report the aim, design and setting; participants or materials; processes, interventions and comparisons; statistical analysis and a power calculation when appropriate; and software requirements. The Discussion for a Methodology article must include practical or operational issues and limitations.
+
+`Declarations` must retain these seven headings even when the appropriate statement is `Not applicable`:
+
+1. Ethics approval and consent to participate
+2. Consent for publication
+3. Availability of data and materials
+4. Competing interests
+5. Funding
+6. Authors' contributions
+7. Acknowledgements
+
+`Authors' information` is optional. Use of public human data does not justify silently assuming that ethics approval or consent is not applicable: the authors must assess the source studies and any local secondary-analysis requirements and supply the final statement. Public datasets must be cited with persistent identifiers in the reference list. References use the journal's Vancouver style.
+
+If additional files are supplied, cite them sequentially and include a separate manuscript listing with each file's name, extension/format, title, and description. This project places that listing after References; that placement and the label “Additional-file descriptions” are project conventions, not a separately named section mandated by the article-type page.
+
+### Journal-mandated openness and reporting
+
+- All data supporting the conclusions must be in an appropriate public repository, the main manuscript, or supporting files whenever possible. Third-party and previously published data must remain available as a condition of publication. Supply private access links for reviewers when possible and state any ethically or legally necessary restrictions.
+- In-house analysis scripts must be deposited in a public repository or included in the supplementary material. Source for the described tool must be in a public repository under an OSI-compliant license; the manuscript must state its access information and license. Genome Biology recommends citing a static archived release in a DOI-issuing repository.
+- The `Availability of data and materials` statement must identify the minimal data needed to interpret, reproduce, and build on the findings, with persistent links. For software, also state the project name, home page, archived version identifier, operating systems, programming language, requirements, license, and restrictions, if any.
+- The authors must complete the Minimum Standards of Reporting Checklist. Methods must report exact sample size for every condition, the sample-size rationale or power analysis if performed, biological versus technical replication, inclusion and exclusion criteria, allocation and randomization, blinding where relevant, replication count and variation, statistical sidedness and multiplicity, summary and error-bar definitions, test appropriateness and assumptions, and uniquely identifying software/resource versions. Figure and table legends must include information essential to interpreting the displayed data. Because the final design has five biological draws within each simulated mechanism, individual draw values must be shown in addition to summaries wherever `n < 6`.
+
+### Formatting, supplements, and preprints
+
+The general submission rules require double-line spacing; line and page numbering; SI units; no manual page breaks; and editable source files. TeX/LaTeX is accepted, and the submission system compiles with pdfLaTeX and TeX Live 2021. Each figure or table title is limited to 15 words, each legend to 300 words, each figure file to 10 MB, and each additional file to 20 MB. Results otherwise described as “data not shown” must be supplied as additional files or deposited in a recognized repository, not on a personal or departmental site. Long supplements should be organized for readers and, where useful, include a contents page, headings mirroring the main text, workflows, negative results, and machine-readable data.
+
+BMC permits and encourages preprints and does not treat them as prior publication. If a preprint exists or is posted during review, its DOI and license must be disclosed to the journal, and the preprint record must later link to the published article. Whether to post a preprint is an author decision.
+
+### Project-specific manuscript and reproducibility safeguards
+
+Springer Nature encourages but does not require its general LaTeX authoring template. This project chooses the official [Springer Nature LaTeX template](https://www.springernature.com/gp/authors/campaigns/latex-author-support), version 3.1 (December 2024), from the [official package URL](https://cms-resources.apps.public.k8s.springernature.io/springer-cms/rest/v1/content/18782940/data/v12), whose verified ZIP SHA-256 is `812e76dcaa9c28dc1bff1fb6065d51729b67d4ea140552a05088317414a3ecae`. Use a Vancouver-compatible bibliography style and compile locally before submission.
+
+The publisher package has no package-wide license file. Its user manual states “Copyright Springer Nature”; `sn-jnl.cls` contains an LPPL 1.3c-or-later notice plus a restrictive distribution sentence, and bibliography files contain differing notices. Preserve every upstream notice, keep publisher assets separate from MaskImpute's source license, do not describe the whole template package as OSI-licensed or LPPL-licensed, and obtain publisher clarification before independently redistributing the complete package.
+
+The following are additional project requirements rather than claims about journal policy. The main Results must show the multi-mechanism benchmark, direct zero-score validation, orthogonal molecular validation, ablations, and resource scaling. The Discussion must lead with when selective imputation helps, when observed counts should be preferred, simulator limitations, and external-reference tradeoffs. All claims are generated from final machine-readable assets. Restore author metadata only from user-provided values; never invent names, affiliations, emails, funding, ethics determinations, consent statements, contributions, LLM disclosures, repository URLs or identifiers, preprint details, or competing-interest declarations.
+
+Required project reproducibility assets are an OSI-compliant license for MaskImpute, a live public source URL, a cited archived release with a DOI or other unique identifier, pinned Python and R environments, a container recipe, dataset accession ledger, exact commands, raw long-form results, machine-readable tables, and an end-to-end smoke workflow. Draft placeholders for the URL or archived identifier may exist while work is in progress, but they block submission and cannot appear in a release candidate. Remove the tracked virtual environment and replace it with lockfiles. Human decisions and evidence are controlled by [`docs/genome-biology-submission-checklist.md`](../../genome-biology-submission-checklist.md).
 
 ## Completion gates
 
@@ -126,5 +173,7 @@ Implementation is complete only when:
 4. the final receipt proves code/config/protocol hashes and one-use execution;
 5. every prespecified metric has a value or explicit reason code for every method/dataset run;
 6. paper numerical claims exactly match generated assets;
-7. the Genome Biology PDF and additional file compile without missing references, assets, or provisional scientific claims;
-8. human-only submission fields are listed in a blocking author checklist rather than fabricated.
+7. the Genome Biology PDF and additional files compile without missing references, assets, or provisional scientific claims and meet the abstract, formatting, file-size, and reference-style rules above;
+8. the Minimum Standards checklist is satisfied, including exact sample sizes and individual values wherever `n < 6`;
+9. all conclusion-supporting data, analysis scripts, and tool code have the required public or supplementary access, and the live code URL, OSI license, archived identifier, and availability statement agree;
+10. every applicable item in `docs/genome-biology-submission-checklist.md` is checked by the authors; unchecked human-only fields block submission and are never fabricated.
