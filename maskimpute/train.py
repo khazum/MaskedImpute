@@ -44,6 +44,26 @@ class TrainingOutcome:
 
 
 _MAX_EXACT_FLOAT64_INTEGER = 2**53
+_SUPPORTED_SPARSE_TYPES = tuple(
+    constructor
+    for name in (
+        "bsr_matrix",
+        "coo_matrix",
+        "csc_matrix",
+        "csr_matrix",
+        "dia_matrix",
+        "dok_matrix",
+        "lil_matrix",
+        "bsr_array",
+        "coo_array",
+        "csc_array",
+        "csr_array",
+        "dia_array",
+        "dok_array",
+        "lil_array",
+    )
+    if isinstance((constructor := getattr(sparse, name, None)), type)
+)
 
 
 def _contains_masked_array(value: object, seen: set[int] | None = None) -> bool:
@@ -84,9 +104,12 @@ def _unsummed_sparse_coordinates(value: object, name: str):
 
 
 def _numeric_matrix_to_dense(value: object, name: str) -> tuple[np.ndarray, np.ndarray]:
+    is_sparse = sparse.issparse(value)
+    if is_sparse and type(value) not in _SUPPORTED_SPARSE_TYPES:
+        raise TypeError(f"{name} must use an exact supported SciPy sparse type")
     if _contains_masked_array(value):
         raise TypeError(f"{name} must not contain masked arrays")
-    if sparse.issparse(value):
+    if is_sparse:
         if value.ndim != 2:
             raise ValueError(f"{name} must be a two-dimensional matrix")
         if value.dtype.metadata is not None:
@@ -111,7 +134,7 @@ def _numeric_matrix_to_dense(value: object, name: str) -> tuple[np.ndarray, np.n
         raise TypeError(f"{name} must contain real numeric values")
     if not np.all(np.isfinite(entries)):
         raise ValueError(f"{name} must contain only finite values")
-    if sparse.issparse(value):
+    if is_sparse:
         dense = np.asarray(coordinates.toarray(), dtype=np.float64, order="C")
     else:
         dense = np.array(matrix, dtype=np.float64, copy=True, order="C", subok=False)

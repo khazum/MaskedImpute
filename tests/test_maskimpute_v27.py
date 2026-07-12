@@ -555,6 +555,28 @@ def test_sparse_lil_nested_masked_scalar_is_rejected_before_coercion():
         validate_observed_counts(counts)
 
 
+def test_custom_sparse_conversion_hook_cannot_swap_unvalidated_storage():
+    from maskimpute.train import validate_observed_counts
+
+    class MaskedCoordinateSwap(sparse.csr_matrix):
+        conversion_called = False
+
+        def tocoo(self, copy=False):
+            type(self).conversion_called = True
+            coordinates = super().tocoo(copy=copy)
+            coordinates.data = np.ma.array(
+                coordinates.data,
+                mask=np.ones(coordinates.data.shape, dtype=np.bool_),
+            )
+            return coordinates
+
+    counts = MaskedCoordinateSwap(np.array([[1, 0], [0, 2]], dtype=np.int64))
+
+    with pytest.raises(TypeError, match="exact supported SciPy sparse"):
+        validate_observed_counts(counts)
+    assert MaskedCoordinateSwap.conversion_called is False
+
+
 def test_count_and_score_dtype_metadata_are_rejected():
     from maskimpute.train import validate_observed_counts, validate_p_pre_zero
 
