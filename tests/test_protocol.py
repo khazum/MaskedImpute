@@ -22,3 +22,14 @@ def test_protocol_rejects_splatter_as_final(tmp_path):
     path.write_text(json.dumps({"schema_version": 1, "final": {"mechanisms": ["splatter"]}}))
     with pytest.raises(ValueError, match="Splatter is development-only"):
         load_protocol(path)
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), -float("inf")])
+def test_protocol_rejects_nonfinite_resource_limits(tmp_path, invalid):
+    protocol = json.loads(Path("study/protocol.json").read_text(encoding="utf-8"))
+    protocol["max_rss_gib"] = invalid
+    path = tmp_path / "protocol.json"
+    path.write_text(json.dumps(protocol), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="finite"):
+        load_protocol(path)

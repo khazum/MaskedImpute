@@ -40,12 +40,15 @@ Competitive results are a target, not a guaranteed conclusion. If the frozen met
 All adapters emit a common `h5ad` schema:
 
 - `X`: observed nonnegative integer counts, cells by genes;
-- `layers["pre_capture_counts"]`: exact pre-capture counts when available;
+- `layers["pre_capture_counts"]`: exact discrete pre-capture counts for SymSim;
+- `layers["latent_expression"]` or `layers["pre_dropout_expression"]`: exact continuous simulator truth for SPARSim or SERGIO;
 - `layers["reference_counts"]`: high-depth proxy counts for semisynthetic data;
+- `layers["heldout_counts"]`: an independent count-split replicate when available;
 - `layers["expected_counts"]`: simulator expectation when available;
 - `obs`: `dataset_id`, `mechanism`, `condition`, `draw`, `group`, `batch`, `library_size`, and optional `pseudotime`;
 - `var`: stable feature identifiers and optional marker/ERCC flags;
-- `uns["truth_kind"]`: one of `exact_pre_capture`, `proxy_high_depth`, or `orthogonal_only`;
+- `uns["truth_kind"]`: one of `exact_pre_capture`, `exact_continuous`, `proxy_high_depth`, or `orthogonal_only`;
+- `uns["primary_truth_layer"]`: the one evaluator layer used for reconstruction endpoints, absent for `orthogonal_only`;
 - `uns["provenance"]`: source accession/URL, source checksum, package version/commit, full parameters, and seeds.
 
 The four mechanisms are deliberately distinct:
@@ -99,9 +102,9 @@ Candidate selection is Pareto-based; the historical `MSE + 2*Biozero-MSE` score 
 
 ## Endpoints and inference
 
-Primary exact-truth endpoints are overall MSE, induced-dropout MSE, pre-dropout-zero MSE, gNRMSE, and CorrErr in log2(CP10k+1) space. Safety endpoints are observed-positive MSE, mean/variance distortion, false positive expression, null-DE FPR, and marker-rank loss. Secondary endpoints include MAE, calibration metrics, cell–cell distance distortion, clustering, pseudotime, RNA–protein concordance, and bulk/pseudobulk concordance.
+Primary exact-truth endpoints are overall MSE, induced-dropout MSE, pre-dropout-zero MSE, gNRMSE, and CorrErr in log2(CP10k+1) space. Pre-dropout-zero reconstruction and score-calibration endpoints require discrete pre-capture truth; they are emitted with the explicit reason `undefined_for_continuous_truth` for SERGIO/SPARSim continuous truth and `proxy_truth_not_exact` for semisynthetic references. Safety endpoints are observed-positive MSE, mean/variance distortion, false positive expression, null-DE FPR, and marker-rank loss. Secondary endpoints include MAE, calibration metrics, cell–cell distance distortion, clustering, pseudotime, RNA–protein concordance, and bulk/pseudobulk concordance.
 
-For each method and dataset draw, stochastic-seed metrics are averaged before the primary paired comparison. The hierarchical bootstrap resamples mechanism, condition within mechanism, dataset draw within condition, and model seed within method/draw. Report median paired percent change, 95% percentile interval, probability of improvement, Holm-adjusted two-sided paired p-values, and the count of independent draws won. Report between-draw and within-draw seed variance separately.
+For each method and biological draw, stochastic-seed metrics are averaged first and paired moderate/severe technical views are then averaged for the across-view primary comparison. A technical view never creates an additional independent unit. The hierarchical bootstrap resamples mechanisms and `biological_id` values within mechanism; model seeds are resampled only inside their biological draw to propagate optimization uncertainty. View-stratified analyses retain the same biological unit. Report median paired percent change, 95% percentile interval, probability of improvement, Holm-adjusted two-sided paired p-values, and the count of independent biological draws won. Report between-draw, between-view, and within-draw seed variance separately.
 
 Final success is not defined as winning every metric. The publication claim may say “competitive” only if the frozen method has median rank at most 2 on the three efficacy endpoints, is Pareto non-dominated, and passes every safety gate. Stronger superiority language requires a multiplicity-corrected 95% interval excluding zero against the strongest applicable competitor on the named endpoint.
 

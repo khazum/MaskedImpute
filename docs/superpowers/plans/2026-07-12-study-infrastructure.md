@@ -114,7 +114,7 @@ git commit -m "feat: define publication study protocol"
 
 **Interfaces:**
 - Consumes: `load_protocol`, `canonical_sha256`, and `file_sha256` from Task 1.
-- Produces: `freeze_round(repo, round_dir, config_path, protocol_path)`, `materialize_final(round_dir, seed_count)`, `assert_final_runnable(repo, round_dir)`, `record_final_evaluation(round_dir, result_manifest)`, and `supersede_round(round_dir, reason)`.
+- Produces: `freeze_round(repo, round_dir, config_path, protocol_path, *, environment_path)`, `materialize_final(round_dir, seed_count, *, repo=None)`, `assert_final_runnable(repo, round_dir)`, `record_final_evaluation(round_dir, result_manifest, *, repo=None)`, and `supersede_round(round_dir, reason)`.
 
 - [ ] **Step 1: Write failing state-transition tests**
 
@@ -127,15 +127,16 @@ def test_final_cannot_materialize_before_freeze(clean_repo):
 
 def test_dirty_or_changed_commit_cannot_run_final(clean_repo):
     round_dir = freeze_fixture(clean_repo)
-    materialize_final(round_dir, seed_count=4)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
     (clean_repo / "tracked.py").write_text("changed\n")
     with pytest.raises(StudyStateError, match="clean frozen commit"):
         assert_final_runnable(clean_repo, round_dir)
 
 def test_evaluation_receipt_is_one_use(clean_repo):
     round_dir = freeze_fixture(clean_repo)
-    materialize_final(round_dir, seed_count=4)
-    record_final_evaluation(round_dir, {"results_sha256": "a" * 64})
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    record_final_evaluation(round_dir, {"results_sha256": "a" * 64}, repo=clean_repo)
     with pytest.raises(StudyStateError, match="already evaluated"):
         assert_final_runnable(clean_repo, round_dir)
 ```
@@ -148,13 +149,13 @@ Expected: import failure for `maskimpute_benchmark.study`.
 
 - [ ] **Step 3: Implement atomic round records**
 
-`freeze_round` must reject dirty repositories, record `method_commit`, config/protocol absolute-independent relative paths and hashes, UTC time, state `frozen`, and round ID. `materialize_final` must use `secrets.randbits(63)` to create unique generator seeds only after freeze, store the seed manifest SHA-256, and transition to `materialized`. `assert_final_runnable` must compare `git rev-parse HEAD`, `git status --porcelain`, and both file hashes with the freeze record. `record_final_evaluation` uses exclusive creation for `evaluation_receipt.json`, then transitions to `evaluated`. `supersede_round` preserves every prior file and transitions to `superseded` with a nonempty reason.
+`freeze_round` must reject dirty repositories and index flags that conceal tracked changes, then record `method_commit`, config/protocol/environment repo-relative paths and hashes, UTC time, state `frozen`, and round ID. `materialize_final` must revalidate every binding, atomically claim materialization, use `secrets.randbits(63)` to create unique generator seeds only after freeze, store the seed manifest SHA-256, and transition to `materialized`. `assert_final_runnable` must revalidate HEAD, tracked and untracked state, all three frozen input hashes, and the seed manifest, then atomically write the sole `execution_claim.json`; a second verifier cannot pass. `record_final_evaluation` requires that claim, revalidates the repository and seed manifest immediately before exclusively publishing `evaluation_receipt.json`, then transitions to `evaluated`. `supersede_round` preserves every prior file and transitions to `superseded` with a nonempty reason.
 
 All JSON writes use a temporary sibling followed by `Path.replace`. Add `artifacts/` to `.gitignore`.
 
 - [ ] **Step 4: Implement CLI commands**
 
-Expose `freeze`, `materialize-final`, `verify-final`, `record-evaluation`, and `supersede`. Every command prints the round state and relevant hashes as JSON and returns nonzero on `StudyStateError`.
+Expose `freeze`, `materialize-final`, `verify-final`, `record-evaluation`, and `supersede`. `freeze` requires a tracked environment lock; materialization and recording accept an explicit repository. `verify-final` is the atomic one-use execution claim, not a repeatable dry run. Every command prints the round state and relevant hashes as JSON and returns nonzero on `StudyStateError`.
 
 - [ ] **Step 5: Run unit and CLI smoke tests**
 
@@ -176,16 +177,16 @@ git commit -m "feat: seal final benchmark rounds"
 - Test: `tests/test_dataset_schema.py`
 
 **Interfaces:**
-- Produces: `validate_benchmark_dataset(adata) -> None`, `make_inference_view(adata) -> AnnData`, `benchmark_dataset_sha256(adata) -> str`, and `TruthKind`.
+- Produces: `validate_benchmark_dataset(adata) -> None`, `make_inference_view(adata) -> AnnData`, `benchmark_dataset_sha256(adata) -> str`, and `TruthKind` with `exact_pre_capture`, `exact_continuous`, `proxy_high_depth`, and `orthogonal_only`.
 
 - [ ] **Step 1: Write failing schema tests**
 
-Build a six-cell/four-gene AnnData fixture with integer `X`, `pre_capture_counts`, labels, markers, and provenance. Assert exact-truth validation succeeds; negative/fractional observed counts fail; proxy truth requires `reference_counts`; and `make_inference_view` removes every truth layer plus `group`, `pseudotime`, marker columns, and all `uns` keys except normalization and non-evaluative batch.
+Build six-cell/four-gene AnnData fixtures with integer `X`, each supported truth kind, labels, markers, and provenance. Assert discrete and continuous exact-truth validation succeeds; negative/fractional observed counts fail; continuous truth is finite/nonnegative but need not be integer; proxy truth requires `reference_counts`; orthogonal-only data carries no evaluator truth; and `make_inference_view` removes every truth layer plus `group`, `pseudotime`, marker columns, and all `uns` keys except normalization and declared non-evaluative covariates.
 
 ```python
 def test_inference_view_cannot_expose_truth(exact_dataset):
     view = make_inference_view(exact_dataset)
-    assert not set(view.layers) & {"pre_capture_counts", "reference_counts", "expected_counts"}
+    assert not set(view.layers) & {"pre_capture_counts", "latent_expression", "pre_dropout_expression", "reference_counts", "heldout_counts", "expected_counts"}
     assert "group" not in view.obs
     assert "is_marker" not in view.var
     assert set(view.uns) <= {"normalization", "allowed_covariates"}
@@ -199,7 +200,7 @@ Expected: import failure for `maskimpute_benchmark.schema`.
 
 - [ ] **Step 3: Implement validation and canonical checksums**
 
-Validate required `obs`, `uns["truth_kind"]`, provenance fields, shape agreement, finite nonnegative integer counts, unique IDs, and truth-kind-specific layers. Hash shapes, CSR arrays or dense C-order bytes, stable obs/var identifiers, truth kind, and canonical provenance; never rely on HDF5 byte identity.
+Validate required `obs`, `uns["truth_kind"]`, `uns["primary_truth_layer"]` where applicable, provenance fields, shape agreement, finite nonnegative integer observed counts, unique IDs, and truth-kind-specific layers. Discrete/proxy count layers must be integer; continuous truth layers must be finite and nonnegative. Hash shapes, CSR arrays or dense C-order bytes, stable obs/var identifiers, truth kind, primary truth layer, and canonical provenance; never rely on HDF5 byte identity.
 
 - [ ] **Step 4: Implement isolated views**
 
@@ -225,7 +226,7 @@ git commit -m "feat: isolate benchmark truth from imputation"
 
 - [ ] **Step 1: Write failing hand-calculated tests**
 
-Use 3×3 matrices with known observed zeros, induced dropouts, pre-dropout zeros, and nonzeros. Assert exact MSE/MAE subset values; common-gene CorrErr; mean/variance distortion; false-positive expression rate; AUROC/AUPRC/Brier/log loss; and calibration bins. Include empty-mask cases and require `reason="no_entries"` rather than silent NaN.
+Use 3×3 matrices with known observed zeros, induced dropouts, pre-dropout zeros, and nonzeros. Assert exact MSE/MAE subset values; gene- and cell-correlation distortion; common-gene CorrErr; mean/variance and distance distortion; false-positive expression rate; AUROC/AUPRC/Brier/log loss/calibration intercept and slope; and calibration bins. Include empty-mask cases and continuous/proxy truth, requiring reason codes such as `no_entries`, `undefined_for_continuous_truth`, or `proxy_truth_not_exact` rather than silent NaN.
 
 ```python
 def test_pre_dropout_zero_score_is_evaluated_only_on_observed_zeros(fixture):
@@ -271,12 +272,12 @@ git commit -m "feat: add publication benchmark metrics"
 
 - [ ] **Step 1: Write failing deterministic inference tests**
 
-Create records for two mechanisms, two conditions each, three independent draws, two methods, and three nested model seeds. Assert model seeds are averaged within draw before the observed paired effect; duplicating seed rows does not change the number of independent units; a missing comparator pair is excluded with a reason count; bootstrap output is reproducible; and Holm-adjusted p-values are monotone and bounded.
+Create records for two mechanisms, three biological draws each, two paired technical views, two methods, and three nested model seeds. Assert model seeds and then technical views are averaged within biological draw before the across-view paired effect; duplicating seed or view rows does not change the number of independent units; a missing comparator pair is excluded with a reason count; bootstrap output is reproducible; and Holm-adjusted p-values are monotone and bounded.
 
 ```python
 def test_model_seeds_do_not_inflate_independent_n(records):
     result = hierarchical_paired_bootstrap(records, "maskimpute", "dca", "mse", n_boot=200, seed=7)
-    assert result.n_independent_draws == 12
+    assert result.n_independent_draws == 6
     assert result.n_raw_rows == 72
 ```
 
@@ -288,11 +289,11 @@ Expected: import failure for `maskimpute_benchmark.statistics`.
 
 - [ ] **Step 3: Implement blocked resampling**
 
-Validate record keys `mechanism`, `condition`, `dataset_id`, `method`, `model_seed`, `metric`, `value`, and `status`. Average valid seeds within method/draw, pair methods on dataset ID, and calculate percent difference `(method-comparator)/abs(comparator)`. Each bootstrap replicate samples mechanisms, conditions within sampled mechanisms, draws within conditions, and raw seeds within method/draw before re-averaging. Return median effect, percentile 95% interval, probability effect `<0`, two-sided sign probability, win count, and exclusions by reason.
+Validate record keys `mechanism`, `biological_id`, `technical_view`, `dataset_id`, `method`, `model_seed`, `metric`, `value`, and `status`. Average valid seeds within method/view, pair methods on dataset ID, and calculate percent difference `(method-comparator)/abs(comparator)`. For the primary across-view analysis, average paired view effects within `biological_id`; view-stratified analysis uses the same biological IDs. Each bootstrap replicate samples mechanisms, biological IDs within sampled mechanisms, and raw seeds only within method/view/draw before re-averaging. Return median effect, percentile 95% interval, probability effect `<0`, two-sided sign probability, win count, and exclusions by reason.
 
 - [ ] **Step 4: Implement seed variance and Holm adjustment**
 
-Seed variance is the within-draw sample variance summarized separately from between-draw variance. Holm adjustment sorts finite p-values, multiplies by remaining hypotheses, applies a cumulative maximum, caps at one, and restores original order.
+Seed variance is the within-draw sample variance summarized separately from between-draw and between-view variance. Holm adjustment sorts finite p-values, multiplies by remaining hypotheses, applies a cumulative maximum, caps at one, and restores original order.
 
 - [ ] **Step 5: Run the infrastructure suite and commit**
 

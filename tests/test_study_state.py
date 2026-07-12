@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -36,6 +37,9 @@ def clean_repo(tmp_path: Path) -> Path:
     (repo / "config.json").write_text(
         json.dumps({"method": "maskimpute", "rank": 16}), encoding="utf-8"
     )
+    (repo / "environment.lock").write_text(
+        "python=3.11\nnumpy=2.1.2\ntorch=2.9.0\n", encoding="utf-8"
+    )
     protocol = json.loads(Path("study/protocol.json").read_text(encoding="utf-8"))
     (repo / "protocol.json").write_text(json.dumps(protocol), encoding="utf-8")
     _git(repo, "add", ".")
@@ -45,7 +49,13 @@ def clean_repo(tmp_path: Path) -> Path:
 
 def freeze_fixture(repo: Path) -> Path:
     round_dir = repo / "artifacts/study/round-001"
-    freeze_round(repo, round_dir, repo / "config.json", repo / "protocol.json")
+    freeze_round(
+        repo,
+        round_dir,
+        repo / "config.json",
+        repo / "protocol.json",
+        environment_path=repo / "environment.lock",
+    )
     return round_dir
 
 
@@ -69,6 +79,7 @@ def test_freeze_records_commit_relative_inputs_hashes_and_utc_time(
         round_dir,
         clean_repo / "config.json",
         clean_repo / "protocol.json",
+        environment_path=clean_repo / "environment.lock",
     )
 
     assert record == json.loads((round_dir / "freeze.json").read_text(encoding="utf-8"))
@@ -79,6 +90,10 @@ def test_freeze_records_commit_relative_inputs_hashes_and_utc_time(
     assert record["protocol_path"] == "protocol.json"
     assert record["config_sha256"] == file_sha256(clean_repo / "config.json")
     assert record["protocol_sha256"] == file_sha256(clean_repo / "protocol.json")
+    assert record["environment_path"] == "environment.lock"
+    assert record["environment_sha256"] == file_sha256(
+        clean_repo / "environment.lock"
+    )
     frozen_at = datetime.fromisoformat(record["frozen_at"].replace("Z", "+00:00"))
     assert frozen_at.tzinfo == timezone.utc
 
@@ -87,7 +102,7 @@ def test_materialization_creates_unique_63_bit_generator_seeds(
     clean_repo: Path,
 ) -> None:
     round_dir = freeze_fixture(clean_repo)
-    record = materialize_final(round_dir, seed_count=32)
+    record = materialize_final(round_dir, seed_count=32, repo=clean_repo)
     seed_manifest = json.loads(
         (round_dir / "final_manifest.json").read_text(encoding="utf-8")
     )
@@ -102,7 +117,7 @@ def test_materialization_creates_unique_63_bit_generator_seeds(
 
 def test_dirty_or_changed_commit_cannot_run_final(clean_repo: Path) -> None:
     round_dir = freeze_fixture(clean_repo)
-    materialize_final(round_dir, seed_count=4)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
     (clean_repo / "tracked.py").write_text("changed\n", encoding="utf-8")
     with pytest.raises(StudyStateError, match="clean frozen commit"):
         assert_final_runnable(clean_repo, round_dir)
@@ -112,7 +127,7 @@ def test_changed_commit_cannot_run_final_even_when_repository_is_clean(
     clean_repo: Path,
 ) -> None:
     round_dir = freeze_fixture(clean_repo)
-    materialize_final(round_dir, seed_count=4)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
     (clean_repo / "tracked.py").write_text("new commit\n", encoding="utf-8")
     _git(clean_repo, "add", "tracked.py")
     _git(clean_repo, "commit", "-m", "change method")
@@ -125,7 +140,7 @@ def test_changed_frozen_input_cannot_run_final_when_git_hides_worktree_change(
     clean_repo: Path,
 ) -> None:
     round_dir = freeze_fixture(clean_repo)
-    materialize_final(round_dir, seed_count=4)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
     _git(clean_repo, "update-index", "--assume-unchanged", "config.json")
     (clean_repo / "config.json").write_text('{"rank": 99}\n', encoding="utf-8")
     assert _git(clean_repo, "status", "--porcelain") == ""
@@ -134,45 +149,127 @@ def test_changed_frozen_input_cannot_run_final_when_git_hides_worktree_change(
         assert_final_runnable(clean_repo, round_dir)
 
 
+def test_hidden_tracked_code_change_cannot_materialize(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    _git(clean_repo, "update-index", "--assume-unchanged", "tracked.py")
+    (clean_repo / "tracked.py").write_text("hidden change\n", encoding="utf-8")
+    assert _git(clean_repo, "status", "--porcelain") == ""
+
+    with pytest.raises(StudyStateError, match="clean frozen commit"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+
+def test_changed_environment_cannot_materialize_when_git_hides_change(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    _git(clean_repo, "update-index", "--skip-worktree", "environment.lock")
+    (clean_repo / "environment.lock").write_text("python=9.9\n", encoding="utf-8")
+
+    with pytest.raises(StudyStateError, match="clean frozen commit"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+
 def test_clean_materialized_round_is_runnable(clean_repo: Path) -> None:
     round_dir = freeze_fixture(clean_repo)
-    materialize_final(round_dir, seed_count=4)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
 
     record = assert_final_runnable(clean_repo, round_dir)
 
-    assert record["state"] == "materialized"
+    assert record["state"] == "running"
     assert record["round_id"] == "round-001"
+    assert (round_dir / "execution_claim.json").exists()
+
+
+def test_final_execution_claim_is_atomic_and_one_use(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+    assert_final_runnable(clean_repo, round_dir)
+    with pytest.raises(StudyStateError, match="already claimed"):
+        assert_final_runnable(clean_repo, round_dir)
 
 
 def test_evaluation_receipt_is_one_use(clean_repo: Path) -> None:
     round_dir = freeze_fixture(clean_repo)
-    materialize_final(round_dir, seed_count=4)
-    record_final_evaluation(round_dir, {"results_sha256": "a" * 64})
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    record_final_evaluation(
+        round_dir, {"results_sha256": "a" * 64}, repo=clean_repo
+    )
     with pytest.raises(StudyStateError, match="already evaluated"):
         assert_final_runnable(clean_repo, round_dir)
 
     with pytest.raises(StudyStateError, match="already evaluated"):
-        record_final_evaluation(round_dir, {"results_sha256": "b" * 64})
+        record_final_evaluation(
+            round_dir, {"results_sha256": "b" * 64}, repo=clean_repo
+        )
 
 
 def test_evaluation_receipt_records_result_manifest_and_hash(clean_repo: Path) -> None:
     round_dir = freeze_fixture(clean_repo)
-    materialize_final(round_dir, seed_count=4)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
     result_manifest = {"results_sha256": "a" * 64, "rows": 24}
 
-    record = record_final_evaluation(round_dir, result_manifest)
+    record = record_final_evaluation(round_dir, result_manifest, repo=clean_repo)
 
     assert record["state"] == "evaluated"
     assert record["result_manifest"] == result_manifest
     assert record["result_manifest_sha256"] == canonical_sha256(result_manifest)
+    assert record["environment_sha256"] == file_sha256(
+        clean_repo / "environment.lock"
+    )
     assert record == json.loads(
         (round_dir / "evaluation_receipt.json").read_text(encoding="utf-8")
     )
 
 
+def test_evaluation_requires_claim_and_unchanged_repository(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    with pytest.raises(StudyStateError, match="claimed"):
+        record_final_evaluation(
+            round_dir, {"results_sha256": "a" * 64}, repo=clean_repo
+        )
+
+    assert_final_runnable(clean_repo, round_dir)
+    _git(clean_repo, "update-index", "--assume-unchanged", "tracked.py")
+    (clean_repo / "tracked.py").write_text("changed after claim\n", encoding="utf-8")
+    with pytest.raises(StudyStateError, match="clean frozen commit"):
+        record_final_evaluation(
+            round_dir, {"results_sha256": "a" * 64}, repo=clean_repo
+        )
+
+
+def test_round_identity_and_manifest_are_revalidated_before_recording(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    manifest_path = round_dir / "final_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["round_id"] = "copied-round"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(StudyStateError, match="seed manifest"):
+        record_final_evaluation(
+            round_dir, {"results_sha256": "a" * 64}, repo=clean_repo
+        )
+
+
+def test_nonfinite_result_manifest_is_a_state_error(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    with pytest.raises(StudyStateError, match="valid JSON"):
+        record_final_evaluation(round_dir, {"metric": float("nan")}, repo=clean_repo)
+
+
 def test_supersede_preserves_prior_records_and_requires_reason(clean_repo: Path) -> None:
     round_dir = freeze_fixture(clean_repo)
-    materialize_final(round_dir, seed_count=4)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
     before = {path.name: path.read_bytes() for path in round_dir.iterdir()}
 
     with pytest.raises(StudyStateError, match="nonempty reason"):
@@ -186,3 +283,46 @@ def test_supersede_preserves_prior_records_and_requires_reason(clean_repo: Path)
     assert all((round_dir / name).read_bytes() == contents for name, contents in before.items())
     with pytest.raises(StudyStateError, match="superseded"):
         assert_final_runnable(clean_repo, round_dir)
+
+
+def test_cli_lifecycle_and_json_errors(clean_repo: Path) -> None:
+    script = Path(__file__).resolve().parents[1] / "scripts/studyctl.py"
+    round_dir = clean_repo / "artifacts/study/round-cli"
+
+    def run(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            cwd=clean_repo,
+            capture_output=True,
+            text=True,
+        )
+
+    frozen = run(
+        "freeze",
+        str(round_dir),
+        "config.json",
+        "protocol.json",
+        "--environment",
+        "environment.lock",
+        "--repo",
+        str(clean_repo),
+    )
+    assert frozen.returncode == 0, frozen.stderr
+    assert json.loads(frozen.stdout)["state"] == "frozen"
+
+    materialized = run(
+        "materialize-final",
+        str(round_dir),
+        "--seed-count",
+        "4",
+        "--repo",
+        str(clean_repo),
+    )
+    assert materialized.returncode == 0, materialized.stderr
+    claimed = run("verify-final", str(round_dir), "--repo", str(clean_repo))
+    assert claimed.returncode == 0, claimed.stderr
+    assert json.loads(claimed.stdout)["state"] == "running"
+
+    duplicate = run("verify-final", str(round_dir), "--repo", str(clean_repo))
+    assert duplicate.returncode == 2
+    assert "error" in json.loads(duplicate.stderr)
