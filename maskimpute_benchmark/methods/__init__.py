@@ -1,5 +1,6 @@
 """Strict method registry and leakage-safe benchmark execution contracts."""
 
+from collections.abc import Callable, Mapping
 from types import MappingProxyType
 
 import numpy as np
@@ -30,7 +31,23 @@ from .alra import (
     finalize_alra_output,
     run_alra,
 )
+from .afmf import AFMFConfig, afmf_to_evaluator_counts, finalize_afmf_output, run_afmf
+from .biaeimpute import (
+    BiAEImputeConfig,
+    biaeimpute_to_evaluator_counts,
+    finalize_biaeimpute_output,
+    run_biaeimpute,
+)
 from .dca import DCAConfig, dca_to_evaluator_counts, finalize_dca_output, run_dca
+from .d3impute import (
+    D3ImputeConfig,
+    MatchedBulkReference,
+    d3impute_to_evaluator_counts,
+    finalize_d3impute_output,
+    prepare_matched_bulk_reference,
+    run_d3impute,
+    validate_matched_bulk_reference,
+)
 from .magic import (
     MAGICConfig,
     finalize_magic_output,
@@ -58,6 +75,12 @@ from .saver import (
     finalize_saver_output,
     run_saver,
     saver_to_evaluator_counts,
+)
+from .scziva import (
+    SCZivaConfig,
+    finalize_scziva_output,
+    run_scziva,
+    scziva_to_evaluator_counts,
 )
 from .scvi import (
     SCVIConfig,
@@ -88,21 +111,37 @@ CORE_EVALUATOR_NATIVE_SCALES = MappingProxyType(
         "saver": "method_native_normalized",
     }
 )
+RECENT_EVALUATOR_COUNT_CONVERTERS = MappingProxyType(
+    {
+        "scziva": scziva_to_evaluator_counts,
+        "afmf": afmf_to_evaluator_counts,
+        "biaeimpute": biaeimpute_to_evaluator_counts,
+        "d3impute": d3impute_to_evaluator_counts,
+    }
+)
+RECENT_EVALUATOR_NATIVE_SCALES = MappingProxyType(
+    {
+        "scziva": "raw_counts",
+        "afmf": "method_native_normalized",
+        "biaeimpute": "raw_counts",
+        "d3impute": "external_reference_adjusted",
+    }
+)
 
 
-def core_output_to_evaluator_counts(
+def _output_to_evaluator_counts(
     method_input: MethodInput,
     snapshot: MethodOutputSnapshot,
+    converters: Mapping[str, Callable[[MethodInput, object], np.ndarray]],
+    native_scales: Mapping[str, str],
 ) -> np.ndarray:
-    """Validate a bound native snapshot and apply its declared count conversion."""
-
     if not isinstance(method_input, MethodInput):
         raise TypeError("method_input must be a MethodInput")
     if not isinstance(snapshot, MethodOutputSnapshot):
         raise TypeError("snapshot must be a MethodOutputSnapshot")
     try:
-        converter = CORE_EVALUATOR_COUNT_CONVERTERS[snapshot.method_id]
-        expected_scale = CORE_EVALUATOR_NATIVE_SCALES[snapshot.method_id]
+        converter = converters[snapshot.method_id]
+        expected_scale = native_scales[snapshot.method_id]
     except KeyError as error:
         raise ValueError(
             f"no evaluator count converter is declared for method {snapshot.method_id}"
@@ -138,6 +177,20 @@ def core_output_to_evaluator_counts(
     return converter(method_input, native_output)
 
 
+def core_output_to_evaluator_counts(
+    method_input: MethodInput,
+    snapshot: MethodOutputSnapshot,
+) -> np.ndarray:
+    """Validate a bound native snapshot and apply its declared count conversion."""
+
+    return _output_to_evaluator_counts(
+        method_input,
+        snapshot,
+        CORE_EVALUATOR_COUNT_CONVERTERS,
+        CORE_EVALUATOR_NATIVE_SCALES,
+    )
+
+
 def core_output_to_evaluator_log2_cp10k(
     method_input: MethodInput,
     snapshot: MethodOutputSnapshot,
@@ -148,7 +201,32 @@ def core_output_to_evaluator_log2_cp10k(
     return count_equivalent_to_log2_cp10k(counts)
 
 
+def recent_output_to_evaluator_counts(
+    method_input: MethodInput,
+    snapshot: MethodOutputSnapshot,
+) -> np.ndarray:
+    """Validate a recent-comparator snapshot and apply its declared conversion."""
+
+    return _output_to_evaluator_counts(
+        method_input,
+        snapshot,
+        RECENT_EVALUATOR_COUNT_CONVERTERS,
+        RECENT_EVALUATOR_NATIVE_SCALES,
+    )
+
+
+def recent_output_to_evaluator_log2_cp10k(
+    method_input: MethodInput,
+    snapshot: MethodOutputSnapshot,
+) -> np.ndarray:
+    """Convert one recent comparator to the common log2(CP10k+1) scale."""
+
+    counts = recent_output_to_evaluator_counts(method_input, snapshot)
+    return count_equivalent_to_log2_cp10k(counts)
+
+
 __all__ = [
+    "AFMFConfig",
     "ALRAConfig",
     "AdapterExecution",
     "AdapterUnavailableError",
@@ -157,7 +235,9 @@ __all__ = [
     "CORE_EVALUATOR_COUNT_CONVERTERS",
     "CORE_EVALUATOR_NATIVE_SCALES",
     "CovariateColumn",
+    "BiAEImputeConfig",
     "DCAConfig",
+    "D3ImputeConfig",
     "EnvironmentSpec",
     "LicenseSpec",
     "MethodContractError",
@@ -168,38 +248,58 @@ __all__ = [
     "MethodSpec",
     "MethodStatusRow",
     "MAGICConfig",
+    "MatchedBulkReference",
+    "RECENT_EVALUATOR_COUNT_CONVERTERS",
+    "RECENT_EVALUATOR_NATIVE_SCALES",
     "ResourceSpec",
     "SAVERConfig",
     "SCVIConfig",
+    "SCZivaConfig",
     "SourceSpec",
     "SourceReceipt",
     "build_method_status_table",
     "canonical_run_record_bytes",
+    "afmf_to_evaluator_counts",
+    "biaeimpute_to_evaluator_counts",
     "core_output_to_evaluator_counts",
     "core_output_to_evaluator_log2_cp10k",
     "count_equivalent_to_log2_cp10k",
+    "d3impute_to_evaluator_counts",
     "dca_to_evaluator_counts",
     "alra_to_evaluator_counts",
     "finalize_alra_output",
+    "finalize_afmf_output",
+    "finalize_biaeimpute_output",
+    "finalize_d3impute_output",
     "finalize_dca_output",
     "finalize_magic_output",
     "finalize_saver_output",
     "finalize_scvi_output",
+    "finalize_scziva_output",
     "frequencies_to_observed_library_counts",
     "load_method_registry",
     "log1p_cp10k",
     "magic_to_evaluator_counts",
     "observed_to_evaluator_counts",
     "prepare_method_input",
+    "prepare_matched_bulk_reference",
+    "recent_output_to_evaluator_counts",
+    "recent_output_to_evaluator_log2_cp10k",
     "snapshot_method_output",
     "run_alra",
+    "run_afmf",
+    "run_biaeimpute",
+    "run_d3impute",
     "run_dca",
     "run_magic",
     "run_observed",
     "run_saver",
     "run_scvi",
+    "run_scziva",
     "saver_to_evaluator_counts",
     "scvi_to_evaluator_counts",
+    "scziva_to_evaluator_counts",
+    "validate_matched_bulk_reference",
     "validate_run_record",
     "verify_pinned_source",
     "verify_cached_method_sources",
