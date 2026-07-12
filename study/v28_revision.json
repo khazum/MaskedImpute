@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "status": "conditional_on_v28_trigger",
+  "trigger": "v28",
+  "parent_configuration_id": "v27-c03-calibrated-r1-g1",
+  "parent_configuration_sha256": "1dfd92b1f9bd6666574cc46cfd0682651da65ed4a6f76f7ae0479a5e2f27eb4a",
+  "configuration_id": "v28-c01-nb-parent-c03",
+  "configuration": {
+    "method_version": "v28",
+    "decoder": "negative_binomial",
+    "encoder_mode": "explicit_mask",
+    "output_policy": "selective",
+    "score_policy": "retained_development_calibrator",
+    "hyperparameters": {
+      "hidden_dims": [
+        128,
+        64
+      ],
+      "latent_dim": 24,
+      "learning_rate": 0.0002,
+      "weight_decay": 0.0001,
+      "batch_size": 64,
+      "max_epochs": 300,
+      "patience": 30,
+      "artificial_mask_fraction": 0.2,
+      "validation_fraction": 0.1,
+      "log_count_bin_edges": [
+        1.0986122886681096,
+        2.1972245773362196,
+        3.4965075614664802
+      ],
+      "early_stopping_min_delta": 0.0,
+      "pre_zero_regularization": 1.0,
+      "gate_gamma": 1.0,
+      "normalization_target": 10000.0
+    },
+    "decoder_hyperparameters": {
+      "dispersion_prior_strength": 20.0,
+      "winsor_quantile": 0.95,
+      "min_dispersion": 0.0001,
+      "max_dispersion": 100.0,
+      "mean_floor": 1e-08
+    }
+  },
+  "configuration_sha256": "fcea35b52f40fc6880ec7b3ca16a5a7c5a0784f984677e8f55934010d3fb470f",
+  "reason_code": "prespecified_decoder_only_revision_of_v27_c03"
+}

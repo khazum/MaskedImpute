@@ -92,6 +92,18 @@ def test_negative_binomial_zero_count_has_exact_finite_zero_mean_boundary() -> N
     np.testing.assert_allclose(mean.grad.numpy(), [[1.0]], atol=1e-12, rtol=1e-12)
 
 
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16, torch.float32])
+def test_negative_binomial_likelihood_requires_stable_float64(dtype) -> None:
+    from maskimpute.nb_model import negative_binomial_nll
+
+    with pytest.raises(TypeError, match="float64"):
+        negative_binomial_nll(
+            torch.tensor([[1000.0]], dtype=dtype),
+            torch.tensor([[1000.0]], dtype=dtype),
+            torch.tensor([1e-4], dtype=dtype),
+        )
+
+
 def test_gene_dispersion_is_robust_bounded_shrunk_and_deterministic() -> None:
     from maskimpute.nb_model import (
         NegativeBinomialDecoderConfig,
@@ -415,6 +427,78 @@ def test_train_v28_zero_library_cell_cannot_poison_selected_nb_gradients() -> No
     )
 
 
+def test_train_v28_matches_scipy_at_bound_and_rejects_cancellation_domain() -> None:
+    from maskimpute import MaskImputeConfig
+    from maskimpute.nb_model import NegativeBinomialDecoderConfig
+    from maskimpute.train import train_v28
+
+    raw_count = 10_000_000
+    counts = np.full((4, 1), raw_count, dtype=np.float64)
+    config = MaskImputeConfig(
+        hidden_dims=(4,),
+        latent_dim=2,
+        batch_size=4,
+        max_epochs=1,
+        patience=1,
+        artificial_mask_fraction=0.5,
+        validation_fraction=0.25,
+        pre_zero_regularization=0.0,
+        seed=42,
+    )
+    outcome = train_v28(
+        counts,
+        np.zeros_like(counts),
+        config,
+        "cpu",
+        decoder_config=NegativeBinomialDecoderConfig(),
+    )
+
+    theta = float(outcome.dispersion.inverse_dispersion[0])
+    probability = theta / (theta + raw_count)
+    expected = -float(nbinom.logpmf(raw_count, theta, probability))
+    np.testing.assert_allclose(
+        outcome.training.training_loss_history,
+        [expected],
+        rtol=1e-10,
+        atol=5e-8,
+    )
+    np.testing.assert_allclose(
+        outcome.training.validation_loss_history,
+        [expected],
+        rtol=1e-10,
+        atol=1e-7,
+    )
+    with pytest.raises(ValueError, match="v28.*count.*limit"):
+        train_v28(
+            np.full((4, 1), raw_count + 1, dtype=np.float64),
+            np.zeros((4, 1), dtype=np.float64),
+            config,
+            "cpu",
+            decoder_config=NegativeBinomialDecoderConfig(),
+        )
+
+
+def test_v27_default_objective_does_not_allocate_float64_count_copies(
+    monkeypatch,
+) -> None:
+    from maskimpute.train import train_v27
+
+    observed_dtypes = []
+    original = torch.as_tensor
+
+    def recording_as_tensor(*args, **kwargs):
+        observed_dtypes.append(kwargs.get("dtype"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "as_tensor", recording_as_tensor)
+    counts = _tiny_counts()
+    probability = np.zeros_like(counts)
+    probability[counts == 0] = 0.6
+    train_v27(counts, probability, _tiny_config(), "cpu")
+
+    assert torch.float64 not in observed_dtypes
+
+
 def test_v28_development_candidate_shares_score_gate_and_selective_output() -> None:
     from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
     from maskimpute.nb_model import NegativeBinomialDecoderConfig
@@ -592,3 +676,105 @@ def test_candidate_decoder_dispatch_accepts_only_exact_v27_and_v28_pairs() -> No
     )
     with pytest.raises(RunnerContractError, match="development candidate"):
         maskimpute_decoder_for_configuration(v28_ablation)
+
+
+def _development_manifest_payload() -> dict[str, object]:
+    rows: list[dict[str, object]] = []
+    ordinal = 0
+    for mechanism in ("symsim", "sergio", "sparsim", "semisynthetic"):
+        for draw in (1, 2):
+            for view in ("moderate", "severe"):
+                ordinal += 1
+                rows.append(
+                    {
+                        "biological_id": f"draw-{draw:02d}",
+                        "cells": 900,
+                        "dataset_id": f"dataset-{ordinal:024x}",
+                        "dataset_sha256": f"{ordinal:064x}",
+                        "genes": 500,
+                        "independent_unit_id": (
+                            f"biological-{(ordinal + 1) // 2:024x}"
+                        ),
+                        "mechanism": mechanism,
+                        "output_file_sha256": f"{ordinal + 100:064x}",
+                        "output_path": (
+                            f"dev/datasets/{mechanism}/draw-{draw:02d}/{view}.h5ad"
+                        ),
+                        "status": "completed",
+                        "technical_view": view,
+                        "truth_sha256": f"{(ordinal + 1) // 2 + 300:064x}",
+                    }
+                )
+    return {
+        "schema_version": 1,
+        "namespace": "dev",
+        "status": "completed",
+        "completed_count": 16,
+        "failed_count": 0,
+        "independent_unit_count": 8,
+        "manifest_sha256": "a" * 64,
+        "protocol_sha256": "b" * 64,
+        "design_sha256": "c" * 64,
+        "seed_source_sha256": "d" * 64,
+        "rows": rows,
+    }
+
+
+def test_tracked_v28_revision_authority_builds_reachable_fixed_plan(tmp_path) -> None:
+    from maskimpute_benchmark.methods.registry import load_method_registry
+    from maskimpute_benchmark.runner import (
+        build_competition_plan,
+        load_runner_authority,
+        load_v28_revision_authority,
+        maskimpute_decoder_for_configuration,
+        RunnerContractError,
+        run_v28_revision_competition,
+        validate_development_manifest_payload,
+    )
+
+    base = load_runner_authority()
+    revision = load_v28_revision_authority()
+    candidates = tuple(
+        value
+        for value in revision.configurations
+        if value.method_id == "maskimpute"
+    )
+
+    assert len(candidates) == 1
+    candidate = candidates[0]
+    assert candidate.configuration_id == "v28-c01-nb-parent-c03"
+    assert candidate.payload["method_version"] == "v28"
+    assert candidate.payload["decoder"] == "negative_binomial"
+    assert candidate.payload["hyperparameters"] == dict(
+        next(
+            value
+            for value in base.configurations
+            if value.configuration_id == "v27-c03-calibrated-r1-g1"
+        ).payload["hyperparameters"]
+    )
+    assert maskimpute_decoder_for_configuration(candidate)[0] == (
+        "negative_binomial"
+    )
+    assert revision.authority_sha256 != base.authority_sha256
+    assert callable(run_v28_revision_competition)
+    with pytest.raises(RunnerContractError, match="v28.*activation"):
+        run_v28_revision_competition(tmp_path / "blocked-before-trigger")
+
+    bindings = validate_development_manifest_payload(_development_manifest_payload())
+    plan = build_competition_plan(
+        load_method_registry(Path("study/methods.json")),
+        bindings,
+        revision,
+    )
+    v28_rows = tuple(
+        entry
+        for entry in plan.entries
+        if entry.method_id == "maskimpute"
+        and entry.configuration_id == "v28-c01-nb-parent-c03"
+    )
+    assert len(v28_rows) == 16 * 3
+    assert all(entry.preflight_status == "planned" for entry in v28_rows)
+    assert any(
+        value.configuration_id == "v28-c01-nb-parent-c03"
+        for value in plan.configurations
+    )

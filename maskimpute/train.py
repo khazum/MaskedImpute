@@ -560,16 +560,19 @@ def _train_with_policies(
     target_expression = torch.as_tensor(
         normalized, dtype=torch.float32, device=selected_device
     )
-    target_counts = torch.as_tensor(
-        counts,
-        dtype=torch.float32,
-        device=selected_device,
-    )
-    count_library_sizes = torch.as_tensor(
-        library_sizes,
-        dtype=torch.float32,
-        device=selected_device,
-    )
+    target_counts = None
+    count_library_sizes = None
+    if objective is not None:
+        target_counts = torch.as_tensor(
+            counts,
+            dtype=torch.float64,
+            device=selected_device,
+        )
+        count_library_sizes = torch.as_tensor(
+            library_sizes,
+            dtype=torch.float64,
+            device=selected_device,
+        )
     positive = torch.as_tensor(counts > 0, dtype=torch.bool, device=selected_device)
     natural_zero = ~positive
     score = torch.as_tensor(probability, dtype=torch.float32, device=selected_device)
@@ -658,6 +661,7 @@ def _train_with_policies(
                     score[rows],
                 )
             else:
+                assert target_counts is not None and count_library_sizes is not None
                 primary_loss, preservation_loss = objective(
                     prediction,
                     target_counts[rows],
@@ -687,6 +691,7 @@ def _train_with_policies(
                     fixed_validation,
                 )
             else:
+                assert target_counts is not None and count_library_sizes is not None
                 validation_loss, _ = objective(
                     validation_prediction,
                     target_counts,
@@ -781,6 +786,7 @@ def train_v28(
     """Train the conditional NB decoder from counts and an external score only."""
 
     from maskimpute.nb_model import (
+        MAX_V28_COUNT_OR_LIBRARY,
         NegativeBinomialDecoderConfig,
         NegativeBinomialMaskAutoencoder,
         _negative_binomial_objective,
@@ -790,6 +796,14 @@ def train_v28(
     if type(decoder_config) is not NegativeBinomialDecoderConfig:
         raise TypeError(
             "decoder_config must be an exact NegativeBinomialDecoderConfig"
+        )
+    counts = validate_observed_counts(observed_counts)
+    library_sizes = counts.sum(axis=1, dtype=np.float64)
+    if np.any(counts > MAX_V28_COUNT_OR_LIBRARY) or np.any(
+        library_sizes > MAX_V28_COUNT_OR_LIBRARY
+    ):
+        raise ValueError(
+            "v28 observed count or library exceeds the stable likelihood limit"
         )
     dispersion_holder: dict[str, object] = {}
 
@@ -821,11 +835,11 @@ def train_v28(
             dispersion,
             normalization_target=training_config.normalization_target,
             device=selected_device,
-            dtype=torch.float32,
+            dtype=torch.float64,
         )
 
     training = _train_with_policies(
-        observed_counts,
+        counts,
         p_pre_zero,
         config,
         device,

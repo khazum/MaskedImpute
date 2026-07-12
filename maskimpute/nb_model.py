@@ -12,6 +12,11 @@ import torch
 from torch import nn
 
 
+MAX_V28_COUNT_OR_LIBRARY = 10_000_000.0
+MIN_V28_INVERSE_DISPERSION = 1e-2
+MAX_V28_INVERSE_DISPERSION = 1e4
+
+
 def _finite_real(
     value: object,
     name: str,
@@ -67,6 +72,10 @@ class NegativeBinomialDecoderConfig:
         )
         if maximum <= minimum:
             raise ValueError("max_dispersion must exceed min_dispersion")
+        if minimum < 1.0 / MAX_V28_INVERSE_DISPERSION:
+            raise ValueError("min_dispersion is below the stable v28 bound")
+        if maximum > 1.0 / MIN_V28_INVERSE_DISPERSION:
+            raise ValueError("max_dispersion exceeds the stable v28 bound")
         object.__setattr__(self, "min_dispersion", minimum)
         object.__setattr__(self, "max_dispersion", maximum)
         object.__setattr__(
@@ -274,12 +283,18 @@ def negative_binomial_nll(
         raise ValueError("counts and mean must share device and dtype")
     if not torch.is_floating_point(counts):
         raise TypeError("counts and mean must use a floating dtype")
+    if counts.dtype != torch.float64:
+        raise TypeError("negative-binomial likelihood requires torch.float64")
     if not torch.isfinite(counts).all() or torch.any(counts < 0):
         raise ValueError("counts must be finite and nonnegative")
+    if torch.any(counts > MAX_V28_COUNT_OR_LIBRARY):
+        raise ValueError("counts exceed the stable v28 likelihood limit")
     if torch.any(counts != torch.floor(counts)):
         raise ValueError("counts must be integral")
     if not torch.isfinite(mean).all() or torch.any(mean < 0):
         raise ValueError("mean must be finite and nonnegative")
+    if torch.any(mean > MAX_V28_COUNT_OR_LIBRARY):
+        raise ValueError("mean exceeds the stable v28 likelihood limit")
     if not isinstance(inverse_dispersion, torch.Tensor):
         raise TypeError("inverse_dispersion must be a torch tensor")
     if (
@@ -297,6 +312,10 @@ def negative_binomial_nll(
         raise ValueError("inverse_dispersion must be gene-wise or count-shaped")
     if not torch.isfinite(size).all() or torch.any(size <= 0):
         raise ValueError("inverse_dispersion must be finite and positive")
+    if torch.any(size < MIN_V28_INVERSE_DISPERSION) or torch.any(
+        size > MAX_V28_INVERSE_DISPERSION
+    ):
+        raise ValueError("inverse_dispersion exceeds stable v28 bounds")
     if mask is None:
         selected = torch.ones_like(counts, dtype=torch.bool)
     else:
@@ -329,6 +348,10 @@ def negative_binomial_nll(
         - selected_counts * torch.log(total)
     )
     losses = -log_probability
+    if not torch.isfinite(losses).all() or torch.any(losses < 0):
+        raise FloatingPointError(
+            "negative-binomial likelihood produced invalid losses"
+        )
     if reduction == "none":
         return losses
     if reduction == "sum":
@@ -482,7 +505,8 @@ def _negative_binomial_objective(
     ) -> tuple[torch.Tensor, torch.Tensor]:
         from maskimpute.train import natural_zero_preservation_loss
 
-        means = apply_library_size_offset(fractions, library_sizes)
+        likelihood_fractions = fractions.to(dtype=counts.dtype)
+        means = apply_library_size_offset(likelihood_fractions, library_sizes)
         if torch.any(artificial_mask):
             primary = negative_binomial_nll(
                 counts,
@@ -506,6 +530,7 @@ def _negative_binomial_objective(
 
 __all__ = [
     "GeneDispersionEstimate",
+    "MAX_V28_COUNT_OR_LIBRARY",
     "NegativeBinomialDecoderConfig",
     "NegativeBinomialMaskAutoencoder",
     "apply_library_size_offset",

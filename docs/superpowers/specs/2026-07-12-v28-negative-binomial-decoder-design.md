@@ -43,10 +43,18 @@ configuration whose payload identifies `method_version=v28` and
 `decoder=negative_binomial`. Decoder hyperparameters are parsed into an exact
 immutable configuration. No v28 symbol is added to the public `maskimpute`
 API, and no v28 row is added to the current tracked development-search ledger.
+The separate `study/v28_revision.json` authority fixes the decoder-only revision
+to parent `v27-c03-calibrated-r1-g1`; its runner is blocked until the canonical
+selection input and recomputed selection report byte-match and report
+`trigger=v28`.
 
 ## Failure behavior and auditability
 
-Inputs must be finite integral nonnegative counts. Fractions, means,
+Inputs must be finite integral nonnegative counts. NB likelihood arithmetic is
+float64 and fails closed above 10,000,000 for any count, mean, or observed cell
+library, and outside the fixed inverse-dispersion range `[0.01, 10000]`; these
+bounds avoid log-gamma cancellation outside the tested numerical domain.
+Fractions, means,
 dispersions, losses, and outputs must remain finite. Empty objective masks,
 nonpositive NB size, invalid configuration fields, unsupported version/decoder
 pairs, and zero-information training matrices fail closed. Diagnostics record

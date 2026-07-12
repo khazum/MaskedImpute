@@ -856,11 +856,11 @@ def _fit_ablation_once(
 
         libraries = torch.as_tensor(
             outcome.library_sizes,
-            dtype=decoder_prediction.dtype,
+            dtype=torch.float64,
             device=selected_device,
         )
         denoised_counts = (
-            apply_library_size_offset(decoder_prediction, libraries)
+            apply_library_size_offset(decoder_prediction.to(torch.float64), libraries)
             .detach()
             .cpu()
             .numpy()

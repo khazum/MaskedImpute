@@ -12,10 +12,12 @@
 
 - The NB mean is `observed_library_size * decoded_gene_fraction`.
 - The likelihood uses `variance = mean + mean^2 / inverse_dispersion`.
+- Likelihood arithmetic is float64 and rejects counts, means, or cell libraries above 10,000,000 and inverse dispersion outside `[0.01, 10000]`.
 - Dispersion uses exposure-adjusted winsorized moments and deterministic log-scale shrinkage to a robust global median.
 - v28 is a benchmark-development candidate only; the public v27 API and tracked v27 search remain unchanged.
 - Score artifacts, development calibration, gate, and output semantics remain shared with v27.
 - No evaluator truth, labels, annotations, or reconstruction-derived score enters dispatch.
+- Conditional execution requires a byte- and semantics-revalidated fixed selection report with `trigger=v28`.
 
 ---
 
