@@ -317,16 +317,63 @@ def verify_pinned_source(spec: MethodSpec, source_dir: Path) -> SourceReceipt:
 
 
 def require_executable(executable: Path) -> Path:
-    """Resolve an explicitly selected environment executable or fail closed."""
+    """Validate an absolute launcher while preserving virtual-env semantics."""
 
     if not isinstance(executable, Path):
         raise TypeError("environment executable must be a pathlib.Path")
-    if not executable.is_file() or not os.access(executable, os.X_OK):
+    if not executable.is_absolute() or ".." in executable.parts:
+        raise AdapterUnavailableError(
+            "environment_executable_unsafe",
+            "environment executable must be an absolute path without parent traversal",
+        )
+    selected = executable.absolute()
+    try:
+        selected_before = selected.lstat()
+    except OSError as error:
         raise AdapterUnavailableError(
             "environment_executable_missing",
-            f"environment executable is missing or not executable: {executable}",
+            f"environment executable is missing or not executable: {selected}",
+        ) from error
+    if not (
+        stat.S_ISREG(selected_before.st_mode) or stat.S_ISLNK(selected_before.st_mode)
+    ):
+        raise AdapterUnavailableError(
+            "environment_executable_unsafe",
+            f"environment executable must be a regular file or symlink: {selected}",
         )
-    return executable.resolve(strict=True)
+    try:
+        target = selected.stat()
+        selected_after = selected.lstat()
+    except OSError as error:
+        raise AdapterUnavailableError(
+            "environment_executable_missing",
+            f"environment executable has a missing or inaccessible target: {selected}",
+        ) from error
+    selected_identity = (
+        selected_before.st_dev,
+        selected_before.st_ino,
+        selected_before.st_mode,
+    )
+    if selected_identity != (
+        selected_after.st_dev,
+        selected_after.st_ino,
+        selected_after.st_mode,
+    ):
+        raise AdapterUnavailableError(
+            "environment_executable_unsafe",
+            f"environment executable identity changed during validation: {selected}",
+        )
+    if not stat.S_ISREG(target.st_mode):
+        raise AdapterUnavailableError(
+            "environment_executable_unsafe",
+            f"environment executable target must be a regular file: {selected}",
+        )
+    if not os.access(selected, os.X_OK):
+        raise AdapterUnavailableError(
+            "environment_executable_missing",
+            f"environment executable is not executable: {selected}",
+        )
+    return selected
 
 
 def _subprocess_environment(extra: Mapping[str, str] | None) -> dict[str, str]:

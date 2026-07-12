@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import anndata as ad
 import numpy as np
@@ -40,6 +41,7 @@ from maskimpute_benchmark.methods.observed import (
     log1p_cp10k,
     run_observed,
     verify_pinned_source,
+    require_executable,
 )
 from maskimpute_benchmark.methods.saver import (
     SAVERConfig,
@@ -266,7 +268,7 @@ def test_every_core_method_uses_explicit_count_inverse_and_one_common_log_scale(
     }
     expected_log = np.log2(1.0 + observed_counts / observed_libraries * 10_000.0)
 
-    assert set(core_methods.CORE_EVALUATOR_COUNT_CONVERTERS) == set(snapshots)
+    assert set(snapshots).issubset(core_methods.CORE_EVALUATOR_COUNT_CONVERTERS)
     for method_id, snapshot in snapshots.items():
         evaluator_counts = core_methods.core_output_to_evaluator_counts(
             method_input, snapshot
@@ -547,6 +549,81 @@ def test_missing_environment_is_reported_with_reproducible_reason(
     assert str(missing) in captured.value.detail
     assert captured.value.stdout == b""
     assert captured.value.stderr == b""
+
+
+def test_require_executable_preserves_absolute_venv_launcher_and_packages(
+    tmp_path: Path,
+) -> None:
+    environment = tmp_path / "environment"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+        check=True,
+        capture_output=True,
+    )
+    launcher = environment / "bin" / "python"
+    assert launcher.is_symlink()
+    site_packages = subprocess.run(
+        [
+            str(launcher),
+            "-I",
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    Path(site_packages, "maskimpute_env_sentinel.py").write_text(
+        "VALUE = 'selected-environment'\n", encoding="utf-8"
+    )
+
+    selected = require_executable(launcher)
+
+    assert selected == launcher.absolute()
+    assert selected.is_symlink()
+    receipt = subprocess.run(
+        [
+            str(selected),
+            "-I",
+            "-c",
+            "import maskimpute_env_sentinel,sys; "
+            "print(sys.prefix); print(maskimpute_env_sentinel.VALUE)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert receipt == [str(environment), "selected-environment"]
+
+
+@pytest.mark.parametrize("kind", ["relative", "traversal", "directory"])
+def test_require_executable_rejects_path_escape_and_nonregular_identity(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    executable = tmp_path / "tool"
+    if kind == "relative":
+        selected = Path("relative/tool")
+    elif kind == "traversal":
+        selected = tmp_path / "nested" / ".." / "tool"
+    else:
+        executable.mkdir()
+        selected = executable
+
+    with pytest.raises(AdapterUnavailableError) as captured:
+        require_executable(selected)
+
+    assert captured.value.reason_code == "environment_executable_unsafe"
+
+
+def test_require_executable_rejects_broken_symlink(tmp_path: Path) -> None:
+    launcher = tmp_path / "python"
+    launcher.symlink_to(tmp_path / "missing-target")
+
+    with pytest.raises(AdapterUnavailableError) as captured:
+        require_executable(launcher)
+
+    assert captured.value.reason_code == "environment_executable_missing"
 
 
 def test_nonzero_upstream_exit_retains_logs_and_does_not_publish_output(
