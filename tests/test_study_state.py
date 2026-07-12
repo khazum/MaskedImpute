@@ -1,8 +1,10 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -75,6 +77,68 @@ def test_freeze_rejects_dirty_repository(clean_repo: Path) -> None:
         freeze_fixture(clean_repo)
 
 
+def test_freeze_rejects_ignored_executable_state(clean_repo: Path) -> None:
+    with (clean_repo / ".gitignore").open("a", encoding="utf-8") as ignore:
+        ignore.write("*.pyc\n")
+    _git(clean_repo, "add", ".gitignore")
+    _git(clean_repo, "commit", "-m", "ignore bytecode")
+    (clean_repo / "payload.pyc").write_bytes(b"unbound executable bytes")
+    assert _git(clean_repo, "status", "--porcelain", "--untracked-files=all") == ""
+
+    with pytest.raises(StudyStateError, match="clean"):
+        freeze_fixture(clean_repo)
+
+
+@pytest.mark.parametrize("kind", ["fifo", "empty_directory"])
+def test_freeze_rejects_ignored_paths_git_does_not_list(
+    clean_repo: Path, kind: str
+) -> None:
+    with (clean_repo / ".gitignore").open("a", encoding="utf-8") as ignore:
+        ignore.write("ignored-state/\n")
+    _git(clean_repo, "add", ".gitignore")
+    _git(clean_repo, "commit", "-m", "ignore runtime state")
+    ignored = clean_repo / "ignored-state"
+    ignored.mkdir()
+    if kind == "fifo":
+        os.mkfifo(ignored / "control")
+    assert _git(clean_repo, "status", "--porcelain", "--untracked-files=all") == ""
+    assert (
+        _git(
+            clean_repo,
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+        )
+        == ""
+    )
+
+    with pytest.raises(StudyStateError, match="clean"):
+        freeze_fixture(clean_repo)
+
+
+def test_materialization_rejects_ignored_state_outside_round(clean_repo: Path) -> None:
+    with (clean_repo / ".gitignore").open("a", encoding="utf-8") as ignore:
+        ignore.write("*.pyc\n")
+    _git(clean_repo, "add", ".gitignore")
+    _git(clean_repo, "commit", "-m", "ignore bytecode")
+    round_dir = freeze_fixture(clean_repo)
+    (clean_repo / "payload.pyc").write_bytes(b"late executable bytes")
+
+    with pytest.raises(StudyStateError, match="clean frozen commit"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+
+def test_materialization_rejects_unexpected_ignored_round_file(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    (round_dir / "payload.pyc").write_bytes(b"round-local executable bytes")
+
+    with pytest.raises(StudyStateError, match="clean frozen commit"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+
 def test_freeze_records_commit_relative_inputs_hashes_and_utc_time(
     clean_repo: Path,
 ) -> None:
@@ -103,8 +167,80 @@ def test_freeze_records_commit_relative_inputs_hashes_and_utc_time(
     assert len(record["round_token"]) == 32
     assert len(record["repository_instance_id"]) == 32
     assert len(record["worktree_path_sha256"]) == 64
+    assert type(record["git_common_dir_device"]) is int
+    assert record["git_common_dir_device"] >= 0
+    assert type(record["git_common_dir_inode"]) is int
+    assert record["git_common_dir_inode"] > 0
+    assert type(record["study_state_root_device"]) is int
+    assert type(record["study_state_root_inode"]) is int
+    assert record["study_state_root_inode"] > 0
+    assert type(record["registry_dir_device"]) is int
+    assert type(record["registry_dir_inode"]) is int
+    assert record["registry_dir_inode"] > 0
     frozen_at = datetime.fromisoformat(record["frozen_at"].replace("Z", "+00:00"))
     assert frozen_at.tzinfo == timezone.utc
+
+
+@pytest.mark.parametrize("authority", ["state_root", "locks", "registry"])
+def test_freeze_rejects_symlinked_authority_directories(
+    clean_repo: Path, tmp_path: Path, authority: str
+) -> None:
+    common = Path(_git(clean_repo, "rev-parse", "--git-common-dir"))
+    if not common.is_absolute():
+        common = clean_repo / common
+    external = tmp_path / f"external-{authority}"
+    external.mkdir()
+    state_root = common / "maskimpute-study"
+    if authority == "state_root":
+        state_root.symlink_to(external, target_is_directory=True)
+    else:
+        state_root.mkdir(mode=0o700)
+        (state_root / f".{authority}").symlink_to(
+            external, target_is_directory=True
+        )
+
+    with pytest.raises(StudyStateError, match="authority|directory|lock"):
+        freeze_fixture(clean_repo)
+
+    assert list(external.iterdir()) == []
+
+
+@pytest.mark.parametrize("record_name", ["instance", "registry"])
+def test_materialization_rejects_symlinked_authority_records(
+    clean_repo: Path, tmp_path: Path, record_name: str
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    if record_name == "instance":
+        record_path = study_module._study_state_root(clean_repo) / "instance.json"
+    else:
+        record_path = study_module._registry_path(clean_repo, "round-001")
+    external = tmp_path / f"external-{record_name}.json"
+    shutil.copyfile(record_path, external)
+    record_path.unlink()
+    record_path.symlink_to(external)
+
+    with pytest.raises(StudyStateError, match="record|authority|clean frozen"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+
+@pytest.mark.parametrize("authority", ["state_root", "registry"])
+def test_materialization_rejects_replaced_authority_directory(
+    clean_repo: Path, tmp_path: Path, authority: str
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    state_root = study_module._study_state_root(clean_repo)
+    target = (
+        state_root
+        if authority == "state_root"
+        else state_root / study_module.REGISTRY_DIR_NAME
+    )
+    snapshot = tmp_path / f"snapshot-{authority}"
+    shutil.copytree(target, snapshot)
+    target.rename(tmp_path / f"old-{authority}")
+    shutil.copytree(snapshot, target)
+
+    with pytest.raises(StudyStateError, match="clean frozen commit"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
 
 
 def test_materialization_creates_unique_63_bit_generator_seeds(
@@ -122,6 +258,19 @@ def test_materialization_creates_unique_63_bit_generator_seeds(
     assert len(set(seeds)) == 32
     assert all(type(seed) is int and 0 <= seed < 2**63 for seed in seeds)
     assert record["seed_manifest_sha256"] == canonical_sha256(seed_manifest)
+
+
+def test_explicit_repo_makes_relative_round_path_repository_relative(
+    clean_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    freeze_fixture(clean_repo)
+    monkeypatch.chdir(tmp_path)
+
+    record = materialize_final(
+        Path("artifacts/study/round-001"), seed_count=4, repo=clean_repo
+    )
+
+    assert record["state"] == "materialized"
 
 
 def test_dirty_or_changed_commit_cannot_run_final(clean_repo: Path) -> None:
@@ -232,6 +381,204 @@ def test_evaluation_receipt_records_result_manifest_and_hash(clean_repo: Path) -
     assert record == json.loads(
         (round_dir / "evaluation_receipt.json").read_text(encoding="utf-8")
     )
+
+
+def test_result_manifest_is_detached_from_caller_mutation(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    supplied = {"metadata": {"version": 1}}
+    original = study_module._validate_result_files
+    calls = 0
+
+    def mutate_caller_after_validation(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 1:
+            supplied["metadata"]["version"] = 2
+        return result
+
+    monkeypatch.setattr(
+        study_module, "_validate_result_files", mutate_caller_after_validation
+    )
+    record = record_final_evaluation(round_dir, supplied, repo=clean_repo)
+
+    assert record["result_manifest"] == {"metadata": {"version": 1}}
+    assert record["result_manifest_sha256"] == canonical_sha256(
+        record["result_manifest"]
+    )
+
+
+def test_evaluation_accepts_only_hash_declared_round_result_files(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    result_path = round_dir / "results" / "scores.json"
+    result_path.parent.mkdir()
+    result_path.write_text('{"mse": 0.5}\n', encoding="utf-8")
+    manifest = {
+        "result_files": [
+            {
+                "path": "results/scores.json",
+                "sha256": file_sha256(result_path),
+            }
+        ]
+    }
+
+    receipt = record_final_evaluation(round_dir, manifest, repo=clean_repo)
+
+    assert receipt["state"] == "evaluated"
+    assert receipt["result_manifest"] == manifest
+
+
+def test_evaluation_rejects_undeclared_ignored_result_file(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    result_path = round_dir / "results" / "scores.json"
+    result_path.parent.mkdir()
+    result_path.write_text('{"mse": 0.5}\n', encoding="utf-8")
+    (round_dir / "results" / "payload.pyc").write_bytes(b"undeclared bytes")
+    manifest = {
+        "result_files": [
+            {
+                "path": "results/scores.json",
+                "sha256": file_sha256(result_path),
+            }
+        ]
+    }
+
+    with pytest.raises(StudyStateError, match="clean frozen commit"):
+        record_final_evaluation(round_dir, manifest, repo=clean_repo)
+
+
+def test_evaluation_rejects_declared_result_hash_mismatch(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    result_path = round_dir / "results" / "scores.json"
+    result_path.parent.mkdir()
+    result_path.write_text('{"mse": 0.5}\n', encoding="utf-8")
+
+    with pytest.raises(StudyStateError, match="result file hash"):
+        record_final_evaluation(
+            round_dir,
+            {
+                "result_files": [
+                    {"path": "results/scores.json", "sha256": "0" * 64}
+                ]
+            },
+            repo=clean_repo,
+        )
+
+
+def test_evaluation_fsyncs_declared_result_and_directory(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    result_path = round_dir / "results" / "scores.json"
+    result_path.parent.mkdir()
+    result_path.write_text('{"mse": 0.5}\n', encoding="utf-8")
+    observed: set[str] = set()
+    real_fsync = os.fsync
+
+    def observe_fsync(descriptor: int) -> None:
+        try:
+            observed.add(os.readlink(f"/proc/self/fd/{descriptor}"))
+        except OSError:
+            pass
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", observe_fsync)
+    record_final_evaluation(
+        round_dir,
+        {
+            "result_files": [
+                {
+                    "path": "results/scores.json",
+                    "sha256": file_sha256(result_path),
+                }
+            ]
+        },
+        repo=clean_repo,
+    )
+
+    assert str(result_path) in observed
+    assert str(result_path.parent) in observed
+
+
+def test_missing_result_after_interrupted_receipt_is_superseded(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    result_path = round_dir / "results" / "scores.json"
+    result_path.parent.mkdir()
+    result_path.write_text('{"mse": 0.5}\n', encoding="utf-8")
+    manifest = {
+        "result_files": [
+            {"path": "results/scores.json", "sha256": file_sha256(result_path)}
+        ]
+    }
+    registry_path = study_module._registry_path(clean_repo, "round-001")
+    original = study_module._atomic_write_json
+
+    def fail_evaluated_registry(path, payload, **kwargs):
+        if path == registry_path and payload.get("state") == "evaluated":
+            raise OSError("injected evaluated-registry crash")
+        return original(path, payload, **kwargs)
+
+    monkeypatch.setattr(study_module, "_atomic_write_json", fail_evaluated_registry)
+    with pytest.raises(OSError, match="injected evaluated-registry crash"):
+        record_final_evaluation(round_dir, manifest, repo=clean_repo)
+    assert (round_dir / "evaluation_receipt.json").exists()
+    assert study_module._read_record(registry_path)["state"] == "running"
+
+    monkeypatch.setattr(study_module, "_atomic_write_json", original)
+    result_path.unlink()
+    with pytest.raises(StudyStateError):
+        record_final_evaluation(round_dir, {"summary": "incomplete"}, repo=clean_repo)
+
+    assert study_module._read_record(registry_path)["state"] == "superseded"
+
+
+def test_result_change_during_registry_advance_supersedes_round(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    result_path = round_dir / "results" / "scores.json"
+    result_path.parent.mkdir()
+    result_path.write_text('{"mse": 0.5}\n', encoding="utf-8")
+    manifest = {
+        "result_files": [
+            {"path": "results/scores.json", "sha256": file_sha256(result_path)}
+        ]
+    }
+    original = study_module._advance_registry
+
+    def mutate_before_advance(*args, **kwargs):
+        if kwargs.get("new_state") == "evaluated":
+            result_path.write_text('{"mse": 999}\n', encoding="utf-8")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(study_module, "_advance_registry", mutate_before_advance)
+    with pytest.raises(StudyStateError, match="result file hash"):
+        record_final_evaluation(round_dir, manifest, repo=clean_repo)
+
+    registry = study_module._read_record(
+        study_module._registry_path(clean_repo, "round-001")
+    )
+    assert registry["state"] == "superseded"
 
 
 def test_evaluation_requires_claim_and_unchanged_repository(clean_repo: Path) -> None:
@@ -652,6 +999,145 @@ def test_complete_copied_state_cannot_run_in_a_fresh_clone(
         materialize_final(copied_round, seed_count=4, repo=clone)
 
 
+def test_same_path_replacement_clone_cannot_replay_frozen_round(
+    clean_repo: Path, tmp_path: Path
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    frozen_round = tmp_path / "frozen-round"
+    shutil.copytree(round_dir, frozen_round)
+    common = Path(_git(clean_repo, "rev-parse", "--git-common-dir"))
+    if not common.is_absolute():
+        common = clean_repo / common
+    frozen_state = tmp_path / "frozen-study-state"
+    shutil.copytree(common / "maskimpute-study", frozen_state)
+
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    archived = tmp_path / "archived-repository"
+    clean_repo.rename(archived)
+    _git(tmp_path, "clone", "--no-local", str(archived), str(clean_repo))
+    replayed_round = clean_repo / "artifacts/study/round-001"
+    replayed_round.parent.mkdir(parents=True)
+    shutil.copytree(frozen_round, replayed_round)
+    replacement_common = Path(_git(clean_repo, "rev-parse", "--git-common-dir"))
+    if not replacement_common.is_absolute():
+        replacement_common = clean_repo / replacement_common
+    shutil.copytree(
+        frozen_state,
+        replacement_common / "maskimpute-study",
+        dirs_exist_ok=True,
+    )
+
+    with pytest.raises(StudyStateError, match="clean frozen commit"):
+        materialize_final(replayed_round, seed_count=4, repo=clean_repo)
+
+
+def test_registry_history_is_digest_chained(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    registry_path = study_module._registry_path(clean_repo, "round-001")
+    frozen = study_module._read_record(registry_path)
+    first = frozen["history"][0]
+    assert first["previous_entry_sha256"] is None
+    assert frozen["history_head_sha256"] == first["entry_sha256"]
+
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    materialized = study_module._read_record(registry_path)
+    second = materialized["history"][1]
+    assert second["previous_entry_sha256"] == first["entry_sha256"]
+    assert materialized["history_head_sha256"] == second["entry_sha256"]
+
+    second["previous_entry_sha256"] = "0" * 64
+    registry_path.write_text(json.dumps(materialized), encoding="utf-8")
+    freeze = study_module._read_record(round_dir / "freeze.json")
+    with pytest.raises(StudyStateError, match="history"):
+        study_module._validate_registry(clean_repo, round_dir, freeze)
+
+
+def test_registry_history_must_start_at_freeze_and_follow_lifecycle(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    registry_path = study_module._registry_path(clean_repo, "round-001")
+    registry = study_module._read_record(registry_path)
+    first = registry["history"][0]
+
+    duplicate = study_module._registry_entry(
+        state="frozen",
+        record_name="freeze.json",
+        record=study_module._read_record(round_dir / "freeze.json"),
+        previous_entry_sha256=first["entry_sha256"],
+    )
+    registry["history"].append(duplicate)
+    registry["history_head_sha256"] = duplicate["entry_sha256"]
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    freeze = study_module._read_record(round_dir / "freeze.json")
+
+    with pytest.raises(StudyStateError, match="history|transition"):
+        study_module._validate_registry(clean_repo, round_dir, freeze)
+
+
+def test_registry_history_cannot_drop_frozen_anchor(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    registry_path = study_module._registry_path(clean_repo, "round-001")
+    registry = study_module._read_record(registry_path)
+    surviving = dict(registry["history"][1])
+    surviving["previous_entry_sha256"] = None
+    payload = dict(surviving)
+    payload.pop("entry_sha256")
+    surviving["entry_sha256"] = canonical_sha256(payload)
+    registry["history"] = [surviving]
+    registry["history_head_sha256"] = surviving["entry_sha256"]
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    freeze = study_module._read_record(round_dir / "freeze.json")
+
+    with pytest.raises(StudyStateError, match="history|frozen"):
+        study_module._validate_registry(clean_repo, round_dir, freeze)
+
+
+@pytest.mark.parametrize("exclusive", [False, True])
+def test_atomic_json_publication_fsyncs_containing_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exclusive: bool
+) -> None:
+    observed: list[bool] = []
+    real_fsync = os.fsync
+
+    def observe_fsync(descriptor: int) -> None:
+        observed.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", observe_fsync)
+    study_module._atomic_write_json(
+        tmp_path / f"record-{exclusive}.json",
+        {"state": "test"},
+        exclusive=exclusive,
+    )
+
+    assert True in observed
+
+
+def test_freeze_durably_publishes_authority_root(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    common = Path(_git(clean_repo, "rev-parse", "--git-common-dir"))
+    if not common.is_absolute():
+        common = clean_repo / common
+    common = common.resolve()
+    observed: set[str] = set()
+    real_fsync = os.fsync
+
+    def observe_fsync(descriptor: int) -> None:
+        try:
+            observed.add(os.readlink(f"/proc/self/fd/{descriptor}"))
+        except OSError:
+            pass
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", observe_fsync)
+    freeze_fixture(clean_repo)
+
+    assert str(common) in observed
+
+
 def test_post_publication_repository_change_supersedes_round(
     clean_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -677,6 +1163,113 @@ def test_post_publication_repository_change_supersedes_round(
         study_module._registry_path(clean_repo, "round-001")
     )
     assert registry["state"] == "superseded"
+
+
+@pytest.mark.parametrize("action", ["mutate", "delete"])
+def test_post_publication_seed_manifest_change_supersedes_round(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    original = study_module._atomic_write_json
+
+    def change_manifest_after_materialization(path, payload, **kwargs):
+        original(path, payload, **kwargs)
+        if path.name == "materialization.json":
+            manifest_path = round_dir / "final_manifest.json"
+            if action == "delete":
+                manifest_path.unlink()
+            else:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["generator_seeds"][0] += 1
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(
+        study_module, "_atomic_write_json", change_manifest_after_materialization
+    )
+    with pytest.raises(StudyStateError, match="manifest"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+    assert study_module._read_record(
+        study_module._registry_path(clean_repo, "round-001")
+    )["state"] == "superseded"
+
+
+def test_post_publication_execution_claim_change_supersedes_round(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    original = study_module._atomic_write_json
+
+    def change_claim_after_publication(path, payload, **kwargs):
+        original(path, payload, **kwargs)
+        if path.name == "execution_claim.json":
+            claim = json.loads(path.read_text(encoding="utf-8"))
+            claim["execution_claim_id"] = "0" * 32
+            path.write_text(json.dumps(claim), encoding="utf-8")
+
+    monkeypatch.setattr(
+        study_module, "_atomic_write_json", change_claim_after_publication
+    )
+    with pytest.raises(StudyStateError, match="claim|registry"):
+        assert_final_runnable(clean_repo, round_dir)
+
+    assert study_module._read_record(
+        study_module._registry_path(clean_repo, "round-001")
+    )["state"] == "superseded"
+
+
+def test_seed_manifest_change_during_registry_advance_supersedes_round(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    original = study_module._advance_registry
+
+    def mutate_before_advance(*args, **kwargs):
+        if kwargs.get("new_state") == "materialized":
+            manifest_path = round_dir / "final_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["generator_seeds"][0] += 1
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(study_module, "_advance_registry", mutate_before_advance)
+    with pytest.raises(StudyStateError, match="manifest"):
+        materialize_final(round_dir, seed_count=4, repo=clean_repo)
+
+    assert study_module._read_record(
+        study_module._registry_path(clean_repo, "round-001")
+    )["state"] == "superseded"
+
+
+def test_receipt_change_after_registry_publication_fails_closed(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    original = study_module._advance_registry
+
+    def mutate_after_advance(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if kwargs.get("new_state") == "evaluated":
+            receipt_path = round_dir / "evaluation_receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            receipt["evaluated_at"] = "changed"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(study_module, "_advance_registry", mutate_after_advance)
+    with pytest.raises(StudyStateError, match="receipt|registry"):
+        record_final_evaluation(
+            round_dir, {"results_sha256": "a" * 64}, repo=clean_repo
+        )
+
+    registry_path = study_module._registry_path(clean_repo, "round-001")
+    assert study_module._read_record(registry_path)["state"] == "evaluated"
+    freeze = study_module._read_record(round_dir / "freeze.json")
+    with pytest.raises(StudyStateError, match="registry history hash"):
+        study_module._validate_registry(clean_repo, round_dir, freeze)
 
 
 def test_post_receipt_repository_change_marks_receipt_superseded(
@@ -705,6 +1298,39 @@ def test_post_receipt_repository_change_marks_receipt_superseded(
         (round_dir / "supersession.json").read_text(encoding="utf-8")
     )
     assert supersession["previous_state"] == "running"
+    assert study_module._read_record(
+        study_module._registry_path(clean_repo, "round-001")
+    )["state"] == "superseded"
+
+
+@pytest.mark.parametrize("action", ["mutate", "delete"])
+def test_post_receipt_seed_manifest_change_is_superseded(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    original = study_module._atomic_write_json
+
+    def change_manifest_after_receipt(path, payload, **kwargs):
+        original(path, payload, **kwargs)
+        if path.name == "evaluation_receipt.json":
+            manifest_path = round_dir / "final_manifest.json"
+            if action == "delete":
+                manifest_path.unlink()
+            else:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                manifest["generator_seeds"][0] += 1
+                manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(
+        study_module, "_atomic_write_json", change_manifest_after_receipt
+    )
+    with pytest.raises(StudyStateError, match="manifest"):
+        record_final_evaluation(
+            round_dir, {"results_sha256": "a" * 64}, repo=clean_repo
+        )
+
     assert study_module._read_record(
         study_module._registry_path(clean_repo, "round-001")
     )["state"] == "superseded"
