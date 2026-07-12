@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "candidate_method_id": "maskimpute",
+  "model_seeds": [42, 43, 44],
+  "base_maskimpute_config": {
+    "hidden_dims": [128, 64],
+    "latent_dim": 24,
+    "learning_rate": 0.0002,
+    "weight_decay": 0.0001,
+    "batch_size": 64,
+    "max_epochs": 300,
+    "patience": 30,
+    "artificial_mask_fraction": 0.2,
+    "validation_fraction": 0.1,
+    "log_count_bin_edges": [
+      1.0986122886681096,
+      2.1972245773362196,
+      3.4965075614664802
+    ],
+    "early_stopping_min_delta": 0.0,
+    "pre_zero_regularization": 1.0,
+    "gate_gamma": 1.0,
+    "normalization_target": 10000.0
+  },
+  "base_maskimpute_config_sha256": "ce07d84c1fd2bfedb51e98d01b0f64b0dd276c3fe1db13d14da67aa05c78b904",
+  "count_model_config": {
+    "n_folds": 5,
+    "use_library_size_exposure": true,
+    "mean_prior_strength": 1.0,
+    "mean_floor": 1e-8,
+    "dispersion_prior_strength": 10.0,
+    "link_bins": 64,
+    "link_max_iter": 200,
+    "link_tolerance": 1e-10,
+    "link_bound": 30.0
+  },
+  "count_model_config_sha256": "01a8355b0b99129ab7e3996790323b14531c130fd29e68bba80a478c13ebc1c6",
+  "ablation_registry_path": "study/ablations.json",
+  "calibration_contract_path": "study/calibration_contract.json",
+  "calibration_contract_sha256": "c1cb47b86e1132ef080830c6b58bf7fa4aac524ca832a9e7e55b81d41fb41ef0",
+  "dataset_qc_policy": {
+    "cell_exclusion_rule": "observed_library_size_equals_zero",
+    "minimum_retained_cells": 2,
+    "application": "pre_dispatch_pair_union_zero_library_identical_cell_subset_all_methods",
+    "additional_cell_filtering": "forbidden",
+    "gene_filtering": "forbidden",
+    "required_audit_fields": [
+      "excluded_cell_count",
+      "excluded_cell_ids_sha256",
+      "retained_cell_count",
+      "retained_cell_ids_sha256"
+    ]
+  },
+  "dataset_qc_policy_sha256": "81dc2ecd1749d9390e499ae21fabb8d3b08f40eec58334c860cd9a23dd4fc2d7",
+  "required_comparator_ids": [
+    "observed",
+    "capacity-matched-ae",
+    "alra",
+    "magic",
+    "dca",
+    "scvi",
+    "saver",
+    "scziva",
+    "afmf",
+    "sccr",
+    "scsdae"
+  ],
+  "orthogonal_endpoints": [
+    {
+      "id": "rna_protein_concordance",
+      "source_id": "cite-seq-cbmc-rna-protein",
+      "comparison": "candidate_minus_observed",
+      "favorable_direction": "higher",
+      "materiality_margin": 0.02
+    },
+    {
+      "id": "ercc_recovery",
+      "source_id": "tung-ipsc-ercc-bulk-replicates",
+      "comparison": "candidate_minus_observed",
+      "favorable_direction": "higher",
+      "materiality_margin": 0.02
+    },
+    {
+      "id": "technical_replicate_concordance",
+      "source_id": "tung-ipsc-ercc-bulk-replicates",
+      "comparison": "candidate_minus_observed",
+      "favorable_direction": "higher",
+      "materiality_margin": 0.02
+    },
+    {
+      "id": "bulk_pseudobulk_concordance",
+      "source_id": "tung-ipsc-ercc-bulk-replicates",
+      "comparison": "candidate_minus_observed",
+      "favorable_direction": "higher",
+      "materiality_margin": 0.02
+    }
+  ],
+  "revision_policy": {
+    "v28_retention": "strict_pareto_improvement_with_zero_and_null_de_safety",
+    "v29_retention": "structure_or_downstream_improvement_without_material_dropout_mse_loss",
+    "v29_max_dropout_mse_loss": 0.02
+  },
+  "equivalence_policy": {
+    "identity_calibration_reason_code": "retained_identity_calibrator_equals_direct_score",
+    "nonidentity_calibration_reason_code": "retained_nonidentity_calibrator_transformed_score",
+    "pending_effect_status": "pending_retained_artifact",
+    "identity_effect_status": "not_applicable_for_efficacy",
+    "nonidentity_effect_status": "retained_calibration_effect_estimable",
+    "calibrated_spec_id": "maskimpute-reference",
+    "direct_spec_id": "direct-score"
+  },
+  "retained_calibration_artifact_path": "artifacts/study/development/calibration/retained_calibration.json",
+  "count_score_manifest_path": "artifacts/study/development/count_scores/manifest.json"
+}

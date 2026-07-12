@@ -1,0 +1,860 @@
+{
+  "schema_version": 1,
+  "authority": {
+    "protocol_sha256": "7cfa1b55458b5b2bc4c22e3a155086724586d95df40aa61c4b78b1a779794249",
+    "development_panel_sha256": "97bb0dfb449dced7c43735830498ad58dcaf6503f40403d177d6e8d2e829d9d7",
+    "methods_sha256": "a8d1d1c7bc83cdc26c2c0570d34376efece52e973f3c24dda5aced28d45423f9",
+    "selection_contract_sha256": "185244ea18d102900a0413fd47e43ccb3f378d4502e5c2f6bb460acea69f9011",
+    "ablations_sha256": "dd4da34e0ebe5e7eb349fac3ed89063781bcddf640b01601b9a3c82a2e43b26f",
+    "calibration_contract_sha256": "c1cb47b86e1132ef080830c6b58bf7fa4aac524ca832a9e7e55b81d41fb41ef0"
+  },
+  "retained_calibration_artifact": {
+    "status": "pending",
+    "path": "artifacts/study/development/calibration/retained_calibration.json",
+    "sha256": null
+  },
+  "count_score_manifest": {
+    "status": "pending",
+    "path": "artifacts/study/development/count_scores/manifest.json",
+    "sha256": null
+  },
+  "configurations": [
+    {
+      "configuration_id": "v27-c01-direct-r1-g1",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "direct_cross_fitted_count_score",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 1.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "f7c529ec4d47a7b4ea2c069daf70f4090195fb53f36cd914e64a3d869485a6a3",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c02-calibrated-r1-g0p5",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 0.5,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "184283117eac4db497fac93f05c178822b1d819b33e64783e8bf59179bed4bcb",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c03-calibrated-r1-g1",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 1.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "1dfd92b1f9bd6666574cc46cfd0682651da65ed4a6f76f7ae0479a5e2f27eb4a",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c04-calibrated-r1-g1p5",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 1.5,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "c77e5e9491a145ba10f1a03534a99a9662d84ad6fbd52cb6303337825cb12c5a",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c05-calibrated-r1-g2",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 2.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "9705e4e1463a01f7d7d9d32a22caf72cc3ace95c15a0e82dded8e2b7da0ac061",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c06-calibrated-r1-g3",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 3.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "f07ec4b2b63e3a043cd7a8f282f0e84598a5e16df8f3121badbac16a0ffebf1c",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c07-calibrated-r1-g4",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 4.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "9f37b83df1d5b0142805db94051b52d65af19ea77c844120925ff5612113a8cb",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c08-calibrated-r1-g6",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 6.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "d68cbb0262441f204920d9ac6d46698cfc5bf8f04efae4e170c5f1f61a780639",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c09-calibrated-r1-g8",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 8.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "b5ac1921894c16b186d7fd7c5d2e27cf76991d48cbf9fb5e82bd872da0b0e8e0",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c10-calibrated-r1-g12",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 1.0,
+          "gate_gamma": 12.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "6d969c44c3ee61b691fb870bfd916862fb7abba433f5c6d1dcbbd23b90be5825",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c11-calibrated-r2-g2",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 2.0,
+          "gate_gamma": 2.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "7028d0291ee898d01432ecd9723f94e903d897fe9bb0e1d160f1132bb7c23483",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c12-calibrated-r2-g3",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 2.0,
+          "gate_gamma": 3.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "b3607cb939c8bd90642a6318074873273a26e59f39c85e523f715940de08f2d0",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c13-calibrated-r2-g4",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 2.0,
+          "gate_gamma": 4.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "513d59e72956c59258250e1fa3f7b2134ea729642d73bbfdae1cbee1e89deb0b",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c14-calibrated-r2-g6",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 2.0,
+          "gate_gamma": 6.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "63ecb68cbbf4de1d6bb804b7e5c923e85acf76825316419566eaaec9963eafc6",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c15-calibrated-r5-g2",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 5.0,
+          "gate_gamma": 2.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "530460d2f5815baff0e82f9152cac45f0c832bd2b2a1042dcbc1224f545bf5d7",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c16-calibrated-r5-g3",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 5.0,
+          "gate_gamma": 3.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "d2cd11f82fe549718e2ea2866475d94fc0ed3f14b881d69ea516acc4cd08ce01",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c17-calibrated-r5-g4",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 5.0,
+          "gate_gamma": 4.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "ca47178331a622bdcdd592e941980d5a59ea7685a07437e69b5df434b5a51b49",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c18-calibrated-r5-g6",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 5.0,
+          "gate_gamma": 6.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "d2d0998c350f46c669be56d22b8cf2fdc35641f34055666154668efc8a234f06",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c19-calibrated-r10-g2",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 10.0,
+          "gate_gamma": 2.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "753e202b5d79479af524b159ef20f451b3e5990e151f7030c938f5b1d2663885",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c20-calibrated-r10-g3",
+      "version": "v27",
+      "disposition": "authorized",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 10.0,
+          "gate_gamma": 3.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "36c957ce08c4d22317427a58365a7f3d5b3ec81fa1ddc598b08c9dda08e78a7f",
+      "reason_code": "chronological_development_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c21-calibrated-r10-g4",
+      "version": "v27",
+      "disposition": "exploratory_budget_overrun_not_selection_eligible",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 10.0,
+          "gate_gamma": 4.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "30c4e5f14d806854f7e7efb98e45d22d4e00599c97adbc2294c2312c35e9c70f",
+      "reason_code": "exploratory_budget_overrun_not_selection_eligible"
+    },
+    {
+      "configuration_id": "v27-c22-calibrated-r10-g6",
+      "version": "v27",
+      "disposition": "exploratory_budget_overrun_not_selection_eligible",
+      "parent_configuration_id": null,
+      "configuration": {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "retained_development_calibrator",
+        "hyperparameters": {
+          "hidden_dims": [
+            128,
+            64
+          ],
+          "latent_dim": 24,
+          "learning_rate": 0.0002,
+          "weight_decay": 0.0001,
+          "batch_size": 64,
+          "max_epochs": 300,
+          "patience": 30,
+          "artificial_mask_fraction": 0.2,
+          "validation_fraction": 0.1,
+          "log_count_bin_edges": [
+            1.0986122886681096,
+            2.1972245773362196,
+            3.4965075614664802
+          ],
+          "early_stopping_min_delta": 0.0,
+          "pre_zero_regularization": 10.0,
+          "gate_gamma": 6.0,
+          "normalization_target": 10000.0
+        }
+      },
+      "configuration_sha256": "7854ec52aa327372bbb1c822fee67f2a419a466eeab2d37cf65011eb32984334",
+      "reason_code": "exploratory_budget_overrun_not_selection_eligible"
+    }
+  ],
+  "exclusions": []
+}
