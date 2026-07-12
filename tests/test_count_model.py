@@ -10,6 +10,28 @@ import pytest
 from scipy import sparse
 
 
+_SPARSE_CONSTRUCTORS = tuple(
+    constructor
+    for name in (
+        "bsr_matrix",
+        "coo_matrix",
+        "csc_matrix",
+        "csr_matrix",
+        "dia_matrix",
+        "dok_matrix",
+        "lil_matrix",
+        "bsr_array",
+        "coo_array",
+        "csc_array",
+        "csr_array",
+        "dia_array",
+        "dok_array",
+        "lil_array",
+    )
+    if (constructor := getattr(sparse, name, None)) is not None
+)
+
+
 def _counts() -> np.ndarray:
     return np.array(
         [
@@ -214,33 +236,65 @@ def test_leave_one_out_fold_parameters_exclude_the_held_out_cell():
     assert baseline_fold.link_slope == changed_fold.link_slope
 
 
-def test_balanced_fold_assignment_depends_on_cell_identity_not_count_values():
+def test_balanced_fold_assignment_is_equivariant_for_distinct_row_permutations():
     from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
 
     counts = _counts()
     config = PreZeroCountModelConfig(n_folds=3)
     baseline = fit_p_pre_zero_count_model(counts, config)
-    changed_counts = counts.copy()
-    changed_counts[2] = np.array([80, 0, 0, 20])
-    changed = fit_p_pre_zero_count_model(changed_counts, config)
+    permutation = np.array([4, 1, 5, 0, 3, 2], dtype=np.int64)
+    inverse = np.argsort(permutation)
+    permuted = fit_p_pre_zero_count_model(counts[permutation], config)
 
-    np.testing.assert_array_equal(baseline.fold_ids, changed.fold_ids)
-    fold_id = int(baseline.fold_ids[2])
-    baseline_fold = baseline.fold_models[fold_id]
-    changed_fold = changed.fold_models[fold_id]
-    assert 2 in baseline_fold.held_out_indices
-    assert baseline_fold.held_out_indices == changed_fold.held_out_indices
-    assert baseline_fold.training_input_sha256 == changed_fold.training_input_sha256
-    np.testing.assert_array_equal(
-        baseline_fold.gene_means,
-        changed_fold.gene_means,
+    np.testing.assert_array_equal(baseline.fold_ids, permuted.fold_ids[inverse])
+    np.testing.assert_array_equal(baseline.p_pre_zero, permuted.p_pre_zero[inverse])
+    np.testing.assert_array_equal(baseline.mu, permuted.mu[inverse])
+    np.testing.assert_array_equal(baseline.alpha, permuted.alpha[inverse])
+    np.testing.assert_array_equal(baseline.pi, permuted.pi[inverse])
+    for baseline_fold, permuted_fold in zip(
+        baseline.fold_models,
+        permuted.fold_models,
+        strict=True,
+    ):
+        assert (
+            baseline_fold.training_input_sha256 == permuted_fold.training_input_sha256
+        )
+        np.testing.assert_array_equal(
+            baseline_fold.gene_means,
+            permuted_fold.gene_means,
+        )
+        np.testing.assert_array_equal(
+            baseline_fold.gene_dispersion,
+            permuted_fold.gene_dispersion,
+        )
+        assert baseline_fold.link_intercept == permuted_fold.link_intercept
+        assert baseline_fold.link_slope == permuted_fold.link_slope
+
+
+def test_duplicate_row_fold_ties_use_current_index_deterministically():
+    from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
+
+    counts = np.array(
+        [
+            [3, 0, 1],
+            [3, 0, 1],
+            [0, 4, 1],
+            [0, 4, 1],
+            [1, 2, 0],
+            [1, 2, 0],
+        ],
+        dtype=np.int64,
     )
-    np.testing.assert_array_equal(
-        baseline_fold.gene_dispersion,
-        changed_fold.gene_dispersion,
+    config = PreZeroCountModelConfig(n_folds=3)
+
+    first = fit_p_pre_zero_count_model(counts, config)
+    second = fit_p_pre_zero_count_model(counts, config)
+
+    np.testing.assert_array_equal(first.fold_ids, second.fold_ids)
+    np.testing.assert_array_equal(first.p_pre_zero, second.p_pre_zero)
+    assert first.manifest["cross_fitting"]["duplicate_row_tie_breaker"] == (
+        "input_row_index_for_identical_canonical_rows"
     )
-    assert baseline_fold.link_intercept == changed_fold.link_intercept
-    assert baseline_fold.link_slope == changed_fold.link_slope
 
 
 def test_equivalent_dense_and_sparse_inputs_have_identical_results_and_digests():
@@ -249,7 +303,7 @@ def test_equivalent_dense_and_sparse_inputs_have_identical_results_and_digests()
     counts = _counts()
     dense = fit_p_pre_zero_count_model(counts.astype(np.float64))
 
-    for constructor in (sparse.coo_matrix, sparse.csc_matrix, sparse.csr_matrix):
+    for constructor in _SPARSE_CONSTRUCTORS:
         encoded = fit_p_pre_zero_count_model(constructor(counts))
         np.testing.assert_array_equal(encoded.p_pre_zero, dense.p_pre_zero)
         np.testing.assert_array_equal(encoded.mu, dense.mu)
@@ -371,6 +425,35 @@ def test_score_rejects_subclass_and_detects_internal_digest_tampering():
     object.__setattr__(malformed, "_config_bytes", None)
     with pytest.raises(ValueError, match="integrity"):
         _ = malformed.manifest
+
+
+def test_rehashed_forged_score_fails_derivation_verification():
+    from maskimpute import fit_p_pre_zero_count_model
+    from maskimpute.count_model import (
+        _canonical_json_bytes,
+        _sha256_bytes,
+        _snapshot_array,
+    )
+
+    counts = _counts()
+    score = fit_p_pre_zero_count_model(counts)
+    forged_probability = score.p_pre_zero.copy()
+    forged_probability[counts == 0] = 0.125
+    object.__setattr__(
+        score,
+        "_p_pre_zero",
+        _snapshot_array(forged_probability, "<f8"),
+    )
+    unsigned = score._unsigned_manifest()
+    score_sha256 = _sha256_bytes(_canonical_json_bytes(unsigned))
+    manifest = dict(unsigned)
+    manifest["score_sha256"] = score_sha256
+    object.__setattr__(score, "_score_sha256", score_sha256)
+    object.__setattr__(score, "_manifest_bytes", _canonical_json_bytes(manifest))
+
+    assert score.manifest["score_sha256"] == score_sha256
+    with pytest.raises(ValueError, match="derivation"):
+        score.score_for_counts(counts)
 
 
 def test_fit_revalidates_config_after_low_level_mutation():
@@ -598,7 +681,215 @@ def test_sparse_subclass_is_rejected_without_invoking_conversion_hook():
     assert HostileSparse.calls == 0
 
 
-def test_exact_sparse_instance_conversion_hook_is_bypassed():
+def test_exact_coo_copy_shadow_cannot_swap_the_validated_count_snapshot():
+    from maskimpute import fit_p_pre_zero_count_model
+
+    stored = _counts()
+    swapped = stored.copy()
+    swapped[0, 0] += 9
+    counts = sparse.coo_matrix(stored)
+    calls = 0
+
+    def hostile_copy(self):
+        nonlocal calls
+        calls += 1
+        return sparse.coo_matrix(swapped)
+
+    counts.copy = MethodType(hostile_copy, counts)
+
+    with pytest.raises(TypeError, match="callable sparse instance shadow"):
+        fit_p_pre_zero_count_model(counts)
+    assert calls == 0
+
+
+def test_exact_dok_stateful_dict_storage_is_rejected_before_iteration():
+    from maskimpute import fit_p_pre_zero_count_model
+
+    stored = sparse.dok_matrix(_counts())
+    swapped_counts = _counts()
+    swapped_counts[0, 0] += 9
+    alternate = dict(sparse.dok_matrix(swapped_counts)._dict)
+    calls = {"items": 0, "keys": 0, "values": 0}
+
+    class StatefulDict(dict):
+        def items(self):
+            calls["items"] += 1
+            return super().items()
+
+        def keys(self):
+            calls["keys"] += 1
+            return alternate.keys()
+
+        def values(self):
+            calls["values"] += 1
+            return alternate.values()
+
+    stored._dict = StatefulDict(stored._dict)
+
+    with pytest.raises(TypeError, match="trusted internal sparse storage"):
+        fit_p_pre_zero_count_model(stored)
+    assert calls == {"items": 0, "keys": 0, "values": 0}
+
+
+@pytest.mark.parametrize(
+    ("constructor", "storage_name"),
+    [
+        (sparse.coo_matrix, "data"),
+        (sparse.csr_matrix, "indices"),
+        (sparse.csc_matrix, "indptr"),
+        (sparse.bsr_matrix, "data"),
+        (sparse.dia_matrix, "offsets"),
+    ],
+)
+def test_sparse_internal_array_subclasses_are_rejected_before_conversion(
+    constructor,
+    storage_name,
+):
+    from maskimpute import fit_p_pre_zero_count_model
+
+    class ArraySubclass(np.ndarray):
+        pass
+
+    counts = constructor(_counts())
+    setattr(counts, storage_name, getattr(counts, storage_name).view(ArraySubclass))
+
+    with pytest.raises(TypeError, match="trusted internal sparse storage"):
+        fit_p_pre_zero_count_model(counts)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_lil_internal_storage_requires_exact_object_arrays_and_lists(nested):
+    from maskimpute import fit_p_pre_zero_count_model
+
+    class ArraySubclass(np.ndarray):
+        pass
+
+    class ListSubclass(list):
+        pass
+
+    counts = sparse.lil_matrix(_counts())
+    if nested:
+        counts.rows[0] = ListSubclass(counts.rows[0])
+    else:
+        counts.data = counts.data.view(ArraySubclass)
+
+    with pytest.raises(TypeError, match="trusted internal sparse storage"):
+        fit_p_pre_zero_count_model(counts)
+
+
+@pytest.mark.parametrize(
+    ("setup", "mutation"),
+    [
+        (
+            "x = sparse.coo_matrix(np.array([[1, 0], [0, 2]]))",
+            "x.coords = (np.array([0, 2]), x.coords[1])",
+        ),
+        (
+            "x = sparse.csr_matrix(np.array([[1, 0], [0, 2]]))",
+            "x.indptr[-1] = 1_000_000",
+        ),
+        (
+            "x = sparse.csr_matrix(np.array([[1, 0], [0, 2]]))",
+            "x.indptr[0] = 1",
+        ),
+        (
+            "x = sparse.csc_matrix(np.array([[1, 0], [0, 2]]))",
+            "x.indices[0] = x.shape[0]",
+        ),
+        (
+            "x = sparse.bsr_matrix(np.array([[1, 0], [0, 2]]))",
+            "x.indices[0] = x.shape[1] // x.blocksize[1]",
+        ),
+        (
+            "x = sparse.dia_matrix(np.array([[1, 0], [0, 2]]))",
+            "x.offsets[0] = x.shape[1]",
+        ),
+        (
+            "x = sparse.dia_matrix((np.array([[1, 0], [0, 1]]), "
+            "np.array([0, 1])), shape=(2, 2))",
+            "x.offsets[1] = 0",
+        ),
+        (
+            "x = sparse.dok_matrix(np.array([[1, 0], [0, 2]]))",
+            "x._dict[(x.shape[0], 0)] = np.int64(3)",
+        ),
+        (
+            "x = sparse.lil_matrix(np.array([[1, 2], [0, 3]]))",
+            "x.rows[0] = list(reversed(x.rows[0]))",
+        ),
+        (
+            "x = sparse.lil_matrix(np.array([[1, 2], [0, 3]]))",
+            "x.rows[0] = [0, 0]",
+        ),
+    ],
+)
+def test_malformed_exact_sparse_structures_fail_before_scipy_conversion(
+    setup,
+    mutation,
+):
+    script = f"""\
+import numpy as np
+from scipy import sparse
+from maskimpute import fit_p_pre_zero_count_model
+{setup}
+{mutation}
+try:
+    fit_p_pre_zero_count_model(x)
+except ValueError as error:
+    assert "invalid sparse structure" in str(error), error
+else:
+    raise AssertionError("malformed sparse structure was accepted")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, (
+        f"returncode={completed.returncode}\nstdout={completed.stdout}\n"
+        f"stderr={completed.stderr}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("constructor", "method_name"),
+    [
+        (sparse.coo_matrix, "tocoo"),
+        (sparse.coo_matrix, "toarray"),
+        (sparse.csr_matrix, "_swap"),
+        (sparse.csc_matrix, "_swap"),
+        (sparse.bsr_matrix, "_get_index_dtype"),
+        (sparse.dia_matrix, "_get_index_dtype"),
+        (sparse.dok_matrix, "values"),
+        (sparse.lil_matrix, "tocsr"),
+    ],
+)
+def test_format_specific_callable_sparse_shadows_are_rejected_before_use(
+    constructor,
+    method_name,
+):
+    from maskimpute import fit_p_pre_zero_count_model
+
+    counts = constructor(_counts())
+    calls = 0
+
+    def hostile_method(self, *args, **kwargs):
+        nonlocal calls
+        del self, args, kwargs
+        calls += 1
+        raise AssertionError("hostile sparse method must never execute")
+
+    setattr(counts, method_name, MethodType(hostile_method, counts))
+
+    with pytest.raises(TypeError, match="callable sparse instance shadow"):
+        fit_p_pre_zero_count_model(counts)
+    assert calls == 0
+
+
+def test_exact_sparse_instance_conversion_hook_is_rejected_without_execution():
     from maskimpute import fit_p_pre_zero_count_model
 
     counts = sparse.csr_matrix(_counts())
@@ -612,13 +903,10 @@ def test_exact_sparse_instance_conversion_hook_is_bypassed():
         return coordinates
 
     counts.tocoo = MethodType(hostile_tocoo, counts)
-    expected = fit_p_pre_zero_count_model(_counts())
 
-    actual = fit_p_pre_zero_count_model(counts)
-
+    with pytest.raises(TypeError, match="callable sparse instance shadow"):
+        fit_p_pre_zero_count_model(counts)
     assert calls == 0
-    assert actual.input_sha256 == expected.input_sha256
-    np.testing.assert_array_equal(actual.p_pre_zero, expected.p_pre_zero)
 
 
 def test_nested_masked_sparse_storage_is_rejected_before_conversion():

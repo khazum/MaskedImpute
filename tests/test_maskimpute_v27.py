@@ -525,7 +525,7 @@ def test_exact_count_model_artifact_is_revalidated_and_reported_as_verified():
     assert diagnostics["score_provenance"] == {
         "artifact_type": "maskimpute_count_model_score",
         "config_sha256": score.config_sha256,
-        "cross_fitting": "balanced_sha256_cell_index_round_robin",
+        "cross_fitting": ("balanced_sha256_row_content_order_round_robin_index_ties"),
         "effective_folds": len(score.fold_models),
         "fit_inputs": ("observed_counts",),
         "input_sha256": score.input_sha256,
@@ -548,6 +548,97 @@ def test_exact_count_model_artifact_refuses_mismatched_imputation_counts():
             config=_tiny_config(max_epochs=1, patience=1),
             device="cpu",
         )
+
+
+def test_rehashed_forged_count_model_artifact_is_never_reported_verified():
+    from maskimpute import fit_p_pre_zero_count_model, impute_counts
+    from maskimpute.count_model import (
+        _canonical_json_bytes,
+        _sha256_bytes,
+        _snapshot_array,
+    )
+
+    counts = _tiny_counts()
+    score = fit_p_pre_zero_count_model(counts)
+    forged_probability = score.p_pre_zero.copy()
+    forged_probability[counts == 0] = 0.25
+    object.__setattr__(
+        score,
+        "_p_pre_zero",
+        _snapshot_array(forged_probability, "<f8"),
+    )
+    unsigned = score._unsigned_manifest()
+    score_sha256 = _sha256_bytes(_canonical_json_bytes(unsigned))
+    manifest = dict(unsigned)
+    manifest["score_sha256"] = score_sha256
+    object.__setattr__(score, "_score_sha256", score_sha256)
+    object.__setattr__(score, "_manifest_bytes", _canonical_json_bytes(manifest))
+
+    with pytest.raises(ValueError, match="derivation"):
+        impute_counts(
+            counts,
+            score,
+            config=_tiny_config(max_epochs=1, patience=1),
+            device="cpu",
+        )
+
+
+def test_exact_coo_copy_shadow_cannot_swap_verified_imputation_counts():
+    from types import MethodType
+
+    from maskimpute import fit_p_pre_zero_count_model, impute_counts
+
+    stored = _tiny_counts()
+    swapped = stored.copy()
+    swapped[0, 0] += 9
+    score = fit_p_pre_zero_count_model(swapped)
+    counts = sparse.coo_matrix(stored)
+    calls = 0
+
+    def hostile_copy(self):
+        nonlocal calls
+        calls += 1
+        return sparse.coo_matrix(swapped)
+
+    counts.copy = MethodType(hostile_copy, counts)
+
+    with pytest.raises(TypeError, match="callable sparse instance shadow"):
+        impute_counts(
+            counts,
+            score,
+            config=_tiny_config(max_epochs=1, patience=1),
+            device="cpu",
+        )
+    assert calls == 0
+
+
+def test_stateful_dok_storage_is_rejected_at_v27_count_boundary_before_iteration():
+    from maskimpute.train import validate_observed_counts
+
+    stored = sparse.dok_matrix(_tiny_counts())
+    swapped = _tiny_counts()
+    swapped[0, 0] += 9
+    alternate = dict(sparse.dok_matrix(swapped)._dict)
+    calls = {"items": 0, "keys": 0, "values": 0}
+
+    class StatefulDict(dict):
+        def items(self):
+            calls["items"] += 1
+            return super().items()
+
+        def keys(self):
+            calls["keys"] += 1
+            return alternate.keys()
+
+        def values(self):
+            calls["values"] += 1
+            return alternate.values()
+
+    stored._dict = StatefulDict(stored._dict)
+
+    with pytest.raises(TypeError, match="trusted internal sparse storage"):
+        validate_observed_counts(stored)
+    assert calls == {"items": 0, "keys": 0, "values": 0}
 
 
 def test_verified_artifact_preserves_single_snapshot_count_input_boundary():
@@ -623,13 +714,28 @@ def test_sparse_input_and_zero_library_cells_follow_the_same_count_scale_contrac
     )
 
 
-def test_sparse_validators_accept_csr_dok_and_lil_matrix_and_array_storage():
+def test_sparse_validators_accept_every_supported_exact_scipy_storage_type():
     from maskimpute.train import validate_observed_counts, validate_p_pre_zero
 
     counts = _tiny_counts()
     probability = _tiny_probability(counts)
-    constructors = [sparse.csr_matrix, sparse.dok_matrix, sparse.lil_matrix]
-    for name in ("csr_array", "dok_array", "lil_array"):
+    constructors = []
+    for name in (
+        "bsr_matrix",
+        "coo_matrix",
+        "csc_matrix",
+        "csr_matrix",
+        "dia_matrix",
+        "dok_matrix",
+        "lil_matrix",
+        "bsr_array",
+        "coo_array",
+        "csc_array",
+        "csr_array",
+        "dia_array",
+        "dok_array",
+        "lil_array",
+    ):
         constructor = getattr(sparse, name, None)
         if constructor is not None:
             constructors.append(constructor)
@@ -677,7 +783,7 @@ def test_custom_sparse_conversion_hook_cannot_swap_unvalidated_storage():
 
 
 @pytest.mark.parametrize("payload_kind", ["masked", "metadata"])
-def test_exact_sparse_instance_conversion_hook_is_never_invoked(payload_kind):
+def test_exact_sparse_instance_conversion_hook_is_rejected_without_use(payload_kind):
     from types import MethodType
 
     from maskimpute.train import validate_observed_counts
@@ -705,10 +811,9 @@ def test_exact_sparse_instance_conversion_hook_is_never_invoked(payload_kind):
 
     counts.tocoo = MethodType(adversarial_tocoo, counts)
 
-    validated = validate_observed_counts(counts)
-
+    with pytest.raises(TypeError, match="callable sparse instance shadow"):
+        validate_observed_counts(counts)
     assert hook_calls == 0
-    np.testing.assert_array_equal(validated, expected)
 
 
 def test_count_and_score_dtype_metadata_are_rejected():

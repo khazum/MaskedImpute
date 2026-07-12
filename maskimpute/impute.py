@@ -77,7 +77,9 @@ def impute_counts(
             "score_provenance": {
                 "artifact_type": "maskimpute_count_model_score",
                 "config_sha256": score_manifest["config_sha256"],
-                "cross_fitting": "balanced_sha256_cell_index_round_robin",
+                "cross_fitting": (
+                    "balanced_sha256_row_content_order_round_robin_index_ties"
+                ),
                 "effective_folds": score_manifest["cross_fitting"]["effective_folds"],
                 "fit_inputs": ("observed_counts",),
                 "input_sha256": score_manifest["input_sha256"],

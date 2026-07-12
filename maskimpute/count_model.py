@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import json
@@ -17,32 +16,14 @@ from scipy.optimize import minimize
 from scipy.special import expit
 
 from maskimpute.prezero import p_pre_zero_from_counts
+from maskimpute.sparse_input import (
+    SUPPORTED_SPARSE_TYPES as _SUPPORTED_SPARSE_TYPES,
+    contains_masked_array as _contains_masked_array,
+    sparse_coordinate_snapshot,
+)
 
 
 _MAX_EXACT_FLOAT64_INTEGER = 2**53
-_SUPPORTED_SPARSE_TYPES = tuple(
-    constructor
-    for name in (
-        "bsr_matrix",
-        "coo_matrix",
-        "csc_matrix",
-        "csr_matrix",
-        "dia_matrix",
-        "dok_matrix",
-        "lil_matrix",
-        "bsr_array",
-        "coo_array",
-        "csc_array",
-        "csr_array",
-        "dia_array",
-        "dok_array",
-        "lil_array",
-    )
-    if isinstance((constructor := getattr(sparse, name, None)), type)
-)
-_TRUSTED_SPARSE_TOCOO = {
-    sparse_type: sparse_type.tocoo for sparse_type in _SUPPORTED_SPARSE_TYPES
-}
 _BUILD_TOKEN = object()
 
 
@@ -170,70 +151,6 @@ def _materialize_array(snapshot: _ArraySnapshot) -> np.ndarray:
     )
 
 
-def _contains_masked_array(value: object, seen: set[int] | None = None) -> bool:
-    if np.ma.isMaskedArray(value):
-        return True
-    if seen is None:
-        seen = set()
-    identity = id(value)
-    if identity in seen:
-        return False
-    seen.add(identity)
-    if sparse.issparse(value):
-        containers = []
-        if hasattr(value, "data"):
-            containers.append(value.data)
-        if hasattr(value, "_dict"):
-            containers.append(value._dict)
-        return any(_contains_masked_array(item, seen) for item in containers)
-    if isinstance(value, np.ndarray) and value.dtype.hasobject:
-        return any(_contains_masked_array(item, seen) for item in value.flat)
-    if isinstance(value, Mapping):
-        return any(
-            _contains_masked_array(item, seen)
-            for pair in value.items()
-            for item in pair
-        )
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return any(_contains_masked_array(item, seen) for item in value)
-    return False
-
-
-def _validated_sparse_coordinates(value: object) -> Any:
-    coordinates = _TRUSTED_SPARSE_TOCOO[type(value)](value, copy=True)
-    if type(coordinates) not in _SUPPORTED_SPARSE_TYPES:
-        raise TypeError(
-            "observed_counts sparse conversion returned an unsupported type"
-        )
-    if _contains_masked_array(coordinates):
-        raise TypeError("observed_counts must not contain masked arrays")
-    if coordinates.ndim != 2 or tuple(coordinates.shape) != tuple(value.shape):
-        raise ValueError("observed_counts sparse conversion changed matrix shape")
-    if coordinates.dtype.metadata is not None:
-        raise TypeError("observed_counts dtype metadata is not supported")
-
-    rows = np.array(coordinates.row, dtype=np.int64, copy=True, subok=False)
-    columns = np.array(coordinates.col, dtype=np.int64, copy=True, subok=False)
-    if rows.shape != columns.shape or rows.shape != coordinates.data.shape:
-        raise ValueError("observed_counts sparse coordinates are malformed")
-    if np.any((rows < 0) | (rows >= value.shape[0])) or np.any(
-        (columns < 0) | (columns >= value.shape[1])
-    ):
-        raise ValueError("observed_counts sparse coordinates are out of bounds")
-    if coordinates.nnz >= 2:
-        order = np.lexsort((columns, rows))
-        ordered_rows = rows[order]
-        ordered_columns = columns[order]
-        if np.any(
-            (ordered_rows[1:] == ordered_rows[:-1])
-            & (ordered_columns[1:] == ordered_columns[:-1])
-        ):
-            raise ValueError(
-                "observed_counts must not contain duplicate sparse coordinates"
-            )
-    return coordinates, rows, columns
-
-
 def _validate_entry_values(entries: np.ndarray) -> None:
     if entries.dtype.metadata is not None:
         raise TypeError("observed_counts dtype metadata is not supported")
@@ -253,20 +170,20 @@ def _validated_counts(observed_counts: object) -> np.ndarray:
     is_sparse = sparse.issparse(observed_counts)
     if is_sparse and type(observed_counts) not in _SUPPORTED_SPARSE_TYPES:
         raise TypeError("observed_counts must use an exact supported SciPy sparse type")
-    if _contains_masked_array(observed_counts):
-        raise TypeError("observed_counts must not contain masked arrays")
 
     if is_sparse:
-        if observed_counts.ndim != 2:
-            raise ValueError("observed_counts must be a two-dimensional matrix")
-        if 0 in observed_counts.shape:
+        entries, rows, columns, shape = sparse_coordinate_snapshot(
+            observed_counts,
+            "observed_counts",
+        )
+        if 0 in shape:
             raise ValueError("observed_counts must have at least one cell and one gene")
-        coordinates, rows, columns = _validated_sparse_coordinates(observed_counts)
-        entries = np.array(coordinates.data, copy=True, order="C", subok=False)
         _validate_entry_values(entries)
-        counts = np.zeros(observed_counts.shape, dtype=np.float64, order="C")
+        counts = np.zeros(shape, dtype=np.float64, order="C")
         counts[rows, columns] = entries
     else:
+        if _contains_masked_array(observed_counts):
+            raise TypeError("observed_counts must not contain masked arrays")
         coerced = np.asanyarray(observed_counts)
         if np.ma.isMaskedArray(coerced):
             raise TypeError("observed_counts must not contain masked arrays")
@@ -326,19 +243,26 @@ def _config_payload(config: PreZeroCountModelConfig) -> dict[str, object]:
 def _balanced_fold_ids(
     counts: np.ndarray,
     effective_folds: int,
-) -> np.ndarray:
-    domain = b"maskimpute-count-model-fold-v1\0" + struct.pack(
-        "<QQ", counts.shape[0], counts.shape[1]
+) -> tuple[np.ndarray, np.ndarray]:
+    canonical_rows = np.asarray(counts, dtype="<u8", order="C")
+    domain = b"maskimpute-count-model-row-fold-v2\0" + struct.pack(
+        "<Q", counts.shape[1]
     )
     keys = []
     for index in range(counts.shape[0]):
-        payload = domain + struct.pack("<Q", index)
-        keys.append((hashlib.sha256(payload).digest(), index))
-    order = [index for _, index in sorted(keys)]
+        row_bytes = canonical_rows[index].tobytes(order="C")
+        keys.append(
+            (
+                hashlib.sha256(domain + row_bytes).digest(),
+                row_bytes,
+                index,
+            )
+        )
+    order = np.asarray([index for _, _, index in sorted(keys)], dtype=np.int64)
     fold_ids = np.empty(counts.shape[0], dtype=np.int64)
     for position, index in enumerate(order):
         fold_ids[index] = position % effective_folds
-    return fold_ids
+    return fold_ids, order
 
 
 def _library_exposures(
@@ -915,7 +839,12 @@ class PreZeroCountModelScore:
             "config": config,
             "config_sha256": self._config_sha256,
             "cross_fitting": {
-                "assignment": "balanced_sha256_cell_index_round_robin",
+                "assignment": (
+                    "balanced_sha256_row_content_order_round_robin_index_ties"
+                ),
+                "duplicate_row_tie_breaker": (
+                    "input_row_index_for_identical_canonical_rows"
+                ),
                 "effective_folds": len(self._fold_models),
                 "fold_models": [_fold_payload(record) for record in self._fold_models],
             },
@@ -964,6 +893,16 @@ class PreZeroCountModelScore:
             raise ValueError(
                 "observed_counts does not match the bound count-model input"
             )
+        try:
+            config_payload = json.loads(self._config_bytes)
+            config = PreZeroCountModelConfig(**config_payload)
+            expected = _fit_validated_count_model(counts, config)
+        except Exception as error:
+            raise ValueError(
+                "count-model score derivation verification failed"
+            ) from error
+        if not _same_score_derivation(self, expected):
+            raise ValueError("count-model score derivation verification failed")
         return _materialize_array(self._p_pre_zero)
 
 
@@ -1001,22 +940,47 @@ def _build_score(
     return score
 
 
-def fit_p_pre_zero_count_model(
-    observed_counts: object,
-    config: PreZeroCountModelConfig = PreZeroCountModelConfig(),
-) -> PreZeroCountModelScore:
-    """Fit cross-fitted pre-capture-zero probabilities from counts alone."""
+def _same_score_derivation(
+    actual: PreZeroCountModelScore,
+    expected: PreZeroCountModelScore,
+) -> bool:
+    if (
+        actual._shape != expected._shape
+        or actual._input_sha256 != expected._input_sha256
+        or actual._config_bytes != expected._config_bytes
+        or actual._config_sha256 != expected._config_sha256
+        or actual._score_sha256 != expected._score_sha256
+        or actual._manifest_bytes != expected._manifest_bytes
+        or actual._p_pre_zero != expected._p_pre_zero
+        or actual._mu != expected._mu
+        or actual._alpha != expected._alpha
+        or actual._pi != expected._pi
+        or actual._fold_ids != expected._fold_ids
+        or len(actual._fold_models) != len(expected._fold_models)
+    ):
+        return False
+    for actual_fold, expected_fold in zip(
+        actual._fold_models,
+        expected._fold_models,
+        strict=True,
+    ):
+        if (
+            actual_fold._gene_means != expected_fold._gene_means
+            or actual_fold._gene_dispersion != expected_fold._gene_dispersion
+            or _canonical_json_bytes(_fold_payload(actual_fold))
+            != _canonical_json_bytes(_fold_payload(expected_fold))
+        ):
+            return False
+    return True
 
-    if type(config) is not PreZeroCountModelConfig:
-        raise TypeError("config must be an exact PreZeroCountModelConfig")
-    try:
-        config = PreZeroCountModelConfig(**_config_payload(config))
-    except (TypeError, ValueError) as error:
-        raise type(error)(f"config revalidation failed: {error}") from error
-    counts = _validated_counts(observed_counts)
+
+def _fit_validated_count_model(
+    counts: np.ndarray,
+    config: PreZeroCountModelConfig,
+) -> PreZeroCountModelScore:
     input_sha256 = _counts_sha256(counts)
     effective_folds = min(config.n_folds, counts.shape[0])
-    fold_ids = _balanced_fold_ids(counts, effective_folds)
+    fold_ids, canonical_row_order = _balanced_fold_ids(counts, effective_folds)
 
     p_pre_zero = np.empty(counts.shape, dtype=np.float64)
     mu = np.empty(counts.shape, dtype=np.float64)
@@ -1024,8 +988,10 @@ def fit_p_pre_zero_count_model(
     pi = np.empty(counts.shape, dtype=np.float64)
     fold_models = []
     for fold_id in range(effective_folds):
-        held_out_indices_array = np.flatnonzero(fold_ids == fold_id)
-        training_indices = np.flatnonzero(fold_ids != fold_id)
+        held_out_indices_array = canonical_row_order[
+            fold_ids[canonical_row_order] == fold_id
+        ]
+        training_indices = canonical_row_order[fold_ids[canonical_row_order] != fold_id]
         training = np.array(counts[training_indices], copy=True, order="C")
         held_out = np.array(counts[held_out_indices_array], copy=True, order="C")
         training_exposure, held_out_exposure, reference = _library_exposures(
@@ -1103,3 +1069,28 @@ def fit_p_pre_zero_count_model(
         alpha=alpha,
         pi=pi,
     )
+
+
+def fit_p_pre_zero_count_model(
+    observed_counts: object,
+    config: PreZeroCountModelConfig = PreZeroCountModelConfig(),
+) -> PreZeroCountModelScore:
+    """Fit cross-fitted pre-capture-zero probabilities from counts alone.
+
+    Fold ordering hashes canonical row content, so distinct-cell results are
+    equivariant to row permutations.  Exact duplicate rows cannot be assigned
+    persistent identities without external cell IDs and therefore use current
+    input row index as their deterministic tie breaker.  Cross-fitting prevents
+    cell self-fit but does not identify count-zero versus loss components from
+    counts alone; this score is the posterior under the disclosed fitted
+    NB2-plus-loss model.
+    """
+
+    if type(config) is not PreZeroCountModelConfig:
+        raise TypeError("config must be an exact PreZeroCountModelConfig")
+    try:
+        config = PreZeroCountModelConfig(**_config_payload(config))
+    except (TypeError, ValueError) as error:
+        raise type(error)(f"config revalidation failed: {error}") from error
+    counts = _validated_counts(observed_counts)
+    return _fit_validated_count_model(counts, config)

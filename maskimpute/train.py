@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 import copy
@@ -14,6 +14,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 from scipy import sparse
+
+from maskimpute.sparse_input import (
+    SUPPORTED_SPARSE_TYPES as _SUPPORTED_SPARSE_TYPES,
+    contains_masked_array as _contains_masked_array,
+    sparse_coordinate_snapshot,
+)
 
 if TYPE_CHECKING:
     from maskimpute.config import MaskImputeConfig
@@ -44,91 +50,25 @@ class TrainingOutcome:
 
 
 _MAX_EXACT_FLOAT64_INTEGER = 2**53
-_SUPPORTED_SPARSE_TYPES = tuple(
-    constructor
-    for name in (
-        "bsr_matrix",
-        "coo_matrix",
-        "csc_matrix",
-        "csr_matrix",
-        "dia_matrix",
-        "dok_matrix",
-        "lil_matrix",
-        "bsr_array",
-        "coo_array",
-        "csc_array",
-        "csr_array",
-        "dia_array",
-        "dok_array",
-        "lil_array",
-    )
-    if isinstance((constructor := getattr(sparse, name, None)), type)
-)
-_TRUSTED_SPARSE_TOCOO = {
-    sparse_type: sparse_type.tocoo for sparse_type in _SUPPORTED_SPARSE_TYPES
-}
-
-
-def _contains_masked_array(value: object, seen: set[int] | None = None) -> bool:
-    if np.ma.isMaskedArray(value):
-        return True
-    if seen is None:
-        seen = set()
-    identity = id(value)
-    if identity in seen:
-        return False
-    seen.add(identity)
-    if sparse.issparse(value):
-        containers = []
-        if hasattr(value, "data"):
-            containers.append(value.data)
-        if hasattr(value, "_dict"):
-            containers.append(value._dict)
-        return any(_contains_masked_array(item, seen) for item in containers)
-    if isinstance(value, np.ndarray) and value.dtype.hasobject:
-        return any(_contains_masked_array(item, seen) for item in value.flat)
-    if isinstance(value, Mapping):
-        return any(_contains_masked_array(item, seen) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_contains_masked_array(item, seen) for item in value)
-    return False
 
 
 def _unsummed_sparse_coordinates(value: object, name: str):
-    coordinates = _TRUSTED_SPARSE_TOCOO[type(value)](value, copy=True)
-    if type(coordinates) not in _SUPPORTED_SPARSE_TYPES:
-        raise TypeError(f"{name} sparse conversion returned an unsupported type")
-    if _contains_masked_array(coordinates):
-        raise TypeError(f"{name} must not contain masked arrays")
-    if coordinates.dtype.metadata is not None:
-        raise TypeError(f"{name} dtype metadata is not supported")
-    if coordinates.ndim != 2 or coordinates.shape != value.shape:
-        raise ValueError(f"{name} sparse conversion changed the matrix shape")
-    if coordinates.nnz < 2:
-        return coordinates
-    order = np.lexsort((coordinates.col, coordinates.row))
-    rows = coordinates.row[order]
-    columns = coordinates.col[order]
-    if np.any((rows[1:] == rows[:-1]) & (columns[1:] == columns[:-1])):
-        raise ValueError(f"{name} must not contain duplicate sparse coordinates")
-    return coordinates
+    return sparse_coordinate_snapshot(value, name)
 
 
 def _numeric_matrix_to_dense(value: object, name: str) -> tuple[np.ndarray, np.ndarray]:
     is_sparse = sparse.issparse(value)
     if is_sparse and type(value) not in _SUPPORTED_SPARSE_TYPES:
         raise TypeError(f"{name} must use an exact supported SciPy sparse type")
-    if _contains_masked_array(value):
-        raise TypeError(f"{name} must not contain masked arrays")
     if is_sparse:
         if value.ndim != 2:
             raise ValueError(f"{name} must be a two-dimensional matrix")
         if value.dtype.metadata is not None:
             raise TypeError(f"{name} dtype metadata is not supported")
-        coordinates = _unsummed_sparse_coordinates(value, name)
-        entries = np.asarray(coordinates.data)
-        shape = value.shape
+        entries, rows, columns, shape = _unsummed_sparse_coordinates(value, name)
     else:
+        if _contains_masked_array(value):
+            raise TypeError(f"{name} must not contain masked arrays")
         coerced = np.asanyarray(value)
         if np.ma.isMaskedArray(coerced):
             raise TypeError(f"{name} must not contain masked arrays")
@@ -146,7 +86,8 @@ def _numeric_matrix_to_dense(value: object, name: str) -> tuple[np.ndarray, np.n
     if not np.all(np.isfinite(entries)):
         raise ValueError(f"{name} must contain only finite values")
     if is_sparse:
-        dense = np.asarray(coordinates.toarray(), dtype=np.float64, order="C")
+        dense = np.zeros(shape, dtype=np.float64, order="C")
+        dense[rows, columns] = entries
     else:
         dense = np.array(matrix, dtype=np.float64, copy=True, order="C", subok=False)
     return dense, entries
