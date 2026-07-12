@@ -36,6 +36,7 @@ _SUBSETS = (
     "overall",
     "induced_dropout",
     "pre_dropout_zero",
+    "non_dropout_nonzero",
     "truth_nonzero",
     "observed_positive",
     "marker",
@@ -146,7 +147,8 @@ def entry_masks(observed: Any, truth: Any) -> dict[str, np.ndarray]:
     return {
         "overall": np.ones(observed_array.shape, dtype=bool),
         "induced_dropout": (observed_array == 0) & (truth_array > 0),
-        "pre_dropout_zero": (observed_array == 0) & (truth_array == 0),
+        "pre_dropout_zero": truth_array == 0,
+        "non_dropout_nonzero": (observed_array > 0) & (truth_array > 0),
         "truth_nonzero": truth_array > 0,
         "observed_positive": observed_array > 0,
     }
@@ -174,15 +176,13 @@ def _gnrmse(
 ) -> MetricValue:
     if not np.any(mask):
         return _unavailable(0, "no_entries")
-    truth_sd = np.std(truth, axis=0, ddof=0)
+    truth_sd = np.maximum(np.std(truth, axis=0, ddof=0), 1e-8)
     values: list[float] = []
     for gene in range(truth.shape[1]):
         selected = mask[:, gene]
-        if np.any(selected) and truth_sd[gene] > 0:
+        if np.any(selected):
             rmse = np.sqrt(np.mean(difference[selected, gene] ** 2))
             values.append(float(rmse / truth_sd[gene]))
-    if not values:
-        return _unavailable(0, "no_variable_truth_genes")
     return _metric(np.mean(values), len(values))
 
 
@@ -379,7 +379,7 @@ def reconstruction_metrics(
     )
     for metric in ("mse", "mae", "gnrmse"):
         result[f"{metric}_dropout"] = result[f"{metric}_induced_dropout"]
-        result[f"{metric}_nonzero"] = result[f"{metric}_truth_nonzero"]
+        result[f"{metric}_nonzero"] = result[f"{metric}_non_dropout_nonzero"]
     result["pairwise_cell_distance_distortion"] = result[
         "cell_distance_distortion"
     ]
@@ -503,14 +503,15 @@ def _wilson_interval(successes: int, n: int) -> tuple[float, float]:
 def _reliability(
     probability: np.ndarray, outcome: np.ndarray, n_bins: int
 ) -> tuple[MetricValue, list[dict[str, float | int]]]:
-    order = np.argsort(probability, kind="stable")
-    chunks = np.array_split(order, min(n_bins, outcome.size))
+    chunks = _tie_aware_groups(probability, n_bins)
     bins: list[dict[str, float | int]] = []
     weighted_error = 0.0
     for index, chunk in enumerate(chunks, start=1):
         mean_prediction = float(np.mean(probability[chunk]))
         successes = int(outcome[chunk].sum())
         observed_fraction = successes / len(chunk)
+        # Wilson intervals describe each reliability bin; they are not
+        # inferential confidence intervals for comparing methods.
         lower, upper = _wilson_interval(successes, len(chunk))
         weighted_error += len(chunk) * abs(mean_prediction - observed_fraction)
         bins.append(
@@ -524,6 +525,45 @@ def _reliability(
             }
         )
     return _metric(weighted_error / outcome.size, outcome.size), bins
+
+
+def _tie_aware_groups(values: np.ndarray, maximum_groups: int) -> list[np.ndarray]:
+    """Target equal-frequency groups without splitting identical values."""
+
+    order = np.argsort(values, kind="stable")
+    sorted_values = values[order]
+    value_groups: list[np.ndarray] = []
+    start = 0
+    while start < values.size:
+        stop = start + 1
+        while stop < values.size and sorted_values[stop] == sorted_values[start]:
+            stop += 1
+        value_groups.append(order[start:stop])
+        start = stop
+
+    n_groups = min(maximum_groups, len(value_groups))
+    if n_groups == 1:
+        return [np.concatenate(value_groups)]
+
+    cumulative = np.cumsum([len(group) for group in value_groups])
+    result: list[np.ndarray] = []
+    previous_end = 0
+    for split in range(1, n_groups):
+        target = split * values.size / n_groups
+        remaining_groups = n_groups - split
+        latest_end = len(value_groups) - remaining_groups
+        candidates = range(previous_end + 1, latest_end + 1)
+        end = min(
+            candidates,
+            key=lambda candidate: (
+                abs(cumulative[candidate - 1] - target),
+                cumulative[candidate - 1],
+            ),
+        )
+        result.append(np.concatenate(value_groups[previous_end:end]))
+        previous_end = end
+    result.append(np.concatenate(value_groups[previous_end:]))
+    return result
 
 
 def _undefined_score_result(n: int, reason: str) -> dict[str, Any]:
@@ -555,6 +595,9 @@ def _score_selected(
 
     probability = probability_matrix[evaluation_mask]
     outcome = (truth[evaluation_mask] == 0).astype(int)
+    canonical_order = np.lexsort((outcome, probability))
+    probability = probability[canonical_order]
+    outcome = outcome[canonical_order]
     result: dict[str, Any] = {"n": n}
     if np.unique(outcome).size < 2:
         result["auroc"] = _unavailable(n, "single_class")
@@ -665,8 +708,10 @@ def stratified_zero_score_metrics(
 
     observed_zero = observed_array == 0
     library_size = np.sum(observed_array, axis=1)
-    ordered_cells = np.argsort(library_size, kind="stable")
-    cell_chunks = np.array_split(ordered_cells, 4)
+    cell_chunks = _tie_aware_groups(library_size, 4)
+    cell_chunks.extend(
+        np.array([], dtype=int) for _ in range(4 - len(cell_chunks))
+    )
     library_records: list[dict[str, Any]] = []
     for quartile, cells in enumerate(cell_chunks, start=1):
         cell_mask = np.zeros(observed_array.shape[0], dtype=bool)

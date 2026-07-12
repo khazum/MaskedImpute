@@ -65,12 +65,14 @@ def test_entry_masks_partition_requested_entry_types(
         "overall",
         "induced_dropout",
         "pre_dropout_zero",
+        "non_dropout_nonzero",
         "truth_nonzero",
         "observed_positive",
     }
     assert int(masks["overall"].sum()) == 9
     assert int(masks["induced_dropout"].sum()) == 3
     assert int(masks["pre_dropout_zero"].sum()) == 3
+    assert int(masks["non_dropout_nonzero"].sum()) == 3
     assert int(masks["truth_nonzero"].sum()) == 6
     assert int(masks["observed_positive"].sum()) == 3
     assert not np.any(masks["induced_dropout"] & masks["pre_dropout_zero"])
@@ -111,7 +113,7 @@ def test_reconstruction_result_exposes_protocol_metric_names(
     assert result["mse_dropout"] == result["mse_induced_dropout"]
     assert result["mae_dropout"] == result["mae_induced_dropout"]
     assert result["gnrmse_dropout"] == result["gnrmse_induced_dropout"]
-    assert result["mse_nonzero"] == result["mse_truth_nonzero"]
+    assert result["mse_nonzero"] == result["mse_non_dropout_nonzero"]
     assert result["pairwise_cell_distance_distortion"] == result[
         "cell_distance_distortion"
     ]
@@ -133,6 +135,31 @@ def test_gnrmse_averages_gene_rmse_over_population_truth_sd(
     assert result["gnrmse_marker"].reason == "marker_genes_not_provided"
 
 
+def test_gnrmse_includes_constant_truth_genes_with_epsilon_denominator() -> None:
+    truth = np.array([[1.0, 0.0], [1.0, 1.0]])
+    observed = truth.copy()
+    imputed = np.array([[2.0, 0.0], [2.0, 1.0]])
+
+    result = reconstruction_metrics(imputed, observed, truth)
+
+    # Gene 1 contributes 1 / 1e-8 and gene 2 contributes zero.
+    assert result["gnrmse"] == MetricValue(50_000_000.0, 2, None)
+
+
+def test_subset_gnrmse_includes_each_gene_with_a_selected_entry() -> None:
+    truth = np.array([[1.0, 0.0], [1.0, 2.0]])
+    observed = np.zeros_like(truth)
+    imputed = np.array([[2.0, 3.0], [2.0, 2.0]])
+
+    result = reconstruction_metrics(imputed, observed, truth)
+
+    # Induced dropouts are both constant gene-1 entries and gene-2/cell-2.
+    # The first gene contributes 1 / 1e-8; the second contributes zero.
+    assert result["gnrmse_induced_dropout"] == MetricValue(50_000_000.0, 2, None)
+    # The sole truth-zero entry is gene 2/cell 1; full-dataset SD is 1.
+    assert result["gnrmse_pre_dropout_zero"] == MetricValue(3.0, 1, None)
+
+
 def test_reconstruction_distortion_and_false_positive_rate_are_complete(
     reconstruction_fixture: tuple[np.ndarray, np.ndarray, np.ndarray],
 ) -> None:
@@ -146,6 +173,28 @@ def test_reconstruction_distortion_and_false_positive_rate_are_complete(
     assert result["mean_distortion"].n == 3
     assert result["variance_distortion"].value == pytest.approx(expected_variance)
     assert result["false_positive_expression"] == MetricValue(1.0, 3, None)
+
+
+def test_truth_zero_and_nonzero_estimands_include_ambient_observed_positive() -> None:
+    truth = np.array([[0.0, 2.0], [0.0, 3.0]])
+    observed = np.array([[5.0, 2.0], [0.0, 0.0]])
+    imputed = np.array([[4.0, 2.0], [1.0, 1.0]])
+
+    masks = entry_masks(observed, truth)
+    assert masks["pre_dropout_zero"].tolist() == [[True, False], [True, False]]
+    assert masks["non_dropout_nonzero"].tolist() == [
+        [False, True],
+        [False, False],
+    ]
+    assert masks["observed_positive"].tolist() == [[True, True], [False, False]]
+
+    result = reconstruction_metrics(imputed, observed, truth)
+    assert result["mse_pre_dropout_zero"] == MetricValue(8.5, 2, None)
+    assert result["false_positive_expression"] == MetricValue(1.0, 2, None)
+    assert result["mse_non_dropout_nonzero"] == MetricValue(0.0, 1, None)
+    assert result["mse_truth_nonzero"] == MetricValue(2.0, 2, None)
+    assert result["mse_observed_positive"] == MetricValue(8.0, 2, None)
+    assert result["mse_nonzero"] == result["mse_non_dropout_nonzero"]
 
 
 def test_corr_err_uses_prespecified_common_genes() -> None:
@@ -191,6 +240,17 @@ def test_pairwise_cell_distance_distortion_is_hand_calculated() -> None:
     assert result["cell_correlation_distortion"].reason == "constant_cell_profile"
 
 
+def test_cell_correlation_distortion_is_hand_calculated() -> None:
+    truth = np.array([[0.0, 1.0, 2.0], [0.0, 2.0, 4.0], [2.0, 1.0, 0.0]])
+    observed = truth.copy()
+    imputed = np.array([[0.0, 1.0, 2.0], [4.0, 2.0, 0.0], [2.0, 1.0, 0.0]])
+
+    result = reconstruction_metrics(imputed, observed, truth)
+
+    # Of three cell-cell correlations, two change from -/+1 to +/-1 by 2.
+    assert result["cell_correlation_distortion"] == MetricValue(4.0 / 3.0, 3, None)
+
+
 def test_constant_and_empty_reconstruction_endpoints_are_reason_coded() -> None:
     truth = np.ones((2, 2))
     observed = truth.copy()
@@ -198,7 +258,7 @@ def test_constant_and_empty_reconstruction_endpoints_are_reason_coded() -> None:
     result = reconstruction_metrics(imputed, observed, truth)
 
     assert result["mse_induced_dropout"] == MetricValue(None, 0, "no_entries")
-    assert result["gnrmse"].reason == "no_variable_truth_genes"
+    assert result["gnrmse"] == MetricValue(0.0, 2, None)
     assert result["corr_err"].reason == "constant_gene_profile"
     assert result["cell_correlation_distortion"].reason == "constant_cell_profile"
     assert all(
@@ -338,6 +398,30 @@ def test_constant_scores_keep_proper_scores_but_reason_code_calibration() -> Non
     assert result["brier"] == MetricValue(0.25, 4, None)
     assert result["calibration_intercept"].reason == "constant_predictions"
     assert result["calibration_slope"].reason == "constant_predictions"
+    assert len(result["reliability_bins"]) == 1
+    assert result["reliability_bins"][0]["n"] == 4
+
+
+def test_reliability_bins_do_not_split_ties_and_are_permutation_invariant() -> None:
+    observed = np.zeros((2, 4))
+    truth = np.array([[0.0, 1.0, 0.0, 1.0], [0.0, 1.0, 1.0, 0.0]])
+    probability = np.array([[0.1, 0.2, 0.2, 0.2], [0.2, 0.8, 0.8, 0.9]])
+
+    original = zero_score_metrics(probability, observed, truth, n_bins=3)
+    permutation = np.array([3, 0, 2, 1])
+    permuted = zero_score_metrics(
+        probability[:, permutation],
+        observed[:, permutation],
+        truth[:, permutation],
+        n_bins=3,
+    )
+
+    assert original == permuted
+    assert [record["n"] for record in original["reliability_bins"]] == [1, 4, 3]
+    score_to_bin: dict[float, set[int]] = {}
+    for record in original["reliability_bins"]:
+        score_to_bin.setdefault(record["mean_prediction"], set()).add(record["bin"])
+    assert all(len(bin_ids) == 1 for bin_ids in score_to_bin.values())
 
 
 @pytest.mark.parametrize(
@@ -447,6 +531,66 @@ def test_stratified_scores_return_explicit_disjoint_strata() -> None:
             for boundary in (record["lower"], record["upper"]):
                 assert boundary is None or np.isfinite(boundary)
     assert result["truth_expression_bins"][-1]["upper"] is None
+
+
+def test_library_quartiles_never_split_ties_and_are_permutation_invariant() -> None:
+    observed = np.array(
+        [
+            [0.0, 0.0],
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [2.0, 0.0],
+            [4.0, 0.0],
+        ]
+    )
+    truth = np.array(
+        [
+            [0.0, 1.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [2.0, 0.0],
+            [4.0, 1.0],
+        ]
+    )
+    probability = np.array(
+        [
+            [0.8, 0.2],
+            [0.3, 0.7],
+            [0.4, 0.6],
+            [0.9, 0.1],
+            [0.2, 0.8],
+            [0.6, 0.4],
+        ]
+    )
+    original = stratified_zero_score_metrics(probability, observed, truth, n_bins=2)
+    permutation = np.array([5, 2, 0, 4, 1, 3])
+    permuted = stratified_zero_score_metrics(
+        probability[permutation],
+        observed[permutation],
+        truth[permutation],
+        n_bins=2,
+    )
+
+    assert original == permuted
+    records = original["library_size_quartiles"]
+    nonempty = [record for record in records if record["n"] > 0]
+    for left, right in zip(nonempty, nonempty[1:]):
+        assert left["upper"] < right["lower"]
+
+
+def test_equal_library_sizes_form_one_effective_quartile() -> None:
+    observed = np.zeros((4, 2))
+    truth = np.tile(np.array([[0.0, 1.0]]), (4, 1))
+    probability = np.full((4, 2), 0.5)
+
+    result = stratified_zero_score_metrics(probability, observed, truth)
+    records = result["library_size_quartiles"]
+
+    assert [record["n"] for record in records] == [8, 0, 0, 0]
+    assert records[0]["lower"] == records[0]["upper"] == 0.0
+    assert all(record["lower"] is None for record in records[1:])
 
 
 def test_stratified_orthogonal_scores_emit_truth_unavailable_records() -> None:
