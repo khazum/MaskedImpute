@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "legacy_data_role": "development_only",
+  "development": {
+    "namespace": "dev",
+    "draws_per_condition": 2,
+    "cells": 900,
+    "genes": 500
+  },
+  "final": {
+    "namespace": "final",
+    "mechanisms": ["symsim", "sergio", "sparsim", "semisynthetic"],
+    "draws_per_condition": 5,
+    "model_seeds": 3,
+    "cells": 2700,
+    "genes": 1200
+  },
+  "primary_metrics": ["mse", "mse_dropout", "mse_pre_dropout_zero", "gnrmse", "corr_err"],
+  "final_timeout_seconds": 21600,
+  "max_rss_gib": 48,
+  "max_gpu_gib": 14
+}
