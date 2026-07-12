@@ -134,6 +134,48 @@ def test_observed_counts_must_be_finite_nonnegative_integers(value: float) -> No
         validate_benchmark_dataset(dataset)
 
 
+@pytest.mark.parametrize("dtype", [object, "U8", "S8", np.complex128, np.longdouble])
+@pytest.mark.parametrize("matrix_role", ["observed", "discrete_truth", "continuous_truth"])
+def test_matrices_reject_non_native_or_wider_than_float64_dtypes(
+    dtype, matrix_role: str
+) -> None:
+    truth_kind = (
+        TruthKind.EXACT_CONTINUOUS
+        if matrix_role == "continuous_truth"
+        else TruthKind.EXACT_PRE_CAPTURE
+    )
+    dataset = _dataset(truth_kind)
+    if matrix_role == "observed":
+        dataset.X = np.asarray(dataset.X).astype(dtype)
+    else:
+        layer = dataset.uns["primary_truth_layer"]
+        dataset.layers[layer] = np.asarray(dataset.layers[layer]).astype(dtype)
+
+    with pytest.raises(ValueError, match="native bool/integer/float.*float64"):
+        validate_benchmark_dataset(dataset)
+
+
+def test_longdouble_fraction_is_not_rounded_into_a_discrete_integer() -> None:
+    dataset = _dataset()
+    truth = np.asarray(dataset.layers["pre_capture_counts"], dtype=np.longdouble)
+    truth[0, 0] = np.longdouble(2**53) + np.longdouble("0.5")
+    dataset.layers["pre_capture_counts"] = truth
+
+    with pytest.raises(ValueError, match="float64"):
+        validate_benchmark_dataset(dataset)
+
+
+def test_discrete_float_counts_must_fit_uint64() -> None:
+    dataset = _dataset()
+    observed = np.zeros(dataset.shape, dtype=np.float64)
+    observed[0, 0] = np.float64(2**64)
+    dataset.X = observed
+    dataset.obs["library_size"] = [2**64, 0, 0, 0, 0, 0]
+
+    with pytest.raises(ValueError, match="uint64"):
+        validate_benchmark_dataset(dataset)
+
+
 @pytest.mark.parametrize("truth_kind", [TruthKind.EXACT_PRE_CAPTURE, TruthKind.PROXY_HIGH_DEPTH])
 def test_discrete_truth_must_be_integer(truth_kind: TruthKind) -> None:
     dataset = _dataset(truth_kind)
@@ -162,6 +204,16 @@ def test_continuous_truth_may_be_fractional() -> None:
     dataset.layers["latent_expression"][0, 0] = 0.123456
 
     validate_benchmark_dataset(dataset)
+
+
+def test_integer_continuous_truth_must_be_exactly_float64_representable() -> None:
+    dataset = _dataset(TruthKind.EXACT_CONTINUOUS)
+    truth = np.zeros(dataset.shape, dtype=np.uint64)
+    truth[0, 0] = 2**53 + 1
+    dataset.layers["latent_expression"] = truth
+
+    with pytest.raises(ValueError, match="exactly representable.*float64"):
+        validate_benchmark_dataset(dataset)
 
 
 @pytest.mark.parametrize(
@@ -342,6 +394,67 @@ def test_dense_and_sparse_storage_have_the_same_dataset_hash() -> None:
     assert benchmark_dataset_sha256(dense) == benchmark_dataset_sha256(sparse_dataset)
 
 
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        np.bool_,
+        np.int8,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint32,
+        np.uint64,
+        np.float16,
+        np.float32,
+        np.float64,
+    ],
+)
+@pytest.mark.parametrize(
+    "truth_kind",
+    [TruthKind.EXACT_PRE_CAPTURE, TruthKind.EXACT_CONTINUOUS],
+)
+def test_every_accepted_native_matrix_dtype_validates_hashes_and_makes_view(
+    dtype, truth_kind: TruthKind
+) -> None:
+    dataset = _dataset(truth_kind)
+    dataset.X = np.asarray(dataset.X).astype(dtype)
+    dataset.obs["library_size"] = [
+        int(sum(int(value) for value in row)) for row in np.asarray(dataset.X)
+    ]
+    primary = dataset.uns["primary_truth_layer"]
+    dataset.layers[primary] = np.asarray(dataset.layers[primary]).astype(dtype)
+
+    validate_benchmark_dataset(dataset)
+    digest = benchmark_dataset_sha256(dataset)
+    view = make_inference_view(dataset)
+
+    assert len(digest) == 64
+    np.testing.assert_array_equal(view.X, dataset.X)
+
+
+def test_discrete_hash_is_canonical_across_native_numeric_dtypes() -> None:
+    digests = set()
+    for dtype in (np.int64, np.uint32, np.float64):
+        dataset = _dataset()
+        dataset.X = np.asarray(dataset.X).astype(dtype)
+        dataset.layers["pre_capture_counts"] = np.asarray(
+            dataset.layers["pre_capture_counts"]
+        ).astype(dtype)
+        digests.add(benchmark_dataset_sha256(dataset))
+
+    assert len(digests) == 1
+
+
+def test_continuous_hash_is_canonical_for_exactly_representable_values() -> None:
+    digests = set()
+    for dtype in (np.int32, np.uint32, np.float32, np.float64):
+        dataset = _dataset(TruthKind.EXACT_CONTINUOUS)
+        dataset.layers["latent_expression"] = OBSERVED.astype(dtype)
+        digests.add(benchmark_dataset_sha256(dataset))
+
+    assert len(digests) == 1
+
+
 def test_dataset_hash_binds_truth_metadata_ids_and_provenance() -> None:
     dataset = _dataset()
     original = benchmark_dataset_sha256(dataset)
@@ -514,6 +627,17 @@ def test_safe_string_object_covariates_are_supported() -> None:
     assert view.obs["batch"].tolist() == dataset.obs["batch"].tolist()
 
 
+@pytest.mark.parametrize("innocuous", ["estate_id", "real_estate_value"])
+def test_evaluator_name_matching_respects_token_boundaries(innocuous: str) -> None:
+    dataset = _dataset()
+    dataset.obs[innocuous] = ["north"] * dataset.n_obs
+    dataset.uns["allowed_covariates"]["obs"].append(innocuous)
+
+    view = make_inference_view(dataset)
+
+    assert innocuous in view.obs
+
+
 @pytest.mark.parametrize(
     "forbidden",
     [
@@ -530,6 +654,8 @@ def test_safe_string_object_covariates_are_supported() -> None:
         "cluster_assignment",
         "class_prediction",
         "cell_state",
+        "cell_type_score",
+        "case_control_flag",
         "disease_status",
         "treatment_arm",
     ],

@@ -80,32 +80,45 @@ _ALLOWED_UNS_KEYS = frozenset(
     }
 )
 _NORMALIZATION_KEYS = frozenset({"input", "target_sum", "log_base", "size_factor"})
-_EVALUATOR_NAME_TOKENS = (
-    "branch",
-    "class",
-    "cluster",
-    "condition",
-    "group",
-    "label",
-    "lineage",
-    "marker",
-    "outcome",
-    "phenotype",
-    "pseudotime",
-    "response",
-    "state",
-    "status",
-    "treatment",
-    "disease",
-    "case_control",
-    "casecontrol",
-    "timepoint",
-    "trajectory",
-    "truth",
-    "ground_truth",
-    "cell_type",
-    "celltype",
+_EVALUATOR_NAME_TOKENS = frozenset(
+    {
+        "biological",
+        "branch",
+        "class",
+        "classes",
+        "classification",
+        "cluster",
+        "clusters",
+        "condition",
+        "dataset",
+        "disease",
+        "draw",
+        "group",
+        "groups",
+        "label",
+        "labels",
+        "library",
+        "lineage",
+        "marker",
+        "markers",
+        "mechanism",
+        "outcome",
+        "phenotype",
+        "pseudotime",
+        "response",
+        "state",
+        "status",
+        "technical",
+        "timepoint",
+        "trajectory",
+        "treatment",
+        "truth",
+    }
 )
+_EVALUATOR_EXACT_NAMES = frozenset(
+    {"cell_type", "celltype", "ground_truth", "case_control", "casecontrol"}
+)
+_EVALUATOR_TOKEN_PAIRS = frozenset({("cell", "type"), ("case", "control")})
 
 
 def _raw_layers(adata: ad.AnnData) -> Mapping[str, object]:
@@ -115,19 +128,23 @@ def _raw_layers(adata: ad.AnnData) -> Mapping[str, object]:
     return layers if isinstance(layers, Mapping) else adata.layers
 
 
-def _as_numeric_values(matrix: object, name: str) -> np.ndarray:
+def _native_matrix_values(matrix: object, name: str) -> np.ndarray:
     if sparse.issparse(matrix):
         canonical = matrix.tocsr(copy=True)
         canonical.sum_duplicates()
         values = canonical.data
     else:
         values = np.asarray(matrix).reshape(-1)
-    if np.issubdtype(values.dtype, np.complexfloating):
-        raise ValueError(f"{name} must contain real numeric values")
-    try:
-        return np.asarray(values, dtype=np.float64)
-    except (TypeError, ValueError) as error:
-        raise ValueError(f"{name} must contain real numeric values") from error
+    if values.dtype.kind not in {"b", "i", "u", "f"} or values.dtype.itemsize > 8:
+        raise ValueError(
+            f"{name} must use a native bool/integer/float dtype no wider than float64"
+        )
+    return values
+
+
+def _integer_is_exact_float64(value: object) -> bool:
+    integer = int(value)
+    return int(float(integer)) == integer
 
 
 def _validate_nonnegative_matrix(
@@ -136,13 +153,26 @@ def _validate_nonnegative_matrix(
     *,
     integer: bool,
 ) -> None:
-    values = _as_numeric_values(matrix, name)
+    values = _native_matrix_values(matrix, name)
     finite_nonnegative = np.isfinite(values).all() and bool((values >= 0).all())
     if integer:
-        if not finite_nonnegative or not bool((values == np.floor(values)).all()):
+        if not finite_nonnegative or (
+            values.dtype.kind == "f"
+            and not bool((values == np.floor(values)).all())
+        ):
             raise ValueError(f"{name} must contain finite nonnegative integers")
+        if values.dtype.kind == "f" and bool(
+            (values.astype(np.float64, copy=False) >= float(2**64)).any()
+        ):
+            raise ValueError(f"{name} integer values must fit uint64")
     elif not finite_nonnegative:
         raise ValueError(f"{name} must be finite and nonnegative")
+    elif values.dtype.kind in {"b", "i", "u"}:
+        large = values[values > 2**53]
+        if any(not _integer_is_exact_float64(value) for value in large):
+            raise ValueError(
+                f"{name} integer values must be exactly representable as float64"
+            )
 
 
 def _observed_row_sums(matrix: object) -> list[int]:
@@ -356,8 +386,15 @@ def _validate_truth_contract(adata: ad.AnnData, kind: TruthKind) -> None:
 
 def _is_evaluator_metadata(name: str) -> bool:
     lowered = name.casefold()
-    return lowered in REQUIRED_OBS_COLUMNS or any(
-        token in lowered for token in _EVALUATOR_NAME_TOKENS
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    token_list = re.findall(r"[a-z0-9]+", camel_split.casefold())
+    tokens = frozenset(token_list)
+    token_pairs = frozenset(zip(token_list, token_list[1:]))
+    return (
+        lowered in REQUIRED_OBS_COLUMNS
+        or lowered in _EVALUATOR_EXACT_NAMES
+        or bool(tokens & _EVALUATOR_NAME_TOKENS)
+        or bool(token_pairs & _EVALUATOR_TOKEN_PAIRS)
     )
 
 
@@ -553,18 +590,7 @@ def _frame_payload(frame: pd.DataFrame) -> list[dict[str, object]]:
     return payload
 
 
-def _matrix_encoding(matrix: object) -> tuple[bytes, np.dtype[Any]]:
-    dtype = np.asarray(matrix.data if sparse.issparse(matrix) else matrix).dtype
-    if dtype.kind == "i":
-        return b"signed-int64", np.dtype("<i8")
-    if dtype.kind in {"u", "b"}:
-        return b"unsigned-int64", np.dtype("<u8")
-    if dtype.kind == "f":
-        return b"float64", np.dtype("<f8")
-    raise ValueError(f"unsupported benchmark matrix dtype: {dtype}")
-
-
-def _matrix_sha256(matrix: object) -> str:
+def _matrix_sha256(matrix: object, *, discrete: bool) -> str:
     """Hash matrix semantics, independent of dense/CSR/CSC representation."""
 
     digest = hashlib.sha256()
@@ -572,8 +598,8 @@ def _matrix_sha256(matrix: object) -> str:
     if not isinstance(shape, tuple) or len(shape) != 2:
         raise ValueError("benchmark matrices must be two-dimensional")
     digest.update(np.asarray(shape, dtype="<u8").tobytes())
-    encoding, value_dtype = _matrix_encoding(matrix)
-    digest.update(encoding)
+    value_dtype = np.dtype("<u8") if discrete else np.dtype("<f8")
+    digest.update(b"discrete-uint64" if discrete else b"continuous-float64")
 
     if sparse.issparse(matrix):
         csr = matrix.tocsr(copy=True)
@@ -618,9 +644,12 @@ def benchmark_dataset_sha256(adata: ad.AnnData) -> str:
     payload: dict[str, Any] = {
         "schema": "maskimpute-benchmark-dataset-v1",
         "shape": list(adata.shape),
-        "observed_sha256": _matrix_sha256(adata.X),
+        "observed_sha256": _matrix_sha256(adata.X, discrete=True),
         "layers": {
-            name: _matrix_sha256(layers[name]) for name in sorted(layers)
+            name: _matrix_sha256(
+                layers[name], discrete=name in _DISCRETE_LAYERS
+            )
+            for name in sorted(layers)
         },
         "obs_ids": [_normalise_scalar(value) for value in adata.obs_names],
         "var_ids": [_normalise_scalar(value) for value in adata.var_names],
