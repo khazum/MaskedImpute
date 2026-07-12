@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "id": "symsim",
+      "role": "mechanism",
+      "mechanism": "symsim",
+      "source_type": "git",
+      "url": "https://github.com/YosefLab/SymSim.git",
+      "revision": "76a674b407ce44bf2690a9161cf28b905598d0a5",
+      "license": "Artistic-2.0",
+      "license_url": "https://raw.githubusercontent.com/YosefLab/SymSim/76a674b407ce44bf2690a9161cf28b905598d0a5/DESCRIPTION",
+      "citation_doi": "10.1038/s41467-019-10500-w",
+      "expected_checksum": {
+        "algorithm": "git-tree-sha1",
+        "value": "12d9c7e9e8c22bb0bae917aec7860627dcb8489b"
+      },
+      "eligibility": "eligible",
+      "endpoints": ["simulation"]
+    },
+    {
+      "id": "sergio",
+      "role": "mechanism",
+      "mechanism": "sergio",
+      "source_type": "git",
+      "url": "https://github.com/PayamDiba/SERGIO.git",
+      "revision": "a6190b74425112834c8fa9b4b6157d9cb3d1ab88",
+      "license": "GPL-3.0-only",
+      "license_url": "https://raw.githubusercontent.com/PayamDiba/SERGIO/a6190b74425112834c8fa9b4b6157d9cb3d1ab88/LICENSE",
+      "citation_doi": "10.1016/j.cels.2020.08.003",
+      "expected_checksum": {
+        "algorithm": "git-tree-sha1",
+        "value": "15558fe60f62683c6fa46bcde01d9f3d3382e34a"
+      },
+      "eligibility": "eligible",
+      "endpoints": ["simulation"]
+    },
+    {
+      "id": "sparsim",
+      "role": "mechanism",
+      "mechanism": "sparsim",
+      "source_type": "git",
+      "url": "https://gitlab.com/sysbiobig/sparsim.git",
+      "revision": "4e7712fb236a92ce7c173da169c8a29cc2a9f0ef",
+      "license": "GPL-3.0-only",
+      "license_url": "https://gitlab.com/sysbiobig/sparsim/-/raw/4e7712fb236a92ce7c173da169c8a29cc2a9f0ef/LICENSE.md",
+      "citation_doi": "10.1093/bioinformatics/btz752",
+      "expected_checksum": {
+        "algorithm": "git-tree-sha1",
+        "value": "5d66b28cc6afd8d68364f4205cc983c7f681e2fe"
+      },
+      "eligibility": "eligible",
+      "endpoints": ["simulation"]
+    },
+    {
+      "id": "baron-pancreas-umi",
+      "role": "semisynthetic_source",
+      "mechanism": "semisynthetic",
+      "source_type": "data",
+      "url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE84133",
+      "revision": "GSE84133:2019-05-15",
+      "license": "LicenseRef-NCBI-GEO-NoRestrictions",
+      "license_url": "https://www.ncbi.nlm.nih.gov/geo/info/disclaimer.html",
+      "citation_doi": "10.1016/j.cels.2016.08.011",
+      "expected_checksum": null,
+      "eligibility": "eligible",
+      "endpoints": ["high_depth_count_thinning", "count_splitting"],
+      "artifacts": [
+        {
+          "name": "GSE84133_RAW.tar",
+          "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE84nnn/GSE84133/suppl/GSE84133_RAW.tar",
+          "expected_checksum": {
+            "algorithm": "sha256",
+            "value": "aed2d208d47a36658aa0e63629afe5d4144ef465a8e3d9a0f377422b1f1073dc"
+          }
+        }
+      ]
+    },
+    {
+      "id": "cite-seq-cbmc-rna-protein",
+      "role": "orthogonal_validation",
+      "mechanism": null,
+      "source_type": "data",
+      "url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE100866",
+      "revision": "GSE100866:2022-01-28",
+      "license": "LicenseRef-NCBI-GEO-NoRestrictions",
+      "license_url": "https://www.ncbi.nlm.nih.gov/geo/info/disclaimer.html",
+      "citation_doi": "10.1038/nmeth.4380",
+      "expected_checksum": null,
+      "eligibility": "eligible",
+      "endpoints": ["rna_protein_concordance"],
+      "artifacts": [
+        {
+          "name": "GSE100866_CBMC_8K_13AB_10X-RNA_umi.csv.gz",
+          "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE100nnn/GSE100866/suppl/GSE100866_CBMC_8K_13AB_10X-RNA_umi.csv.gz",
+          "expected_checksum": {
+            "algorithm": "sha256",
+            "value": "21ef983d92d57ba7f5bccb524a1c588025f50dc62f2da21dffe968514d85a202"
+          }
+        },
+        {
+          "name": "GSE100866_CBMC_8K_13AB_10X-ADT_umi.csv.gz",
+          "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE100nnn/GSE100866/suppl/GSE100866_CBMC_8K_13AB_10X-ADT_umi.csv.gz",
+          "expected_checksum": {
+            "algorithm": "sha256",
+            "value": "ae986df44e403244963582973bfb2d70a8dde14797338f56fc606eab5cae2740"
+          }
+        }
+      ]
+    },
+    {
+      "id": "tung-ipsc-ercc-bulk-replicates",
+      "role": "orthogonal_validation",
+      "mechanism": null,
+      "source_type": "data",
+      "url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE77288",
+      "revision": "GSE77288:2019-05-15",
+      "license": "LicenseRef-NCBI-GEO-NoRestrictions",
+      "license_url": "https://www.ncbi.nlm.nih.gov/geo/info/disclaimer.html",
+      "citation_doi": "10.1038/srep39921",
+      "expected_checksum": null,
+      "eligibility": "eligible",
+      "endpoints": [
+        "ercc_recovery",
+        "technical_replicate_concordance",
+        "bulk_pseudobulk_concordance"
+      ],
+      "artifacts": [
+        {
+          "name": "GSE77288_molecules-raw-single-per-sample.txt.gz",
+          "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE77nnn/GSE77288/suppl/GSE77288_molecules-raw-single-per-sample.txt.gz",
+          "expected_checksum": {
+            "algorithm": "sha256",
+            "value": "c7c52e4251e5ba89987ace223a591fd93d4f2f55ec5a44292432ad10b9192e3c"
+          }
+        },
+        {
+          "name": "GSE77288_reads-raw-bulk-per-sample.txt.gz",
+          "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE77nnn/GSE77288/suppl/GSE77288_reads-raw-bulk-per-sample.txt.gz",
+          "expected_checksum": {
+            "algorithm": "sha256",
+            "value": "6e2a1a0bc59dd3159a43963bd916cbe68da921147f44c855fda1dbb2206dc787"
+          }
+        },
+        {
+          "name": "GSE77288_molecules-raw-single-per-lane.txt.gz",
+          "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE77nnn/GSE77288/suppl/GSE77288_molecules-raw-single-per-lane.txt.gz",
+          "expected_checksum": {
+            "algorithm": "sha256",
+            "value": "72d7522c279b40ee5ad3e68d34783a6b19e66603b3a81029c5bc4c86f456a666"
+          }
+        },
+        {
+          "name": "GSE77288_reads-raw-bulk-per-lane.txt.gz",
+          "url": "https://ftp.ncbi.nlm.nih.gov/geo/series/GSE77nnn/GSE77288/suppl/GSE77288_reads-raw-bulk-per-lane.txt.gz",
+          "expected_checksum": {
+            "algorithm": "sha256",
+            "value": "07dbf3e653b814351a178475549ca2803e2ac45c987e10172743defd1fd93939"
+          }
+        }
+      ]
+    }
+  ]
+}
