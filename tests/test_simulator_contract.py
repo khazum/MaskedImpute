@@ -13,6 +13,7 @@ import pytest
 
 import maskimpute_benchmark.simulators.base as base_module
 import maskimpute_benchmark.simulators.native as native_module
+import maskimpute_benchmark.study as study_module
 from maskimpute_benchmark.protocol import load_protocol
 from maskimpute_benchmark.schema import benchmark_dataset_sha256
 from maskimpute_benchmark.study import (
@@ -460,6 +461,31 @@ def test_final_manifest_loader_rechecks_repository_after_protocol_parse(
     monkeypatch.setattr(base_module, "load_protocol", parse_then_mutate)
 
     with pytest.raises(SimulationContractError, match="integrity|unchanged"):
+        load_final_manifest_claim(repo, round_dir)
+
+
+def test_final_manifest_loader_binds_journal_across_outer_snapshots(
+    final_repo: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, round_dir = final_repo
+    materialize_final(round_dir, seed_count=4, repo=repo)
+    assert_final_runnable(repo, round_dir)
+    real_validate = study_module._validate_result_journal
+    validations = 0
+
+    def change_head_between_snapshots(*args, **kwargs):
+        nonlocal validations
+        validations += 1
+        result = dict(real_validate(*args, **kwargs))
+        if validations >= 3:
+            result["head_sha256"] = "f" * 64
+        return result
+
+    monkeypatch.setattr(
+        study_module, "_validate_result_journal", change_head_between_snapshots
+    )
+
+    with pytest.raises(SimulationContractError, match="journal.*changed|changed.*journal"):
         load_final_manifest_claim(repo, round_dir)
 
 

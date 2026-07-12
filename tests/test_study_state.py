@@ -18,6 +18,7 @@ from maskimpute_benchmark.study import (
     assert_final_runnable,
     freeze_round,
     materialize_final,
+    record_incremental_results,
     record_final_evaluation,
     supersede_round,
 )
@@ -69,6 +70,342 @@ def freeze_fixture(repo: Path) -> Path:
 def test_final_cannot_materialize_before_freeze(clean_repo: Path) -> None:
     with pytest.raises(StudyStateError, match="must be frozen"):
         materialize_final(clean_repo / "artifacts/study/round-001", seed_count=4)
+
+
+def _result_manifest(round_dir: Path, *relative_paths: str) -> dict[str, object]:
+    return {
+        "result_files": [
+            {
+                "path": f"results/{relative}",
+                "sha256": file_sha256(round_dir / "results" / relative),
+            }
+            for relative in sorted(relative_paths)
+        ]
+    }
+
+
+def test_running_round_journals_incremental_results_for_claim_revalidation(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    claim = assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    (results / "first.txt").write_text("first\n", encoding="utf-8")
+
+    first = record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "first.txt"),
+        repo=clean_repo,
+    )
+
+    assert first["sequence"] == 1
+    assert first["execution_claim_id"] == claim["execution_claim_id"]
+    (results / "second.txt").write_text("second\n", encoding="utf-8")
+    second = record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "first.txt", "second.txt"),
+        repo=clean_repo,
+    )
+    assert second["sequence"] == 2
+
+    from maskimpute_benchmark.simulators import load_final_manifest_claim
+
+    loaded = load_final_manifest_claim(clean_repo, round_dir)
+    assert loaded.execution_claim_id == claim["execution_claim_id"]
+
+
+def test_incremental_result_journal_recovers_publication_before_record(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    (results / "recover.txt").write_text("recover\n", encoding="utf-8")
+
+    from maskimpute_benchmark.simulators import load_final_manifest_claim
+
+    with pytest.raises(Exception, match="clean frozen|valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
+
+    record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "recover.txt"),
+        repo=clean_repo,
+    )
+    assert load_final_manifest_claim(clean_repo, round_dir).round_id == "round-001"
+
+
+def test_incremental_result_journal_rejects_omission_extra_file_and_symlink(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    first = results / "first.txt"
+    first.write_text("first\n", encoding="utf-8")
+    record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "first.txt"),
+        repo=clean_repo,
+    )
+
+    with pytest.raises(study_module.StudyStateError, match="omit|monotonic|previous"):
+        record_incremental_results(round_dir, {"result_files": []}, repo=clean_repo)
+
+    extra = results / "extra.txt"
+    extra.write_text("extra\n", encoding="utf-8")
+    with pytest.raises(study_module.StudyStateError, match="clean frozen|unchanged"):
+        record_incremental_results(
+            round_dir,
+            _result_manifest(round_dir, "first.txt"),
+            repo=clean_repo,
+        )
+    extra.unlink()
+
+    outside = clean_repo / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    symlink = results / "link.txt"
+    symlink.symlink_to(outside)
+    manifest = _result_manifest(round_dir, "first.txt")
+    manifest["result_files"].append(
+        {"path": "results/link.txt", "sha256": file_sha256(outside)}
+    )
+    with pytest.raises(study_module.StudyStateError, match="regular file|invalid"):
+        record_incremental_results(round_dir, manifest, repo=clean_repo)
+
+
+def test_final_evaluation_reconciles_incremental_journal_superset(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    (results / "first.txt").write_text("first\n", encoding="utf-8")
+    record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "first.txt"),
+        repo=clean_repo,
+    )
+    (results / "last.txt").write_text("last\n", encoding="utf-8")
+    manifest = _result_manifest(round_dir, "first.txt", "last.txt")
+
+    receipt = record_final_evaluation(round_dir, manifest, repo=clean_repo)
+
+    assert receipt["result_manifest"] == manifest
+
+
+def test_result_journal_is_private_durable_and_authority_bound(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fsync_modes: list[int] = []
+    original_fsync = os.fsync
+
+    def observed_fsync(descriptor: int) -> None:
+        fsync_modes.append(os.fstat(descriptor).st_mode)
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(study_module.os, "fsync", observed_fsync)
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    (results / "durable.txt").write_text("durable\n", encoding="utf-8")
+    record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "durable.txt"),
+        repo=clean_repo,
+    )
+
+    root, journal, _root_identity, _journal_identity = (
+        study_module._result_journal_directories(
+            clean_repo, round_dir.name, create=False
+        )
+    )
+    entry = journal / "00000001.json"
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(journal.stat().st_mode) == 0o700
+    assert stat.S_IMODE(entry.stat().st_mode) == 0o600
+    assert root.stat().st_uid == os.geteuid()
+    assert journal.stat().st_uid == os.geteuid()
+    assert entry.stat().st_uid == os.geteuid()
+    assert entry.stat().st_nlink == 1
+    assert any(stat.S_ISREG(mode) for mode in fsync_modes)
+    assert any(stat.S_ISDIR(mode) for mode in fsync_modes)
+
+
+def test_result_journal_rejects_gap_extra_entry_tamper_and_directory_replacement(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    (results / "bound.txt").write_text("bound\n", encoding="utf-8")
+    record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "bound.txt"),
+        repo=clean_repo,
+    )
+    from maskimpute_benchmark.simulators import load_final_manifest_claim
+
+    _root, journal, _root_identity, _journal_identity = (
+        study_module._result_journal_directories(
+            clean_repo, round_dir.name, create=False
+        )
+    )
+    entry = journal / "00000001.json"
+    gap = journal / "00000002.json"
+    entry.rename(gap)
+    with pytest.raises(Exception, match="gap|extra|valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
+    gap.rename(entry)
+
+    extra = journal / ".entry.tmp"
+    extra.write_text("{}\n", encoding="utf-8")
+    extra.chmod(0o600)
+    with pytest.raises(Exception, match="gap|extra|valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
+    extra.unlink()
+
+    record = json.loads(entry.read_text(encoding="utf-8"))
+    record["new_result_files"][0]["sha256"] = "0" * 64
+    entry.write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(Exception, match="digest|valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
+
+    original = journal.with_name("round-001-original")
+    journal.rename(original)
+    journal.mkdir(mode=0o700)
+    with pytest.raises(Exception, match="identity|valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
+
+
+def test_incremental_journal_rejects_hardlinks_and_postrecord_mutation(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    outside = clean_repo / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    hardlink = results / "hardlink.txt"
+    os.link(outside, hardlink)
+    with pytest.raises(StudyStateError, match="regular file"):
+        record_incremental_results(
+            round_dir,
+            _result_manifest(round_dir, "hardlink.txt"),
+            repo=clean_repo,
+        )
+    hardlink.unlink()
+    outside.unlink()
+
+    result = results / "immutable.txt"
+    result.write_text("before\n", encoding="utf-8")
+    record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "immutable.txt"),
+        repo=clean_repo,
+    )
+    result.write_text("after\n", encoding="utf-8")
+    from maskimpute_benchmark.simulators import load_final_manifest_claim
+
+    with pytest.raises(Exception, match="hash|valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
+
+
+def test_incremental_journal_postpublication_failure_supersedes_round(
+    clean_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    result = results / "mutated-after-entry.txt"
+    result.write_text("before\n", encoding="utf-8")
+    real_validate = study_module._validate_result_journal
+    validations = 0
+
+    def mutate_before_postpublication_validation(*args, **kwargs):
+        nonlocal validations
+        validations += 1
+        if validations == 2:
+            result.write_text("after\n", encoding="utf-8")
+        return real_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        study_module,
+        "_validate_result_journal",
+        mutate_before_postpublication_validation,
+    )
+
+    with pytest.raises(StudyStateError, match="hash"):
+        record_incremental_results(
+            round_dir,
+            _result_manifest(round_dir, "mutated-after-entry.txt"),
+            repo=clean_repo,
+        )
+
+    supersession = json.loads(
+        (round_dir / "supersession.json").read_text(encoding="utf-8")
+    )
+    assert supersession["state"] == "superseded"
+    registry = json.loads(
+        study_module._registry_path(clean_repo, round_dir.name).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert registry["state"] == "superseded"
+
+
+def test_result_journal_rejects_relaxed_private_modes(clean_repo: Path) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    result = results / "private.txt"
+    result.write_text("private\n", encoding="utf-8")
+    record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "private.txt"),
+        repo=clean_repo,
+    )
+    from maskimpute_benchmark.simulators import load_final_manifest_claim
+
+    root, journal, _root_identity, _journal_identity = (
+        study_module._result_journal_directories(
+            clean_repo, round_dir.name, create=False
+        )
+    )
+    entry = journal / "00000001.json"
+    entry.chmod(0o640)
+    with pytest.raises(Exception, match="private|valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
+    entry.chmod(0o600)
+
+    journal.chmod(0o750)
+    with pytest.raises(Exception, match="private|authority|valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
+    journal.chmod(0o700)
+
+    root.chmod(0o750)
+    with pytest.raises(Exception, match="private|authority|valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
 
 
 def test_freeze_rejects_dirty_repository(clean_repo: Path) -> None:

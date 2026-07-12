@@ -574,42 +574,136 @@ def load_final_manifest_claim(repo: Path, round_dir: Path) -> FinalManifestClaim
     try:
         repository, destination = study._repository_for_round(round_dir, repo)
         with study._round_lock(repository, destination.name) as lock_identity:
-            freeze = study._verify_frozen_repository(repository, destination)
-            registry = study._validate_registry(
-                repository, destination, freeze, expected_state="running"
-            )
-            materialization, manifest = study._validate_seed_manifest(
-                destination, freeze
-            )
-            execution = study._validate_execution_claim_record(
-                destination, freeze, materialization
-            )
+
+            def snapshot() -> tuple[
+                dict[str, object],
+                dict[str, object],
+                dict[str, object],
+                dict[str, object],
+                dict[str, object],
+                dict[str, object],
+            ]:
+                initial_freeze = study._validate_freeze(destination, repository)
+                initial_registry = study._validate_registry(
+                    repository,
+                    destination,
+                    initial_freeze,
+                    expected_state="running",
+                )
+                initial_materialization, initial_manifest = (
+                    study._validate_seed_manifest(destination, initial_freeze)
+                )
+                initial_execution = study._validate_execution_claim_record(
+                    destination, initial_freeze, initial_materialization
+                )
+                initial_journal = study._validate_result_journal(
+                    repository,
+                    destination,
+                    initial_freeze,
+                    initial_materialization,
+                    initial_execution,
+                )
+                initial_commitment = canonical_sha256(
+                    {
+                        "freeze": initial_freeze,
+                        "registry": initial_registry,
+                        "materialization": initial_materialization,
+                        "manifest": initial_manifest,
+                        "execution": initial_execution,
+                        "journal_files": initial_journal["cumulative_result_files"],
+                        "journal_head": initial_journal["head_sha256"],
+                    }
+                )
+                verified_freeze = study._verify_frozen_repository(
+                    repository,
+                    destination,
+                    allowed_result_paths=initial_journal["allowed_result_paths"],
+                )
+                current_registry = study._validate_registry(
+                    repository,
+                    destination,
+                    verified_freeze,
+                    expected_state="running",
+                )
+                current_materialization, current_manifest = (
+                    study._validate_seed_manifest(destination, verified_freeze)
+                )
+                current_execution = study._validate_execution_claim_record(
+                    destination, verified_freeze, current_materialization
+                )
+                current_journal = study._validate_result_journal(
+                    repository,
+                    destination,
+                    verified_freeze,
+                    current_materialization,
+                    current_execution,
+                )
+                current_commitment = canonical_sha256(
+                    {
+                        "freeze": verified_freeze,
+                        "registry": current_registry,
+                        "materialization": current_materialization,
+                        "manifest": current_manifest,
+                        "execution": current_execution,
+                        "journal_files": current_journal["cumulative_result_files"],
+                        "journal_head": current_journal["head_sha256"],
+                    }
+                )
+                if initial_commitment != current_commitment:
+                    raise SimulationContractError(
+                        "final records or result journal changed while loading"
+                    )
+                journal_binding = {
+                    "head_sha256": current_journal["head_sha256"],
+                    "cumulative_result_files_sha256": canonical_sha256(
+                        current_journal["cumulative_result_files"]
+                    ),
+                }
+                return (
+                    verified_freeze,
+                    current_registry,
+                    current_materialization,
+                    current_manifest,
+                    current_execution,
+                    journal_binding,
+                )
+
+            (
+                freeze,
+                registry,
+                materialization,
+                manifest,
+                execution,
+                journal_binding,
+            ) = snapshot()
             first_commitment = canonical_sha256(
                 {
+                    "freeze": freeze,
                     "registry": registry,
                     "materialization": materialization,
                     "manifest": manifest,
                     "execution": execution,
+                    "journal": journal_binding,
                 }
             )
 
             # Repeat every mutable-record read before returning the snapshot.
-            freeze = study._verify_frozen_repository(repository, destination)
-            registry = study._validate_registry(
-                repository, destination, freeze, expected_state="running"
-            )
-            materialization, manifest = study._validate_seed_manifest(
-                destination, freeze
-            )
-            execution = study._validate_execution_claim_record(
-                destination, freeze, materialization
-            )
+            (
+                freeze,
+                registry,
+                materialization,
+                manifest,
+                execution,
+                journal_binding,
+            ) = snapshot()
             second_commitment = canonical_sha256(
                 {
+                    "freeze": freeze,
                     "registry": registry,
                     "materialization": materialization,
                     "manifest": manifest,
                     "execution": execution,
+                    "journal": journal_binding,
                 }
             )
             study._assert_round_lock_identity(
@@ -617,29 +711,29 @@ def load_final_manifest_claim(repo: Path, round_dir: Path) -> FinalManifestClaim
             )
             if first_commitment != second_commitment:
                 raise SimulationContractError(
-                    "final manifest or execution claim changed while loading"
+                    "final manifest, execution claim, or result journal changed while loading"
                 )
             protocol_path = repository / freeze["protocol_path"]
             frozen_protocol = load_protocol(protocol_path)
             # Parsing is executable code and may itself have side effects.
             # Revalidate the frozen repository and every issued record once
             # more after parsing, while the lifecycle lock is still held.
-            freeze = study._verify_frozen_repository(repository, destination)
-            registry = study._validate_registry(
-                repository, destination, freeze, expected_state="running"
-            )
-            materialization, manifest = study._validate_seed_manifest(
-                destination, freeze
-            )
-            execution = study._validate_execution_claim_record(
-                destination, freeze, materialization
-            )
+            (
+                freeze,
+                registry,
+                materialization,
+                manifest,
+                execution,
+                journal_binding,
+            ) = snapshot()
             final_commitment = canonical_sha256(
                 {
+                    "freeze": freeze,
                     "registry": registry,
                     "materialization": materialization,
                     "manifest": manifest,
                     "execution": execution,
+                    "journal": journal_binding,
                 }
             )
             study._assert_round_lock_identity(
@@ -647,7 +741,7 @@ def load_final_manifest_claim(repo: Path, round_dir: Path) -> FinalManifestClaim
             )
             if second_commitment != final_commitment:
                 raise SimulationContractError(
-                    "final manifest or execution claim changed while loading"
+                    "final manifest, execution claim, or result journal changed while loading"
                 )
     except SimulationContractError:
         raise

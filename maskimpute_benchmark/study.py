@@ -39,6 +39,7 @@ REGISTRY_DIR_NAME = ".registry"
 LOCKS_DIR_NAME = ".locks"
 GIT_STATE_DIR_NAME = "maskimpute-study"
 RESULTS_DIR_NAME = "results"
+RESULT_JOURNALS_DIR_NAME = ".result-journals"
 
 _ROUND_STATE_NAMES = frozenset(
     {
@@ -56,6 +57,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_OID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _TOKEN_RE = re.compile(r"^[0-9a-f]{32}$")
 _ROUND_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_MAX_JOURNAL_ENTRY_BYTES = 16 * 1024 * 1024
 
 
 class StudyStateError(RuntimeError):
@@ -186,6 +188,77 @@ def _read_record(path: Path) -> dict[str, Any]:
             os.close(descriptor)
     if not isinstance(payload, dict):
         raise StudyStateError(f"invalid round record {path.name}: expected an object")
+    return payload
+
+
+def _file_state(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _read_private_canonical_record(path: Path, label: str) -> dict[str, Any]:
+    """Read one exact 0600 record from a stable O_NOFOLLOW descriptor."""
+
+    descriptor = -1
+    try:
+        named_before = path.lstat()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat_module.S_ISREG(opened.st_mode)
+            or stat_module.S_IMODE(opened.st_mode) != 0o600
+            or opened.st_nlink != 1
+            or opened.st_uid != os.geteuid()
+            or _file_state(opened) != _file_state(named_before)
+        ):
+            raise StudyStateError(f"{label} is not a private unique regular file")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, _MAX_JOURNAL_ENTRY_BYTES + 1 - total))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _MAX_JOURNAL_ENTRY_BYTES:
+                raise StudyStateError(f"{label} exceeds its maximum size")
+            chunks.append(chunk)
+        opened_after = os.fstat(descriptor)
+        named_after = path.lstat()
+        if (
+            _file_state(opened) != _file_state(opened_after)
+            or _file_state(opened) != _file_state(named_after)
+        ):
+            raise StudyStateError(f"{label} changed while reading")
+        raw = b"".join(chunks)
+        payload = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+    except StudyStateError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise StudyStateError(f"invalid {label}: {exc}") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if not isinstance(payload, dict):
+        raise StudyStateError(f"{label} must be a JSON object")
+    if raw != _json_text(payload).encode("utf-8"):
+        raise StudyStateError(f"{label} is not canonical JSON")
     return payload
 
 
@@ -382,6 +455,61 @@ def _study_state_root(repo: Path) -> Path:
 def _registry_path(repo: Path, round_id: str) -> Path:
     registry_dir = _authority_directories(repo, create=False)[2]
     return registry_dir / f"{round_id}.json"
+
+
+def _result_journal_directories(
+    repo: Path, round_id: str, *, create: bool
+) -> tuple[Path, Path, tuple[int, int], tuple[int, int]]:
+    """Return secure authority directories for one append-only result journal."""
+
+    if not _ROUND_ID_RE.fullmatch(round_id):
+        raise StudyStateError("round ID contains unsupported characters")
+    state_root = _study_state_root(repo)
+    journals_root = state_root / RESULT_JOURNALS_DIR_NAME
+    root_identity = _secure_authority_directory(
+        journals_root, parent=state_root, create=create
+    )
+    journal = journals_root / round_id
+    journal_identity = _secure_authority_directory(
+        journal, parent=journals_root, create=create
+    )
+    for label, path, identity in (
+        ("result journals root", journals_root, root_identity),
+        ("result journal", journal, journal_identity),
+    ):
+        try:
+            metadata = path.stat(follow_symlinks=False)
+        except OSError as exc:
+            raise StudyStateError(f"{label} is unavailable") from exc
+        if (
+            not stat_module.S_ISDIR(metadata.st_mode)
+            or stat_module.S_IMODE(metadata.st_mode) != 0o700
+            or metadata.st_uid != os.geteuid()
+            or (metadata.st_dev, metadata.st_ino) != identity
+        ):
+            raise StudyStateError(f"{label} must remain an owner-private directory")
+    return journals_root, journal, root_identity, journal_identity
+
+
+def _result_journal_anchor(
+    execution_claim_id: str,
+    seed_manifest_sha256: str,
+    freeze: Mapping[str, Any],
+    root_identity: tuple[int, int],
+    journal_identity: tuple[int, int],
+) -> str:
+    return canonical_sha256(
+        {
+            "schema": "maskimpute-result-journal-anchor-v1",
+            "execution_claim_id": execution_claim_id,
+            "seed_manifest_sha256": seed_manifest_sha256,
+            "bindings": _binding_fields(freeze),
+            "result_journals_root_device": root_identity[0],
+            "result_journals_root_inode": root_identity[1],
+            "result_journal_device": journal_identity[0],
+            "result_journal_inode": journal_identity[1],
+        }
+    )
 
 
 def _worktree_path_sha256(repo: Path) -> str:
@@ -1104,6 +1232,48 @@ def _verify_frozen_repository(
     return freeze
 
 
+def _hash_unique_result_file(path: Path) -> str:
+    """Hash one stable regular result through its O_NOFOLLOW descriptor."""
+
+    descriptor = -1
+    try:
+        named_before = path.lstat()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened = os.fstat(descriptor)
+        if (
+            not stat_module.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or _file_state(opened) != _file_state(named_before)
+        ):
+            raise StudyStateError("result file must be a unique regular file")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        opened_after = os.fstat(descriptor)
+        named_after = path.lstat()
+        if (
+            _file_state(opened) != _file_state(opened_after)
+            or _file_state(opened) != _file_state(named_after)
+        ):
+            raise StudyStateError("result file changed while hashing")
+        return digest.hexdigest()
+    except StudyStateError:
+        raise
+    except OSError as exc:
+        raise StudyStateError("result file could not be hashed") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _validate_result_files(
     repo: Path, round_dir: Path, manifest: Mapping[str, Any]
 ) -> frozenset[str]:
@@ -1146,17 +1316,297 @@ def _validate_result_files(
         if (
             candidate.is_symlink()
             or resolved != candidate.absolute()
-            or not candidate.is_file()
         ):
             raise StudyStateError("result file must be a regular file")
+        observed_hash = _hash_unique_result_file(candidate)
         try:
-            observed_hash = file_sha256(candidate)
+            if candidate.resolve(strict=True) != candidate.absolute():
+                raise StudyStateError("result file path changed while hashing")
         except OSError as exc:
-            raise StudyStateError("result file could not be hashed") from exc
+            raise StudyStateError("result file path changed while hashing") from exc
         if observed_hash != expected_hash:
             raise StudyStateError("result file hash does not match manifest")
         allowed.add(candidate.relative_to(repo).as_posix())
     return frozenset(allowed)
+
+
+def _validate_result_journal(
+    repo: Path,
+    round_dir: Path,
+    freeze: Mapping[str, Any],
+    materialization: Mapping[str, Any],
+    execution: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate the authority-rooted append-only chain of published results."""
+
+    (
+        _journals_root,
+        journal,
+        root_identity,
+        journal_identity,
+    ) = _result_journal_directories(repo, round_dir.name, create=False)
+    if root_identity != (
+        execution.get("result_journals_root_device"),
+        execution.get("result_journals_root_inode"),
+    ) or journal_identity != (
+        execution.get("result_journal_device"),
+        execution.get("result_journal_inode"),
+    ):
+        raise StudyStateError("result journal directory identity changed")
+    expected_anchor = _result_journal_anchor(
+        execution["execution_claim_id"],
+        materialization["seed_manifest_sha256"],
+        freeze,
+        root_identity,
+        journal_identity,
+    )
+    if execution.get("result_journal_anchor_sha256") != expected_anchor:
+        raise StudyStateError("result journal anchor does not match execution claim")
+    try:
+        entries = sorted(journal.iterdir(), key=lambda path: path.name)
+    except OSError as exc:
+        raise StudyStateError("result journal cannot be inspected") from exc
+    expected_names = [f"{index:08d}.json" for index in range(1, len(entries) + 1)]
+    if [path.name for path in entries] != expected_names:
+        raise StudyStateError("result journal contains a gap or extra entry")
+
+    execution_sha256 = canonical_sha256(dict(execution))
+    previous_sha256 = expected_anchor
+    cumulative: dict[str, str] = {}
+    last_entry: dict[str, Any] | None = None
+    for sequence, path in enumerate(entries, start=1):
+        entry = _read_private_canonical_record(path, "result journal entry")
+        expected_keys = {
+            "schema_version",
+            "round_id",
+            "state",
+            "execution_claim_id",
+            "execution_claim_sha256",
+            "seed_manifest_sha256",
+            "sequence",
+            "previous_entry_sha256",
+            "new_result_files",
+            "cumulative_result_files_sha256",
+            "entry_sha256",
+        }
+        if set(entry) != expected_keys:
+            raise StudyStateError("result journal entry has invalid schema")
+        observed_entry_sha256 = entry.get("entry_sha256")
+        entry_payload = dict(entry)
+        entry_payload.pop("entry_sha256", None)
+        if (
+            entry.get("schema_version") != 1
+            or entry.get("round_id") != round_dir.name
+            or entry.get("state") != "running"
+            or entry.get("execution_claim_id") != execution.get("execution_claim_id")
+            or entry.get("execution_claim_sha256") != execution_sha256
+            or entry.get("seed_manifest_sha256")
+            != materialization.get("seed_manifest_sha256")
+            or entry.get("sequence") != sequence
+            or entry.get("previous_entry_sha256") != previous_sha256
+            or not isinstance(observed_entry_sha256, str)
+            or not _SHA256_RE.fullmatch(observed_entry_sha256)
+            or canonical_sha256(entry_payload) != observed_entry_sha256
+        ):
+            raise StudyStateError("result journal entry digest or binding is invalid")
+        new_files = entry.get("new_result_files")
+        if not isinstance(new_files, list) or not new_files:
+            raise StudyStateError("result journal entry must add result files")
+        paths: list[str] = []
+        for item in new_files:
+            if not isinstance(item, Mapping) or set(item) != {"path", "sha256"}:
+                raise StudyStateError("result journal file entry is invalid")
+            value = item.get("path")
+            digest = item.get("sha256")
+            if not isinstance(value, str):
+                raise StudyStateError("result journal file path is invalid")
+            _require_sha256(digest, "result journal file hash")
+            if value in cumulative:
+                raise StudyStateError("result journal contains a duplicate result path")
+            cumulative[value] = digest
+            paths.append(value)
+        if paths != sorted(paths) or len(paths) != len(set(paths)):
+            raise StudyStateError("result journal file paths are not sorted and unique")
+        cumulative_files = [
+            {"path": path, "sha256": cumulative[path]} for path in sorted(cumulative)
+        ]
+        if entry.get("cumulative_result_files_sha256") != canonical_sha256(
+            cumulative_files
+        ):
+            raise StudyStateError("result journal cumulative digest is invalid")
+        previous_sha256 = observed_entry_sha256
+        last_entry = entry
+
+    cumulative_files = [
+        {"path": path, "sha256": cumulative[path]} for path in sorted(cumulative)
+    ]
+    _root_after, _journal_after, root_identity_after, journal_identity_after = (
+        _result_journal_directories(repo, round_dir.name, create=False)
+    )
+    if (
+        root_identity_after != root_identity
+        or journal_identity_after != journal_identity
+    ):
+        raise StudyStateError("result journal directory changed during validation")
+    try:
+        names_after = sorted(path.name for path in journal.iterdir())
+    except OSError as exc:
+        raise StudyStateError("result journal cannot be re-inspected") from exc
+    if names_after != expected_names:
+        raise StudyStateError("result journal entries changed during validation")
+    allowed = _validate_result_files(
+        repo, round_dir, {"result_files": cumulative_files}
+    )
+    return {
+        "allowed_result_paths": allowed,
+        "cumulative_result_files": cumulative_files,
+        "head_sha256": previous_sha256,
+        "last_entry": last_entry,
+        "sequence": len(entries),
+    }
+
+
+def _canonical_incremental_manifest(
+    result_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(result_manifest, Mapping) or set(result_manifest) != {
+        "result_files"
+    }:
+        raise StudyStateError(
+            "incremental result manifest must contain exactly result_files"
+        )
+    try:
+        manifest = json.loads(
+            _json_text(dict(result_manifest)),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise StudyStateError(f"record is not valid JSON: {exc}") from exc
+    if not isinstance(manifest, dict):
+        raise StudyStateError("incremental result manifest must be a JSON object")
+    return manifest
+
+
+def _record_incremental_results_locked(
+    repo: Path,
+    round_dir: Path,
+    freeze: Mapping[str, Any],
+    result_manifest: Mapping[str, Any],
+    lock_identity: _RoundLockIdentity,
+) -> dict[str, Any] | None:
+    manifest = _canonical_incremental_manifest(result_manifest)
+    _validate_registry(repo, round_dir, freeze, expected_state="running")
+    materialization, _seed_manifest = _validate_seed_manifest(round_dir, freeze)
+    execution = _validate_execution_claim_record(round_dir, freeze, materialization)
+    journal = _validate_result_journal(
+        repo, round_dir, freeze, materialization, execution
+    )
+    proposed_allowed = _validate_result_files(repo, round_dir, manifest)
+    proposed_entries = manifest.get("result_files")
+    assert isinstance(proposed_entries, list)
+    proposed: dict[str, str] = {
+        str(item["path"]): str(item["sha256"])
+        for item in proposed_entries
+        if isinstance(item, Mapping)
+    }
+    if len(proposed) != len(proposed_entries):
+        raise StudyStateError("incremental result manifest contains duplicate paths")
+    existing_entries = journal["cumulative_result_files"]
+    assert isinstance(existing_entries, list)
+    existing = {
+        str(item["path"]): str(item["sha256"])
+        for item in existing_entries
+        if isinstance(item, Mapping)
+    }
+    if any(proposed.get(path) != digest for path, digest in existing.items()):
+        raise StudyStateError(
+            "incremental result manifest must preserve every previous path and hash"
+        )
+    new_paths = sorted(set(proposed) - set(existing))
+    _verify_frozen_repository(repo, round_dir, allowed_result_paths=proposed_allowed)
+    if not new_paths:
+        if set(proposed) != set(existing):
+            raise StudyStateError("incremental result manifest is not monotonic")
+        last_entry = journal["last_entry"]
+        if last_entry is None:
+            return None
+        assert isinstance(last_entry, dict)
+        return last_entry
+
+    _fsync_declared_result_files(repo, round_dir, manifest)
+    sequence = int(journal["sequence"]) + 1
+    new_files = [{"path": path, "sha256": proposed[path]} for path in new_paths]
+    cumulative_files = [
+        {"path": path, "sha256": proposed[path]} for path in sorted(proposed)
+    ]
+    entry: dict[str, Any] = {
+        "schema_version": 1,
+        "round_id": round_dir.name,
+        "state": "running",
+        "execution_claim_id": execution["execution_claim_id"],
+        "execution_claim_sha256": canonical_sha256(execution),
+        "seed_manifest_sha256": materialization["seed_manifest_sha256"],
+        "sequence": sequence,
+        "previous_entry_sha256": journal["head_sha256"],
+        "new_result_files": new_files,
+        "cumulative_result_files_sha256": canonical_sha256(cumulative_files),
+    }
+    entry["entry_sha256"] = canonical_sha256(entry)
+    _assert_round_lock_identity(repo, round_dir.name, lock_identity)
+    _journal_root, journal_dir, _root_identity, _journal_identity = (
+        _result_journal_directories(repo, round_dir.name, create=False)
+    )
+    try:
+        _atomic_write_json(journal_dir / f"{sequence:08d}.json", entry, exclusive=True)
+    except FileExistsError as exc:
+        raise StudyStateError("result journal sequence was already published") from exc
+    try:
+        _assert_round_lock_identity(repo, round_dir.name, lock_identity)
+        observed = _validate_result_journal(
+            repo, round_dir, freeze, materialization, execution
+        )
+        if observed["head_sha256"] != entry["entry_sha256"]:
+            raise StudyStateError("result journal head changed during publication")
+        _verify_frozen_repository(
+            repo, round_dir, allowed_result_paths=proposed_allowed
+        )
+    except StudyStateError as integrity_error:
+        try:
+            _supersede_integrity_failure_locked(
+                repo,
+                round_dir,
+                freeze,
+                reason="incremental result journal failed post-publication validation",
+                lock_identity=lock_identity,
+            )
+        except StudyStateError as supersession_error:
+            raise supersession_error from integrity_error
+        raise
+    return entry
+
+
+def record_incremental_results(
+    round_dir: Path,
+    result_manifest: Mapping[str, Any],
+    *,
+    repo: Path | None = None,
+) -> dict[str, Any]:
+    """Append exact immutable result files to a claimed round's hash chain."""
+
+    repository, destination = _repository_for_round(round_dir, repo)
+    with _round_lock(repository, destination.name) as lock_identity:
+        freeze = _validate_freeze(destination, repository)
+        entry = _record_incremental_results_locked(
+            repository,
+            destination,
+            freeze,
+            result_manifest,
+            lock_identity,
+        )
+        if entry is None:
+            raise StudyStateError("incremental result manifest adds no files")
+        return entry
 
 
 def _fsync_declared_result_files(
@@ -1260,10 +1710,20 @@ def _validate_execution_claim_record(
     claim_id = claim.get("execution_claim_id")
     if not isinstance(claim_id, str) or not _TOKEN_RE.fullmatch(claim_id):
         raise StudyStateError("execution claim is invalid")
-    if claim.get("seed_manifest_sha256") != materialization.get(
-        "seed_manifest_sha256"
-    ):
+    if claim.get("seed_manifest_sha256") != materialization.get("seed_manifest_sha256"):
         raise StudyStateError("execution claim seed manifest does not match")
+    for label in ("result_journals_root", "result_journal"):
+        if (
+            type(claim.get(f"{label}_device")) is not int
+            or claim[f"{label}_device"] < 0
+            or type(claim.get(f"{label}_inode")) is not int
+            or claim[f"{label}_inode"] <= 0
+        ):
+            raise StudyStateError("execution claim result journal identity is invalid")
+    _require_sha256(
+        claim.get("result_journal_anchor_sha256"),
+        "execution claim result journal anchor",
+    )
     return claim
 
 
@@ -1765,13 +2225,37 @@ def assert_final_runnable(repo: Path, round_dir: Path) -> dict[str, Any]:
         _validate_registry(
             repository, destination, freeze, expected_state="materialized"
         )
+        execution_claim_id = secrets.token_hex(16)
+        (
+            _journals_root,
+            result_journal,
+            journals_root_identity,
+            result_journal_identity,
+        ) = _result_journal_directories(repository, destination.name, create=True)
+        try:
+            if any(result_journal.iterdir()):
+                raise StudyStateError("result journal is not empty before final claim")
+        except OSError as exc:
+            raise StudyStateError("result journal cannot be inspected") from exc
+        journal_anchor = _result_journal_anchor(
+            execution_claim_id,
+            materialization["seed_manifest_sha256"],
+            freeze,
+            journals_root_identity,
+            result_journal_identity,
+        )
         record: dict[str, Any] = {
             "schema_version": 1,
             "round_id": destination.name,
             "state": "running",
             "claimed_at": _utc_now(),
-            "execution_claim_id": secrets.token_hex(16),
+            "execution_claim_id": execution_claim_id,
             "seed_manifest_sha256": materialization["seed_manifest_sha256"],
+            "result_journals_root_device": journals_root_identity[0],
+            "result_journals_root_inode": journals_root_identity[1],
+            "result_journal_device": result_journal_identity[0],
+            "result_journal_inode": result_journal_identity[1],
+            "result_journal_anchor_sha256": journal_anchor,
             **_binding_fields(freeze),
         }
         _verify_frozen_repository(repository, destination)
@@ -1788,6 +2272,20 @@ def assert_final_runnable(repo: Path, round_dir: Path) -> dict[str, Any]:
             _validate_state_record_chain(
                 destination, freeze, expected_state="running"
             )
+            current_materialization, _manifest = _validate_seed_manifest(
+                destination, freeze
+            )
+            current_execution = _validate_execution_claim_record(
+                destination, freeze, current_materialization
+            )
+            if _validate_result_journal(
+                repository,
+                destination,
+                freeze,
+                current_materialization,
+                current_execution,
+            )["sequence"] != 0:
+                raise StudyStateError("new execution claim journal is not empty")
         except StudyStateError:
             _supersede_integrity_failure_locked(
                 repository,
@@ -1815,6 +2313,20 @@ def assert_final_runnable(repo: Path, round_dir: Path) -> dict[str, Any]:
             _validate_registry(
                 repository, destination, freeze, expected_state="running"
             )
+            current_materialization, _manifest = _validate_seed_manifest(
+                destination, freeze
+            )
+            current_execution = _validate_execution_claim_record(
+                destination, freeze, current_materialization
+            )
+            if _validate_result_journal(
+                repository,
+                destination,
+                freeze,
+                current_materialization,
+                current_execution,
+            )["sequence"] != 0:
+                raise StudyStateError("new execution claim journal is not empty")
             _verify_frozen_repository(repository, destination)
         except StudyStateError:
             _supersede_integrity_failure_locked(
@@ -1886,9 +2398,39 @@ def record_final_evaluation(
                 )
                 raise
         else:
+            freeze = _validate_freeze(destination, repository)
+            pre_journal_registry = _validate_registry(repository, destination, freeze)
+            if pre_journal_registry.get("state") != "running":
+                raise StudyStateError(
+                    "final execution must be claimed before evaluation"
+                )
+            _record_incremental_results_locked(
+                repository,
+                destination,
+                freeze,
+                {"result_files": manifest.get("result_files", [])},
+                lock_identity,
+            )
+            materialization, _seed_manifest = _validate_seed_manifest(
+                destination, freeze
+            )
+            execution = _validate_execution_claim_record(
+                destination, freeze, materialization
+            )
+            journal = _validate_result_journal(
+                repository,
+                destination,
+                freeze,
+                materialization,
+                execution,
+            )
             allowed_result_paths = _validate_result_files(
                 repository, destination, manifest
             )
+            if allowed_result_paths != journal["allowed_result_paths"]:
+                raise StudyStateError(
+                    "final result manifest does not reconcile with result journal"
+                )
             freeze = _verify_frozen_repository(
                 repository,
                 destination,
@@ -2074,6 +2616,7 @@ __all__ = [
     "assert_final_runnable",
     "freeze_round",
     "materialize_final",
+    "record_incremental_results",
     "record_final_evaluation",
     "supersede_round",
 ]
