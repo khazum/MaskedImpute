@@ -335,6 +335,21 @@ def test_records_require_the_exact_prespecified_draw_view_panel(restriction):
         validate_calibration_records(records)
 
 
+def test_records_reject_reused_dataset_content_across_panel_slots():
+    import dataclasses
+
+    from maskimpute.calibration import validate_calibration_records
+
+    records = list(_development_records())
+    records[1] = dataclasses.replace(
+        records[1],
+        dataset_sha256=records[0].dataset_sha256,
+    )
+
+    with pytest.raises(ValueError, match="duplicate.*dataset.*sha256|dataset.*digest"):
+        validate_calibration_records(records)
+
+
 def test_lodo_folds_hold_out_entire_mechanism_biological_draw_without_leakage():
     from maskimpute.calibration import cross_validate_calibrator
 
@@ -936,6 +951,26 @@ def test_artifact_loader_cross_checks_aggregate_and_mechanism_metric_counts(
     _canonical_write(path, payload)
 
     with pytest.raises(ValueError, match="aggregate.*count|mechanism.*metric"):
+        load_calibration_artifact(path)
+
+
+def test_artifact_loader_rejects_reused_dataset_content_across_bindings(
+    tmp_path: Path,
+):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(_development_records()).to_dict()
+    shared_digest = payload["training"]["record_bindings"][0]["dataset_sha256"]
+    for binding in payload["training"]["record_bindings"]:
+        binding["dataset_sha256"] = shared_digest
+    _rehash_payload(payload)
+    path = tmp_path / "reused-dataset-content.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="duplicate.*dataset.*sha256|dataset.*digest"):
         load_calibration_artifact(path)
 
 

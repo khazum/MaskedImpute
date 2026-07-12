@@ -467,6 +467,9 @@ def _canonical_calibration_records(
     dataset_ids = [record.dataset_id for record in values]
     if len(set(dataset_ids)) != len(dataset_ids):
         raise ValueError("duplicate calibration record dataset_id")
+    dataset_sha256s = [record.dataset_sha256 for record in values]
+    if len(set(dataset_sha256s)) != len(dataset_sha256s):
+        raise ValueError("duplicate calibration record dataset_sha256")
     panel_keys = [(record.biological_id, record.technical_view) for record in values]
     if require_complete_panel and (
         len(panel_keys) != len(set(panel_keys))
@@ -1512,6 +1515,7 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
     previous_binding_key: tuple[str, ...] | None = None
     binding_manifests: list[str] = []
     dataset_ids: list[str] = []
+    dataset_sha256s: list[str] = []
     binding_panel_keys: list[tuple[str, str]] = []
     for index, value in enumerate(binding_payload):
         binding = _exact_keys(
@@ -1568,11 +1572,16 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
             raise ValueError("training binding contradicts cross-validation group")
         binding_manifests.append(manifest_sha256)
         dataset_ids.append(dataset_id)
+        dataset_sha256s.append(dataset_sha256)
         binding_panel_keys.append((binding["biological_id"], binding["technical_view"]))
     if tuple(sorted(binding_manifests)) != manifests:
         raise ValueError("training record bindings differ from manifests")
     if len(set(dataset_ids)) != len(dataset_ids):
         raise ValueError("training record bindings contain duplicate dataset IDs")
+    if len(set(dataset_sha256s)) != len(dataset_sha256s):
+        raise ValueError(
+            "training record bindings contain duplicate dataset_sha256 values"
+        )
     if len(binding_panel_keys) != len(set(binding_panel_keys)) or set(
         binding_panel_keys
     ) != set(_DEVELOPMENT_PANEL_KEYS):
