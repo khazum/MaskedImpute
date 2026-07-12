@@ -70,10 +70,38 @@ _PROVENANCE_FIELDS = (
     "seeds",
 )
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_ALLOWED_UNS_KEYS = frozenset(
+    {
+        "truth_kind",
+        "primary_truth_layer",
+        "provenance",
+        "normalization",
+        "allowed_covariates",
+    }
+)
+_NORMALIZATION_KEYS = frozenset({"input", "target_sum", "log_base", "size_factor"})
 _EVALUATOR_NAME_TOKENS = (
+    "branch",
+    "class",
+    "cluster",
+    "condition",
+    "group",
     "label",
+    "lineage",
     "marker",
+    "outcome",
+    "phenotype",
     "pseudotime",
+    "response",
+    "state",
+    "status",
+    "treatment",
+    "disease",
+    "case_control",
+    "casecontrol",
+    "timepoint",
+    "trajectory",
+    "truth",
     "ground_truth",
     "cell_type",
     "celltype",
@@ -117,6 +145,20 @@ def _validate_nonnegative_matrix(
         raise ValueError(f"{name} must be finite and nonnegative")
 
 
+def _observed_row_sums(matrix: object) -> list[int]:
+    """Sum validated integer counts without a float precision round trip."""
+
+    if sparse.issparse(matrix):
+        csr = matrix.tocsr(copy=True)
+        csr.sum_duplicates()
+        return [
+            sum(int(value) for value in csr.data[csr.indptr[row] : csr.indptr[row + 1]])
+            for row in range(csr.shape[0])
+        ]
+    dense = np.asarray(matrix)
+    return [sum(int(value) for value in dense[row]) for row in range(dense.shape[0])]
+
+
 def _validate_ids(adata: ad.AnnData) -> None:
     for axis, names in (("obs", adata.obs_names), ("var", adata.var_names)):
         if not names.is_unique:
@@ -134,19 +176,42 @@ def _validate_obs(adata: ad.AnnData) -> None:
     for column in REQUIRED_OBS_COLUMNS:
         if column not in adata.obs:
             raise ValueError(f"missing required obs column: {column}")
-        if bool(adata.obs[column].isna().any()):
-            raise ValueError(f"required obs column {column} contains missing values")
 
-    for column in REQUIRED_OBS_COLUMNS[:-1]:
-        if any(isinstance(value, str) and not value.strip() for value in adata.obs[column]):
-            raise ValueError(f"required obs column {column} contains empty values")
+    design_columns = (
+        "dataset_id",
+        "mechanism",
+        "condition",
+        "biological_id",
+        "technical_view",
+    )
+    for column in design_columns:
+        values = adata.obs[column].tolist()
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            raise ValueError(f"{column} must contain nonempty strings")
+        if len(set(values)) != 1:
+            raise ValueError(f"{column} must be constant within an AnnData dataset")
 
-    try:
-        library_size = np.asarray(adata.obs["library_size"], dtype=np.float64)
-    except (TypeError, ValueError) as error:
-        raise ValueError("library_size must be finite and nonnegative") from error
-    if not np.isfinite(library_size).all() or not bool((library_size >= 0).all()):
-        raise ValueError("library_size must be finite and nonnegative")
+    draw_values = adata.obs["draw"].tolist()
+    if any(
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, (int, np.integer))
+        or int(value) <= 0
+        for value in draw_values
+    ):
+        raise ValueError("draw must contain a positive integer")
+    if len({int(value) for value in draw_values}) != 1:
+        raise ValueError("draw must be constant within an AnnData dataset")
+
+    library_values = adata.obs["library_size"].tolist()
+    if any(
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, (int, np.integer))
+        or int(value) < 0
+        for value in library_values
+    ):
+        raise ValueError("library_size must contain finite nonnegative integers")
+    if [int(value) for value in library_values] != _observed_row_sums(adata.X):
+        raise ValueError("library_size must exactly equal observed-count row sums")
 
 
 def _require_canonical_json(value: object, name: str) -> None:
@@ -194,6 +259,62 @@ def _validate_provenance(adata: ad.AnnData) -> None:
     _require_canonical_json(provenance, "provenance canonical JSON")
 
 
+def _validate_normalization(adata: ad.AnnData) -> None:
+    if "normalization" not in adata.uns:
+        return
+    normalization = adata.uns["normalization"]
+    if not isinstance(normalization, Mapping):
+        raise ValueError("normalization must be an object with whitelisted scalar keys")
+    unsupported = set(normalization) - _NORMALIZATION_KEYS
+    if unsupported:
+        names = ", ".join(sorted(str(key) for key in unsupported))
+        raise ValueError(f"normalization contains unsupported keys: {names}")
+    if "input" not in normalization:
+        raise ValueError("normalization must declare its input")
+    input_value = normalization["input"]
+    if not isinstance(input_value, str) or not input_value.strip():
+        raise ValueError("normalization input must be a nonempty string")
+
+    for key in ("target_sum", "log_base"):
+        if key not in normalization or normalization[key] is None:
+            continue
+        value = normalization[key]
+        if (
+            isinstance(value, (bool, np.bool_))
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0
+            or (key == "log_base" and value == 1)
+        ):
+            raise ValueError(f"normalization {key} must be a valid positive number")
+
+    if "size_factor" in normalization and normalization["size_factor"] is not None:
+        value = normalization["size_factor"]
+        valid_name = isinstance(value, str) and bool(value.strip())
+        valid_number = (
+            not isinstance(value, (bool, np.bool_))
+            and isinstance(value, (int, float))
+            and math.isfinite(value)
+            and value > 0
+        )
+        if not (valid_name or valid_number):
+            raise ValueError(
+                "normalization size_factor must be a nonempty name or positive number"
+            )
+
+
+def _validate_closed_slots(adata: ad.AnnData) -> None:
+    for slot in ("obsm", "varm", "obsp", "varp"):
+        if len(getattr(adata, slot)):
+            raise ValueError(f"unsupported AnnData slot must be empty: {slot}")
+    if adata.raw is not None:
+        raise ValueError("unsupported AnnData slot must be empty: raw")
+    unsupported_uns = set(adata.uns) - _ALLOWED_UNS_KEYS
+    if unsupported_uns:
+        names = ", ".join(sorted(str(key) for key in unsupported_uns))
+        raise ValueError(f"unsupported uns key: {names}")
+
+
 def _parse_truth_kind(adata: ad.AnnData) -> TruthKind:
     try:
         return TruthKind(adata.uns.get("truth_kind"))
@@ -210,6 +331,12 @@ def _validate_truth_contract(adata: ad.AnnData, kind: TruthKind) -> None:
     if kind is TruthKind.ORTHOGONAL_ONLY:
         if has_primary:
             raise ValueError("orthogonal_only datasets must not declare primary truth")
+        truth_layers = sorted(EVALUATOR_LAYERS & set(layers))
+        if truth_layers:
+            raise ValueError(
+                "orthogonal_only datasets must not contain evaluator truth layers: "
+                + ", ".join(truth_layers)
+            )
         return
 
     if not isinstance(primary, str) or not primary:
@@ -229,8 +356,52 @@ def _validate_truth_contract(adata: ad.AnnData, kind: TruthKind) -> None:
 
 def _is_evaluator_metadata(name: str) -> bool:
     lowered = name.casefold()
-    return lowered in {"group", "groups", "truth"} or any(
+    return lowered in REQUIRED_OBS_COLUMNS or any(
         token in lowered for token in _EVALUATOR_NAME_TOKENS
+    )
+
+
+def _validate_covariate_series(series: pd.Series, axis: str, name: str) -> None:
+    label = f"allowed_covariates {axis}.{name}"
+    if isinstance(series.dtype, pd.CategoricalDtype):
+        if bool(series.isna().any()):
+            raise ValueError(f"{label} must contain immutable scalar values")
+        categories = series.cat.categories.tolist()
+        if any(
+            isinstance(value, np.generic)
+            or isinstance(value, (bytes, bytearray))
+            or not isinstance(value, (str, bool, int, float))
+            or (isinstance(value, float) and not math.isfinite(value))
+            for value in categories
+        ):
+            raise ValueError(f"{label} categories must be immutable scalar values")
+        return
+
+    if pd.api.types.is_object_dtype(series.dtype):
+        if bool(series.isna().any()) or not all(
+            isinstance(value, str) for value in series.tolist()
+        ):
+            raise ValueError(f"{label} must contain immutable scalar strings")
+        return
+    if isinstance(series.dtype, pd.StringDtype):
+        if bool(series.isna().any()):
+            raise ValueError(f"{label} must contain immutable scalar strings")
+        return
+    if pd.api.types.is_bool_dtype(series.dtype) or pd.api.types.is_integer_dtype(
+        series.dtype
+    ):
+        if bool(series.isna().any()):
+            raise ValueError(f"{label} must contain immutable scalar values")
+        return
+    if pd.api.types.is_float_dtype(series.dtype):
+        try:
+            values = np.asarray(series, dtype=np.float64)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{label} must contain immutable scalar values") from error
+        if np.isfinite(values).all():
+            return
+    raise ValueError(
+        f"{label} must use a supported immutable scalar covariate dtype"
     )
 
 
@@ -248,9 +419,7 @@ def _parse_allowed_covariates(adata: ad.AnnData) -> tuple[list[str], list[str]]:
         obs_names = declaration
         var_names = []
 
-    def validate_axis(
-        names: object, available: pd.Index, axis: str
-    ) -> list[str]:
+    def validate_axis(names: object, frame: pd.DataFrame, axis: str) -> list[str]:
         if (
             not isinstance(names, Sequence)
             or isinstance(names, (str, bytes))
@@ -260,7 +429,7 @@ def _parse_allowed_covariates(adata: ad.AnnData) -> tuple[list[str], list[str]]:
         result = list(names)
         if len(result) != len(set(result)):
             raise ValueError(f"allowed_covariates {axis} contains duplicate columns")
-        missing = [name for name in result if name not in available]
+        missing = [name for name in result if name not in frame.columns]
         if missing:
             raise ValueError(
                 f"allowed_covariates {axis} columns are missing: {', '.join(missing)}"
@@ -271,11 +440,13 @@ def _parse_allowed_covariates(adata: ad.AnnData) -> tuple[list[str], list[str]]:
                 "evaluator metadata cannot be an allowed covariate: "
                 + ", ".join(forbidden)
             )
+        for name in result:
+            _validate_covariate_series(frame[name], axis, name)
         return result
 
     return (
-        validate_axis(obs_names, adata.obs.columns, "obs"),
-        validate_axis(var_names, adata.var.columns, "var"),
+        validate_axis(obs_names, adata.obs, "obs"),
+        validate_axis(var_names, adata.var, "var"),
     )
 
 
@@ -284,9 +455,10 @@ def validate_benchmark_dataset(adata: ad.AnnData) -> None:
 
     if not isinstance(adata, ad.AnnData):
         raise TypeError("benchmark dataset must be an AnnData object")
+    _validate_closed_slots(adata)
     _validate_ids(adata)
-    _validate_obs(adata)
     _validate_nonnegative_matrix(adata.X, "observed counts", integer=True)
+    _validate_obs(adata)
 
     layers = _raw_layers(adata)
     for name, matrix in layers.items():
@@ -304,6 +476,7 @@ def validate_benchmark_dataset(adata: ad.AnnData) -> None:
     truth_kind = _parse_truth_kind(adata)
     _validate_truth_contract(adata, truth_kind)
     _validate_provenance(adata)
+    _validate_normalization(adata)
     _parse_allowed_covariates(adata)
 
 
@@ -332,7 +505,38 @@ def _normalise_scalar(value: object) -> object:
         return {"type": "bytes", "value": value.hex()}
     if isinstance(value, (pd.Timestamp, pd.Timedelta)):
         return {"type": type(value).__name__, "value": value.isoformat()}
-    return {"type": type(value).__name__, "value": str(value)}
+    if isinstance(value, Mapping):
+        entries = [
+            (_normalise_scalar(key), _normalise_scalar(nested))
+            for key, nested in value.items()
+        ]
+        entries.sort(key=lambda item: json.dumps(item[0], sort_keys=True))
+        return {"type": "mapping", "entries": entries}
+    if isinstance(value, (list, tuple)):
+        return {
+            "type": type(value).__name__,
+            "values": [_normalise_scalar(nested) for nested in value],
+        }
+    if isinstance(value, np.ndarray):
+        return {
+            "type": "ndarray",
+            "dtype": value.dtype.str,
+            "shape": list(value.shape),
+            "values": [_normalise_scalar(nested) for nested in value.reshape(-1)],
+        }
+    raise ValueError(f"unsupported metadata scalar type: {type(value).__name__}")
+
+
+def _series_schema(series: pd.Series) -> dict[str, object]:
+    if isinstance(series.dtype, pd.CategoricalDtype):
+        return {
+            "kind": "categorical",
+            "categories": [
+                _normalise_scalar(value) for value in series.cat.categories.tolist()
+            ],
+            "ordered": bool(series.cat.ordered),
+        }
+    return {"kind": "plain", "dtype": str(series.dtype)}
 
 
 def _frame_payload(frame: pd.DataFrame) -> list[dict[str, object]]:
@@ -342,10 +546,22 @@ def _frame_payload(frame: pd.DataFrame) -> list[dict[str, object]]:
         payload.append(
             {
                 "name": _normalise_scalar(column),
+                "schema": _series_schema(series),
                 "values": [_normalise_scalar(value) for value in series.tolist()],
             }
         )
     return payload
+
+
+def _matrix_encoding(matrix: object) -> tuple[bytes, np.dtype[Any]]:
+    dtype = np.asarray(matrix.data if sparse.issparse(matrix) else matrix).dtype
+    if dtype.kind == "i":
+        return b"signed-int64", np.dtype("<i8")
+    if dtype.kind in {"u", "b"}:
+        return b"unsigned-int64", np.dtype("<u8")
+    if dtype.kind == "f":
+        return b"float64", np.dtype("<f8")
+    raise ValueError(f"unsupported benchmark matrix dtype: {dtype}")
 
 
 def _matrix_sha256(matrix: object) -> str:
@@ -356,6 +572,8 @@ def _matrix_sha256(matrix: object) -> str:
     if not isinstance(shape, tuple) or len(shape) != 2:
         raise ValueError("benchmark matrices must be two-dimensional")
     digest.update(np.asarray(shape, dtype="<u8").tobytes())
+    encoding, value_dtype = _matrix_encoding(matrix)
+    digest.update(encoding)
 
     if sparse.issparse(matrix):
         csr = matrix.tocsr(copy=True)
@@ -365,7 +583,7 @@ def _matrix_sha256(matrix: object) -> str:
         for row in range(shape[0]):
             start, stop = csr.indptr[row : row + 2]
             columns = np.asarray(csr.indices[start:stop], dtype="<u8")
-            values = np.asarray(csr.data[start:stop], dtype="<f8")
+            values = np.asarray(csr.data[start:stop], dtype=value_dtype)
             digest.update(np.asarray([len(columns)], dtype="<u8").tobytes())
             digest.update(columns.tobytes())
             digest.update(values.tobytes())
@@ -374,7 +592,7 @@ def _matrix_sha256(matrix: object) -> str:
         for row in range(shape[0]):
             row_values = np.asarray(dense[row]).reshape(-1)
             columns = np.flatnonzero(row_values != 0).astype("<u8", copy=False)
-            values = np.asarray(row_values[columns], dtype="<f8")
+            values = np.asarray(row_values[columns], dtype=value_dtype)
             digest.update(np.asarray([len(columns)], dtype="<u8").tobytes())
             digest.update(columns.tobytes())
             digest.update(values.tobytes())
@@ -419,6 +637,23 @@ def _copy_matrix(matrix: object) -> object:
     return np.array(matrix, copy=True)
 
 
+def _copy_covariate_frame(frame: pd.DataFrame, names: list[str]) -> pd.DataFrame:
+    copied = pd.DataFrame(index=frame.index.copy(deep=True))
+    for name in names:
+        series = frame[name]
+        if isinstance(series.dtype, pd.CategoricalDtype):
+            categories = [deepcopy(value) for value in series.cat.categories.tolist()]
+            categorical = pd.Categorical.from_codes(
+                series.cat.codes.to_numpy(copy=True),
+                categories=categories,
+                ordered=series.cat.ordered,
+            )
+            copied[name] = pd.Series(categorical, index=copied.index, name=name)
+        else:
+            copied[name] = series.copy(deep=True)
+    return copied
+
+
 def make_inference_view(adata: ad.AnnData) -> ad.AnnData:
     """Return a deep, truth-free copy containing only declared method inputs."""
 
@@ -426,8 +661,8 @@ def make_inference_view(adata: ad.AnnData) -> ad.AnnData:
     obs_covariates, var_covariates = _parse_allowed_covariates(adata)
     view = ad.AnnData(
         X=_copy_matrix(adata.X),
-        obs=adata.obs.loc[:, obs_covariates].copy(deep=True),
-        var=adata.var.loc[:, var_covariates].copy(deep=True),
+        obs=_copy_covariate_frame(adata.obs, obs_covariates),
+        var=_copy_covariate_frame(adata.var, var_covariates),
     )
     if "normalization" in adata.uns:
         view.uns["normalization"] = deepcopy(adata.uns["normalization"])

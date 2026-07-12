@@ -193,6 +193,25 @@ def test_orthogonal_data_has_no_primary_truth() -> None:
 
 
 @pytest.mark.parametrize(
+    "layer",
+    [
+        "pre_capture_counts",
+        "latent_expression",
+        "pre_dropout_expression",
+        "reference_counts",
+        "heldout_counts",
+        "expected_counts",
+    ],
+)
+def test_orthogonal_data_rejects_every_evaluator_layer(layer: str) -> None:
+    dataset = _dataset(TruthKind.ORTHOGONAL_ONLY)
+    dataset.layers[layer] = np.ones(dataset.shape, dtype=int)
+
+    with pytest.raises(ValueError, match="orthogonal_only.*evaluator truth"):
+        validate_benchmark_dataset(dataset)
+
+
+@pytest.mark.parametrize(
     ("mutate", "message"),
     [
         (lambda p: p.pop("software_version"), "software_version"),
@@ -237,6 +256,67 @@ def test_required_cell_metadata_cannot_be_missing(column: str) -> None:
     dataset.obs.drop(columns=column, inplace=True)
 
     with pytest.raises(ValueError, match=f"missing required obs column.*{column}"):
+        validate_benchmark_dataset(dataset)
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["dataset_id", "mechanism", "condition", "biological_id", "technical_view"],
+)
+@pytest.mark.parametrize("invalid", ["", "   ", 42])
+def test_design_identifiers_must_be_nonempty_strings(column: str, invalid) -> None:
+    dataset = _dataset()
+    dataset.obs[column] = [invalid] * dataset.n_obs
+
+    with pytest.raises(ValueError, match=f"{column}.*nonempty strings"):
+        validate_benchmark_dataset(dataset)
+
+
+@pytest.mark.parametrize(
+    "column",
+    ["dataset_id", "mechanism", "condition", "biological_id", "technical_view"],
+)
+def test_design_identifiers_are_constant_within_dataset(column: str) -> None:
+    dataset = _dataset()
+    dataset.obs.loc["cell-5", column] = "different"
+
+    with pytest.raises(ValueError, match=f"{column}.*constant"):
+        validate_benchmark_dataset(dataset)
+
+
+@pytest.mark.parametrize("invalid", [0, -1, 1.5, "1", True])
+def test_draw_is_a_constant_positive_integer(invalid) -> None:
+    dataset = _dataset()
+    dataset.obs["draw"] = [invalid] * dataset.n_obs
+
+    with pytest.raises(ValueError, match="draw.*positive integer"):
+        validate_benchmark_dataset(dataset)
+
+
+def test_draw_is_constant_within_dataset() -> None:
+    dataset = _dataset()
+    dataset.obs.loc["cell-5", "draw"] = 2
+
+    with pytest.raises(ValueError, match="draw.*constant"):
+        validate_benchmark_dataset(dataset)
+
+
+@pytest.mark.parametrize("invalid", [-1, 1.5, np.nan, np.inf, "3"])
+def test_library_size_is_a_finite_nonnegative_integer(invalid) -> None:
+    dataset = _dataset()
+    library_size = dataset.obs["library_size"].astype(object)
+    library_size.loc["cell-0"] = invalid
+    dataset.obs["library_size"] = library_size
+
+    with pytest.raises(ValueError, match="library_size.*finite nonnegative integer"):
+        validate_benchmark_dataset(dataset)
+
+
+def test_library_size_must_exactly_equal_observed_row_sum() -> None:
+    dataset = _dataset()
+    dataset.obs.loc["cell-0", "library_size"] += 1
+
+    with pytest.raises(ValueError, match="library_size.*row sums"):
         validate_benchmark_dataset(dataset)
 
 
@@ -287,16 +367,46 @@ def test_dataset_hash_binds_truth_metadata_ids_and_provenance() -> None:
     assert benchmark_dataset_sha256(changed_id) != original
 
 
+def test_dataset_hash_is_lossless_for_integers_above_float_precision() -> None:
+    first = _dataset()
+    second = _dataset()
+    first.layers["pre_capture_counts"][0, 0] = 2**53
+    second.layers["pre_capture_counts"][0, 0] = 2**53 + 1
+
+    assert benchmark_dataset_sha256(first) != benchmark_dataset_sha256(second)
+
+    sparse_first = first.copy()
+    sparse_first.X = sparse.csr_matrix(first.X)
+    for layer_name in list(sparse_first.layers):
+        sparse_first.layers[layer_name] = sparse.csr_matrix(
+            sparse_first.layers[layer_name]
+        )
+    assert benchmark_dataset_sha256(first) == benchmark_dataset_sha256(sparse_first)
+
+
+def test_dataset_hash_binds_categorical_levels_order_and_ordered_flag() -> None:
+    baseline = _dataset()
+    baseline.obs["group"] = pd.Categorical(
+        baseline.obs["group"], categories=["A", "B", "unused"], ordered=True
+    )
+    changed_level_order = baseline.copy()
+    changed_level_order.obs["group"] = pd.Categorical(
+        changed_level_order.obs["group"],
+        categories=["B", "A", "unused"],
+        ordered=True,
+    )
+    changed_ordered = baseline.copy()
+    changed_ordered.obs["group"] = changed_ordered.obs["group"].cat.as_unordered()
+
+    baseline_hash = benchmark_dataset_sha256(baseline)
+    assert benchmark_dataset_sha256(changed_level_order) != baseline_hash
+    assert benchmark_dataset_sha256(changed_ordered) != baseline_hash
+
+
 def test_inference_view_contains_only_declared_non_evaluative_inputs() -> None:
     dataset = _dataset()
     dataset.layers["heldout_counts"] = np.ones(dataset.shape, dtype=int)
     dataset.layers["expected_counts"] = np.ones(dataset.shape, dtype=float)
-    dataset.obsm["truth_embedding"] = np.arange(12).reshape(6, 2)
-    dataset.varm["marker_loadings"] = np.arange(8).reshape(4, 2)
-    dataset.obsp["truth_neighbors"] = sparse.eye(6, format="csr")
-    dataset.varp["gene_network"] = sparse.eye(4, format="csr")
-    dataset.raw = dataset
-    dataset.uns["evaluator_settings"] = {"label_key": "group"}
     source_hash = benchmark_dataset_sha256(dataset)
 
     view = make_inference_view(dataset)
@@ -325,6 +435,32 @@ def test_inference_view_contains_only_declared_non_evaluative_inputs() -> None:
     assert "marker_score" not in view.var
 
 
+@pytest.mark.parametrize("slot", ["obsm", "varm", "obsp", "varp", "raw"])
+def test_unsupported_ann_data_slots_are_rejected_fail_closed(slot: str) -> None:
+    dataset = _dataset()
+    if slot == "obsm":
+        dataset.obsm["embedding"] = np.arange(12).reshape(6, 2)
+    elif slot == "varm":
+        dataset.varm["loadings"] = np.arange(8).reshape(4, 2)
+    elif slot == "obsp":
+        dataset.obsp["neighbors"] = sparse.eye(6, format="csr")
+    elif slot == "varp":
+        dataset.varp["network"] = sparse.eye(4, format="csr")
+    else:
+        dataset.raw = dataset
+
+    with pytest.raises(ValueError, match=f"unsupported AnnData slot.*{slot}"):
+        validate_benchmark_dataset(dataset)
+
+
+def test_unsupported_uns_evaluator_settings_are_rejected_fail_closed() -> None:
+    dataset = _dataset()
+    dataset.uns["evaluator_settings"] = {"label_key": "group"}
+
+    with pytest.raises(ValueError, match="unsupported uns key.*evaluator_settings"):
+        validate_benchmark_dataset(dataset)
+
+
 def test_inference_view_and_source_do_not_share_mutable_state() -> None:
     dataset = _dataset()
     original_x = np.asarray(dataset.X).copy()
@@ -347,12 +483,102 @@ def test_inference_view_and_source_do_not_share_mutable_state() -> None:
     assert view.obs.loc["cell-1", "batch"] == "b1"
 
 
-@pytest.mark.parametrize("forbidden", ["group", "label", "pseudotime"])
+def test_categorical_covariates_are_copied_with_independent_schema() -> None:
+    dataset = _dataset()
+    dataset.obs["batch"] = pd.Categorical(
+        dataset.obs["batch"], categories=["b1", "b2", "b3"], ordered=True
+    )
+
+    view = make_inference_view(dataset)
+
+    assert view.obs["batch"].cat.ordered
+    assert view.obs["batch"].cat.categories.tolist() == ["b1", "b2", "b3"]
+    assert view.obs["batch"].cat.categories is not dataset.obs["batch"].cat.categories
+
+
+def test_nested_object_covariates_are_rejected() -> None:
+    dataset = _dataset()
+    dataset.obs["unsafe"] = [["hidden-label"] for _ in range(dataset.n_obs)]
+    dataset.uns["allowed_covariates"]["obs"].append("unsafe")
+
+    with pytest.raises(ValueError, match="immutable scalar"):
+        validate_benchmark_dataset(dataset)
+
+
+def test_safe_string_object_covariates_are_supported() -> None:
+    dataset = _dataset()
+    assert dataset.obs["batch"].dtype == object
+
+    validate_benchmark_dataset(dataset)
+    view = make_inference_view(dataset)
+    assert view.obs["batch"].tolist() == dataset.obs["batch"].tolist()
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "dataset_id",
+        "mechanism",
+        "condition",
+        "biological_id",
+        "technical_view",
+        "draw",
+        "library_size",
+        "group",
+        "label",
+        "pseudotime",
+        "cluster_assignment",
+        "class_prediction",
+        "cell_state",
+        "disease_status",
+        "treatment_arm",
+    ],
+)
 def test_evaluator_metadata_cannot_be_declared_as_allowed_covariate(
     forbidden: str,
 ) -> None:
     dataset = _dataset()
+    if forbidden not in dataset.obs:
+        dataset.obs[forbidden] = ["hidden"] * dataset.n_obs
     dataset.uns["allowed_covariates"]["obs"].append(forbidden)
 
     with pytest.raises(ValueError, match="evaluator metadata"):
         make_inference_view(dataset)
+
+
+def test_normalization_accepts_only_whitelisted_scalar_metadata() -> None:
+    dataset = _dataset()
+    dataset.uns["normalization"] = {
+        "input": "raw_umi_counts",
+        "target_sum": 10_000,
+        "log_base": 2.0,
+        "size_factor": "library_size",
+    }
+
+    validate_benchmark_dataset(dataset)
+    view = make_inference_view(dataset)
+    assert view.uns["normalization"] == dataset.uns["normalization"]
+
+
+@pytest.mark.parametrize(
+    "normalization",
+    [
+        {"size_factor": "none"},
+        {"input": 123, "size_factor": "none"},
+        {"input": "raw_umi_counts", "target_sum": "10000"},
+        {"input": "raw_umi_counts", "log_base": True},
+        {"input": "raw_umi_counts", "log_base": 1.0},
+        {"input": "raw_umi_counts", "size_factor": False},
+        {"input": "raw_umi_counts", "labels": ["A", "B"]},
+        {"input": "raw_umi_counts", "size_factor": ["A", "B"]},
+        {"input": {"labels": ["A", "B"]}, "size_factor": "none"},
+    ],
+)
+def test_normalization_cannot_carry_nested_evaluator_metadata(
+    normalization: dict[str, object],
+) -> None:
+    dataset = _dataset()
+    dataset.uns["normalization"] = normalization
+
+    with pytest.raises(ValueError, match="normalization"):
+        validate_benchmark_dataset(dataset)
