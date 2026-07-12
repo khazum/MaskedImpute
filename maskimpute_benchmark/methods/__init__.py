@@ -77,6 +77,20 @@ from .saver import (
     run_saver,
     saver_to_evaluator_counts,
 )
+from .sccr import (
+    SCCRConfig,
+    finalize_sccr_output,
+    run_sccr,
+    sccr_to_evaluator_counts,
+)
+from .scsdae import (
+    SCSDaeAttemptReceipt,
+    SCSDaeConfig,
+    SCSDaeUnavailableError,
+    finalize_scsdae_output,
+    run_scsdae,
+    scsdae_to_evaluator_counts,
+)
 from .scziva import (
     SCZivaConfig,
     finalize_scziva_output,
@@ -139,6 +153,18 @@ RECENT_EVALUATOR_NATIVE_SCALES = MappingProxyType(
         "afmf": "method_native_normalized",
         "biaeimpute": "raw_counts",
         "d3impute": "external_reference_adjusted",
+    }
+)
+LEGACY_EVALUATOR_COUNT_CONVERTERS = MappingProxyType(
+    {
+        "sccr": sccr_to_evaluator_counts,
+        "scsdae": scsdae_to_evaluator_counts,
+    }
+)
+LEGACY_EVALUATOR_NATIVE_SCALES = MappingProxyType(
+    {
+        "sccr": "method_native_normalized",
+        "scsdae": "method_native_normalized",
     }
 )
 
@@ -239,6 +265,30 @@ def recent_output_to_evaluator_log2_cp10k(
     return count_equivalent_to_log2_cp10k(counts)
 
 
+def legacy_output_to_evaluator_counts(
+    method_input: MethodInput,
+    snapshot: MethodOutputSnapshot,
+) -> np.ndarray:
+    """Validate a required legacy snapshot and apply its scale conversion."""
+
+    return _output_to_evaluator_counts(
+        method_input,
+        snapshot,
+        LEGACY_EVALUATOR_COUNT_CONVERTERS,
+        LEGACY_EVALUATOR_NATIVE_SCALES,
+    )
+
+
+def legacy_output_to_evaluator_log2_cp10k(
+    method_input: MethodInput,
+    snapshot: MethodOutputSnapshot,
+) -> np.ndarray:
+    """Convert one required legacy comparator to common log2(CP10k+1)."""
+
+    counts = legacy_output_to_evaluator_counts(method_input, snapshot)
+    return count_equivalent_to_log2_cp10k(counts)
+
+
 _LAZY_MASKIMPUTE_EXPORTS = frozenset(
     {
         "MaskImputeAdapterExecution",
@@ -274,6 +324,8 @@ __all__ = [
     "D3ImputeConfig",
     "EnvironmentSpec",
     "LicenseSpec",
+    "LEGACY_EVALUATOR_COUNT_CONVERTERS",
+    "LEGACY_EVALUATOR_NATIVE_SCALES",
     "MethodContractError",
     "MethodInput",
     "MethodOutputSnapshot",
@@ -288,6 +340,10 @@ __all__ = [
     "RECENT_EVALUATOR_NATIVE_SCALES",
     "ResourceSpec",
     "SAVERConfig",
+    "SCCRConfig",
+    "SCSDaeAttemptReceipt",
+    "SCSDaeConfig",
+    "SCSDaeUnavailableError",
     "SCVIConfig",
     "SCZivaConfig",
     "SourceSpec",
@@ -310,10 +366,14 @@ __all__ = [
     "finalize_magic_output",
     "finalize_maskimpute_output",
     "finalize_saver_output",
+    "finalize_sccr_output",
+    "finalize_scsdae_output",
     "finalize_scvi_output",
     "finalize_scziva_output",
     "frequencies_to_observed_library_counts",
     "load_method_registry",
+    "legacy_output_to_evaluator_counts",
+    "legacy_output_to_evaluator_log2_cp10k",
     "log1p_cp10k",
     "magic_to_evaluator_counts",
     "maskimpute_to_evaluator_counts",
@@ -333,9 +393,13 @@ __all__ = [
     "run_maskimpute",
     "run_observed",
     "run_saver",
+    "run_sccr",
+    "run_scsdae",
     "run_scvi",
     "run_scziva",
     "saver_to_evaluator_counts",
+    "sccr_to_evaluator_counts",
+    "scsdae_to_evaluator_counts",
     "scvi_to_evaluator_counts",
     "scziva_to_evaluator_counts",
     "validate_matched_bulk_reference",
