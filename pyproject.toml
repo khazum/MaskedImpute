@@ -16,7 +16,7 @@ dependencies = [
 test = ["pytest>=8,<9"]
 
 [tool.setuptools.packages.find]
-include = ["maskimpute_benchmark*"]
+include = ["maskimpute*", "maskimpute_benchmark*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
