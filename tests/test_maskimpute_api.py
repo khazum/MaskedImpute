@@ -3,8 +3,12 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 import subprocess
 import sys
-import tomllib
 from types import MethodType
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib
 
 import numpy as np
 import pytest

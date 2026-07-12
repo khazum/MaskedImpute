@@ -214,6 +214,13 @@ def _structure_error(name: str, detail: str) -> ValueError:
     return ValueError(f"{name} has invalid sparse structure: {detail}")
 
 
+def _exact_real_ratio(value: object) -> tuple[int, int]:
+    if isinstance(value, (bool, int, np.bool_, np.integer)):
+        return int(value), 1
+    numerator, denominator = value.as_integer_ratio()
+    return int(numerator), int(denominator)
+
+
 def _same_real_scalar(left: object, right: object) -> bool:
     left_inexact = isinstance(left, (float, np.inexact))
     right_inexact = isinstance(right, (float, np.inexact))
@@ -226,13 +233,7 @@ def _same_real_scalar(left: object, right: object) -> bool:
     if left_infinite or right_infinite:
         return left_infinite and right_infinite and bool(left == right)
 
-    def exact_ratio(value: object) -> tuple[int, int]:
-        if isinstance(value, (bool, int, np.bool_, np.integer)):
-            return int(value), 1
-        numerator, denominator = value.as_integer_ratio()
-        return int(numerator), int(denominator)
-
-    return exact_ratio(left) == exact_ratio(right)
+    return _exact_real_ratio(left) == _exact_real_ratio(right)
 
 
 def _scalar_losslessly_compatible(value: object, dtype: np.dtype) -> bool:
@@ -260,14 +261,17 @@ def _scalar_losslessly_compatible(value: object, dtype: np.dtype) -> bool:
     components = (real, imaginary) if kind == "c" else (real,)
     component_dtype = np.empty((), dtype=dtype).real.dtype
     maximum = np.finfo(component_dtype).max
+    maximum_numerator, maximum_denominator = _exact_real_ratio(maximum)
     for component in components:
         finite = (
             True
             if isinstance(component, (bool, int, np.bool_, np.integer))
             else bool(np.isfinite(component))
         )
-        if finite and abs(component) > maximum:
-            return False
+        if finite:
+            numerator, denominator = _exact_real_ratio(component)
+            if abs(numerator) * maximum_denominator > maximum_numerator * denominator:
+                return False
     try:
         with np.errstate(over="raise", invalid="raise"):
             converted = dtype.type(value)

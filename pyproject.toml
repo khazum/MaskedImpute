@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = ["torch>=2.2,<3"]
-test = ["pytest>=8,<9"]
+test = ["pytest>=8,<9", "tomli>=2,<3; python_version < '3.11'"]
 
 [tool.setuptools.packages.find]
 include = ["maskimpute*", "maskimpute_benchmark*"]

@@ -1119,3 +1119,32 @@ def test_sparse_declared_dtype_rejects_nonlossless_internal_scalar(
 
     with pytest.raises(ValueError, match="losslessly compatible.*dtype"):
         fit_p_pre_zero_count_model(counts, _cell_ids(2))
+
+
+@pytest.mark.parametrize(
+    "constructor_name",
+    ["dok_matrix", "lil_matrix", "dok_array", "lil_array"],
+)
+@pytest.mark.parametrize(
+    ("declared_dtype", "stored_scalar"),
+    [(np.float32, 2**1000), (np.float64, 2**10000)],
+)
+def test_float_sparse_storage_rejects_huge_python_int_without_warning(
+    constructor_name,
+    declared_dtype,
+    stored_scalar,
+):
+    from maskimpute import fit_p_pre_zero_count_model
+
+    constructor = getattr(sparse, constructor_name, None)
+    if constructor is None:
+        pytest.skip(f"SciPy does not provide {constructor_name}")
+    counts = constructor(np.array([[1, 0], [0, 2]], dtype=declared_dtype))
+    if constructor_name.startswith("dok"):
+        counts._dict[(0, 1)] = stored_scalar
+    else:
+        counts.rows[0].append(1)
+        counts.data[0].append(stored_scalar)
+
+    with pytest.raises(ValueError, match="invalid sparse structure.*declared dtype"):
+        fit_p_pre_zero_count_model(counts, _cell_ids(2))
