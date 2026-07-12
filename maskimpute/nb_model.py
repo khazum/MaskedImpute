@@ -309,16 +309,19 @@ def negative_binomial_nll(
         selected = mask
     if not torch.any(selected):
         raise ValueError("negative-binomial objective mask must not be empty")
-    total = size + mean
+    selected_counts = counts[selected]
+    selected_mean = mean[selected]
+    selected_size = size[selected]
+    total = selected_size + selected_mean
     log_probability = (
-        torch.lgamma(counts + size)
-        - torch.lgamma(size)
-        - torch.lgamma(counts + 1.0)
-        + size * (torch.log(size) - torch.log(total))
-        + torch.xlogy(counts, mean)
-        - counts * torch.log(total)
+        torch.lgamma(selected_counts + selected_size)
+        - torch.lgamma(selected_size)
+        - torch.lgamma(selected_counts + 1.0)
+        + selected_size * (torch.log(selected_size) - torch.log(total))
+        + torch.xlogy(selected_counts, selected_mean)
+        - selected_counts * torch.log(total)
     )
-    losses = -log_probability[selected]
+    losses = -log_probability
     if reduction == "none":
         return losses
     if reduction == "sum":
@@ -473,13 +476,16 @@ def _negative_binomial_objective(
         from maskimpute.train import natural_zero_preservation_loss
 
         means = apply_library_size_offset(fractions, library_sizes)
-        primary = negative_binomial_nll(
-            counts,
-            means,
-            inverse_dispersion,
-            mask=artificial_mask,
-            reduction="mean",
-        )
+        if torch.any(artificial_mask):
+            primary = negative_binomial_nll(
+                counts,
+                means,
+                inverse_dispersion,
+                mask=artificial_mask,
+                reduction="mean",
+            )
+        else:
+            primary = means.sum() * 0.0
         normalized_prediction = torch.log1p(fractions * target)
         preservation = natural_zero_preservation_loss(
             normalized_prediction,

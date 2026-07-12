@@ -52,6 +52,30 @@ def test_negative_binomial_nll_matches_scipy_mean_size_parameterization() -> Non
     assert torch.isfinite(mean.grad).all()
 
 
+def test_negative_binomial_mask_does_not_backpropagate_unselected_zero_means() -> None:
+    from maskimpute.nb_model import negative_binomial_nll
+
+    counts = torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float64)
+    mean = torch.tensor(
+        [[0.0, 0.0], [0.5, 0.5]],
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    mask = torch.tensor([[False, False], [True, False]], dtype=torch.bool)
+
+    loss = negative_binomial_nll(
+        counts,
+        mean,
+        torch.ones(2, dtype=torch.float64),
+        mask=mask,
+    )
+    loss.backward()
+
+    assert mean.grad is not None
+    assert torch.isfinite(mean.grad).all()
+    np.testing.assert_array_equal(mean.grad[~mask].numpy(), np.zeros(3))
+
+
 def test_gene_dispersion_is_robust_bounded_shrunk_and_deterministic() -> None:
     from maskimpute.nb_model import (
         NegativeBinomialDecoderConfig,
@@ -349,6 +373,30 @@ def test_train_v28_is_deterministic_truth_free_and_restores_caller_rng() -> None
             decoder_config=decoder_config,
             evaluator_truth=np.ones_like(counts),
         )
+
+
+def test_train_v28_zero_library_cell_cannot_poison_selected_nb_gradients() -> None:
+    from maskimpute.nb_model import NegativeBinomialDecoderConfig
+    from maskimpute.train import train_v28
+
+    counts = np.vstack((np.zeros((1, 4)), _tiny_counts()))
+    probability = np.zeros_like(counts)
+    probability[counts == 0] = 0.6
+
+    outcome = train_v28(
+        counts,
+        probability,
+        _tiny_config(),
+        "cpu",
+        decoder_config=NegativeBinomialDecoderConfig(),
+    )
+
+    assert all(np.isfinite(outcome.training.training_loss_history))
+    assert all(np.isfinite(outcome.training.validation_loss_history))
+    assert all(
+        torch.isfinite(parameter).all()
+        for parameter in outcome.training.model.state_dict().values()
+    )
 
 
 def test_v28_development_candidate_shares_score_gate_and_selective_output() -> None:
