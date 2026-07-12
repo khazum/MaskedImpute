@@ -627,15 +627,44 @@ def test_safe_string_object_covariates_are_supported() -> None:
     assert view.obs["batch"].tolist() == dataset.obs["batch"].tolist()
 
 
+@pytest.mark.parametrize("axis", ["obs", "var"])
 @pytest.mark.parametrize("innocuous", ["estate_id", "real_estate_value"])
-def test_evaluator_name_matching_respects_token_boundaries(innocuous: str) -> None:
+def test_evaluator_name_matching_respects_token_boundaries(
+    axis: str, innocuous: str
+) -> None:
     dataset = _dataset()
-    dataset.obs[innocuous] = ["north"] * dataset.n_obs
-    dataset.uns["allowed_covariates"]["obs"].append(innocuous)
+    frame = getattr(dataset, axis)
+    frame[innocuous] = ["north"] * len(frame)
+    dataset.uns["allowed_covariates"][axis].append(innocuous)
 
     view = make_inference_view(dataset)
 
-    assert innocuous in view.obs
+    assert innocuous in getattr(view, axis)
+
+
+@pytest.mark.parametrize("axis", ["obs", "var"])
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "label2",
+        "timepoint2",
+        "class2",
+        "cluster2",
+        "truth2",
+        "celltype2",
+        "outcome2",
+    ],
+)
+def test_evaluator_metadata_with_numeric_suffix_is_rejected(
+    axis: str, forbidden: str
+) -> None:
+    dataset = _dataset()
+    frame = getattr(dataset, axis)
+    frame[forbidden] = ["hidden"] * len(frame)
+    dataset.uns["allowed_covariates"][axis].append(forbidden)
+
+    with pytest.raises(ValueError, match="evaluator metadata"):
+        make_inference_view(dataset)
 
 
 @pytest.mark.parametrize(

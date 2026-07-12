@@ -387,13 +387,14 @@ def _validate_truth_contract(adata: ad.AnnData, kind: TruthKind) -> None:
 def _is_evaluator_metadata(name: str) -> bool:
     lowered = name.casefold()
     camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
-    token_list = re.findall(r"[a-z0-9]+", camel_split.casefold())
+    token_list = re.findall(r"[a-z]+|[0-9]+", camel_split.casefold())
     tokens = frozenset(token_list)
     token_pairs = frozenset(zip(token_list, token_list[1:]))
     return (
         lowered in REQUIRED_OBS_COLUMNS
         or lowered in _EVALUATOR_EXACT_NAMES
         or bool(tokens & _EVALUATOR_NAME_TOKENS)
+        or bool(tokens & _EVALUATOR_EXACT_NAMES)
         or bool(token_pairs & _EVALUATOR_TOKEN_PAIRS)
     )
 
