@@ -312,13 +312,20 @@ def negative_binomial_nll(
     selected_counts = counts[selected]
     selected_mean = mean[selected]
     selected_size = size[selected]
+    if torch.any((selected_counts > 0) & (selected_mean <= 0)):
+        raise ValueError("positive selected counts require positive means")
+    log_mean_input = torch.where(
+        selected_counts > 0,
+        selected_mean,
+        torch.ones_like(selected_mean),
+    )
     total = selected_size + selected_mean
     log_probability = (
         torch.lgamma(selected_counts + selected_size)
         - torch.lgamma(selected_size)
         - torch.lgamma(selected_counts + 1.0)
         + selected_size * (torch.log(selected_size) - torch.log(total))
-        + torch.xlogy(selected_counts, selected_mean)
+        + selected_counts * torch.log(log_mean_input)
         - selected_counts * torch.log(total)
     )
     losses = -log_probability

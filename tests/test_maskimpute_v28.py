@@ -76,6 +76,22 @@ def test_negative_binomial_mask_does_not_backpropagate_unselected_zero_means() -
     np.testing.assert_array_equal(mean.grad[~mask].numpy(), np.zeros(3))
 
 
+def test_negative_binomial_zero_count_has_exact_finite_zero_mean_boundary() -> None:
+    from maskimpute.nb_model import negative_binomial_nll
+
+    mean = torch.zeros((1, 1), dtype=torch.float64, requires_grad=True)
+    loss = negative_binomial_nll(
+        torch.zeros((1, 1), dtype=torch.float64),
+        mean,
+        torch.ones(1, dtype=torch.float64),
+    )
+    loss.backward()
+
+    np.testing.assert_allclose(loss.detach().numpy(), 0.0, atol=0.0, rtol=0.0)
+    assert mean.grad is not None
+    np.testing.assert_allclose(mean.grad.numpy(), [[1.0]], atol=1e-12, rtol=1e-12)
+
+
 def test_gene_dispersion_is_robust_bounded_shrunk_and_deterministic() -> None:
     from maskimpute.nb_model import (
         NegativeBinomialDecoderConfig,
