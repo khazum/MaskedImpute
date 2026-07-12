@@ -22,11 +22,21 @@ def _record(
     manifest_character: str,
     probabilities=(0.1, 0.25, 0.7, 0.9),
     targets=None,
+    *,
+    namespace="dev",
+    data_role="development",
+    technical_view="moderate",
 ):
-    from maskimpute.calibration import CalibrationRecord
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+    )
 
     if targets is None:
         targets = tuple(int(value >= 0.5) for value in probabilities)
+    dataset_digest = hashlib.sha256(
+        f"{mechanism}:{biological_id}:{technical_view}:{manifest_character}".encode()
+    ).hexdigest()
     return CalibrationRecord(
         p_pre_zero=probabilities,
         target=targets,
@@ -34,11 +44,20 @@ def _record(
         biological_id=biological_id,
         manifest_sha256=_sha(manifest_character),
         truth_kind="exact_pre_capture",
+        namespace=namespace,
+        data_role=data_role,
+        technical_view=technical_view,
+        dataset_id=f"dataset-{dataset_digest[:24]}",
+        dataset_sha256=dataset_digest,
+        protocol_sha256=DEVELOPMENT_PROTOCOL_SHA256,
     )
 
 
 def test_calibration_record_is_validated_immutable_exact_truth_snapshot():
-    from maskimpute.calibration import CalibrationRecord
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+    )
 
     probability = np.array([0.1, 0.8])
     target = np.array([0, 1], dtype=np.int64)
@@ -49,6 +68,12 @@ def test_calibration_record_is_validated_immutable_exact_truth_snapshot():
         biological_id="draw-01",
         manifest_sha256=_sha("a"),
         truth_kind="exact_pre_capture",
+        namespace="dev",
+        data_role="development",
+        technical_view="moderate",
+        dataset_id="dataset-" + "b" * 24,
+        dataset_sha256=_sha("c"),
+        protocol_sha256=DEVELOPMENT_PROTOCOL_SHA256,
     )
     probability[:] = 0.5
     target[:] = 0
@@ -58,6 +83,21 @@ def test_calibration_record_is_validated_immutable_exact_truth_snapshot():
     assert not hasattr(record, "__dict__")
     with pytest.raises(AttributeError):
         record.mechanism = "sergio"
+
+
+def test_calibration_scope_constant_binds_the_tracked_development_protocol():
+    from maskimpute.calibration import DEVELOPMENT_PROTOCOL_SHA256
+
+    protocol = Path("study/protocol.json").read_bytes()
+
+    assert hashlib.sha256(protocol).hexdigest() == DEVELOPMENT_PROTOCOL_SHA256
+    payload = json.loads(protocol)
+    assert payload["development"] == {
+        "namespace": "dev",
+        "draws_per_condition": 2,
+        "cells": 900,
+        "genes": 500,
+    }
 
 
 @pytest.mark.parametrize(
@@ -77,14 +117,24 @@ def test_calibration_record_is_validated_immutable_exact_truth_snapshot():
         {"mechanism": "sergio"},
         {"biological_id": "draw-1"},
         {"biological_id": "draw-00"},
+        {"biological_id": "draw-03"},
         {"manifest_sha256": "A" * 64},
         {"manifest_sha256": "a" * 63},
         {"truth_kind": "exact_continuous"},
         {"truth_kind": "proxy_high_depth"},
+        {"namespace": "final"},
+        {"data_role": "final_evaluation"},
+        {"technical_view": "unknown"},
+        {"dataset_id": "dataset-not-a-digest"},
+        {"dataset_sha256": "a" * 63},
+        {"protocol_sha256": "f" * 64},
     ],
 )
 def test_calibration_record_rejects_ambiguous_or_noncanonical_fields(override):
-    from maskimpute.calibration import CalibrationRecord
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+    )
 
     arguments = {
         "p_pre_zero": (0.1, 0.8),
@@ -93,6 +143,12 @@ def test_calibration_record_rejects_ambiguous_or_noncanonical_fields(override):
         "biological_id": "draw-01",
         "manifest_sha256": _sha("a"),
         "truth_kind": "exact_pre_capture",
+        "namespace": "dev",
+        "data_role": "development",
+        "technical_view": "moderate",
+        "dataset_id": "dataset-" + "b" * 24,
+        "dataset_sha256": _sha("c"),
+        "protocol_sha256": DEVELOPMENT_PROTOCOL_SHA256,
     }
     arguments.update(override)
     with pytest.raises((TypeError, ValueError)):
@@ -208,16 +264,22 @@ def test_development_weights_balance_draws_records_and_entries():
             targets=(0, 0, 1, 1),
         ),
         _record("symsim", "draw-02", "c", probabilities=(0.1, 0.9)),
-        _record("symsim", "draw-03", "d", probabilities=(0.1, 0.9)),
+        _record(
+            "symsim",
+            "draw-02",
+            "d",
+            probabilities=(0.1, 0.9),
+            technical_view="severe",
+        ),
     )
 
     weights = development_weights(records)
 
     assert sum(sum(value) for value in weights.values()) == pytest.approx(1.0)
-    assert sum(weights[_sha("a")]) + sum(weights[_sha("b")]) == pytest.approx(1 / 3)
-    assert sum(weights[_sha("c")]) == pytest.approx(1 / 3)
-    assert sum(weights[_sha("d")]) == pytest.approx(1 / 3)
+    assert sum(weights[_sha("a")]) + sum(weights[_sha("b")]) == pytest.approx(1 / 2)
+    assert sum(weights[_sha("c")]) + sum(weights[_sha("d")]) == pytest.approx(1 / 2)
     assert sum(weights[_sha("a")]) == pytest.approx(sum(weights[_sha("b")]))
+    assert sum(weights[_sha("c")]) == pytest.approx(sum(weights[_sha("d")]))
     assert weights[_sha("a")][0] == pytest.approx(weights[_sha("a")][1])
     assert weights[_sha("b")][0] == pytest.approx(sum(weights[_sha("b")]) / 4)
 
@@ -240,7 +302,7 @@ def test_lodo_folds_hold_out_entire_mechanism_biological_draw_without_leakage():
 
     records = tuple(
         _record(mechanism, f"draw-0{draw}", manifest)
-        for draw, manifest in ((1, "a"), (2, "b"), (3, "c"), (4, "d"))
+        for draw, manifest in ((1, "a"), (2, "b"))
         for mechanism in ("symsim",)
     )
 
@@ -248,7 +310,7 @@ def test_lodo_folds_hold_out_entire_mechanism_biological_draw_without_leakage():
     second = cross_validate_calibrator(tuple(reversed(records)), "isotonic")
 
     assert first == second
-    assert len(first.folds) == 4
+    assert len(first.folds) == 2
     assert not first.fit_failures
     for fold in first.folds:
         assert set(fold.held_out_manifests).isdisjoint(fold.training_manifests)
@@ -286,6 +348,35 @@ def test_calibration_metrics_match_weighted_brier_and_log_loss_oracles():
     assert metrics.calibration_slope is not None
     assert np.isfinite(metrics.calibration_intercept)
     assert np.isfinite(metrics.calibration_slope)
+
+
+def test_calibration_is_invariant_to_huge_finite_weight_scale_without_warnings():
+    from maskimpute.calibration import calibration_metrics, fit_score_calibrator
+
+    probability = np.array([0.2, 0.2])
+    target = np.array([0, 1])
+    huge = np.array([1e308, 1e308])
+
+    metrics = calibration_metrics(probability, target, huge)
+    isotonic = fit_score_calibrator("isotonic", probability, target, huge)
+
+    assert metrics.brier == pytest.approx(0.34)
+    assert metrics.log_loss == pytest.approx(-0.5 * (np.log(0.8) + np.log(0.2)))
+    np.testing.assert_allclose(isotonic.transform(probability), [0.5, 0.5])
+
+
+def test_calibration_line_reports_complete_separation_as_undefined():
+    from maskimpute.calibration import calibration_metrics
+
+    metrics = calibration_metrics(
+        np.array([0.0, 0.0, 1.0, 1.0]),
+        np.array([0, 0, 1, 1]),
+        np.ones(4),
+    )
+
+    assert metrics.calibration_intercept is None
+    assert metrics.calibration_slope is None
+    assert metrics.slope_reason == "complete_or_quasi_separation"
 
 
 def _metrics(brier=0.2, log_loss=0.5, slope=1.0):
@@ -413,6 +504,24 @@ def test_retention_gate_passes_only_when_every_prespecified_guardrail_passes():
     assert improved == ("m1", "m2", "m3")
 
 
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"minimum_mechanisms_improved": 1},
+        {"minimum_mechanisms_improved": 4},
+        {"brier_improvement_epsilon": 0.0},
+        {"log_loss_worsening_tolerance": 0.0},
+        {"calibration_slope_lower": 0.7},
+        {"calibration_slope_upper": 1.3},
+    ],
+)
+def test_publication_calibration_thresholds_cannot_be_weakened_or_changed(override):
+    from maskimpute.calibration import CalibrationThresholds
+
+    with pytest.raises(ValueError, match="prespecified|publication|exactly"):
+        CalibrationThresholds(**override)
+
+
 def test_selection_is_deterministic_and_retains_every_candidate_report():
     from maskimpute.calibration import select_candidate
 
@@ -453,11 +562,7 @@ def test_calibration_decision_rejects_ineligible_or_incomplete_selection():
 def test_cross_validated_candidate_panel_keeps_identity_and_all_three_alternatives():
     from maskimpute.calibration import evaluate_calibration_candidates
 
-    records = tuple(
-        _record(mechanism, f"draw-0{draw}", manifest)
-        for draw, manifest in enumerate("12345678", start=1)
-        for mechanism in ("symsim",)
-    )
+    records = _development_records()
 
     decision = evaluate_calibration_candidates(records)
 
@@ -478,10 +583,11 @@ def test_cross_validated_candidate_panel_keeps_identity_and_all_three_alternativ
 
 
 def _development_records():
-    return tuple(
-        _record(mechanism, f"draw-0{draw}", manifest)
-        for draw, manifest in enumerate("12345678", start=1)
-        for mechanism in ("symsim",)
+    return (
+        _record("symsim", "draw-01", "1", technical_view="moderate"),
+        _record("symsim", "draw-01", "2", technical_view="severe"),
+        _record("symsim", "draw-02", "3", technical_view="moderate"),
+        _record("symsim", "draw-02", "4", technical_view="severe"),
     )
 
 
@@ -495,7 +601,7 @@ def test_fitted_artifact_is_deterministic_complete_and_score_only():
 
     assert first.to_dict() == second.to_dict()
     payload = first.to_dict()
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
     assert payload["artifact_type"] == "maskimpute_prezero_calibration"
     assert payload["inference_features"] == ["p_pre_zero"]
     assert payload["selected_algorithm"] == payload["calibrator"]["algorithm"]
@@ -516,8 +622,15 @@ def test_fitted_artifact_is_deterministic_complete_and_score_only():
         "beta",
         "isotonic",
     ]
-    assert payload["training"]["record_count"] == 8
-    assert payload["training"]["entry_count"] == 32
+    assert payload["data_scope"] == {
+        "allowed_biological_ids": ["draw-01", "draw-02"],
+        "data_role": "development",
+        "namespace": "dev",
+        "protocol_sha256": payload["training"]["record_bindings"][0]["protocol_sha256"],
+    }
+    assert payload["training"]["record_count"] == 4
+    assert payload["training"]["entry_count"] == 16
+    assert len(payload["training"]["record_bindings"]) == 4
     assert payload["training"]["manifest_sha256s"] == sorted(
         record.manifest_sha256 for record in records
     )
@@ -585,7 +698,7 @@ def test_artifact_loader_rejects_noncanonical_duplicate_extra_and_nonfinite_json
     )
     nonfinite = tmp_path / "nonfinite.json"
     nonfinite.write_text(
-        canonical_text.replace('"record_count":8', '"record_count":NaN')
+        canonical_text.replace('"record_count":4', '"record_count":NaN')
     )
 
     for path in (noncanonical, duplicate, extra, nonfinite):
@@ -617,9 +730,77 @@ def test_artifact_loader_rejects_boolean_schema_even_with_recomputed_digest(
         load_calibration_artifact(path)
 
 
+def test_artifact_loader_recomputes_retention_semantics_after_valid_rehash(
+    tmp_path: Path,
+):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(_development_records()).to_dict()
+    logistic = next(
+        item
+        for item in payload["selection"]["candidates"]
+        if item["algorithm"] == "logistic"
+    )
+    logistic["eligible"] = True
+    logistic["eligibility_reasons"] = []
+    logistic["brier_improved_mechanisms"] = ["symsim"]
+    payload["selected_algorithm"] = "logistic"
+    payload["calibrator"] = {
+        "algorithm": "logistic",
+        "parameters": {"intercept": 0.0, "slope": 1.0},
+    }
+    payload["selection"]["decision_reason"] = (
+        "nonidentity_passed_prespecified_retention_gate"
+    )
+    _rehash_payload(payload)
+    path = tmp_path / "forged-retention.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="retention|eligib|mechanism"):
+        load_calibration_artifact(path)
+
+
+def test_artifact_loader_rejects_cross_validation_mechanism_outside_truth_scope(
+    tmp_path: Path,
+):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(_development_records()).to_dict()
+    for group in payload["cross_validation"]["groups"]:
+        group["mechanism"] = "sergio"
+    _rehash_payload(payload)
+    path = tmp_path / "forged-mechanism.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="mechanism|truth|eligible"):
+        load_calibration_artifact(path)
+
+
+def test_artifact_loader_rejects_rehashed_final_namespace_scope(tmp_path: Path):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+    )
+
+    payload = fit_development_calibration(_development_records()).to_dict()
+    payload["data_scope"]["namespace"] = "final"
+    _rehash_payload(payload)
+    path = tmp_path / "forged-final-scope.json"
+    _canonical_write(path, payload)
+
+    with pytest.raises(ValueError, match="development|scope|namespace"):
+        load_calibration_artifact(path)
+
+
 def _training_input_payload():
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_type": "maskimpute_prezero_calibration_training_records",
         "records": [
             {
@@ -629,6 +810,12 @@ def _training_input_payload():
                 "biological_id": record.biological_id,
                 "manifest_sha256": record.manifest_sha256,
                 "truth_kind": record.truth_kind,
+                "namespace": record.namespace,
+                "data_role": record.data_role,
+                "technical_view": record.technical_view,
+                "dataset_id": record.dataset_id,
+                "dataset_sha256": record.dataset_sha256,
+                "protocol_sha256": record.protocol_sha256,
             }
             for record in _development_records()
         ],
@@ -646,6 +833,23 @@ def _canonical_write(path: Path, payload) -> None:
         )
         + "\n"
     )
+
+
+def _rehash_payload(payload) -> None:
+    unsigned = dict(payload)
+    unsigned.pop("payload_sha256", None)
+    payload["payload_sha256"] = hashlib.sha256(
+        (
+            json.dumps(
+                unsigned,
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode()
+    ).hexdigest()
 
 
 def _run_calibration_cli(input_path: Path, output_path: Path):
@@ -742,11 +946,89 @@ def test_atomic_artifact_failure_leaves_no_output_or_temporary_file(
     artifact = module.fit_development_calibration(_development_records())
     output = tmp_path / "calibration.json"
 
-    def fail_link(source, destination):
+    def fail_link(*args, **kwargs):
         raise OSError("injected link failure")
 
     monkeypatch.setattr(module.os, "link", fail_link)
     with pytest.raises(OSError, match="injected"):
+        module.save_calibration_artifact(output, artifact)
+
+    assert not output.exists()
+    assert not list(tmp_path.glob(".calibration.json.*.tmp"))
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_calibration_loaders_reject_linked_input_files(tmp_path: Path, link_kind):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        load_calibration_artifact,
+        load_calibration_records,
+        save_calibration_artifact,
+    )
+
+    records_source = tmp_path / "records-source.json"
+    artifact_source = tmp_path / "artifact-source.json"
+    _canonical_write(records_source, _training_input_payload())
+    save_calibration_artifact(
+        artifact_source,
+        fit_development_calibration(_development_records()),
+    )
+    records_link = tmp_path / "records-link.json"
+    artifact_link = tmp_path / "artifact-link.json"
+    if link_kind == "symlink":
+        records_link.symlink_to(records_source)
+        artifact_link.symlink_to(artifact_source)
+    else:
+        records_link.hardlink_to(records_source)
+        artifact_link.hardlink_to(artifact_source)
+
+    with pytest.raises(ValueError, match="link|regular|unique"):
+        load_calibration_records(records_link)
+    with pytest.raises(ValueError, match="link|regular|unique"):
+        load_calibration_artifact(artifact_link)
+
+
+def test_calibration_save_rejects_symlinked_output_parent(tmp_path: Path):
+    from maskimpute.calibration import (
+        fit_development_calibration,
+        save_calibration_artifact,
+    )
+
+    real_parent = tmp_path / "real"
+    real_parent.mkdir()
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    output = linked_parent / "calibration.json"
+
+    with pytest.raises((OSError, ValueError), match="symlink|link"):
+        save_calibration_artifact(
+            output,
+            fit_development_calibration(_development_records()),
+        )
+    assert not (real_parent / "calibration.json").exists()
+
+
+def test_directory_fsync_failure_rolls_back_published_artifact(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import maskimpute.calibration as module
+
+    artifact = module.fit_development_calibration(_development_records())
+    output = tmp_path / "calibration.json"
+    real_fsync = module.os.fsync
+    calls = 0
+
+    def fail_directory_fsync(descriptor):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected directory fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(module.os, "fsync", fail_directory_fsync)
+
+    with pytest.raises(OSError, match="directory fsync"):
         module.save_calibration_artifact(output, artifact)
 
     assert not output.exists()

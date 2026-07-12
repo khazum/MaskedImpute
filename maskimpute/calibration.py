@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 from typing import Any, ClassVar
 
@@ -19,8 +20,23 @@ from scipy.special import expit, logit
 
 PROBABILITY_CLIP = 1e-12
 CALIBRATOR_ORDER = ("identity", "logistic", "beta", "isotonic")
+DEVELOPMENT_PROTOCOL_SHA256 = (
+    "7cfa1b55458b5b2bc4c22e3a155086724586d95df40aa61c4b78b1a779794249"
+)
+_DEVELOPMENT_NAMESPACE = "dev"
+_DEVELOPMENT_DATA_ROLE = "development"
+_DEVELOPMENT_BIOLOGICAL_IDS = ("draw-01", "draw-02")
+_SYMSIM_TECHNICAL_VIEWS = ("moderate", "severe")
+_PRESPECIFIED_THRESHOLDS = {
+    "minimum_mechanisms_improved": 3,
+    "brier_improvement_epsilon": 1e-6,
+    "log_loss_worsening_tolerance": 1e-3,
+    "calibration_slope_lower": 0.8,
+    "calibration_slope_upper": 1.2,
+}
 _MECHANISM = re.compile(r"[a-z][a-z0-9_]*")
 _BIOLOGICAL_ID = re.compile(r"draw-(?:0[1-9]|[1-9][0-9])")
+_DATASET_ID = re.compile(r"dataset-[0-9a-f]{24}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -84,6 +100,12 @@ class CalibrationRecord:
     biological_id: str
     manifest_sha256: str
     truth_kind: str
+    namespace: str
+    data_role: str
+    technical_view: str
+    dataset_id: str
+    dataset_sha256: str
+    protocol_sha256: str
 
     def __post_init__(self) -> None:
         probability = _probability_array(self.p_pre_zero, ndim=1)
@@ -102,12 +124,32 @@ class CalibrationRecord:
             self.biological_id
         ):
             raise ValueError("biological_id must use canonical draw-{index:02d} form")
+        if self.biological_id not in _DEVELOPMENT_BIOLOGICAL_IDS:
+            raise ValueError(
+                "biological_id is outside the prespecified development draw set"
+            )
         if not isinstance(self.manifest_sha256, str) or not _SHA256.fullmatch(
             self.manifest_sha256
         ):
             raise ValueError("manifest_sha256 must be lowercase SHA-256")
         if self.truth_kind != "exact_pre_capture":
             raise ValueError("truth_kind must be exact_pre_capture")
+        if self.namespace != _DEVELOPMENT_NAMESPACE:
+            raise ValueError("calibration namespace must be the development namespace")
+        if self.data_role != _DEVELOPMENT_DATA_ROLE:
+            raise ValueError("calibration data_role must be development")
+        if self.technical_view not in _SYMSIM_TECHNICAL_VIEWS:
+            raise ValueError("technical_view is not a prespecified SymSim view")
+        if not isinstance(self.dataset_id, str) or not _DATASET_ID.fullmatch(
+            self.dataset_id
+        ):
+            raise ValueError("dataset_id must be a canonical simulation dataset ID")
+        if not isinstance(self.dataset_sha256, str) or not _SHA256.fullmatch(
+            self.dataset_sha256
+        ):
+            raise ValueError("dataset_sha256 must be lowercase SHA-256")
+        if self.protocol_sha256 != DEVELOPMENT_PROTOCOL_SHA256:
+            raise ValueError("protocol_sha256 does not bind the development protocol")
         object.__setattr__(self, "p_pre_zero", tuple(float(x) for x in probability))
         object.__setattr__(self, "target", tuple(int(x) for x in target))
 
@@ -252,6 +294,12 @@ def _validate_fit_arrays(
         raise ValueError("p_pre_zero, target, and weights lengths must match")
     if np.any(sample_weights <= 0):
         raise ValueError("weights must be strictly positive")
+    scale = float(np.max(sample_weights))
+    sample_weights /= scale
+    total = float(np.sum(sample_weights))
+    if not math.isfinite(total) or total <= 0:
+        raise ValueError("weights cannot be normalized safely")
+    sample_weights /= total
     return probability, labels, sample_weights
 
 
@@ -381,17 +429,23 @@ def validate_calibration_records(
         ) from exc
     if not values:
         raise ValueError("at least one calibration record is required")
-    if any(not isinstance(record, CalibrationRecord) for record in values):
+    if any(type(record) is not CalibrationRecord for record in values):
         raise TypeError("records must contain only CalibrationRecord values")
     manifests = [record.manifest_sha256 for record in values]
     if len(set(manifests)) != len(manifests):
         raise ValueError("duplicate calibration record manifest_sha256")
+    dataset_ids = [record.dataset_id for record in values]
+    if len(set(dataset_ids)) != len(dataset_ids):
+        raise ValueError("duplicate calibration record dataset_id")
     return tuple(
         sorted(
             values,
             key=lambda record: (
+                record.namespace,
                 record.mechanism,
                 record.biological_id,
+                record.technical_view,
+                record.dataset_id,
                 record.manifest_sha256,
             ),
         )
@@ -579,6 +633,10 @@ def _calibration_line(
     predictor = logit(np.clip(probability, PROBABILITY_CLIP, 1 - PROBABILITY_CLIP))
     if np.ptp(predictor) == 0:
         return None, None, "constant_prediction"
+    negative = predictor[target == 0]
+    positive = predictor[target == 1]
+    if np.max(negative) <= np.min(positive) or np.max(positive) <= np.min(negative):
+        return None, None, "complete_or_quasi_separation"
     design = np.column_stack((np.ones(len(predictor)), predictor))
     total_weight = float(np.sum(weights))
 
@@ -666,6 +724,10 @@ class CalibrationThresholds:
                 raise ValueError(f"{name} must be finite and nonnegative")
         if self.calibration_slope_lower > self.calibration_slope_upper:
             raise ValueError("calibration slope bounds are reversed")
+        if self.to_dict() != _PRESPECIFIED_THRESHOLDS:
+            raise ValueError(
+                "publication calibration thresholds must equal the prespecified values"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1115,6 +1177,7 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
             "artifact_type",
             "estimand",
             "inference_features",
+            "data_scope",
             "selected_algorithm",
             "calibrator",
             "selection",
@@ -1132,7 +1195,7 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
     unsigned.pop("payload_sha256")
     if _canonical_digest(unsigned) != digest:
         raise ValueError("artifact payload digest mismatch")
-    if type(payload["schema_version"]) is not int or payload["schema_version"] != 1:
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != 2:
         raise ValueError("unsupported calibration artifact schema")
     if payload["artifact_type"] != "maskimpute_prezero_calibration":
         raise ValueError("artifact_type is invalid")
@@ -1140,6 +1203,23 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         raise ValueError("calibration estimand is invalid")
     if payload["inference_features"] != ["p_pre_zero"]:
         raise ValueError("calibrator inference features are invalid")
+    data_scope = _exact_keys(
+        payload["data_scope"],
+        {
+            "allowed_biological_ids",
+            "data_role",
+            "namespace",
+            "protocol_sha256",
+        },
+        "data_scope",
+    )
+    if data_scope != {
+        "allowed_biological_ids": list(_DEVELOPMENT_BIOLOGICAL_IDS),
+        "data_role": _DEVELOPMENT_DATA_ROLE,
+        "namespace": _DEVELOPMENT_NAMESPACE,
+        "protocol_sha256": DEVELOPMENT_PROTOCOL_SHA256,
+    }:
+        raise ValueError("calibration artifact is outside the development data scope")
 
     truth_eligibility = _exact_keys(
         payload["truth_eligibility"],
@@ -1163,7 +1243,8 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         raise ValueError("eligible calibration mechanism count is invalid")
     if (
         type(truth_eligibility["minimum_mechanisms_required"]) is not int
-        or truth_eligibility["minimum_mechanisms_required"] <= 0
+        or truth_eligibility["minimum_mechanisms_required"]
+        != _PRESPECIFIED_THRESHOLDS["minimum_mechanisms_improved"]
     ):
         raise ValueError("minimum calibration mechanism count is invalid")
     if truth_eligibility["panel_limitations"] != {
@@ -1183,7 +1264,7 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
     )
     if selection["candidate_order"] != list(CALIBRATOR_ORDER):
         raise ValueError("candidate_order is invalid")
-    _thresholds_from_dict(selection["thresholds"])
+    thresholds = _thresholds_from_dict(selection["thresholds"])
     if (
         selection["thresholds"]["minimum_mechanisms_improved"]
         != truth_eligibility["minimum_mechanisms_required"]
@@ -1192,14 +1273,47 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
     if not isinstance(selection["candidates"], list):
         raise ValueError("selection.candidates must be an array")
     candidates = tuple(_candidate_from_dict(item) for item in selection["candidates"])
+    if tuple(candidate.algorithm for candidate in candidates) != CALIBRATOR_ORDER:
+        raise ValueError("candidate reports are not in canonical algorithm order")
+    expected_mechanisms = tuple(truth_eligibility["eligible_mechanisms"])
+    if any(
+        tuple(name for name, _metric in candidate.mechanism_metrics)
+        != expected_mechanisms
+        for candidate in candidates
+    ):
+        raise ValueError("candidate mechanisms contradict exact-truth eligibility")
+    identity = candidates[0]
+    if (
+        not identity.eligible
+        or identity.fit_failures
+        or identity.brier_improved_mechanisms
+        or identity.eligibility_reasons != ("default_uncalibrated_score",)
+    ):
+        raise ValueError("identity candidate semantics are invalid")
+    for candidate in candidates[1:]:
+        expected_reasons, expected_improved = retention_reasons(
+            candidate,
+            identity,
+            thresholds,
+        )
+        if (
+            candidate.eligible is not (not expected_reasons)
+            or candidate.eligibility_reasons != expected_reasons
+            or candidate.brier_improved_mechanisms != expected_improved
+        ):
+            raise ValueError(
+                "candidate retention eligibility was not derived correctly"
+            )
     decision = select_candidate(candidates)
     if decision.selected_algorithm != payload["selected_algorithm"]:
         raise ValueError("selected algorithm contradicts candidate reports")
-    if (
-        not isinstance(selection["decision_reason"], str)
-        or not selection["decision_reason"]
-    ):
-        raise ValueError("selection.decision_reason must be nonempty")
+    expected_decision_reason = (
+        "identity_default_no_nonidentity_passed"
+        if decision.selected_algorithm == "identity"
+        else "nonidentity_passed_prespecified_retention_gate"
+    )
+    if selection["decision_reason"] != expected_decision_reason:
+        raise ValueError("selection.decision_reason contradicts the retention decision")
 
     cross_validation = _exact_keys(
         payload["cross_validation"],
@@ -1216,19 +1330,27 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
     ):
         raise ValueError("cross-validation groups must be a nonempty array")
     group_manifests: list[str] = []
+    group_binding_by_manifest: dict[str, tuple[str, str, str]] = {}
     previous_group: tuple[str, str] | None = None
     for index, item in enumerate(cross_validation["groups"]):
         group = _exact_keys(
             item,
-            {"mechanism", "biological_id", "manifest_sha256s"},
+            {"namespace", "mechanism", "biological_id", "manifest_sha256s"},
             f"cross_validation.groups[{index}]",
         )
+        namespace = group["namespace"]
         mechanism = group["mechanism"]
         biological_id = group["biological_id"]
-        if not isinstance(mechanism, str) or not _MECHANISM.fullmatch(mechanism):
-            raise ValueError("cross-validation mechanism is invalid")
-        if not isinstance(biological_id, str) or not _BIOLOGICAL_ID.fullmatch(
-            biological_id
+        if namespace != _DEVELOPMENT_NAMESPACE:
+            raise ValueError("cross-validation namespace is outside development")
+        if mechanism not in expected_mechanisms:
+            raise ValueError(
+                "cross-validation mechanism is outside exact-truth eligibility"
+            )
+        if (
+            not isinstance(biological_id, str)
+            or not _BIOLOGICAL_ID.fullmatch(biological_id)
+            or biological_id not in _DEVELOPMENT_BIOLOGICAL_IDS
         ):
             raise ValueError("cross-validation biological_id is invalid")
         group_key = (mechanism, biological_id)
@@ -1243,6 +1365,14 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
             not _SHA256.fullmatch(manifest) for manifest in manifests
         ):
             raise ValueError("cross-validation manifest hashes are invalid")
+        if any(manifest in group_binding_by_manifest for manifest in manifests):
+            raise ValueError("cross-validation manifest is assigned to multiple groups")
+        for manifest in manifests:
+            group_binding_by_manifest[manifest] = (
+                namespace,
+                mechanism,
+                biological_id,
+            )
         group_manifests.extend(manifests)
 
     training = _exact_keys(
@@ -1251,6 +1381,7 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
             "record_count",
             "entry_count",
             "record_digest_sha256",
+            "record_bindings",
             "manifest_sha256s",
         },
         "training",
@@ -1272,6 +1403,71 @@ def _validate_artifact_payload(value: object) -> tuple[dict[str, Any], ScoreCali
         raise ValueError("training record count does not match manifests")
     if tuple(sorted(group_manifests)) != manifests:
         raise ValueError("cross-validation and training manifests differ")
+    binding_payload = training["record_bindings"]
+    if not isinstance(binding_payload, list) or len(binding_payload) != len(manifests):
+        raise ValueError("training record bindings do not match record count")
+    previous_binding_key: tuple[str, ...] | None = None
+    binding_manifests: list[str] = []
+    dataset_ids: list[str] = []
+    for index, value in enumerate(binding_payload):
+        binding = _exact_keys(
+            value,
+            {
+                "biological_id",
+                "data_role",
+                "dataset_id",
+                "dataset_sha256",
+                "manifest_sha256",
+                "mechanism",
+                "namespace",
+                "protocol_sha256",
+                "technical_view",
+            },
+            f"training.record_bindings[{index}]",
+        )
+        if (
+            binding["namespace"] != _DEVELOPMENT_NAMESPACE
+            or binding["data_role"] != _DEVELOPMENT_DATA_ROLE
+            or binding["protocol_sha256"] != DEVELOPMENT_PROTOCOL_SHA256
+            or binding["mechanism"] not in expected_mechanisms
+            or binding["biological_id"] not in _DEVELOPMENT_BIOLOGICAL_IDS
+            or binding["technical_view"] not in _SYMSIM_TECHNICAL_VIEWS
+        ):
+            raise ValueError("training record binding is outside development scope")
+        dataset_id = binding["dataset_id"]
+        dataset_sha256 = binding["dataset_sha256"]
+        manifest_sha256 = binding["manifest_sha256"]
+        if not isinstance(dataset_id, str) or not _DATASET_ID.fullmatch(dataset_id):
+            raise ValueError("training record dataset_id is invalid")
+        if not isinstance(dataset_sha256, str) or not _SHA256.fullmatch(dataset_sha256):
+            raise ValueError("training record dataset_sha256 is invalid")
+        if not isinstance(manifest_sha256, str) or not _SHA256.fullmatch(
+            manifest_sha256
+        ):
+            raise ValueError("training record manifest_sha256 is invalid")
+        binding_key = (
+            binding["namespace"],
+            binding["mechanism"],
+            binding["biological_id"],
+            binding["technical_view"],
+            dataset_id,
+            manifest_sha256,
+        )
+        if previous_binding_key is not None and binding_key <= previous_binding_key:
+            raise ValueError("training record bindings are not canonical")
+        previous_binding_key = binding_key
+        if group_binding_by_manifest.get(manifest_sha256) != (
+            binding["namespace"],
+            binding["mechanism"],
+            binding["biological_id"],
+        ):
+            raise ValueError("training binding contradicts cross-validation group")
+        binding_manifests.append(manifest_sha256)
+        dataset_ids.append(dataset_id)
+    if tuple(sorted(binding_manifests)) != manifests:
+        raise ValueError("training record bindings differ from manifests")
+    if len(set(dataset_ids)) != len(dataset_ids):
+        raise ValueError("training record bindings contain duplicate dataset IDs")
     return payload, calibrator
 
 
@@ -1307,6 +1503,26 @@ def _record_payload(record: CalibrationRecord) -> dict[str, Any]:
         "biological_id": record.biological_id,
         "manifest_sha256": record.manifest_sha256,
         "truth_kind": record.truth_kind,
+        "namespace": record.namespace,
+        "data_role": record.data_role,
+        "technical_view": record.technical_view,
+        "dataset_id": record.dataset_id,
+        "dataset_sha256": record.dataset_sha256,
+        "protocol_sha256": record.protocol_sha256,
+    }
+
+
+def _record_binding(record: CalibrationRecord) -> dict[str, str]:
+    return {
+        "biological_id": record.biological_id,
+        "data_role": record.data_role,
+        "dataset_id": record.dataset_id,
+        "dataset_sha256": record.dataset_sha256,
+        "manifest_sha256": record.manifest_sha256,
+        "mechanism": record.mechanism,
+        "namespace": record.namespace,
+        "protocol_sha256": record.protocol_sha256,
+        "technical_view": record.technical_view,
     }
 
 
@@ -1332,6 +1548,7 @@ def fit_development_calibration(
     ):
         groups.append(
             {
+                "namespace": _DEVELOPMENT_NAMESPACE,
                 "mechanism": mechanism,
                 "biological_id": biological_id,
                 "manifest_sha256s": sorted(
@@ -1343,10 +1560,16 @@ def fit_development_calibration(
             }
         )
     unsigned: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_type": "maskimpute_prezero_calibration",
         "estimand": "pre_capture_zero_given_observed_zero",
         "inference_features": ["p_pre_zero"],
+        "data_scope": {
+            "allowed_biological_ids": list(_DEVELOPMENT_BIOLOGICAL_IDS),
+            "data_role": _DEVELOPMENT_DATA_ROLE,
+            "namespace": _DEVELOPMENT_NAMESPACE,
+            "protocol_sha256": DEVELOPMENT_PROTOCOL_SHA256,
+        },
         "truth_eligibility": {
             "accepted_truth_kind": "exact_pre_capture",
             "eligible_mechanisms": ["symsim"],
@@ -1381,6 +1604,7 @@ def fit_development_calibration(
             "record_digest_sha256": _canonical_digest(
                 [_record_payload(record) for record in canonical]
             ),
+            "record_bindings": [_record_binding(record) for record in canonical],
             "manifest_sha256s": sorted(record.manifest_sha256 for record in canonical),
         },
     }
@@ -1402,12 +1626,101 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _reject_symlink_components(path: Path) -> None:
+    absolute = path.absolute()
+    for component in (absolute, *absolute.parents):
+        if not os.path.lexists(component):
+            continue
+        try:
+            metadata = component.lstat()
+        except OSError as exc:
+            raise ValueError(f"calibration path cannot be inspected: {path}") from exc
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ValueError(f"calibration path must not contain symlinks: {path}")
+
+
+def _file_state(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _read_unique_regular_bytes(path: Path, name: str) -> bytes:
+    _reject_symlink_components(path)
+    try:
+        before_path = path.lstat()
+        if not stat.S_ISREG(before_path.st_mode) or before_path.st_nlink != 1:
+            raise ValueError(f"{name} must be a unique regular file without links")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(f"{name} cannot be opened as a unique regular file") from exc
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or (before.st_dev, before.st_ino)
+            != (before_path.st_dev, before_path.st_ino)
+        ):
+            raise ValueError(f"{name} changed while opening or is linked")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+        after_path = path.lstat()
+        if _file_state(before) != _file_state(after) or _file_state(
+            before
+        ) != _file_state(after_path):
+            raise ValueError(f"{name} changed while reading")
+        _reject_symlink_components(path)
+        return b"".join(chunks)
+    except ValueError:
+        raise
+    except OSError as exc:
+        raise ValueError(f"{name} changed while reading") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _verify_open_directory(path: Path, descriptor: int) -> None:
+    try:
+        by_path = path.lstat()
+        by_descriptor = os.fstat(descriptor)
+    except OSError as exc:
+        raise ValueError("calibration output directory changed") from exc
+    if (
+        not stat.S_ISDIR(by_path.st_mode)
+        or stat.S_ISLNK(by_path.st_mode)
+        or not stat.S_ISDIR(by_descriptor.st_mode)
+        or (by_path.st_dev, by_path.st_ino)
+        != (by_descriptor.st_dev, by_descriptor.st_ino)
+    ):
+        raise ValueError("calibration output directory changed or is a symlink")
+
+
 def load_calibration_artifact(path: str | Path) -> CalibrationArtifact:
     """Load exact canonical bytes and verify the complete artifact schema/digest."""
 
     artifact_path = Path(path)
     try:
-        raw = artifact_path.read_bytes()
+        raw = _read_unique_regular_bytes(
+            artifact_path,
+            "calibration artifact",
+        )
         payload = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_unique_json_object,
@@ -1426,7 +1739,10 @@ def load_calibration_records(path: str | Path) -> tuple[CalibrationRecord, ...]:
 
     input_path = Path(path)
     try:
-        raw = input_path.read_bytes()
+        raw = _read_unique_regular_bytes(
+            input_path,
+            "calibration training input",
+        )
         payload = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_unique_json_object,
@@ -1441,7 +1757,7 @@ def load_calibration_records(path: str | Path) -> tuple[CalibrationRecord, ...]:
         {"schema_version", "artifact_type", "records"},
         "training input",
     )
-    if type(root["schema_version"]) is not int or root["schema_version"] != 1:
+    if type(root["schema_version"]) is not int or root["schema_version"] != 2:
         raise ValueError("unsupported calibration training input schema")
     if root["artifact_type"] != "maskimpute_prezero_calibration_training_records":
         raise ValueError("calibration training artifact_type is invalid")
@@ -1458,6 +1774,12 @@ def load_calibration_records(path: str | Path) -> tuple[CalibrationRecord, ...]:
                 "biological_id",
                 "manifest_sha256",
                 "truth_kind",
+                "namespace",
+                "data_role",
+                "technical_view",
+                "dataset_id",
+                "dataset_sha256",
+                "protocol_sha256",
             },
             f"training input records[{index}]",
         )
@@ -1476,24 +1798,78 @@ def save_calibration_artifact(
 
     if not isinstance(artifact, CalibrationArtifact):
         raise TypeError("artifact must be CalibrationArtifact")
-    output = Path(path)
+    output = Path(path).absolute()
+    _reject_symlink_components(output.parent)
     output.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{output.name}.",
-        suffix=".tmp",
-        dir=output.parent,
+    _reject_symlink_components(output)
+    parent_flags = (
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     )
-    temporary = Path(temporary_name)
+    parent_descriptor = os.open(output.parent, parent_flags)
+    descriptor = -1
+    temporary: Path | None = None
+    published = False
     try:
-        with os.fdopen(descriptor, "wb") as destination:
+        _verify_open_directory(output.parent, parent_descriptor)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{output.name}.",
+            suffix=".tmp",
+            dir=output.parent,
+        )
+        temporary = Path(temporary_name)
+        destination = os.fdopen(descriptor, "wb")
+        descriptor = -1
+        with destination:
             destination.write(artifact._payload_bytes)
             destination.flush()
             os.fsync(destination.fileno())
-        os.link(temporary, output)
-        directory_descriptor = os.open(output.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        _verify_open_directory(output.parent, parent_descriptor)
+        _reject_symlink_components(output)
+        os.link(
+            temporary.name,
+            output.name,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        published = True
+        _verify_open_directory(output.parent, parent_descriptor)
+        os.fsync(parent_descriptor)
+        _verify_open_directory(output.parent, parent_descriptor)
+    except BaseException:
+        if published and temporary is not None:
+            try:
+                temporary_metadata = os.stat(
+                    temporary.name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                output_metadata = os.stat(
+                    output.name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if stat.S_ISREG(output_metadata.st_mode) and (
+                    temporary_metadata.st_dev,
+                    temporary_metadata.st_ino,
+                ) == (output_metadata.st_dev, output_metadata.st_ino):
+                    os.unlink(output.name, dir_fd=parent_descriptor)
+                    try:
+                        os.fsync(parent_descriptor)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+        raise
     finally:
-        temporary.unlink(missing_ok=True)
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary is not None:
+            try:
+                os.unlink(temporary.name, dir_fd=parent_descriptor)
+                os.fsync(parent_descriptor)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        os.close(parent_descriptor)
