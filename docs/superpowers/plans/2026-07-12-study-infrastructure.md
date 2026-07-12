@@ -75,8 +75,9 @@ The tracked JSON must contain:
 {
   "schema_version": 1,
   "legacy_data_role": "development_only",
-  "development": {"draws_per_condition": 3, "cells": 1000, "genes": 1000},
+  "development": {"namespace": "dev", "draws_per_condition": 3, "cells": 1000, "genes": 1000},
   "final": {
+    "namespace": "final",
     "mechanisms": ["scdesign3", "symsim", "scmultisim", "semisynthetic"],
     "draws_per_condition": 8,
     "model_seeds": 3,
