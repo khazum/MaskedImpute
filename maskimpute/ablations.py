@@ -640,6 +640,8 @@ def _fit_ablation_once(
     cell_ids: object,
     development_mechanism: str,
     development_biological_id: str,
+    decoder: str = "scaled_gaussian",
+    decoder_config: object | None = None,
 ):
     """Fit one development ablation from verified, truth-free score artifacts.
 
@@ -657,6 +659,12 @@ def _fit_ablation_once(
     from maskimpute.train import TrainingOutcome
 
     trusted_spec, registry, registry_sha256 = _trusted_ablation_spec(spec)
+    if decoder not in {"scaled_gaussian", "negative_binomial"}:
+        raise ValueError("decoder must be scaled_gaussian or negative_binomial")
+    if decoder == "scaled_gaussian" and decoder_config is not None:
+        raise ValueError("scaled_gaussian does not accept decoder_config")
+    if decoder == "negative_binomial" and trusted_spec.id != registry.reference.id:
+        raise ValueError("negative_binomial is a reference-only development revision")
     if type(config) is not MaskImputeConfig:
         raise TypeError("config must be an exact MaskImputeConfig")
     config = replace(config)
@@ -742,48 +750,69 @@ def _fit_ablation_once(
     else:
         equivalence_reason = "direct_cross_fitted_count_score"
 
-    def model_factory(
-        n_genes: int,
-        training_config: MaskImputeConfig,
-    ) -> torch.nn.Module:
-        return build_capacity_matched_model(
-            n_genes=n_genes,
-            hidden_dims=training_config.hidden_dims,
-            latent_dim=training_config.latent_dim,
-            encoder_mode=trusted_spec.encoder_mode,
-        )
+    dispersion = None
+    if decoder == "scaled_gaussian":
 
-    if trusted_spec.positive_masking == "uniform":
-
-        def training_mask_factory(
-            values: object,
-            *,
-            validation_mask: object,
-            fraction: float,
-            log_count_bin_edges: Sequence[float],
-            rng: np.random.Generator,
-        ) -> np.ndarray:
-            del log_count_bin_edges
-            return make_uniform_positive_mask(
-                values,
-                validation_mask=validation_mask,
-                fraction=fraction,
-                rng=rng,
+        def model_factory(
+            n_genes: int,
+            training_config: MaskImputeConfig,
+        ) -> torch.nn.Module:
+            return build_capacity_matched_model(
+                n_genes=n_genes,
+                hidden_dims=training_config.hidden_dims,
+                latent_dim=training_config.latent_dim,
+                encoder_mode=trusted_spec.encoder_mode,
             )
 
+        if trusted_spec.positive_masking == "uniform":
+
+            def training_mask_factory(
+                values: object,
+                *,
+                validation_mask: object,
+                fraction: float,
+                log_count_bin_edges: Sequence[float],
+                rng: np.random.Generator,
+            ) -> np.ndarray:
+                del log_count_bin_edges
+                return make_uniform_positive_mask(
+                    values,
+                    validation_mask=validation_mask,
+                    fraction=fraction,
+                    rng=rng,
+                )
+
+        else:
+            from maskimpute.train import make_epoch_training_mask
+
+            training_mask_factory = make_epoch_training_mask
+
+        outcome: TrainingOutcome = _train_with_policies(
+            counts,
+            probability,
+            resolved_config,
+            device,
+            model_factory=model_factory,
+            training_mask_factory=training_mask_factory,
+        )
     else:
-        from maskimpute.train import make_epoch_training_mask
+        from maskimpute.nb_model import NegativeBinomialDecoderConfig
+        from maskimpute.train import train_v28
 
-        training_mask_factory = make_epoch_training_mask
-
-    outcome: TrainingOutcome = _train_with_policies(
-        counts,
-        probability,
-        resolved_config,
-        device,
-        model_factory=model_factory,
-        training_mask_factory=training_mask_factory,
-    )
+        if type(decoder_config) is not NegativeBinomialDecoderConfig:
+            raise TypeError(
+                "negative_binomial decoder_config must be an exact "
+                "NegativeBinomialDecoderConfig"
+            )
+        v28_outcome = train_v28(
+            counts,
+            probability,
+            resolved_config,
+            device,
+            decoder_config=decoder_config,
+        )
+        outcome = v28_outcome.training
+        dispersion = v28_outcome.dispersion
 
     selected_device = next(outcome.model.parameters()).device
     expression = torch.as_tensor(
@@ -798,23 +827,72 @@ def _fit_ablation_once(
     )
     outcome.model.eval()
     with torch.no_grad():
-        normalized_prediction, latent = outcome.model(expression, availability)
-    normalized_dense = normalized_prediction.detach().cpu().numpy().astype(np.float64)
+        decoder_prediction, latent = outcome.model(expression, availability)
+    prediction_dense = decoder_prediction.detach().cpu().numpy().astype(np.float64)
     latent_dense = latent.detach().cpu().numpy().astype(np.float64)
-    if not np.all(np.isfinite(normalized_dense)) or np.any(normalized_dense < 0):
+    if not np.all(np.isfinite(prediction_dense)) or np.any(prediction_dense < 0):
         raise FloatingPointError("ablation decoder produced invalid predictions")
     if not np.all(np.isfinite(latent_dense)):
         raise FloatingPointError("ablation encoder produced invalid latent values")
-    with np.errstate(over="ignore", invalid="ignore"):
-        denoised_counts = invert_observed_normalization(
-            normalized_dense,
-            outcome.library_sizes,
-            target=resolved_config.normalization_target,
-        )
-    if not np.all(np.isfinite(denoised_counts)) or np.any(denoised_counts < 0):
-        raise FloatingPointError(
+    if decoder == "scaled_gaussian":
+        with np.errstate(over="ignore", invalid="ignore"):
+            denoised_counts = invert_observed_normalization(
+                prediction_dense,
+                outcome.library_sizes,
+                target=resolved_config.normalization_target,
+            )
+        invalid_decoder_message = (
             "ablation inverse normalization produced invalid counts"
         )
+        method_version = "v27-development-ablation-single-run"
+        primary_loss_name = "artificially_masked_observed_positive_mse"
+        decoder_diagnostics: dict[str, object] = {
+            "family": "scaled_gaussian",
+            "prediction_scale": "log_normalized_expression",
+            "count_conversion": "inverse_observed_library_log_normalization",
+        }
+    else:
+        from maskimpute.nb_model import apply_library_size_offset
+
+        libraries = torch.as_tensor(
+            outcome.library_sizes,
+            dtype=decoder_prediction.dtype,
+            device=selected_device,
+        )
+        denoised_counts = (
+            apply_library_size_offset(decoder_prediction, libraries)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float64)
+        )
+        invalid_decoder_message = "negative-binomial decoder produced invalid counts"
+        method_version = "v28-development-candidate-single-run"
+        primary_loss_name = (
+            "artificially_masked_observed_positive_negative_binomial_nll"
+        )
+        assert dispersion is not None
+        dispersion_bytes = np.asarray(
+            dispersion.dispersion,
+            dtype="<f8",
+        ).tobytes(order="C")
+        decoder_diagnostics = {
+            "family": "negative_binomial",
+            "parameterization": "variance_equals_mean_plus_mean_squared_over_theta",
+            "mean": "observed_library_size_times_decoded_gene_fraction",
+            "gene_fraction_link": "softmax",
+            "dispersion_estimator": (
+                "exposure_adjusted_winsorized_moments_log_shrunk_to_gene_median"
+            ),
+            "dispersion_config": decoder_config.to_dict(),
+            "global_dispersion": dispersion.global_dispersion,
+            "gene_dispersion_min": float(np.min(dispersion.dispersion)),
+            "gene_dispersion_max": float(np.max(dispersion.dispersion)),
+            "gene_dispersion_sha256": hashlib.sha256(dispersion_bytes).hexdigest(),
+            "validation_positive_values_excluded_from_dispersion": True,
+        }
+    if not np.all(np.isfinite(denoised_counts)) or np.any(denoised_counts < 0):
+        raise FloatingPointError(invalid_decoder_message)
     output_counts = apply_ablation_output(
         denoised_counts,
         counts,
@@ -827,7 +905,8 @@ def _fit_ablation_once(
     base_config_payload = _training_config_payload(config)
     effective_config_payload = _training_config_payload(resolved_config)
     diagnostics = {
-        "method_version": "v27-development-ablation-single-run",
+        "method_version": method_version,
+        "decoder": decoder_diagnostics,
         "ablation": {
             "id": trusted_spec.id,
             "changed_component": trusted_spec.changed_component,
@@ -869,7 +948,7 @@ def _fit_ablation_once(
             "epoch_training_mask_sha256": outcome.epoch_training_mask_hashes,
         },
         "losses": {
-            "primary": "artificially_masked_observed_positive_mse",
+            "primary": primary_loss_name,
             "natural_zero_penalty": (
                 "mean(p_pre_zero * normalized_prediction_squared)"
             ),

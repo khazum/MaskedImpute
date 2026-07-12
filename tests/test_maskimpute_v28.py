@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+from pathlib import Path
+
 import numpy as np
 import pytest
 from scipy.stats import nbinom
@@ -221,6 +224,60 @@ def _tiny_config():
     )
 
 
+def _method_input(counts: np.ndarray):
+    from maskimpute_benchmark.methods.base import MethodInput
+
+    return MethodInput(
+        source_dataset_sha256=hashlib.sha256(counts.tobytes()).hexdigest(),
+        obs_ids=tuple(f"cell-{index}" for index in range(counts.shape[0])),
+        var_ids=tuple(f"gene-{index}" for index in range(counts.shape[1])),
+        shape=counts.shape,
+        obs_covariates=(),
+        var_covariates=(),
+        _count_bytes=np.asarray(counts, dtype="<f8", order="C").tobytes(order="C"),
+        _normalization_bytes=b"{}",
+    )
+
+
+def _identity_calibration_artifact():
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+        fit_development_calibration,
+    )
+
+    records = []
+    for index, (draw, view) in enumerate(
+        (
+            ("draw-01", "moderate"),
+            ("draw-01", "severe"),
+            ("draw-02", "moderate"),
+            ("draw-02", "severe"),
+        ),
+        start=1,
+    ):
+        dataset_sha = hashlib.sha256(f"{draw}:{view}:v28".encode()).hexdigest()
+        records.append(
+            CalibrationRecord(
+                p_pre_zero=(0.1, 0.25, 0.7, 0.9),
+                target=(0, 0, 1, 1),
+                mechanism="symsim",
+                biological_id=draw,
+                manifest_sha256=f"{index:x}" * 64,
+                truth_kind="exact_pre_capture",
+                namespace="dev",
+                data_role="development",
+                technical_view=view,
+                dataset_id=f"dataset-{dataset_sha[:24]}",
+                dataset_sha256=dataset_sha,
+                protocol_sha256=DEVELOPMENT_PROTOCOL_SHA256,
+            )
+        )
+    artifact = fit_development_calibration(records)
+    assert artifact.selected_algorithm == "identity"
+    return artifact
+
+
 def test_train_v28_is_deterministic_truth_free_and_restores_caller_rng() -> None:
     from maskimpute.nb_model import NegativeBinomialDecoderConfig
     from maskimpute.train import train_v28
@@ -291,3 +348,80 @@ def test_train_v28_is_deterministic_truth_free_and_restores_caller_rng() -> None
             decoder_config=decoder_config,
             evaluator_truth=np.ones_like(counts),
         )
+
+
+def test_v28_development_candidate_shares_score_gate_and_selective_output() -> None:
+    from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
+    from maskimpute.nb_model import NegativeBinomialDecoderConfig
+    from maskimpute_benchmark.methods.maskimpute import (
+        run_v28_development_candidate,
+    )
+    from maskimpute_benchmark.methods.registry import load_method_registry
+
+    counts = _tiny_counts()
+    method_input = _method_input(counts)
+    score_config = PreZeroCountModelConfig(n_folds=2, link_max_iter=25)
+    calibration = _identity_calibration_artifact()
+    execution = run_v28_development_candidate(
+        load_method_registry(Path("study/methods.json")).by_id("maskimpute"),
+        method_input,
+        calibration_artifact=calibration,
+        seed=42,
+        config=_tiny_config(),
+        count_model_config=score_config,
+        decoder_config=NegativeBinomialDecoderConfig(
+            dispersion_prior_strength=5.0,
+            winsor_quantile=0.9,
+        ),
+        device="cpu",
+        development_mechanism="symsim",
+        development_biological_id="draw-01",
+    )
+
+    direct_score = fit_p_pre_zero_count_model(
+        counts,
+        method_input.obs_ids,
+        score_config,
+    ).score_for_counts(counts, method_input.obs_ids)
+    expected_probability = np.zeros_like(direct_score)
+    observed_zero = counts == 0
+    expected_probability[observed_zero] = (
+        calibration.transform_for_development_holdout(
+            direct_score[observed_zero],
+            mechanism="symsim",
+            biological_id="draw-01",
+        )
+    )
+    result = execution.ablation_result
+    np.testing.assert_array_equal(result.p_pre_zero, expected_probability)
+    np.testing.assert_array_equal(
+        execution.snapshot.matrix[counts > 0],
+        counts[counts > 0],
+    )
+    np.testing.assert_allclose(
+        result.denoised_counts.sum(axis=1),
+        counts.sum(axis=1),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    expected_output = result.denoised_counts * np.power(
+        1.0 - expected_probability,
+        _tiny_config().gate_gamma,
+    )
+    expected_output[counts > 0] = counts[counts > 0]
+    np.testing.assert_allclose(result.selective_counts, expected_output)
+    assert np.all(np.isfinite(result.denoised_counts))
+    assert np.all(result.denoised_counts >= 0)
+    diagnostics = result.diagnostics
+    assert diagnostics["method_version"] == "v28-development-candidate-single-run"
+    assert diagnostics["decoder"]["family"] == "negative_binomial"
+    assert diagnostics["decoder"]["mean"] == (
+        "observed_library_size_times_decoded_gene_fraction"
+    )
+    assert diagnostics["losses"]["primary"] == (
+        "artificially_masked_observed_positive_negative_binomial_nll"
+    )
+    assert diagnostics["score"]["calibration_scope"] == (
+        "leave_one_biological_draw_out"
+    )
+    assert diagnostics["primary_output_policy"] == "selective"

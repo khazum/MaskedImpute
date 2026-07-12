@@ -87,6 +87,8 @@ def _run_in_tree(
     device: str | torch.device,
     development_mechanism: str,
     development_biological_id: str,
+    decoder: str = "scaled_gaussian",
+    decoder_config: object | None = None,
 ) -> MaskImputeAdapterExecution:
     require_method_spec(
         spec,
@@ -122,6 +124,21 @@ def _run_in_tree(
         raise ValueError("seed must equal the bound MaskImpute config seed")
     if type(count_model_config) is not PreZeroCountModelConfig:
         raise TypeError("count_model_config must be an exact PreZeroCountModelConfig")
+    if decoder == "scaled_gaussian":
+        if decoder_config is not None:
+            raise ValueError("scaled_gaussian does not accept decoder_config")
+    elif decoder == "negative_binomial":
+        from maskimpute.nb_model import NegativeBinomialDecoderConfig
+
+        if type(decoder_config) is not NegativeBinomialDecoderConfig:
+            raise TypeError(
+                "negative_binomial decoder_config must be an exact "
+                "NegativeBinomialDecoderConfig"
+            )
+        if variant_id != "maskimpute-reference":
+            raise ValueError("negative_binomial is a reference-only revision")
+    else:
+        raise ValueError("decoder is not a tracked in-tree implementation")
 
     registry = load_ablation_registry(_TRACKED_ABLATION_REGISTRY)
     specifications = {registry.reference.id: registry.reference, **registry.by_id}
@@ -146,6 +163,8 @@ def _run_in_tree(
         cell_ids=method_input.obs_ids,
         development_mechanism=development_mechanism,
         development_biological_id=development_biological_id,
+        decoder=decoder,
+        decoder_config=decoder_config,
     )
     snapshot = finalize_maskimpute_output(
         spec,
@@ -160,7 +179,7 @@ def _run_in_tree(
         ),
         CompatibilityEvent(
             "primary_output_policy",
-            f"tracked ablation policy={result.output_policy}; denoised output remains separate",
+            f"decoder={decoder}; tracked policy={result.output_policy}; denoised output remains separate",
         ),
         CompatibilityEvent(
             "development_authority_boundary",
@@ -249,10 +268,42 @@ def run_capacity_matched_ae(
     )
 
 
+def run_v28_development_candidate(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    *,
+    calibration_artifact: CalibrationArtifact,
+    seed: int,
+    config: MaskImputeConfig,
+    count_model_config: PreZeroCountModelConfig,
+    decoder_config: object,
+    device: str | torch.device,
+    development_mechanism: str,
+    development_biological_id: str,
+) -> MaskImputeAdapterExecution:
+    """Run the conditional NB revision inside development authority only."""
+
+    return _run_in_tree(
+        spec,
+        method_input,
+        variant_id="maskimpute-reference",
+        calibration_artifact=calibration_artifact,
+        seed=seed,
+        config=config,
+        count_model_config=count_model_config,
+        device=device,
+        development_mechanism=development_mechanism,
+        development_biological_id=development_biological_id,
+        decoder="negative_binomial",
+        decoder_config=decoder_config,
+    )
+
+
 __all__ = [
     "MaskImputeAdapterExecution",
     "finalize_maskimpute_output",
     "maskimpute_to_evaluator_counts",
     "run_capacity_matched_ae",
     "run_maskimpute",
+    "run_v28_development_candidate",
 ]
