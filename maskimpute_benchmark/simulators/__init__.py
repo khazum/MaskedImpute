@@ -19,6 +19,7 @@ from .native import (
     seal_native_outputs,
     validate_native_manifest,
 )
+from .symsim import run_symsim_pair
 
 __all__ = [
     "FinalManifestClaim",
@@ -31,6 +32,7 @@ __all__ = [
     "load_final_manifest_claim",
     "revalidate_native_outputs",
     "seal_native_outputs",
+    "run_symsim_pair",
     "simulation_dataset_id",
     "simulation_request_identity",
     "validate_paired_simulation_requests",
