@@ -91,6 +91,17 @@ from .scsdae import (
     run_scsdae,
     scsdae_to_evaluator_counts,
 )
+from .sctsi import (
+    SCTSIAttemptReceipt,
+    SCTSIConfig,
+    SCTSIMatchedBulkReference,
+    SCTSIUnavailableError,
+    finalize_sctsi_output,
+    prepare_sctsi_matched_bulk_reference,
+    run_sctsi,
+    sctsi_to_evaluator_counts,
+    validate_sctsi_matched_bulk_reference,
+)
 from .scziva import (
     SCZivaConfig,
     finalize_scziva_output,
@@ -165,6 +176,18 @@ LEGACY_EVALUATOR_NATIVE_SCALES = MappingProxyType(
     {
         "sccr": "method_native_normalized",
         "scsdae": "method_native_normalized",
+    }
+)
+EXTERNAL_REFERENCE_EVALUATOR_COUNT_CONVERTERS = MappingProxyType(
+    {
+        "d3impute": d3impute_to_evaluator_counts,
+        "sctsi": sctsi_to_evaluator_counts,
+    }
+)
+EXTERNAL_REFERENCE_EVALUATOR_NATIVE_SCALES = MappingProxyType(
+    {
+        "d3impute": "external_reference_adjusted",
+        "sctsi": "external_reference_adjusted",
     }
 )
 
@@ -289,6 +312,30 @@ def legacy_output_to_evaluator_log2_cp10k(
     return count_equivalent_to_log2_cp10k(counts)
 
 
+def external_reference_output_to_evaluator_counts(
+    method_input: MethodInput,
+    snapshot: MethodOutputSnapshot,
+) -> np.ndarray:
+    """Validate an external-reference snapshot and convert to evaluator counts."""
+
+    return _output_to_evaluator_counts(
+        method_input,
+        snapshot,
+        EXTERNAL_REFERENCE_EVALUATOR_COUNT_CONVERTERS,
+        EXTERNAL_REFERENCE_EVALUATOR_NATIVE_SCALES,
+    )
+
+
+def external_reference_output_to_evaluator_log2_cp10k(
+    method_input: MethodInput,
+    snapshot: MethodOutputSnapshot,
+) -> np.ndarray:
+    """Convert an external-reference comparator to common log2(CP10k+1)."""
+
+    counts = external_reference_output_to_evaluator_counts(method_input, snapshot)
+    return count_equivalent_to_log2_cp10k(counts)
+
+
 _LAZY_MASKIMPUTE_EXPORTS = frozenset(
     {
         "MaskImputeAdapterExecution",
@@ -323,6 +370,8 @@ __all__ = [
     "DCAConfig",
     "D3ImputeConfig",
     "EnvironmentSpec",
+    "EXTERNAL_REFERENCE_EVALUATOR_COUNT_CONVERTERS",
+    "EXTERNAL_REFERENCE_EVALUATOR_NATIVE_SCALES",
     "LicenseSpec",
     "LEGACY_EVALUATOR_COUNT_CONVERTERS",
     "LEGACY_EVALUATOR_NATIVE_SCALES",
@@ -344,6 +393,10 @@ __all__ = [
     "SCSDaeAttemptReceipt",
     "SCSDaeConfig",
     "SCSDaeUnavailableError",
+    "SCTSIAttemptReceipt",
+    "SCTSIConfig",
+    "SCTSIMatchedBulkReference",
+    "SCTSIUnavailableError",
     "SCVIConfig",
     "SCZivaConfig",
     "SourceSpec",
@@ -368,9 +421,12 @@ __all__ = [
     "finalize_saver_output",
     "finalize_sccr_output",
     "finalize_scsdae_output",
+    "finalize_sctsi_output",
     "finalize_scvi_output",
     "finalize_scziva_output",
     "frequencies_to_observed_library_counts",
+    "external_reference_output_to_evaluator_counts",
+    "external_reference_output_to_evaluator_log2_cp10k",
     "load_method_registry",
     "legacy_output_to_evaluator_counts",
     "legacy_output_to_evaluator_log2_cp10k",
@@ -380,6 +436,7 @@ __all__ = [
     "observed_to_evaluator_counts",
     "prepare_method_input",
     "prepare_matched_bulk_reference",
+    "prepare_sctsi_matched_bulk_reference",
     "recent_output_to_evaluator_counts",
     "recent_output_to_evaluator_log2_cp10k",
     "snapshot_method_output",
@@ -395,14 +452,17 @@ __all__ = [
     "run_saver",
     "run_sccr",
     "run_scsdae",
+    "run_sctsi",
     "run_scvi",
     "run_scziva",
     "saver_to_evaluator_counts",
     "sccr_to_evaluator_counts",
     "scsdae_to_evaluator_counts",
+    "sctsi_to_evaluator_counts",
     "scvi_to_evaluator_counts",
     "scziva_to_evaluator_counts",
     "validate_matched_bulk_reference",
+    "validate_sctsi_matched_bulk_reference",
     "validate_run_record",
     "verify_pinned_source",
     "verify_cached_method_sources",
