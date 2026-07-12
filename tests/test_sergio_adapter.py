@@ -1036,6 +1036,24 @@ def test_deterministic_rerun_reuses_content_addressed_native_without_overwrite(
     assert list((requests[0].output_path.parent / "native").iterdir()) == native_dirs
 
 
+def test_relocated_rerun_has_identical_manifest_and_semantic_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_external(monkeypatch)
+
+    first = sergio_module.run_sergio_pair(_requests(tmp_path / "first"), SMOKE_PROTOCOL)
+    relocated = sergio_module.run_sergio_pair(
+        _requests(tmp_path / "relocated"), SMOKE_PROTOCOL
+    )
+
+    assert [artifact.native_manifest.manifest_sha256 for artifact in first] == [
+        artifact.native_manifest.manifest_sha256 for artifact in relocated
+    ]
+    assert [artifact.dataset_sha256 for artifact in first] == [
+        artifact.dataset_sha256 for artifact in relocated
+    ]
+
+
 def test_sergio_pair_is_exported_from_simulators_package() -> None:
     import maskimpute_benchmark.simulators as simulators
 

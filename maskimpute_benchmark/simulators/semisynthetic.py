@@ -34,7 +34,7 @@ from .base import (
     SimulationArtifact,
     SimulationContractError,
     SimulationRequest,
-    simulation_request_identity,
+    simulation_scientific_identity,
     validate_paired_simulation_requests,
 )
 from .native import seal_native_outputs
@@ -729,15 +729,6 @@ def _pair_config(
         },
         "source_receipt_sha256": canonical_sha256(source_receipt),
         "views": views,
-    }
-
-
-def _location_free_request_identity(request: SimulationRequest) -> dict[str, object]:
-    identity = simulation_request_identity(request)
-    identity.pop("output_path")
-    return {
-        "schema": "maskimpute-semisynthetic-request-design-v1",
-        **identity,
     }
 
 
@@ -1720,7 +1711,7 @@ def run_semisynthetic_pair(
             by_view["moderate"].genes,
         )
         pair_identity = {
-            name: _location_free_request_identity(by_view[name])
+            name: simulation_scientific_identity(by_view[name])
             for name in ("moderate", "severe")
         }
         pair_request_sha256 = canonical_sha256(pair_identity)
@@ -1734,7 +1725,7 @@ def run_semisynthetic_pair(
                 "config_sha256": canonical_sha256(config),
                 "fit_sha256": fit.fit_sha256,
                 "pair_request_sha256": pair_request_sha256,
-                "simulation_request": simulation_request_identity(request),
+                "simulation_request": simulation_scientific_identity(request),
                 "source_partition": {
                     "namespace": fit.namespace,
                     "donors": list(fit.donors),

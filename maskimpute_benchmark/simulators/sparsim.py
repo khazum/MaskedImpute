@@ -30,7 +30,7 @@ from .base import (
     SimulationArtifact,
     SimulationContractError,
     SimulationRequest,
-    simulation_request_identity,
+    simulation_scientific_identity,
     validate_paired_simulation_requests,
 )
 from .native import seal_native_outputs
@@ -1392,7 +1392,7 @@ def run_sparsim_pair(
         )
         marker_truth = _marker_truth(latent, groups)
         pair_identity = {
-            name: simulation_request_identity(by_view[name])
+            name: simulation_scientific_identity(by_view[name])
             for name in ("moderate", "severe")
         }
         pair_request_sha256 = canonical_sha256(pair_identity)
@@ -1407,7 +1407,7 @@ def run_sparsim_pair(
                 "environment": before_environment,
                 "pair_request_sha256": pair_request_sha256,
                 "run_metadata": run_metadata,
-                "simulation_request": simulation_request_identity(request),
+                "simulation_request": simulation_scientific_identity(request),
                 "source_receipt": before_source,
             }
             manifest_metadata[name] = metadata

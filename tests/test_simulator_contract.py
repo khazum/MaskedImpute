@@ -30,6 +30,8 @@ from maskimpute_benchmark.simulators.base import (
     biological_unit_id,
     load_final_manifest_claim,
     simulation_dataset_id,
+    simulation_request_identity,
+    simulation_scientific_identity,
     validate_paired_simulation_requests,
     validate_simulation_request,
 )
@@ -180,6 +182,34 @@ def test_deterministic_ids_bind_seeded_design_fields(
     assert biological_unit_id(moderate) == biological_unit_id(severe)
     assert moderate.independent_unit_id == severe.independent_unit_id
     assert moderate.dataset_id == simulation_dataset_id(moderate)
+
+
+def test_scientific_request_identity_is_independent_of_output_destination(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    relocated = replace(
+        request,
+        output_path=(
+            tmp_path / "relocated" / "dev" / "symsim" / "draw-01-moderate.h5ad"
+        ),
+    )
+
+    assert simulation_scientific_identity(request) == simulation_scientific_identity(
+        relocated
+    )
+    assert simulation_request_identity(request) == simulation_scientific_identity(
+        request
+    )
+    assert "output_path" not in simulation_scientific_identity(request)
+    validate_simulation_request(relocated, PROTOCOL)
+
+    invalid_destination = replace(
+        request,
+        output_path=tmp_path / "relocated" / "missing-namespace.h5ad",
+    )
+    with pytest.raises(SimulationContractError, match="output_path"):
+        validate_simulation_request(invalid_destination, PROTOCOL)
 
 
 def test_paired_views_share_one_biological_unit_and_truth_seed(tmp_path: Path) -> None:
@@ -920,19 +950,7 @@ def _artifact_request(tmp_path: Path, **changes: object) -> SimulationRequest:
 
 
 def _request_identity(request: SimulationRequest) -> dict[str, object]:
-    return {
-        "biological_id": request.biological_id,
-        "biological_seed": request.biological_seed,
-        "cells": request.cells,
-        "dataset_id": request.dataset_id,
-        "genes": request.genes,
-        "independent_unit_id": request.independent_unit_id,
-        "measurement_seed": request.measurement_seed,
-        "mechanism": request.mechanism,
-        "namespace": request.namespace,
-        "output_path": request.output_path.as_posix(),
-        "technical_view": request.technical_view,
-    }
+    return simulation_scientific_identity(request)
 
 
 def _seal_for_request(
@@ -1023,6 +1041,31 @@ def test_simulation_artifact_is_frozen_and_binds_validated_translation(
     assert benchmark_dataset_sha256(artifact.adata) == dataset_hash
     with pytest.raises(FrozenInstanceError):
         artifact.dataset_sha256 = "0" * 64  # type: ignore[misc]
+
+
+def test_simulation_artifact_scientific_binding_survives_relocation(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output.txt"
+    output.write_text("native", encoding="utf-8")
+    request = _artifact_request(tmp_path)
+    relocated = replace(
+        request,
+        output_path=(
+            tmp_path / "relocated" / "dev" / "symsim" / "draw-01-moderate.h5ad"
+        ),
+    )
+    manifest = _seal_for_request(output, request)
+    adata = _truth_dataset(request, manifest.manifest_sha256)
+    dataset_hash = benchmark_dataset_sha256(adata)
+
+    original = SimulationArtifact(request, adata, manifest, dataset_hash)
+    moved = SimulationArtifact(relocated, adata, manifest, dataset_hash)
+
+    assert moved.native_manifest.manifest_sha256 == (
+        original.native_manifest.manifest_sha256
+    )
+    assert moved.dataset_sha256 == original.dataset_sha256
 
 
 def test_simulation_artifact_rejects_missing_native_manifest_binding(

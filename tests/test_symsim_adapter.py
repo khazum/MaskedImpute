@@ -328,6 +328,22 @@ def test_deterministic_rerun_has_identical_semantic_hashes(
     assert list(requests[0].output_path.parent.glob(".symsim-native-*")) == []
 
 
+def test_relocated_rerun_has_identical_manifest_and_semantic_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_external(monkeypatch)
+
+    first = run_symsim_pair(_requests(tmp_path / "first"), SMOKE_PROTOCOL)
+    relocated = run_symsim_pair(_requests(tmp_path / "relocated"), SMOKE_PROTOCOL)
+
+    assert [artifact.native_manifest.manifest_sha256 for artifact in first] == [
+        artifact.native_manifest.manifest_sha256 for artifact in relocated
+    ]
+    assert [artifact.dataset_sha256 for artifact in first] == [
+        artifact.dataset_sha256 for artifact in relocated
+    ]
+
+
 def test_request_sequence_is_snapshotted_exactly_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

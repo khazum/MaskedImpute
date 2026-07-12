@@ -91,7 +91,7 @@ class SimulationArtifact:
         draw_index = _biological_draw_index(request.biological_id)
         revalidate_native_outputs(native_manifest)
         native_request = native_manifest.metadata.get("simulation_request")
-        expected_request = simulation_request_identity(request)
+        expected_request = simulation_scientific_identity(request)
         if not isinstance(native_request, Mapping) or canonical_sha256(
             native_request
         ) != canonical_sha256(expected_request):
@@ -231,14 +231,15 @@ def biological_unit_id(request: SimulationRequest) -> str:
     return f"biological-{canonical_sha256(payload)[:24]}"
 
 
-def simulation_request_identity(request: SimulationRequest) -> dict[str, object]:
-    """Return canonical metadata binding every simulator request input."""
+def simulation_scientific_identity(request: SimulationRequest) -> dict[str, object]:
+    """Return the canonical scientific identity, independent of destination."""
 
     if not isinstance(request, SimulationRequest):
         raise TypeError("request must be a SimulationRequest")
     if not isinstance(request.output_path, Path):
         raise SimulationContractError("output_path must be a pathlib.Path")
     return {
+        "schema": "maskimpute-simulation-scientific-identity-v1",
         "biological_id": request.biological_id,
         "biological_seed": request.biological_seed,
         "cells": request.cells,
@@ -248,9 +249,14 @@ def simulation_request_identity(request: SimulationRequest) -> dict[str, object]
         "measurement_seed": request.measurement_seed,
         "mechanism": request.mechanism,
         "namespace": request.namespace,
-        "output_path": request.output_path.as_posix(),
         "technical_view": request.technical_view,
     }
+
+
+def simulation_request_identity(request: SimulationRequest) -> dict[str, object]:
+    """Return the path-independent request identity used in sealed artifacts."""
+
+    return simulation_scientific_identity(request)
 
 
 def _validate_safe_id(value: object, name: str) -> None:
@@ -676,6 +682,7 @@ __all__ = [
     "SimulationRequest",
     "biological_unit_id",
     "load_final_manifest_claim",
+    "simulation_scientific_identity",
     "simulation_request_identity",
     "simulation_dataset_id",
     "validate_paired_simulation_requests",

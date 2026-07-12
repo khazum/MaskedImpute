@@ -382,6 +382,28 @@ def test_deterministic_rerun_reuses_identical_native_content(
     )
 
 
+def test_relocated_rerun_has_identical_manifest_and_semantic_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _mock_external(monkeypatch)
+
+    first = run_sparsim_pair(_requests(tmp_path / "first"), SMOKE_PROTOCOL)
+    relocated = run_sparsim_pair(_requests(tmp_path / "relocated"), SMOKE_PROTOCOL)
+
+    assert [artifact.native_manifest.manifest_sha256 for artifact in first] == [
+        artifact.native_manifest.manifest_sha256 for artifact in relocated
+    ]
+    assert [artifact.dataset_sha256 for artifact in first] == [
+        artifact.dataset_sha256 for artifact in relocated
+    ]
+
+
+def test_sparsim_pair_is_exported_from_simulators_package() -> None:
+    import maskimpute_benchmark.simulators as simulators
+
+    assert simulators.run_sparsim_pair is sparsim_module.run_sparsim_pair
+
+
 @pytest.mark.parametrize(
     "corruption",
     [

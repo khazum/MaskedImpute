@@ -177,7 +177,10 @@ def _requests(root: Path) -> tuple[SimulationRequest, SimulationRequest]:
 
 
 def test_semisynthetic_adapter_exposes_paired_public_api() -> None:
+    import maskimpute_benchmark.simulators as simulators
+
     assert callable(run_semisynthetic_pair)
+    assert simulators.run_semisynthetic_pair is run_semisynthetic_pair
 
 
 def test_development_pair_uses_only_development_donors_and_preserves_proxy_truth(
@@ -279,6 +282,10 @@ def test_seeded_reruns_have_identical_native_bytes_and_semantics(
         assert [entry.as_dict() for entry in first_artifact.native_manifest.files] == [
             entry.as_dict() for entry in second_artifact.native_manifest.files
         ]
+        assert first_artifact.native_manifest.manifest_sha256 == (
+            second_artifact.native_manifest.manifest_sha256
+        )
+        assert first_artifact.dataset_sha256 == second_artifact.dataset_sha256
         native_paths = {
             item.logical_path: item.physical_path
             for item in first_artifact.native_manifest._sealed_files
