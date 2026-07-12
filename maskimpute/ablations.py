@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -20,7 +21,9 @@ import numpy as np
 
 from maskimpute.config import MaskImputeConfig
 from maskimpute.train import (
+    _train_with_policies,
     _numeric_matrix_to_dense,
+    invert_observed_normalization,
     validate_observed_counts,
     validate_p_pre_zero,
 )
@@ -35,8 +38,13 @@ _VARIANT_ORDER = (
     "no-pre-zero-regularizer",
     "no-explicit-mask",
     "full-denoising",
-    "direct-score",
     "calibrated-score",
+)
+_TRACKED_ABLATION_REGISTRY = (
+    Path(__file__).resolve().parents[1] / "study" / "ablations.json"
+)
+_TRACKED_ABLATION_REGISTRY_SHA256 = (
+    "79b89fcdf39dd7881bfc08090f701fecb5439953873e60064dbc1bc7dc8d66b9"
 )
 _SPEC_FIELDS = {
     "id",
@@ -62,8 +70,7 @@ _EXPECTED_SINGLE_CHANGES: Mapping[str, frozenset[str]] = MappingProxyType(
         "no-pre-zero-regularizer": frozenset({"pre_zero_regularizer"}),
         "no-explicit-mask": frozenset({"encoder_mode"}),
         "full-denoising": frozenset({"output_policy"}),
-        "direct-score": frozenset({"score_source"}),
-        "calibrated-score": frozenset(),
+        "calibrated-score": frozenset({"score_source"}),
     }
 )
 
@@ -74,6 +81,15 @@ def _exact_mapping(value: object, expected: set[str], name: str) -> dict[str, ob
     if set(value) != expected:
         raise ValueError(f"{name} has missing or extra fields")
     return value
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 def _nonempty_string(value: object, name: str) -> str:
@@ -174,6 +190,50 @@ class AblationRegistry:
         return {spec.id: spec for spec in self.variants}
 
 
+@dataclass(frozen=True, slots=True)
+class AblationRunResult:
+    """Neutral primary-output wrapper for selective and nonselective controls."""
+
+    output_policy: str
+    _result: object
+
+    def __post_init__(self) -> None:
+        from maskimpute.result import ImputationResult
+
+        if self.output_policy not in {"selective", "full_gated", "full_ungated"}:
+            raise ValueError("output_policy is invalid")
+        if type(self._result) is not ImputationResult:
+            raise TypeError("_result must be an exact ImputationResult")
+
+    @property
+    def primary_counts(self):
+        return self._result.selective_counts  # type: ignore[attr-defined]
+
+    @property
+    def selective_counts(self):
+        if self.output_policy != "selective":
+            raise AttributeError(
+                "nonselective ablation output is available only as primary_counts"
+            )
+        return self.primary_counts
+
+    @property
+    def denoised_counts(self):
+        return self._result.denoised_counts  # type: ignore[attr-defined]
+
+    @property
+    def p_pre_zero(self) -> np.ndarray:
+        return self._result.p_pre_zero  # type: ignore[attr-defined]
+
+    @property
+    def latent(self) -> np.ndarray:
+        return self._result.latent  # type: ignore[attr-defined]
+
+    @property
+    def diagnostics(self):
+        return self._result.diagnostics  # type: ignore[attr-defined]
+
+
 def _parse_spec(value: object, name: str) -> AblationSpec:
     payload = _exact_mapping(value, _SPEC_FIELDS, name)
     return AblationSpec(
@@ -188,17 +248,16 @@ def _parse_spec(value: object, name: str) -> AblationSpec:
     )
 
 
-def load_ablation_registry(path: str | Path) -> AblationRegistry:
-    """Load the exact tracked ablation schema and reject silent denominator edits."""
-
+def _parse_ablation_registry_bytes(raw: bytes) -> AblationRegistry:
     try:
         payload = json.loads(
-            Path(path).read_text(encoding="utf-8"),
+            raw.decode("utf-8"),
             parse_constant=lambda value: (_ for _ in ()).throw(
                 ValueError(f"nonfinite JSON constant {value}")
             ),
+            object_pairs_hook=_unique_json_object,
         )
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    except (UnicodeError, json.JSONDecodeError) as error:
         raise ValueError("ablation registry is not readable canonical JSON") from error
     root = _exact_mapping(
         payload,
@@ -255,8 +314,7 @@ def load_ablation_registry(path: str | Path) -> AblationRegistry:
         "no-pre-zero-regularizer": "pre_zero_regularizer",
         "no-explicit-mask": "encoder_mode",
         "full-denoising": "output_policy",
-        "direct-score": "score_source",
-        "calibrated-score": "score_source_control",
+        "calibrated-score": "score_source",
     }
     for spec in variants:
         if spec.changed_component != expected_components[spec.id]:
@@ -271,6 +329,16 @@ def load_ablation_registry(path: str | Path) -> AblationRegistry:
         reference=reference,
         variants=variants,
     )
+
+
+def load_ablation_registry(path: str | Path) -> AblationRegistry:
+    """Load the exact tracked ablation schema and reject silent denominator edits."""
+
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as error:
+        raise ValueError("ablation registry is not readable canonical JSON") from error
+    return _parse_ablation_registry_bytes(raw)
 
 
 def build_capacity_matched_model(
@@ -310,9 +378,9 @@ def build_capacity_matched_model(
             if encoder_mode == "explicit_mask":
                 self.mask_token = nn.Parameter(torch.zeros(n_genes))
             else:
-                # This active output offset replaces the explicit model's token
-                # parameters, retaining nominal capacity without encoding missingness.
-                self.output_offset = nn.Parameter(torch.zeros(n_genes))
+                # A nonlinear expression-only channel replaces the token parameters.
+                # It retains active capacity without encoding availability itself.
+                self.expression_curvature = nn.Parameter(torch.zeros(n_genes))
             encoder_layers: list[nn.Module] = []
             previous = 2 * n_genes
             for width in hidden:
@@ -353,13 +421,13 @@ def build_capacity_matched_model(
             represented = torch.where(
                 availability, expression, torch.zeros_like(expression)
             )
-            return torch.cat((represented, represented), dim=1)
+            curvature = self.expression_curvature.to(dtype=expression.dtype)
+            expression_only = represented * torch.sigmoid(curvature * represented)
+            return torch.cat((represented, expression_only), dim=1)
 
         def forward(self, expression, availability):
             latent = self.encoder(self.prepare_encoder_input(expression, availability))
             linear = self.decoder(latent)
-            if self.encoder_mode == "implicit_numeric_zero":
-                linear = linear + self.output_offset.to(dtype=linear.dtype)
             return torch.nn.functional.softplus(linear), latent
 
     return CapacityMatchedAutoencoder()
@@ -410,6 +478,21 @@ def resolve_training_config(
         raise TypeError("base must be an exact MaskImputeConfig")
     if type(spec) is not AblationSpec:
         raise TypeError("spec must be an exact AblationSpec")
+    if spec.gate == "power_complement" and base.gate_gamma <= 0:
+        raise ValueError("enabled power-complement gate requires positive gate_gamma")
+    if spec.pre_zero_regularizer and base.pre_zero_regularization <= 0:
+        raise ValueError(
+            "enabled pre-zero regularizer requires positive pre_zero_regularization"
+        )
+    if spec.id == "no-gate" and base.gate_gamma <= 0:
+        raise ValueError(
+            "reference gate_gamma must be positive for the no-gate ablation"
+        )
+    if spec.id == "no-pre-zero-regularizer" and base.pre_zero_regularization <= 0:
+        raise ValueError(
+            "reference pre_zero_regularization must be positive for the "
+            "no-pre-zero-regularizer ablation"
+        )
     regularization = base.pre_zero_regularization if spec.pre_zero_regularizer else 0.0
     return replace(base, pre_zero_regularization=regularization)
 
@@ -436,24 +519,59 @@ def optimization_budget_signature(config: MaskImputeConfig) -> tuple[object, ...
     )
 
 
+def _training_config_payload(config: MaskImputeConfig) -> dict[str, object]:
+    return {
+        "artificial_mask_fraction": config.artificial_mask_fraction,
+        "batch_size": config.batch_size,
+        "early_stopping_min_delta": config.early_stopping_min_delta,
+        "gate_gamma": config.gate_gamma,
+        "hidden_dims": list(config.hidden_dims),
+        "latent_dim": config.latent_dim,
+        "learning_rate": config.learning_rate,
+        "log_count_bin_edges": list(config.log_count_bin_edges),
+        "max_epochs": config.max_epochs,
+        "normalization_target": config.normalization_target,
+        "patience": config.patience,
+        "pre_zero_regularization": config.pre_zero_regularization,
+        "seed": config.seed,
+        "validation_fraction": config.validation_fraction,
+        "weight_decay": config.weight_decay,
+    }
+
+
+def _canonical_payload_sha256(payload: Mapping[str, object]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    ).hexdigest()
+
+
 def resolve_score(
     p_pre_zero: object,
+    observed_counts: object,
     spec: AblationSpec,
     *,
     calibrator: ScoreCalibrator | None,
 ) -> np.ndarray:
     """Resolve direct versus retained-calibrator score without reconstruction input."""
 
-    probability, _ = _numeric_matrix_to_dense(p_pre_zero, "p_pre_zero")
-    if np.any((probability < 0) | (probability > 1)):
-        raise ValueError("p_pre_zero must lie in [0, 1]")
+    counts = validate_observed_counts(observed_counts)
+    probability = validate_p_pre_zero(p_pre_zero, counts)
     if spec.score_source == "direct":
         return probability
     from maskimpute.calibration import ScoreCalibrator
 
     if type(calibrator) is not ScoreCalibrator:
         raise ValueError("retained score variant requires an exact calibrator")
-    return calibrator.transform(probability)
+    calibrated = np.zeros_like(probability)
+    observed_zero = counts == 0
+    calibrated[observed_zero] = calibrator.transform(probability[observed_zero])
+    return calibrated
 
 
 def apply_ablation_output(
@@ -489,3 +607,255 @@ def apply_ablation_output(
     if spec.output_policy == "selective":
         output[counts > 0] = counts[counts > 0]
     return output
+
+
+def _trusted_ablation_spec(spec: object) -> tuple[AblationSpec, AblationRegistry, str]:
+    if type(spec) is not AblationSpec:
+        raise TypeError("spec must be an exact AblationSpec")
+    try:
+        registry_bytes = _TRACKED_ABLATION_REGISTRY.read_bytes()
+    except OSError as error:
+        raise RuntimeError(
+            "tracked publication ablation registry is unavailable"
+        ) from error
+    registry_sha256 = hashlib.sha256(registry_bytes).hexdigest()
+    if registry_sha256 != _TRACKED_ABLATION_REGISTRY_SHA256:
+        raise ValueError("tracked publication ablation registry digest differs")
+    registry = _parse_ablation_registry_bytes(registry_bytes)
+    trusted_by_id = {registry.reference.id: registry.reference, **registry.by_id}
+    trusted = trusted_by_id.get(spec.id)
+    if trusted is None or trusted != spec:
+        raise ValueError("spec does not exactly match the tracked ablation registry")
+    return trusted, registry, registry_sha256
+
+
+def _fit_ablation_once(
+    observed_counts: object,
+    score_artifact: object,
+    calibration_artifact: object,
+    spec: AblationSpec,
+    config: MaskImputeConfig,
+    device: object,
+    *,
+    cell_ids: object,
+):
+    """Fit one development ablation from verified, truth-free score artifacts.
+
+    This internal single-run primitive does not authorize a publication panel.
+    The authority layer must bind the dataset, common base configuration, count
+    score, calibration artifact, complete spec-by-seed grid, and output manifest.
+    This function still rejects raw score matrices and free-form interventions.
+    """
+
+    import torch
+
+    from maskimpute.calibration import CalibrationArtifact
+    from maskimpute.count_model import PreZeroCountModelScore
+    from maskimpute.result import ImputationResult
+    from maskimpute.train import TrainingOutcome
+
+    trusted_spec, registry, registry_sha256 = _trusted_ablation_spec(spec)
+    if type(config) is not MaskImputeConfig:
+        raise TypeError("config must be an exact MaskImputeConfig")
+    config = replace(config)
+    if config.seed not in registry.model_seeds:
+        raise ValueError("config seed is outside the tracked ablation seed panel")
+    resolved_config = resolve_training_config(config, trusted_spec)
+
+    counts = validate_observed_counts(observed_counts)
+    if type(score_artifact) is not PreZeroCountModelScore:
+        raise TypeError("score_artifact must be an exact PreZeroCountModelScore")
+    direct_score = validate_p_pre_zero(
+        score_artifact.score_for_counts(counts, cell_ids),
+        counts,
+    )
+    if type(calibration_artifact) is not CalibrationArtifact:
+        raise TypeError("calibration_artifact must be an exact CalibrationArtifact")
+    verified_calibration = CalibrationArtifact(calibration_artifact.to_dict())
+    calibration_payload = verified_calibration.to_dict()
+
+    probability = np.array(direct_score, copy=True)
+    if trusted_spec.score_source == "retained_calibrator":
+        observed_zero = counts == 0
+        probability[observed_zero] = verified_calibration.transform(
+            direct_score[observed_zero]
+        )
+        probability[counts > 0] = 0.0
+        probability = validate_p_pre_zero(probability, counts)
+        if verified_calibration.selected_algorithm == "identity":
+            equivalence_reason = "retained_identity_calibrator_equals_direct_score"
+        elif np.array_equal(probability, direct_score):
+            equivalence_reason = (
+                "retained_nonidentity_calibrator_unchanged_on_this_dataset"
+            )
+        else:
+            equivalence_reason = "retained_nonidentity_calibrator_transformed_score"
+    else:
+        equivalence_reason = "direct_cross_fitted_count_score"
+
+    def model_factory(
+        n_genes: int,
+        training_config: MaskImputeConfig,
+    ) -> torch.nn.Module:
+        return build_capacity_matched_model(
+            n_genes=n_genes,
+            hidden_dims=training_config.hidden_dims,
+            latent_dim=training_config.latent_dim,
+            encoder_mode=trusted_spec.encoder_mode,
+        )
+
+    if trusted_spec.positive_masking == "uniform":
+
+        def training_mask_factory(
+            values: object,
+            *,
+            validation_mask: object,
+            fraction: float,
+            log_count_bin_edges: Sequence[float],
+            rng: np.random.Generator,
+        ) -> np.ndarray:
+            del log_count_bin_edges
+            return make_uniform_positive_mask(
+                values,
+                validation_mask=validation_mask,
+                fraction=fraction,
+                rng=rng,
+            )
+
+    else:
+        from maskimpute.train import make_epoch_training_mask
+
+        training_mask_factory = make_epoch_training_mask
+
+    outcome: TrainingOutcome = _train_with_policies(
+        counts,
+        probability,
+        resolved_config,
+        device,
+        model_factory=model_factory,
+        training_mask_factory=training_mask_factory,
+    )
+
+    selected_device = next(outcome.model.parameters()).device
+    expression = torch.as_tensor(
+        outcome.normalized_expression,
+        dtype=torch.float32,
+        device=selected_device,
+    )
+    availability = torch.as_tensor(
+        counts > 0,
+        dtype=torch.bool,
+        device=selected_device,
+    )
+    outcome.model.eval()
+    with torch.no_grad():
+        normalized_prediction, latent = outcome.model(expression, availability)
+    normalized_dense = normalized_prediction.detach().cpu().numpy().astype(np.float64)
+    latent_dense = latent.detach().cpu().numpy().astype(np.float64)
+    if not np.all(np.isfinite(normalized_dense)) or np.any(normalized_dense < 0):
+        raise FloatingPointError("ablation decoder produced invalid predictions")
+    if not np.all(np.isfinite(latent_dense)):
+        raise FloatingPointError("ablation encoder produced invalid latent values")
+    with np.errstate(over="ignore", invalid="ignore"):
+        denoised_counts = invert_observed_normalization(
+            normalized_dense,
+            outcome.library_sizes,
+            target=resolved_config.normalization_target,
+        )
+    if not np.all(np.isfinite(denoised_counts)) or np.any(denoised_counts < 0):
+        raise FloatingPointError(
+            "ablation inverse normalization produced invalid counts"
+        )
+    output_counts = apply_ablation_output(
+        denoised_counts,
+        counts,
+        probability,
+        trusted_spec,
+        gamma=resolved_config.gate_gamma,
+    )
+
+    score_manifest = score_artifact.manifest
+    base_config_payload = _training_config_payload(config)
+    effective_config_payload = _training_config_payload(resolved_config)
+    diagnostics = {
+        "method_version": "v27-development-ablation-single-run",
+        "ablation": {
+            "id": trusted_spec.id,
+            "changed_component": trusted_spec.changed_component,
+            "encoder_mode": trusted_spec.encoder_mode,
+            "gate": trusted_spec.gate,
+            "output_policy": trusted_spec.output_policy,
+            "pre_zero_regularizer": trusted_spec.pre_zero_regularizer,
+            "encoder_interpretation": (
+                "broader_expression_only_encoder_representation_with_active_"
+                "capacity_compensation"
+                if trusted_spec.encoder_mode == "implicit_numeric_zero"
+                else "explicit_availability_indicator_and_learned_mask_token"
+            ),
+            "nominal_parameter_count": sum(
+                parameter.numel() for parameter in outcome.model.parameters()
+            ),
+            "registry_sha256": registry_sha256,
+        },
+        "score": {
+            "source": trusted_spec.score_source,
+            "artifact_integrity_verified": True,
+            "source_authorized_by_panel": False,
+            "score_artifact_sha256": score_manifest["score_sha256"],
+            "score_input_sha256": score_manifest["input_sha256"],
+            "score_config_sha256": score_manifest["config_sha256"],
+            "calibration_artifact_sha256": calibration_payload["payload_sha256"],
+            "retained_calibrator": verified_calibration.selected_algorithm,
+            "equivalence_reason": equivalence_reason,
+        },
+        "masks": {
+            "fixed_validation_mask_sha256": outcome.validation_mask_hashes[0],
+            "fixed_validation_positive_entries": int(
+                np.count_nonzero(outcome.validation_mask)
+            ),
+            "epoch_positive_masking": trusted_spec.positive_masking,
+            "epoch_training_mask_sha256": outcome.epoch_training_mask_hashes,
+        },
+        "losses": {
+            "primary": "artificially_masked_observed_positive_mse",
+            "natural_zero_penalty": (
+                "mean(p_pre_zero * normalized_prediction_squared)"
+            ),
+            "natural_zero_penalty_weight": resolved_config.pre_zero_regularization,
+            "training": outcome.training_loss_history,
+            "validation": outcome.validation_loss_history,
+        },
+        "budget": {
+            "optimization_signature": optimization_budget_signature(resolved_config),
+            "base_config": base_config_payload,
+            "base_config_sha256": _canonical_payload_sha256(base_config_payload),
+            "effective_config": effective_config_payload,
+            "effective_config_sha256": _canonical_payload_sha256(
+                effective_config_payload
+            ),
+            "best_epoch": outcome.best_epoch,
+            "stopped_epoch": outcome.stopped_epoch,
+            "model_seed": resolved_config.seed,
+        },
+        "gate": {
+            "family": trusted_spec.gate,
+            "formula": (
+                "prediction * (1 - p_pre_zero) ** gamma"
+                if trusted_spec.gate == "power_complement"
+                else "identity"
+            ),
+            "gamma": resolved_config.gate_gamma,
+        },
+        "primary_output_policy": trusted_spec.output_policy,
+        "device": outcome.device,
+    }
+    return AblationRunResult(
+        output_policy=trusted_spec.output_policy,
+        _result=ImputationResult(
+            selective_counts=output_counts,
+            denoised_counts=denoised_counts,
+            p_pre_zero=probability,
+            latent=latent_dense,
+            diagnostics=diagnostics,
+        ),
+    )

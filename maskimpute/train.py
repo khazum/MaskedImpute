@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 import copy
@@ -24,14 +24,12 @@ from maskimpute.sparse_input import (
 if TYPE_CHECKING:
     from maskimpute.config import MaskImputeConfig
 
-    from maskimpute.model import ExplicitMaskAutoencoder
-
 
 @dataclass(frozen=True, slots=True)
 class TrainingOutcome:
     """Internal immutable audit record for one v27 fit."""
 
-    model: ExplicitMaskAutoencoder
+    model: torch.nn.Module
     normalized_expression: np.ndarray
     library_sizes: np.ndarray
     validation_mask: np.ndarray
@@ -452,6 +450,8 @@ def _deterministic_training_scope(function):
         p_pre_zero: object,
         config: MaskImputeConfig,
         device: str | torch.device,
+        *args: object,
+        **kwargs: object,
     ) -> TrainingOutcome:
         selected_device = torch.device(device)
         if selected_device.type == "cuda":
@@ -464,21 +464,29 @@ def _deterministic_training_scope(function):
                     "to be ':4096:8' or ':16:8'"
                 )
         with _scoped_deterministic_torch(config.seed, selected_device):
-            return function(observed_counts, p_pre_zero, config, selected_device)
+            return function(
+                observed_counts,
+                p_pre_zero,
+                config,
+                selected_device,
+                *args,
+                **kwargs,
+            )
 
     return wrapped
 
 
 @_deterministic_training_scope
-def train_v27(
+def _train_with_policies(
     observed_counts: object,
     p_pre_zero: object,
     config: MaskImputeConfig,
     device: str | torch.device,
+    *,
+    model_factory: Callable[[int, MaskImputeConfig], torch.nn.Module],
+    training_mask_factory: Callable[..., np.ndarray],
 ) -> TrainingOutcome:
-    """Train v27 using only observed counts and the external count score."""
-
-    from maskimpute.model import ExplicitMaskAutoencoder
+    """Shared deterministic trainer for prespecified architecture/mask policies."""
 
     counts = validate_observed_counts(observed_counts)
     probability = validate_p_pre_zero(p_pre_zero, counts)
@@ -504,11 +512,12 @@ def train_v27(
     selected_device = torch.device(device)
     if selected_device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
-    model = ExplicitMaskAutoencoder(
-        n_genes=counts.shape[1],
-        hidden_dims=config.hidden_dims,
-        latent_dim=config.latent_dim,
-    ).to(selected_device)
+    model = model_factory(counts.shape[1], config)
+    if not isinstance(model, torch.nn.Module):
+        raise TypeError("model_factory must return a torch.nn.Module")
+    model = model.to(selected_device)
+    if not tuple(model.parameters()):
+        raise ValueError("training model must contain parameters")
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
@@ -554,7 +563,7 @@ def train_v27(
 
     for epoch_index in range(config.max_epochs):
         model.train()
-        epoch_mask = make_epoch_training_mask(
+        epoch_mask = training_mask_factory(
             counts,
             validation_mask=validation_mask,
             fraction=config.artificial_mask_fraction,
@@ -665,4 +674,34 @@ def train_v27(
             if selected_device.type == "cuda"
             else None
         ),
+    )
+
+
+def train_v27(
+    observed_counts: object,
+    p_pre_zero: object,
+    config: MaskImputeConfig,
+    device: str | torch.device,
+) -> TrainingOutcome:
+    """Train v27 using only observed counts and the external count score."""
+
+    from maskimpute.model import ExplicitMaskAutoencoder
+
+    def model_factory(
+        n_genes: int,
+        training_config: MaskImputeConfig,
+    ) -> torch.nn.Module:
+        return ExplicitMaskAutoencoder(
+            n_genes=n_genes,
+            hidden_dims=training_config.hidden_dims,
+            latent_dim=training_config.latent_dim,
+        )
+
+    return _train_with_policies(
+        observed_counts,
+        p_pre_zero,
+        config,
+        device,
+        model_factory=model_factory,
+        training_mask_factory=make_epoch_training_mask,
     )
