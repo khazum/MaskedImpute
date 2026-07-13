@@ -13,6 +13,7 @@ import pytest
 
 import maskimpute_benchmark.methods as core_methods
 import maskimpute_benchmark.methods.alra as alra_adapter
+import maskimpute_benchmark.methods.dca as dca_adapter
 import maskimpute_benchmark.methods.magic as magic_adapter
 import maskimpute_benchmark.methods.saver as saver_adapter
 from maskimpute_benchmark.methods import (
@@ -370,6 +371,86 @@ def test_configs_match_exact_pinned_upstream_defaults_and_seed_overrides() -> No
         estimates_only=True,
     )
     assert _registry().by_id("saver").seed_policy == "required"
+
+
+def test_alra_binds_gnu_mkl_threading_layer_and_receipts_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured_environment = None
+
+    def fake_execute(spec, source_dir, command, **kwargs):
+        nonlocal captured_environment
+        captured_environment = kwargs.get("environment")
+        rows, columns = int(command[8]), int(command[9])
+        Path(command[6]).write_bytes(
+            np.ones((rows, columns), dtype="<f8").tobytes(order="C")
+        )
+        Path(command[7]).write_text(
+            "mkl_threading_layer\tGNU\n"
+            "r_version\ttest-r\n"
+            "rsvd_version\ttest-rsvd\n"
+            f"upstream_source_file\t{command[4]}\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(alra_adapter, "execute_pinned_command", fake_execute)
+    execution = run_alra(
+        _registry().by_id("alra"),
+        _method_input(),
+        source_dir=tmp_path,
+        rscript=Path(sys.executable),
+        seed=42,
+        work_root=tmp_path,
+    )
+
+    assert captured_environment == {"MKL_THREADING_LAYER": "GNU"}
+    assert dict(execution.environment_receipt)["mkl_threading_layer"] == "GNU"
+    compatibility = {event.code: event.detail for event in execution.compatibility_log}
+    assert "MKL_THREADING_LAYER=GNU" in compatibility["numerical_stability_policy"]
+
+
+def test_dca_binds_tensorflow_gpu_growth_and_receipts_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured_environment = None
+
+    def fake_execute(spec, source_dir, command, **kwargs):
+        nonlocal captured_environment
+        captured_environment = kwargs.get("environment")
+        np.save(command[6], np.load(command[5], allow_pickle=False), allow_pickle=False)
+        Path(command[7]).write_text(
+            "anndata_version\ttest-anndata\n"
+            f"dca_module\t{source_dir}/dca/__init__.py\n"
+            "dca_version\ttest-dca\n"
+            "numpy_version\ttest-numpy\n"
+            "python_version\ttest-python\n"
+            "scanpy_version\ttest-scanpy\n"
+            "tensorflow_force_gpu_allow_growth\ttrue\n"
+            "tensorflow_version\ttest-tensorflow\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(dca_adapter, "execute_pinned_command", fake_execute)
+    execution = run_dca(
+        _registry().by_id("dca"),
+        _method_input(),
+        source_dir=tmp_path,
+        python_executable=Path(sys.executable),
+        seed=42,
+        work_root=tmp_path,
+    )
+
+    assert captured_environment == {"TF_FORCE_GPU_ALLOW_GROWTH": "true"}
+    assert (
+        dict(execution.environment_receipt)["tensorflow_force_gpu_allow_growth"]
+        == "true"
+    )
+    compatibility = {event.code: event.detail for event in execution.compatibility_log}
+    assert "TF_FORCE_GPU_ALLOW_GROWTH=true" in compatibility["allocator_policy"]
 
 
 def test_core_adapter_registry_metadata_does_not_promote_unlocked_environments() -> (
@@ -750,12 +831,46 @@ def test_real_pinned_alra_tiny_smoke(tmp_path: Path) -> None:
     assert dict(execution.environment_receipt)["upstream_source_file"].endswith(
         "/alra.R"
     )
+    assert dict(execution.environment_receipt)["mkl_threading_layer"] == "GNU"
     assert "upstream_rank_override" in [
         event.code for event in execution.compatibility_log
     ]
     assert "evaluator_scale_conversion" in [
         event.code for event in execution.compatibility_log
     ]
+
+
+def test_real_pinned_alra_automatic_rank_medium_matrix_smoke(
+    tmp_path: Path,
+) -> None:
+    rscript_value = shutil.which("Rscript")
+    if rscript_value is None or not _has_rsvd(rscript_value):
+        pytest.skip("Rscript with rsvd is unavailable")
+    # Pinned choose_k computes its fixed 100-value tail, so both dimensions
+    # must exceed 100 for the upstream automatic-rank default to be defined.
+    method_input = _method_input(cells=160, genes=128)
+
+    execution = run_alra(
+        _registry().by_id("alra"),
+        method_input,
+        source_dir=_cached_source("alra"),
+        rscript=Path(rscript_value),
+        seed=42,
+        config=ALRAConfig(),
+        work_root=tmp_path,
+    )
+
+    _assert_snapshot_bound(execution.snapshot, "alra", method_input)
+    _assert_evaluator_scales(execution, method_input)
+    assert np.isfinite(execution.snapshot.matrix).all()
+    assert np.isfinite(
+        core_methods.core_output_to_evaluator_log2_cp10k(
+            method_input, execution.snapshot
+        )
+    ).all()
+    compatibility = {event.code: event.detail for event in execution.compatibility_log}
+    assert compatibility["upstream_rank_selection"] == "k=0 automatic choice"
+    assert "q=10" in compatibility["upstream_parameters"]
 
 
 def test_real_pinned_magic_tiny_smoke_when_declared_dependency_env_exists(
@@ -811,6 +926,10 @@ def test_real_pinned_dca_tiny_smoke_when_legacy_environment_exists(
     assert (execution.snapshot.matrix >= 0).all()
     assert dict(execution.environment_receipt)["dca_module"].endswith(
         "/dca/__init__.py"
+    )
+    assert (
+        dict(execution.environment_receipt)["tensorflow_force_gpu_allow_growth"]
+        == "true"
     )
     assert "upstream_training_override" in [
         event.code for event in execution.compatibility_log

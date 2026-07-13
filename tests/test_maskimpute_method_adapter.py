@@ -85,6 +85,35 @@ def _identity_calibration_artifact():
     return fit_development_calibration(records)
 
 
+def test_full_denoising_alone_may_change_observed_positive_counts():
+    from maskimpute_benchmark.methods.base import MethodContractError
+    from maskimpute_benchmark.methods.maskimpute import finalize_maskimpute_output
+    from maskimpute_benchmark.methods.registry import load_method_registry
+
+    counts = np.array([[5, 0, 1], [2, 3, 0]], dtype=np.int64)
+    method_input = _method_input(counts)
+    spec = load_method_registry(Path("study/methods.json")).by_id("maskimpute")
+    denoised = counts.astype(np.float64)
+    denoised[counts > 0] += 0.5
+
+    for selective_variant in ("maskimpute-reference", "direct-score", "no-gate"):
+        with pytest.raises(MethodContractError, match="preserve observed positives"):
+            finalize_maskimpute_output(
+                spec,
+                method_input,
+                denoised,
+                variant_id=selective_variant,
+            )
+
+    snapshot = finalize_maskimpute_output(
+        spec,
+        method_input,
+        denoised,
+        variant_id="full-denoising",
+    )
+    np.testing.assert_array_equal(snapshot.matrix, denoised)
+
+
 def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
     from maskimpute import MaskImputeConfig, PreZeroCountModelConfig
     from maskimpute_benchmark.methods.maskimpute import (
@@ -157,6 +186,18 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
         development_mechanism="symsim",
         development_biological_id="draw-01",
     )
+    full_denoising = _run_in_tree(
+        methods.by_id("maskimpute"),
+        method_input,
+        variant_id="full-denoising",
+        calibration_artifact=calibration,
+        seed=42,
+        config=config,
+        count_model_config=score_config,
+        device="cpu",
+        development_mechanism="symsim",
+        development_biological_id="draw-01",
+    )
 
     assert isinstance(candidate, MaskImputeAdapterExecution)
     assert candidate.snapshot.method_id == "maskimpute"
@@ -196,6 +237,13 @@ def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
         "direct-score"
     )
     assert direct_ablation.ablation_result.diagnostics["score"]["source"] == "direct"
+    np.testing.assert_array_equal(
+        direct_ablation.snapshot.matrix[counts > 0], counts[counts > 0]
+    )
+    assert full_denoising.ablation_result.output_policy == "full_gated"
+    assert not np.array_equal(
+        full_denoising.snapshot.matrix[counts > 0], counts[counts > 0]
+    )
     assert dict(candidate.environment_receipt)["device"] == "cpu"
 
 

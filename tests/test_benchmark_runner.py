@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -11,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import maskimpute_benchmark.runner as runner_module
 from maskimpute_benchmark.methods import (
     AdapterExecution,
     MethodInput,
@@ -42,6 +44,7 @@ from maskimpute_benchmark.runner import (
     execute_competition_plan,
     derive_authorized_configurations,
     method_input_sha256,
+    implementation_source_sha256,
     maskimpute_variant_for_configuration,
     load_runner_authority,
     validate_development_manifest_payload,
@@ -358,6 +361,9 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
     assert len({entry.run_id for entry in plan.entries}) == expected
     assert plan.input_hashes["dataset_manifest_sha256"] == SHA_A
     assert plan.input_hashes["method_registry_sha256"] == "2" * 64
+    assert plan.input_hashes["implementation_source_sha256"] == (
+        implementation_source_sha256()
+    )
     for entry in plan.entries:
         expected_seeds = (None,) if entry.method_id in deterministic else (42, 43, 44)
         assert entry.model_seed in expected_seeds
@@ -524,7 +530,7 @@ def test_clean_publication_authority_loads_exact_dynamic_runner_grid() -> None:
     )
     assert authority.dataset_qc_policy == DatasetQCPolicy.fixed()
     assert authority.dataset_qc_policy_sha256 == DatasetQCPolicy.fixed().sha256
-    assert authority.retained_calibration_status == "pending"
+    assert authority.retained_calibration_status == "ready"
 
 
 def test_ready_maskimpute_authority_removes_only_its_preflight_block() -> None:
@@ -1028,6 +1034,37 @@ def test_completed_output_uses_common_log2_cp10k_and_complete_long_form_metrics(
     assert mse.n == expected["mse"].n
 
 
+def test_evaluator_conversion_failure_retains_only_stable_hashed_detail() -> None:
+    prepared = _prepared_truth_dataset()
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    execution = run_observed(spec, prepared.method_input)
+    unsafe_detail = "private /tmp/worker-928/token=not-for-publication"
+
+    def invalid_converter(method_input, adapter_execution):
+        raise ValueError(unsafe_detail)
+
+    evaluated = evaluate_adapter_outcome(
+        _entry_for(prepared, "observed", seed=None),
+        prepared,
+        AdapterOutcome.completed(
+            execution,
+            runtime_seconds=1,
+            peak_rss_bytes=1,
+            peak_gpu_bytes=0,
+        ),
+        output_converter=invalid_converter,
+    )
+
+    detail_sha256 = hashlib.sha256(
+        b"maskimpute-evaluator-conversion-detail-v1\0" + unsafe_detail.encode()
+    ).hexdigest()
+    expected = f"evaluator_conversion:ValueError:detail_sha256={detail_sha256}"
+    assert evaluated.run.status == "unavailable"
+    assert evaluated.run.reason == expected
+    assert unsafe_detail not in evaluated.run.reason
+    assert all(metric.reason == expected for metric in evaluated.metrics)
+
+
 @pytest.mark.parametrize("method_id", ["maskimpute", "capacity-matched-ae"])
 def test_in_tree_learned_methods_use_the_shared_raw_count_converter(
     method_id: str,
@@ -1174,6 +1211,20 @@ class _InterruptSecondExecutor:
         return AdapterOutcome.unavailable("adapter_not_configured", runtime_seconds=1)
 
 
+def _write_implementation_source_fixture(root: Path, *, reverse: bool = False) -> None:
+    files = {
+        "maskimpute/a.py": b"first = 1\n",
+        "maskimpute/nested/z.py": b"last = 2\n",
+        "maskimpute_benchmark/runner.py": b"runner = 3\n",
+        "scripts/run_development_competition.py": b"main = 4\n",
+    }
+    names = tuple(reversed(files)) if reverse else tuple(files)
+    for relative in names:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(files[relative])
+
+
 def _two_method_plan(prepared) -> CompetitionPlan:
     entries = (
         _entry_for(prepared, "observed", seed=None),
@@ -1189,6 +1240,7 @@ def _two_method_plan(prepared) -> CompetitionPlan:
             "dataset_manifest_sha256": prepared.binding.manifest_sha256,
             "method_registry_sha256": SHA_B,
             "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+            "implementation_source_sha256": implementation_source_sha256(),
         },
         entries=entries,
         plan_sha256="c" * 64,
@@ -1274,6 +1326,42 @@ def test_resume_requires_exact_plan_and_continues_only_after_valid_prefix(
         store.load(changed)
 
 
+def test_checkpoint_resume_rejects_changed_implementation_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    source_root = tmp_path / "source"
+    _write_implementation_source_fixture(source_root)
+    source_sha256 = implementation_source_sha256(source_root)
+    original_plan = _two_method_plan(prepared)
+    plan = replace(
+        original_plan,
+        input_hashes={
+            **original_plan.input_hashes,
+            "implementation_source_sha256": source_sha256,
+        },
+    )
+    store = CheckpointStore(tmp_path / "competition")
+    monkeypatch.setattr(
+        runner_module,
+        "implementation_source_sha256",
+        lambda repository_root=None: implementation_source_sha256(source_root),
+    )
+    execute_competition_plan(
+        plan,
+        load_method_registry(METHODS_PATH),
+        {prepared.binding.dataset_id: prepared},
+        _RecordingUnavailableExecutor(),
+        store,
+    )
+
+    changed = source_root / "maskimpute/a.py"
+    changed.write_bytes(changed.read_bytes() + b"# changed after checkpoint\n")
+    with pytest.raises(RunnerContractError, match="implementation source"):
+        store.load(plan)
+
+
 def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
     tmp_path: Path,
 ) -> None:
@@ -1281,7 +1369,10 @@ def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
     entry = _entry_for(prepared, "observed", seed=None)
     plan = CompetitionPlan(
         schema_version=1,
-        input_hashes={"dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256},
+        input_hashes={
+            "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+            "implementation_source_sha256": implementation_source_sha256(),
+        },
         entries=(entry,),
         plan_sha256="e" * 64,
     )
@@ -1324,6 +1415,36 @@ def test_checkpoint_loader_rejects_symlink_replacement(tmp_path: Path) -> None:
 
     with pytest.raises(RunnerContractError, match="checkpoint.*regular file|symlink"):
         store.load(plan)
+
+
+def test_implementation_source_digest_is_sorted_raw_and_symlink_safe(
+    tmp_path: Path,
+) -> None:
+    roots = (tmp_path / "first", tmp_path / "second")
+    _write_implementation_source_fixture(roots[0])
+    _write_implementation_source_fixture(roots[1], reverse=True)
+
+    first = implementation_source_sha256(roots[0])
+    assert implementation_source_sha256(roots[1]) == first
+    ignored = roots[0] / "scripts/not-an-execution-entrypoint.py"
+    ignored.write_bytes(b"ignored = True\n")
+    assert implementation_source_sha256(roots[0]) == first
+    changed = roots[1] / "maskimpute/nested/z.py"
+    changed.write_bytes(changed.read_bytes() + b"# byte change\n")
+    assert implementation_source_sha256(roots[1]) != first
+
+    linked = roots[0] / "maskimpute/linked.py"
+    linked.symlink_to(tmp_path / "outside.py")
+    with pytest.raises(RunnerContractError, match="symlink"):
+        implementation_source_sha256(roots[0])
+    linked.unlink()
+    outside_directory = tmp_path / "outside-directory"
+    outside_directory.mkdir()
+    (roots[0] / "maskimpute/linked-directory").symlink_to(
+        outside_directory, target_is_directory=True
+    )
+    with pytest.raises(RunnerContractError, match="directory.*symlink"):
+        implementation_source_sha256(roots[0])
 
 
 def test_public_cli_exposes_only_operational_output_and_environment_paths() -> None:

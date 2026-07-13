@@ -51,8 +51,10 @@ def finalize_maskimpute_output(
     spec: MethodSpec,
     method_input: MethodInput,
     primary_counts: object,
+    *,
+    variant_id: str,
 ) -> MethodOutputSnapshot:
-    """Bind one in-tree primary output to the evaluator dataset and IDs."""
+    """Bind one configuration-aware in-tree output to evaluator IDs."""
 
     require_method_spec(
         spec,
@@ -64,8 +66,28 @@ def finalize_maskimpute_output(
         raise ValueError(
             "in-tree adapter accepts only MaskImpute or its matched control"
         )
+    if variant_id == "capacity-matched-ae":
+        if spec.id != "capacity-matched-ae":
+            raise ValueError("capacity-matched variant requires its method spec")
+    elif variant_id in {
+        "maskimpute-reference",
+        "direct-score",
+        "no-gate",
+        "no-pre-zero-regularizer",
+        "no-explicit-mask",
+        "full-denoising",
+    }:
+        if spec.id != "maskimpute":
+            raise ValueError("MaskImpute variant requires its method spec")
+    else:
+        raise ValueError("variant is not a tracked in-tree execution")
+    validation_spec = (
+        replace(spec, preserves_observed_positives=False)
+        if variant_id == "full-denoising"
+        else spec
+    )
     return snapshot_method_output(
-        spec,
+        validation_spec,
         method_input,
         primary_counts,
         source_dataset_sha256=method_input.source_dataset_sha256,
@@ -170,6 +192,7 @@ def _run_in_tree(
         spec,
         method_input,
         result.primary_counts,
+        variant_id=variant_id,
     )
     selected_device = str(torch.device(device))
     compatibility = (

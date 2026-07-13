@@ -23,6 +23,7 @@ from .observed import (
 
 _DCA_DRIVER = r"""
 from pathlib import Path
+import os
 import sys
 import numpy as np
 
@@ -47,6 +48,9 @@ reduce_lr = int(sys.argv[16])
 early_stop = int(sys.argv[17])
 batch_size = int(sys.argv[18])
 optimizer = sys.argv[19]
+tensorflow_force_gpu_allow_growth = os.environ.get("TF_FORCE_GPU_ALLOW_GROWTH")
+if tensorflow_force_gpu_allow_growth != "true":
+    raise RuntimeError("TF_FORCE_GPU_ALLOW_GROWTH must be true")
 sys.path.insert(0, str(source_dir))
 import anndata
 import dca
@@ -98,6 +102,7 @@ receipt = {
     "numpy_version": str(numpy.__version__),
     "python_version": sys.version.split()[0],
     "scanpy_version": str(getattr(scanpy, "__version__", "unknown")),
+    "tensorflow_force_gpu_allow_growth": tensorflow_force_gpu_allow_growth,
     "tensorflow_version": str(tensorflow.__version__),
 }
 receipt_path.write_text(
@@ -249,7 +254,14 @@ def run_dca(
             "evaluator_scale_conversion",
             "native raw-count snapshot is a count equivalent and then uses the shared log2(1 + counts/row_total*10000) transform; zero-library rows fail closed",
         ),
-        CompatibilityEvent("compatibility_shims", "none"),
+        CompatibilityEvent(
+            "allocator_policy",
+            "subprocess binds TF_FORCE_GPU_ALLOW_GROWTH=true before TensorFlow import and receipts the exact value",
+        ),
+        CompatibilityEvent(
+            "compatibility_shims",
+            "no source/API shim; the explicit TensorFlow allocator environment policy is disclosed separately",
+        ),
     ]
     if (config.hidden_size, float(config.hidden_dropout)) != ((64, 32, 64), 0.0):
         compatibility.append(
@@ -311,6 +323,7 @@ def run_dca(
             command,
             cwd=work_dir,
             timeout_seconds=spec.resources.timeout_seconds,
+            environment={"TF_FORCE_GPU_ALLOW_GROWTH": "true"},
         )
         output = read_npy_output(output_path)
         receipt = read_environment_receipt(
@@ -323,6 +336,7 @@ def run_dca(
                     "numpy_version",
                     "python_version",
                     "scanpy_version",
+                    "tensorflow_force_gpu_allow_growth",
                     "tensorflow_version",
                 }
             ),

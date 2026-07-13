@@ -34,6 +34,10 @@ k <- as.integer(args[[8]])
 q <- as.integer(args[[9]])
 quantile_probability <- as.numeric(args[[10]])
 use_mkl <- identical(args[[11]], "TRUE")
+mkl_threading_layer <- Sys.getenv("MKL_THREADING_LAYER", unset=NA_character_)
+if (!identical(mkl_threading_layer, "GNU")) {
+  stop("MKL_THREADING_LAYER must be GNU")
+}
 input_connection <- file(input_file, open="rb")
 on.exit(close(input_connection), add=TRUE)
 values <- readBin(input_connection, what="double", n=n_obs*n_vars,
@@ -57,6 +61,7 @@ output_connection <- file(output_file, open="wb")
 writeBin(as.double(t(result)), output_connection, size=8, endian="little")
 close(output_connection)
 receipt <- c(
+  paste("mkl_threading_layer", mkl_threading_layer, sep="\t"),
   paste("r_version", R.version.string, sep="\t"),
   paste("rsvd_version", as.character(utils::packageVersion("rsvd")), sep="\t"),
   paste("upstream_source_file", source_file, sep="\t")
@@ -166,6 +171,10 @@ def run_alra(
             "native snapshot remains log1p-CP10k; evaluator counts are expm1(native)*observed_library_size/10000, followed by the shared log2(CP10k+1) transform; zero-library rows fail closed",
         ),
         CompatibilityEvent(
+            "numerical_stability_policy",
+            "subprocess binds MKL_THREADING_LAYER=GNU before R initializes numerical libraries and receipts the exact value",
+        ),
+        CompatibilityEvent(
             "compatibility_shims",
             "sets explicit class='matrix' on normalized input so pinned scalar class check works on current R; values and dimensions unchanged",
         ),
@@ -219,12 +228,18 @@ def run_alra(
             command,
             cwd=work_dir,
             timeout_seconds=spec.resources.timeout_seconds,
+            environment={"MKL_THREADING_LAYER": "GNU"},
         )
         output = read_raw_output(output_path, method_input.shape)
         receipt = read_environment_receipt(
             receipt_path,
             expected_keys=frozenset(
-                {"r_version", "rsvd_version", "upstream_source_file"}
+                {
+                    "mkl_threading_layer",
+                    "r_version",
+                    "rsvd_version",
+                    "upstream_source_file",
+                }
             ),
         )
         snapshot = finalize_alra_output(spec, method_input, output)

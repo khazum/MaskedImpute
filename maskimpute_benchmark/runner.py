@@ -44,6 +44,8 @@ SELECTION_COMPLETENESS_BLOCKERS = (
     "null_de_fpr_not_evaluated",
     "orthogonal_endpoints_not_evaluated",
 )
+_IMPLEMENTATION_SOURCE_DIRECTORIES = ("maskimpute", "maskimpute_benchmark")
+_IMPLEMENTATION_SOURCE_FILES = ("scripts/run_development_competition.py",)
 _TRACKED_V28_REVISION_PATH = (
     Path(__file__).resolve().parents[1] / "study/v28_revision.json"
 )
@@ -156,6 +158,140 @@ def _canonical_bytes(value: object) -> bytes:
         separators=(",", ":"),
         sort_keys=True,
     ).encode("utf-8")
+
+
+def _read_implementation_source(path: Path, relative: str) -> bytes:
+    try:
+        before = path.lstat()
+    except OSError as error:
+        raise RunnerContractError(
+            f"implementation source is unavailable: {relative}"
+        ) from error
+    if stat.S_ISLNK(before.st_mode):
+        raise RunnerContractError(
+            f"implementation source must not be a symlink: {relative}"
+        )
+    if not stat.S_ISREG(before.st_mode):
+        raise RunnerContractError(
+            f"implementation source must be a regular file: {relative}"
+        )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as error:
+        raise RunnerContractError(
+            f"implementation source cannot be opened safely: {relative}"
+        ) from error
+    try:
+        opened = os.fstat(descriptor)
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    try:
+        after = path.lstat()
+    except OSError as error:
+        raise RunnerContractError(
+            f"implementation source changed while hashing: {relative}"
+        ) from error
+
+    def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_size,
+            value.st_mtime_ns,
+        )
+
+    if identity(before) != identity(opened) or identity(opened) != identity(after):
+        raise RunnerContractError(
+            f"implementation source changed while hashing: {relative}"
+        )
+    return b"".join(chunks)
+
+
+def implementation_source_sha256(repository_root: Path | None = None) -> str:
+    """Hash sorted raw execution-source paths and bytes without following links."""
+
+    if repository_root is None:
+        repository_root = Path(__file__).resolve().parents[1]
+    if not isinstance(repository_root, Path):
+        raise TypeError("repository_root must be a pathlib.Path")
+    root = repository_root.absolute()
+    try:
+        root_metadata = root.lstat()
+    except OSError as error:
+        raise RunnerContractError(
+            "implementation source root is unavailable"
+        ) from error
+    if stat.S_ISLNK(root_metadata.st_mode):
+        raise RunnerContractError("implementation source root must not be a symlink")
+    if not stat.S_ISDIR(root_metadata.st_mode):
+        raise RunnerContractError("implementation source root must be a directory")
+
+    paths: list[tuple[str, Path]] = []
+    for directory_name in _IMPLEMENTATION_SOURCE_DIRECTORIES:
+        directory = root / directory_name
+        try:
+            directory_metadata = directory.lstat()
+        except OSError as error:
+            raise RunnerContractError(
+                f"implementation source directory is unavailable: {directory_name}"
+            ) from error
+        if stat.S_ISLNK(directory_metadata.st_mode):
+            raise RunnerContractError(
+                f"implementation source directory must not be a symlink: {directory_name}"
+            )
+        if not stat.S_ISDIR(directory_metadata.st_mode):
+            raise RunnerContractError(
+                f"implementation source path must be a directory: {directory_name}"
+            )
+        for current, directory_names, file_names in os.walk(
+            directory, followlinks=False
+        ):
+            directory_names.sort()
+            file_names.sort()
+            current_path = Path(current)
+            for child_name in directory_names:
+                child = current_path / child_name
+                try:
+                    child_metadata = child.lstat()
+                except OSError as error:
+                    raise RunnerContractError(
+                        "implementation source directory changed while enumerating"
+                    ) from error
+                if stat.S_ISLNK(child_metadata.st_mode):
+                    relative = child.relative_to(root).as_posix()
+                    raise RunnerContractError(
+                        "implementation source directory must not be a symlink: "
+                        f"{relative}"
+                    )
+            for file_name in file_names:
+                if not file_name.endswith(".py"):
+                    continue
+                path = current_path / file_name
+                paths.append((path.relative_to(root).as_posix(), path))
+    for relative in _IMPLEMENTATION_SOURCE_FILES:
+        paths.append((relative, root / relative))
+    paths.sort(key=lambda item: os.fsencode(item[0]))
+    if len({relative for relative, _ in paths}) != len(paths):
+        raise RunnerContractError("implementation source paths are not unique")
+
+    digest = hashlib.sha256()
+    digest.update(b"maskimpute-implementation-source-v1\0")
+    for relative, path in paths:
+        relative_bytes = os.fsencode(relative)
+        payload = _read_implementation_source(path, relative)
+        digest.update(struct.pack("<Q", len(relative_bytes)))
+        digest.update(relative_bytes)
+        digest.update(struct.pack("<Q", len(payload)))
+        digest.update(payload)
+    return digest.hexdigest()
 
 
 def _thaw_frozen_json(value: object) -> object:
@@ -1146,6 +1282,7 @@ def build_competition_plan(
         "retained_calibration_sha256": (
             authority.retained_calibration_sha256 or "0" * 64
         ),
+        "implementation_source_sha256": implementation_source_sha256(),
     }
     entries: list[RunPlanEntry] = []
     authority_by_method: dict[str, tuple[AuthorizedConfiguration, ...]] = {
@@ -2559,6 +2696,55 @@ def _long_form_unavailable(
     )
 
 
+def _evaluator_conversion_failure_reason(error: Exception) -> str:
+    from .methods import AdapterUnavailableError
+
+    if isinstance(error, AdapterUnavailableError) and re.fullmatch(
+        r"[a-z][a-z0-9_]*", error.reason_code
+    ):
+        return f"evaluator_conversion:{error.reason_code}"
+    error_name = next(
+        name
+        for error_type, name in (
+            (TypeError, "TypeError"),
+            (ValueError, "ValueError"),
+            (OverflowError, "OverflowError"),
+            (AdapterUnavailableError, "AdapterUnavailableError"),
+        )
+        if isinstance(error, error_type)
+    )
+    digest = hashlib.sha256()
+    digest.update(b"maskimpute-evaluator-conversion-detail-v1\0")
+    if len(error.args) == 1 and type(error.args[0]) is str:
+        digest.update(error.args[0].encode("utf-8", errors="surrogatepass"))
+    else:
+        for argument in error.args:
+            if type(argument) is str:
+                payload = b"str\0" + argument.encode("utf-8", errors="surrogatepass")
+            elif type(argument) is bytes:
+                payload = b"bytes\0" + argument
+            elif argument is None:
+                payload = b"none\0"
+            elif type(argument) is bool:
+                payload = b"bool\0" + (b"true" if argument else b"false")
+            elif type(argument) is int:
+                payload = b"int\0" + str(argument).encode("ascii")
+            elif type(argument) is float:
+                payload = b"float\0" + argument.hex().encode("ascii")
+            else:
+                payload = (
+                    b"object-type\0"
+                    + type(argument).__module__.encode("utf-8", errors="surrogatepass")
+                    + b"."
+                    + type(argument).__qualname__.encode(
+                        "utf-8", errors="surrogatepass"
+                    )
+                )
+            digest.update(struct.pack("<Q", len(payload)))
+            digest.update(payload)
+    return f"evaluator_conversion:{error_name}:detail_sha256={digest.hexdigest()}"
+
+
 def evaluate_adapter_outcome(
     entry: RunPlanEntry,
     prepared: PreparedDataset,
@@ -2625,11 +2811,11 @@ def evaluate_adapter_outcome(
                 raise ValueError("common-scale output is invalid")
         except AdapterUnavailableError as error:
             run_status = "unavailable"
-            reason = f"evaluator_conversion:{error.reason_code}"
+            reason = _evaluator_conversion_failure_reason(error)
             evaluator_output = None
         except (TypeError, ValueError, OverflowError) as error:
             run_status = "unavailable"
-            reason = f"evaluator_conversion:{type(error).__name__}"
+            reason = _evaluator_conversion_failure_reason(error)
             evaluator_output = None
         if evaluator_output is None:
             assert reason is not None
@@ -3173,6 +3359,15 @@ class CheckpointStore:
     def load(self, plan: CompetitionPlan) -> CheckpointReport:
         if not isinstance(plan, CompetitionPlan):
             raise TypeError("plan must be a CompetitionPlan")
+        expected_source_sha256 = _require_sha256(
+            plan.input_hashes.get("implementation_source_sha256"),
+            "plan implementation source checksum",
+        )
+        current_source_sha256 = implementation_source_sha256()
+        if expected_source_sha256 != current_source_sha256:
+            raise RunnerContractError(
+                "checkpoint implementation source differs from the current code bytes"
+            )
         try:
             raw = self._read_checkpoint_bytes()
             payload = json.loads(
@@ -3197,13 +3392,13 @@ class CheckpointStore:
             raise RunnerContractError("checkpoint checksum mismatch")
         if payload.get("schema_version") != 1:
             raise RunnerContractError("checkpoint schema_version must be 1")
-        if payload.get("plan_sha256") != plan.plan_sha256:
-            raise RunnerContractError(
-                "checkpoint plan checksum mismatches current plan"
-            )
         if payload.get("input_hashes") != dict(plan.input_hashes):
             raise RunnerContractError(
                 "checkpoint input hashes mismatch current authority"
+            )
+        if payload.get("plan_sha256") != plan.plan_sha256:
+            raise RunnerContractError(
+                "checkpoint plan checksum mismatches current plan"
             )
         if payload.get("planned_run_count") != len(plan.entries):
             raise RunnerContractError("checkpoint planned denominator changed")
