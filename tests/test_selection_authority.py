@@ -566,7 +566,7 @@ def test_public_selection_api_accepts_results_only_not_design_authority():
     assert tuple(signature.parameters) == ("payload",)
 
 
-def test_repository_authority_derives_design_methods_and_pending_calibration():
+def test_repository_authority_derives_design_methods_and_ready_calibration():
     from maskimpute_benchmark.selection import (
         _load_selection_authority,
         load_publication_execution_authority,
@@ -596,16 +596,20 @@ def test_repository_authority_derives_design_methods_and_pending_calibration():
         "sccr",
         "scsdae",
     )
-    assert authority.retained_calibration.status == "pending"
+    assert authority.retained_calibration.status == "ready"
     assert authority.retained_calibration.path == (
         "artifacts/study/development/calibration/retained_calibration.json"
     )
-    assert authority.retained_calibration.sha256 is None
-    assert authority.count_score_manifest.status == "pending"
+    assert authority.retained_calibration.sha256 == (
+        "905567fdb35e7e1f44defca9c76ee13b0442fc6beba3e5fc70a543f8dd59dcd9"
+    )
+    assert authority.count_score_manifest.status == "ready"
     assert authority.count_score_manifest.path == (
         "artifacts/study/development/count_scores/manifest.json"
     )
-    assert authority.count_score_manifest.sha256 is None
+    assert authority.count_score_manifest.sha256 == (
+        "0aa43abf97499faea5c1506bcd112ae608fd51490715dbdb784184d709632a02"
+    )
     assert dict(authority.base_maskimpute_config) == {
         "hidden_dims": (128, 64),
         "latent_dim": 24,
@@ -703,13 +707,13 @@ def test_repository_authority_derives_design_methods_and_pending_calibration():
     )
 
 
-def test_public_selection_blocks_until_the_ledger_binds_retained_calibration():
+def test_public_selection_rejects_malformed_result_before_evidence_validation():
     from maskimpute_benchmark.selection import (
         SelectionAuthorityError,
         _select_for_repository,
     )
 
-    with pytest.raises(SelectionAuthorityError, match="calibration.*pending"):
+    with pytest.raises(SelectionAuthorityError, match="missing or extra fields"):
         _select_for_repository({}, Path.cwd(), require_clean=False)
 
 

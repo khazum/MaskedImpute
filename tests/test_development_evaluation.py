@@ -36,6 +36,7 @@ def _completed_checkpoint(tmp_path: Path):
         DatasetQCPolicy,
         RunPlanEntry,
         evaluate_adapter_outcome,
+        implementation_source_sha256,
         prepare_dataset_for_execution,
     )
     from maskimpute_benchmark.schema import benchmark_dataset_sha256
@@ -112,7 +113,10 @@ def _completed_checkpoint(tmp_path: Path):
     )
     plan_core = {
         "schema_version": 1,
-        "input_hashes": {"dataset_manifest_sha256": SHA_A},
+        "input_hashes": {
+            "dataset_manifest_sha256": SHA_A,
+            "implementation_source_sha256": implementation_source_sha256(),
+        },
         "entries": [entry.to_dict()],
         "configurations": [],
     }
