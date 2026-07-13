@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
+import time
 
 import anndata as ad
 import numpy as np
@@ -13,6 +16,7 @@ import pandas as pd
 import pytest
 
 import maskimpute_benchmark.runner as runner_module
+import maskimpute_benchmark.runtime_environments as runtime_module
 from maskimpute_benchmark.methods import (
     AdapterExecution,
     MethodInput,
@@ -35,6 +39,7 @@ from maskimpute_benchmark.runner import (
     ResourceSample,
     ExecutionEnvironmentRegistry,
     RepositoryAdapterDispatcher,
+    SpawnedRepositoryExecutor,
     prepare_dataset_pair_for_execution,
     prepare_dataset_for_execution,
     build_competition_plan,
@@ -49,7 +54,10 @@ from maskimpute_benchmark.runner import (
     load_runner_authority,
     validate_development_manifest_payload,
 )
-from maskimpute_benchmark.runtime_environments import build_runtime_environment_lock
+from maskimpute_benchmark.runtime_environments import (
+    RuntimeEnvironmentSnapshot,
+    build_runtime_environment_lock,
+)
 
 
 METHODS_PATH = Path("study/methods.json")
@@ -225,6 +233,16 @@ def _truth_probe_executor(request: ExecutionRequest) -> AdapterOutcome:
     return AdapterOutcome.failed("truth_was_visible")
 
 
+def _spawn_state_executor(_request: ExecutionRequest) -> AdapterOutcome:
+    return AdapterOutcome.unavailable(
+        "spawn_state_receipt",
+        stdout=json.dumps(
+            {"cwd": str(Path.cwd()), "sys_path": sys.path},
+            sort_keys=True,
+        ).encode("utf-8"),
+    )
+
+
 def _observed_executor(request: ExecutionRequest) -> AdapterOutcome:
     execution = run_observed(request.method_spec, request.method_input)
     return AdapterOutcome.completed(
@@ -233,6 +251,11 @@ def _observed_executor(request: ExecutionRequest) -> AdapterOutcome:
         peak_rss_bytes=1024,
         peak_gpu_bytes=0,
     )
+
+
+def _slow_observed_executor(request: ExecutionRequest) -> AdapterOutcome:
+    time.sleep(0.4)
+    return _observed_executor(request)
 
 
 def _maskimpute_result_executor(request: ExecutionRequest) -> AdapterOutcome:
@@ -613,6 +636,84 @@ def test_spawned_executor_receives_no_anndata_or_truth_slots() -> None:
     assert outcome.stdout == b"truth access rejected\n"
 
 
+def test_spawned_executor_uses_bound_cwd_and_frozen_search_path() -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    frozen_path = runtime_module.publication_python_spawn_search_path()
+
+    outcome = execute_adapter_in_spawned_process(
+        request,
+        _spawn_state_executor,
+        poll_interval_seconds=0.01,
+        spawn_search_path=frozen_path,
+    )
+    receipt = json.loads(outcome.stdout.decode("utf-8"))
+
+    assert receipt == {
+        "cwd": str(runtime_module.publication_runtime_working_directory()),
+        "sys_path": list(frozen_path),
+    }
+
+
+def test_spawned_executor_rejects_lexical_executable_alias(tmp_path: Path) -> None:
+    from multiprocessing import spawn
+
+    alias = tmp_path / "python-alias"
+    alias.symlink_to(sys.executable)
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    spawn.set_executable(str(alias))
+    try:
+        with pytest.raises(RunnerContractError, match="lexically"):
+            execute_adapter_in_spawned_process(request, _observed_executor)
+    finally:
+        spawn.set_executable(sys.executable)
+
+
+def test_spawned_executor_rejects_warning_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    monkeypatch.setattr(sys, "warnoptions", ["error"])
+
+    with pytest.raises(RunnerContractError, match="nondefault Python flags"):
+        execute_adapter_in_spawned_process(request, _observed_executor)
+
+
 def test_spawned_executor_returns_a_bound_observed_snapshot() -> None:
     registry = load_method_registry(METHODS_PATH)
     spec = registry.by_id("observed")
@@ -839,6 +940,186 @@ def test_execution_environment_registry_revalidates_bytes_and_environment_per_ro
         environments.revalidate_for("afmf")
 
 
+def test_execution_environment_snapshot_reads_libc_environ() -> None:
+    name = "MASKIMPUTE_PUTENV_ONLY_REGRESSION"
+    os.environ.pop(name, None)
+    before = runner_module._execution_environment_snapshot()
+    try:
+        os.putenv(name, "bound-by-libc-environ")
+        assert name not in os.environ
+        assert runner_module._execution_environment_snapshot() != before
+    finally:
+        os.unsetenv(name)
+
+
+def test_registry_rejects_parent_python_search_path_drift() -> None:
+    environments = ExecutionEnvironmentRegistry.fixed(Path.cwd())
+    injected = next(
+        path
+        for path in (Path(sys.prefix) / "include", Path(sys.prefix) / "bin")
+        if path.is_dir() and str(path.resolve()) not in sys.path
+    )
+    sys.path.insert(0, str(injected.resolve()))
+    try:
+        with pytest.raises(RunnerContractError, match="spawn search path changed"):
+            environments.revalidate_control_state_for("observed")
+    finally:
+        sys.path.remove(str(injected.resolve()))
+
+
+def test_per_row_control_revalidation_rehashes_snapshot_control_files(
+    tmp_path: Path,
+) -> None:
+    control = tmp_path / "synthetic-control"
+    control.write_bytes(b"before")
+    base = ExecutionEnvironmentRegistry.fixed(tmp_path)
+    snapshot = RuntimeEnvironmentSnapshot(
+        identity_sha256="a" * 64,
+        closure_paths_sha256="b" * 64,
+        nvidia_smi_path=None,
+        path_identities=(),
+        watch_specs=(),
+        control_file_sha256s=((str(control), hashlib.sha256(b"before").hexdigest()),),
+    )
+    environments = replace(base, runtime_snapshot=snapshot)
+
+    environments.revalidate_control_state_for("observed")
+    control.write_bytes(b"changed")
+
+    with pytest.raises(RunnerContractError, match="runtime control file content"):
+        environments.revalidate_control_state_for("observed")
+
+
+def test_per_row_revalidation_does_not_rediscover_runtime_closure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = tmp_path / "python-environment"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+        check=True,
+    )
+    python = environment / "bin/python"
+    lock = build_runtime_environment_lock(
+        {"benchmark": ("python", python)}
+    )
+    lock_path = tmp_path / "runtime-lock.json"
+    lock_path.write_text(
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    environments = ExecutionEnvironmentRegistry.fixed(
+        tmp_path,
+        runtime_lock_path=lock_path,
+        benchmark_python=python,
+    )
+    dispatcher = RepositoryAdapterDispatcher(tmp_path, environments)
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("per-row runtime closure discovery")
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_with_native_dependency_roots",
+        forbidden,
+    )
+
+    outcome = dispatcher(request)
+
+    assert outcome.status == "completed"
+
+
+def test_spawned_repository_executor_rejects_transient_runtime_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = tmp_path / "python-environment"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+        check=True,
+    )
+    python = environment / "bin/python"
+    lock = build_runtime_environment_lock({"benchmark": ("python", python)})
+    lock_path = tmp_path / "runtime-lock.json"
+    lock_path.write_text(
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    environments = ExecutionEnvironmentRegistry.fixed(
+        tmp_path,
+        runtime_lock_path=lock_path,
+        benchmark_python=python,
+    )
+    dispatcher = RepositoryAdapterDispatcher(tmp_path, environments)
+    executor = SpawnedRepositoryExecutor(dispatcher)
+    real_spawn = execute_adapter_in_spawned_process
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    displaced = environment / "bin/python.displaced"
+    failures: list[BaseException] = []
+
+    def swap_and_restore() -> None:
+        try:
+            time.sleep(0.1)
+            python.rename(displaced)
+            python.symlink_to("/bin/false")
+            time.sleep(0.05)
+            python.unlink()
+            displaced.rename(python)
+        except BaseException as error:  # pragma: no cover - thread handoff
+            failures.append(error)
+
+    mutation = threading.Thread(target=swap_and_restore)
+
+    def spawn_slow(request: ExecutionRequest, _executor, **_kwargs) -> AdapterOutcome:
+        mutation.start()
+        return real_spawn(
+            request,
+            _slow_observed_executor,
+            poll_interval_seconds=0.01,
+            resource_sampler=_FixedResourceSampler(rss=1024, gpu=0),
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "execute_adapter_in_spawned_process",
+        spawn_slow,
+    )
+    try:
+        with pytest.raises(RunnerContractError, match="runtime changed during execution"):
+            executor(request)
+    finally:
+        if mutation.ident is not None:
+            mutation.join()
+    assert failures == []
+
+
 def test_dispatcher_revalidates_runtime_before_and_after_each_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -897,6 +1178,92 @@ def test_spawned_executor_uses_parent_sampled_resources_not_executor_claims() ->
     assert outcome.peak_gpu_bytes == 0
     assert outcome.rss_measurement == "mock_process_tree_rss"
     assert outcome.gpu_measurement == "not_applicable_cpu"
+
+
+def test_gpu_sampler_uses_bound_absolute_nvidia_smi_after_path_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = tmp_path / "selected" / "nvidia-smi"
+    replacement = tmp_path / "replacement" / "nvidia-smi"
+    selected.parent.mkdir()
+    replacement.parent.mkdir()
+    for executable in (selected, replacement):
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+    process_id = os.getpid()
+    commands: list[list[str]] = []
+
+    def completed(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"{process_id}, 7\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(runner_module.subprocess, "run", completed)
+    monkeypatch.setattr(
+        runner_module, "_linux_process_tree", lambda _root: {process_id}
+    )
+    monkeypatch.setenv("PATH", str(replacement.parent))
+
+    sample = runner_module.LinuxProcessTreeResourceSampler(selected).sample(
+        process_id, gpu_required=True
+    )
+
+    assert commands[0][0] == str(selected)
+    assert sample.peak_gpu_bytes == 7 * 1024**2
+
+
+def test_spawned_executor_passes_snapshot_bound_gpu_sampler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nvidia_smi = tmp_path / "nvidia-smi"
+    nvidia_smi.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    nvidia_smi.chmod(0o755)
+    base = ExecutionEnvironmentRegistry.fixed(tmp_path)
+    snapshot = RuntimeEnvironmentSnapshot(
+        identity_sha256="a" * 64,
+        closure_paths_sha256="b" * 64,
+        nvidia_smi_path=str(nvidia_smi),
+        path_identities=(),
+        watch_specs=(),
+        control_file_sha256s=(),
+    )
+    environments = replace(base, runtime_snapshot=snapshot)
+    executor = SpawnedRepositoryExecutor(
+        RepositoryAdapterDispatcher(tmp_path, environments)
+    )
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    observed: list[object] = []
+
+    def capture(_request, _dispatcher, *, resource_sampler, **_kwargs):
+        observed.append(resource_sampler)
+        return _observed_executor(_request)
+
+    monkeypatch.setattr(
+        runner_module, "execute_adapter_in_spawned_process", capture
+    )
+
+    executor(request)
+
+    assert len(observed) == 1
+    assert observed[0].nvidia_smi_path == nvidia_smi
 
 
 def test_gpu_execution_fails_closed_when_independent_gpu_measurement_is_missing() -> (

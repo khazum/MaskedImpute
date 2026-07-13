@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
+from ..runtime_environments import (
+    publication_git_executable,
+    publication_runtime_working_directory,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -257,11 +261,18 @@ def observed_to_evaluator_counts(
 
 
 def _git(source_dir: Path, *arguments: str) -> str:
+    selected_source = source_dir.absolute()
     try:
         result = subprocess.run(
-            ["git", "-C", str(source_dir), *arguments],
+            [
+                str(publication_git_executable()),
+                "-C",
+                str(selected_source),
+                *arguments,
+            ],
             check=True,
             capture_output=True,
+            cwd=publication_runtime_working_directory(),
             text=True,
             timeout=30,
         )
@@ -419,10 +430,12 @@ def execute_pinned_command(
     timeout_seconds: int,
     environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
-    """Run a command once between two exact pristine-source verifications."""
+    """Run a command from the bound loader CWD between source verifications."""
 
     if not command or any(not isinstance(value, str) or not value for value in command):
         raise TypeError("command must contain nonempty strings")
+    if not isinstance(cwd, Path) or not cwd.is_dir():
+        raise TypeError("cwd must be an existing pathlib.Path directory")
     command_tuple = tuple(command)
     before = verify_pinned_source(spec, source_dir)
 
@@ -460,7 +473,7 @@ def execute_pinned_command(
     try:
         result = subprocess.run(
             command_tuple,
-            cwd=cwd,
+            cwd=publication_runtime_working_directory(),
             env=_subprocess_environment(environment),
             check=False,
             capture_output=True,

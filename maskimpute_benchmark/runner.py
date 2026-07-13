@@ -10,7 +10,7 @@ their operating-system account.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field as dataclass_field, replace
 import hashlib
 import json
 import math
@@ -33,10 +33,19 @@ from .methods import AdapterExecution, MethodInput, MethodSpec
 from .methods.registry import MethodRegistry
 from .protocol import canonical_sha256
 from .runtime_environments import (
+    RuntimeChangeMonitor,
     RuntimeEnvironmentError,
+    RuntimeEnvironmentSnapshot,
     load_runtime_environment_lock,
-    runtime_environment_identity_sha256,
+    merge_runtime_environment_snapshots,
+    nvidia_smi_executable,
+    process_environment_sha256,
+    publication_python_spawn_search_path,
+    publication_runtime_working_directory,
+    runtime_environment_snapshot,
     validate_runtime_environment_lock,
+    verify_runtime_environment_control_files,
+    verify_runtime_environment_snapshot,
 )
 
 
@@ -1686,8 +1695,13 @@ def _linux_process_tree(root_pid: int) -> set[int]:
     return result
 
 
+@dataclass(frozen=True, slots=True)
 class LinuxProcessTreeResourceSampler:
     """Sample aggregate Linux RSS and nvidia-smi compute-process memory."""
+
+    nvidia_smi_path: Path | None = dataclass_field(
+        default_factory=nvidia_smi_executable
+    )
 
     def sample(self, process_id: int, *, gpu_required: bool) -> ResourceSample:
         if (
@@ -1713,15 +1727,23 @@ class LinuxProcessTreeResourceSampler:
                 rss_provenance="linux_proc_process_tree_rss",
                 gpu_provenance="not_applicable_cpu_only_method",
             )
+        if self.nvidia_smi_path is None:
+            return ResourceSample(
+                peak_rss_bytes=rss,
+                peak_gpu_bytes=None,
+                rss_provenance="linux_proc_process_tree_rss",
+                gpu_provenance="nvidia_smi_measurement_unavailable",
+            )
         try:
             completed = subprocess.run(
                 [
-                    "nvidia-smi",
+                    str(self.nvidia_smi_path),
                     "--query-compute-apps=pid,used_gpu_memory",
                     "--format=csv,noheader,nounits",
                 ],
                 check=True,
                 capture_output=True,
+                cwd=publication_runtime_working_directory(),
                 text=True,
                 timeout=5,
             )
@@ -3665,12 +3687,7 @@ class AdapterExecutor(Protocol):
 
 
 def _execution_environment_snapshot() -> str:
-    return canonical_sha256(
-        {
-            "schema": "maskimpute-process-environment-v1",
-            "variables": sorted(os.environ.items()),
-        }
-    )
+    return process_environment_sha256()
 
 
 @dataclass(frozen=True, slots=True)
@@ -3685,7 +3702,10 @@ class ExecutionEnvironmentRegistry:
     benchmark_python: Path | None
     r_library_paths: tuple[tuple[str, tuple[str, ...]], ...]
     execution_environment_sha256: str
+    python_spawn_search_path: tuple[str, ...]
     runtime_identity_snapshots: tuple[tuple[str, str], ...]
+    runtime_closure_paths_sha256s: tuple[tuple[str, str], ...]
+    runtime_snapshot: RuntimeEnvironmentSnapshot | None
 
     @classmethod
     def fixed(
@@ -3778,6 +3798,8 @@ class ExecutionEnvironmentRegistry:
         runtime_lock_sha256: str | None = None
         runtime_receipt: dict[str, object] | None = None
         runtime_identity_snapshots: tuple[tuple[str, str], ...] = ()
+        runtime_closure_paths_sha256s: tuple[tuple[str, str], ...] = ()
+        runtime_snapshot: RuntimeEnvironmentSnapshot | None = None
         normalized_r_libraries = tuple(
             (
                 environment_id,
@@ -3788,6 +3810,7 @@ class ExecutionEnvironmentRegistry:
             )
         )
         execution_environment_sha256 = _execution_environment_snapshot()
+        python_spawn_search_path = publication_python_spawn_search_path()
         if runtime_lock_path is not None:
             if not isinstance(runtime_lock_path, Path):
                 raise TypeError("runtime_lock_path must be a pathlib.Path")
@@ -3807,15 +3830,14 @@ class ExecutionEnvironmentRegistry:
                     Path(executable_path),
                 )
             try:
-                runtime_lock = load_runtime_environment_lock(runtime_lock_path)
-                runtime_receipt = validate_runtime_environment_lock(
-                    runtime_lock,
-                    declarations,
-                    r_library_paths=r_library_paths,
-                )
+                initial_lock = load_runtime_environment_lock(runtime_lock_path)
                 libraries = {} if r_library_paths is None else r_library_paths
-                identity_cache: dict[tuple[str, str, tuple[str, ...]], str] = {}
+                identity_cache: dict[
+                    tuple[str, str, tuple[str, ...]], RuntimeEnvironmentSnapshot
+                ] = {}
                 identities: list[tuple[str, str]] = []
+                closure_paths: dict[str, str] = {}
+                snapshots: list[RuntimeEnvironmentSnapshot] = []
                 for environment_id, (kind, executable) in sorted(
                     declarations.items()
                 ):
@@ -3829,15 +3851,40 @@ class ExecutionEnvironmentRegistry:
                         ),
                     )
                     if cache_key not in identity_cache:
-                        identity_cache[cache_key] = (
-                            runtime_environment_identity_sha256(
-                                kind,
-                                executable,
-                                r_library_paths=selected_libraries,
-                            )
+                        identity_cache[cache_key] = runtime_environment_snapshot(
+                            kind,
+                            executable,
+                            r_library_paths=selected_libraries,
                         )
-                    identities.append((environment_id, identity_cache[cache_key]))
+                        snapshots.append(identity_cache[cache_key])
+                    identities.append(
+                        (environment_id, identity_cache[cache_key].identity_sha256)
+                    )
+                    closure_paths[environment_id] = identity_cache[
+                        cache_key
+                    ].closure_paths_sha256
                 runtime_identity_snapshots = tuple(identities)
+                runtime_closure_paths_sha256s = tuple(sorted(closure_paths.items()))
+                runtime_snapshot = merge_runtime_environment_snapshots(
+                    snapshots,
+                    additional_files=(initial_lock.path,),
+                )
+                with RuntimeChangeMonitor(runtime_snapshot.watch_specs) as monitor:
+                    verify_runtime_environment_snapshot(runtime_snapshot)
+                    monitor.assert_unchanged()
+                    runtime_lock = load_runtime_environment_lock(initial_lock.path)
+                    runtime_receipt = validate_runtime_environment_lock(
+                        runtime_lock,
+                        declarations,
+                        r_library_paths=r_library_paths,
+                        expected_closure_paths_sha256s=closure_paths,
+                    )
+                    verify_runtime_environment_snapshot(runtime_snapshot)
+                    monitor.assert_unchanged()
+                if _execution_environment_snapshot() != execution_environment_sha256:
+                    raise RuntimeEnvironmentError(
+                        "execution-affecting environment changed during planning"
+                    )
             except RuntimeEnvironmentError as error:
                 raise RunnerContractError(str(error)) from error
             runtime_lock_sha256 = runtime_lock.file_sha256
@@ -3850,7 +3897,12 @@ class ExecutionEnvironmentRegistry:
             "methods": receipt,
             "runtime_lock": runtime_receipt,
             "execution_environment_sha256": execution_environment_sha256,
+            "python_spawn_search_path": python_spawn_search_path,
             "runtime_identity_snapshots": runtime_identity_snapshots,
+            "runtime_closure_paths_sha256s": runtime_closure_paths_sha256s,
+            "runtime_integrity_snapshot_sha256": (
+                None if runtime_snapshot is None else runtime_snapshot.identity_sha256
+            ),
         }
         return cls(
             repository_root=repository,
@@ -3858,14 +3910,17 @@ class ExecutionEnvironmentRegistry:
             registry_sha256=canonical_sha256(body),
             runtime_lock_sha256=runtime_lock_sha256,
             runtime_lock_path=(
-                None if runtime_lock_path is None else runtime_lock_path.resolve(strict=True)
+                None if runtime_lock_path is None else runtime_lock.path
             ),
             benchmark_python=(
                 None if benchmark_python is None else benchmark_python.absolute()
             ),
             r_library_paths=normalized_r_libraries,
             execution_environment_sha256=execution_environment_sha256,
+            python_spawn_search_path=python_spawn_search_path,
             runtime_identity_snapshots=runtime_identity_snapshots,
+            runtime_closure_paths_sha256s=runtime_closure_paths_sha256s,
+            runtime_snapshot=runtime_snapshot,
         )
 
     def executable_for(self, method_id: str) -> Path | None:
@@ -3874,13 +3929,21 @@ class ExecutionEnvironmentRegistry:
                 return None if path is None else Path(path)
         return None
 
-    def revalidate_for(self, method_id: str) -> None:
-        """Rehash the exact runtime and inherited execution environment for one row."""
-
+    def revalidate_control_state_for(self, method_id: str) -> None:
+        """Recheck exact libc environment and race-safe runtime-lock bytes."""
         if _execution_environment_snapshot() != self.execution_environment_sha256:
             raise RunnerContractError(
                 "execution-affecting environment changed after plan construction"
             )
+        if publication_python_spawn_search_path() != self.python_spawn_search_path:
+            raise RunnerContractError(
+                "Python spawn search path changed after plan construction"
+            )
+        if self.runtime_snapshot is not None:
+            try:
+                verify_runtime_environment_control_files(self.runtime_snapshot)
+            except RuntimeEnvironmentError as error:
+                raise RunnerContractError(str(error)) from error
         if self.runtime_lock_path is None:
             return
         try:
@@ -3889,28 +3952,75 @@ class ExecutionEnvironmentRegistry:
                 raise RuntimeEnvironmentError("runtime lock changed after planning")
             if method_id in {"observed", "maskimpute", "capacity-matched-ae"}:
                 environment_id = "benchmark"
-                kind: Literal["python", "r"] = "python"
                 executable = self.benchmark_python
             else:
                 environment_id = method_id
-                kind = "r" if method_id in {"alra", "saver"} else "python"
                 executable = self.executable_for(method_id)
             if executable is None:
                 return
-            libraries = dict(self.r_library_paths)
             lock.by_id(environment_id)
-            observed_identity = runtime_environment_identity_sha256(
-                kind,
-                executable,
-                r_library_paths=tuple(
-                    Path(path) for path in libraries.get(environment_id, ())
+        except RuntimeEnvironmentError as error:
+            raise RunnerContractError(str(error)) from error
+
+    def revalidate_for(self, method_id: str) -> None:
+        """Recheck control state and all prevalidated path identities."""
+
+        self.revalidate_control_state_for(method_id)
+        if self.runtime_lock_path is None:
+            return
+        if self.runtime_snapshot is None:
+            raise RunnerContractError("runtime integrity snapshot is unavailable")
+        try:
+            verify_runtime_environment_snapshot(self.runtime_snapshot)
+        except RuntimeEnvironmentError as error:
+            raise RunnerContractError(str(error)) from error
+
+    def full_revalidate(self) -> None:
+        """Rebuild all frozen inventories while a replacement monitor is active."""
+
+        self.revalidate_for("observed")
+        if self.runtime_lock_path is None:
+            return
+        if self.benchmark_python is None:
+            raise RunnerContractError("benchmark Python runtime is unavailable")
+        declarations: dict[str, tuple[Literal["python", "r"], Path]] = {
+            "benchmark": ("python", self.benchmark_python)
+        }
+        r_methods = {"alra", "saver"}
+        for method_id, raw_path in self.executable_paths:
+            if raw_path is None:
+                continue
+            declarations[method_id] = (
+                "r" if method_id in r_methods else "python",
+                Path(raw_path),
+            )
+        libraries = {
+            environment_id: tuple(Path(path) for path in paths)
+            for environment_id, paths in self.r_library_paths
+        }
+        try:
+            lock = load_runtime_environment_lock(self.runtime_lock_path)
+            if lock.file_sha256 != self.runtime_lock_sha256:
+                raise RuntimeEnvironmentError(
+                    "runtime lock changed after plan construction"
+                )
+            validate_runtime_environment_lock(
+                lock,
+                declarations,
+                r_library_paths=libraries,
+                expected_closure_paths_sha256s=dict(
+                    self.runtime_closure_paths_sha256s
                 ),
             )
-            expected_identity = dict(self.runtime_identity_snapshots).get(environment_id)
-            if observed_identity != expected_identity:
-                raise RuntimeEnvironmentError(
-                    f"runtime identity mismatch for {environment_id}"
-                )
+            if self.runtime_snapshot is not None:
+                verify_runtime_environment_snapshot(self.runtime_snapshot)
+        except RuntimeEnvironmentError as error:
+            raise RunnerContractError(str(error)) from error
+
+    def change_monitor(self) -> RuntimeChangeMonitor:
+        specs = () if self.runtime_snapshot is None else self.runtime_snapshot.watch_specs
+        try:
+            return RuntimeChangeMonitor(specs)
         except RuntimeEnvironmentError as error:
             raise RunnerContractError(str(error)) from error
 
@@ -4067,6 +4177,7 @@ class RepositoryAdapterDispatcher:
 
     repository_root: Path
     environments: ExecutionEnvironmentRegistry
+    monitor_runtime_changes: bool = True
 
     @property
     def supported_method_ids(self) -> tuple[str, ...]:
@@ -4192,11 +4303,36 @@ class RepositoryAdapterDispatcher:
 
     def __call__(self, request: ExecutionRequest) -> AdapterOutcome:
         method_id = request.method_spec.id
-        self.environments.revalidate_for(method_id)
+        monitor = (
+            self.environments.change_monitor()
+            if self.monitor_runtime_changes
+            else None
+        )
         try:
-            return self._execute_validated(request)
+            if self.monitor_runtime_changes:
+                self.environments.revalidate_for(method_id)
+            else:
+                self.environments.revalidate_control_state_for(method_id)
+            if monitor is not None:
+                try:
+                    monitor.assert_unchanged()
+                except RuntimeEnvironmentError as error:
+                    raise RunnerContractError(str(error)) from error
+            try:
+                return self._execute_validated(request)
+            finally:
+                if monitor is not None:
+                    try:
+                        monitor.assert_unchanged()
+                    except RuntimeEnvironmentError as error:
+                        raise RunnerContractError(str(error)) from error
+                if self.monitor_runtime_changes:
+                    self.environments.revalidate_for(method_id)
+                else:
+                    self.environments.revalidate_control_state_for(method_id)
         finally:
-            self.environments.revalidate_for(method_id)
+            if monitor is not None:
+                monitor.close()
 
     def _execute_validated(self, request: ExecutionRequest) -> AdapterOutcome:
         request.validate_integrity()
@@ -4316,9 +4452,76 @@ class SpawnedRepositoryExecutor:
     """Publication executor using spawn plus independent parent telemetry."""
 
     dispatcher: RepositoryAdapterDispatcher
+    _runtime_monitor: RuntimeChangeMonitor = dataclass_field(
+        init=False, repr=False, compare=False
+    )
+    _child_dispatcher: RepositoryAdapterDispatcher = dataclass_field(
+        init=False, repr=False, compare=False
+    )
+    _resource_sampler: ResourceSampler = dataclass_field(
+        init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        monitor = self.dispatcher.environments.change_monitor()
+        try:
+            self.dispatcher.environments.full_revalidate()
+            monitor.assert_unchanged()
+        except RuntimeEnvironmentError as error:
+            monitor.close()
+            raise RunnerContractError(str(error)) from error
+        except BaseException:
+            monitor.close()
+            raise
+        object.__setattr__(self, "_runtime_monitor", monitor)
+        snapshot = self.dispatcher.environments.runtime_snapshot
+        object.__setattr__(
+            self,
+            "_resource_sampler",
+            (
+                LinuxProcessTreeResourceSampler()
+                if snapshot is None
+                else LinuxProcessTreeResourceSampler(
+                    None
+                    if snapshot.nvidia_smi_path is None
+                    else Path(snapshot.nvidia_smi_path)
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "_child_dispatcher",
+            replace(
+                self.dispatcher,
+                environments=replace(
+                    self.dispatcher.environments,
+                    runtime_snapshot=None,
+                ),
+                monitor_runtime_changes=False,
+            ),
+        )
 
     def __call__(self, request: ExecutionRequest) -> AdapterOutcome:
-        return execute_adapter_in_spawned_process(request, self.dispatcher)
+        method_id = request.method_spec.id
+        self.dispatcher.environments.revalidate_control_state_for(method_id)
+        try:
+            self._runtime_monitor.assert_unchanged()
+        except RuntimeEnvironmentError as error:
+            raise RunnerContractError(str(error)) from error
+        try:
+            return execute_adapter_in_spawned_process(
+                request,
+                self._child_dispatcher,
+                resource_sampler=self._resource_sampler,
+                expected_spawn_executable=self.dispatcher.environments.benchmark_python,
+                spawn_search_path=self.dispatcher.environments.python_spawn_search_path,
+            )
+        finally:
+            try:
+                self._runtime_monitor.assert_unchanged()
+            except RuntimeEnvironmentError as error:
+                raise RunnerContractError(str(error)) from error
+            self.dispatcher.environments.revalidate_control_state_for(method_id)
 
 
 def load_prepared_development_panel(
@@ -4500,6 +4703,7 @@ def _adapter_process_target(
     executor: Callable[[ExecutionRequest], AdapterOutcome],
 ) -> None:
     try:
+        os.chdir(publication_runtime_working_directory())
         outcome = executor(request)
         if not isinstance(outcome, AdapterOutcome):
             raise TypeError("adapter executor returned a noncanonical outcome")
@@ -4522,6 +4726,8 @@ def execute_adapter_in_spawned_process(
     *,
     poll_interval_seconds: float = 0.05,
     resource_sampler: ResourceSampler | None = None,
+    expected_spawn_executable: Path | None = None,
+    spawn_search_path: tuple[str, ...] | None = None,
 ) -> AdapterOutcome:
     """Execute from a fresh interpreter that never receives evaluator AnnData.
 
@@ -4534,6 +4740,70 @@ def execute_adapter_in_spawned_process(
     if not callable(executor):
         raise TypeError("executor must be callable")
     request.validate_integrity()
+    from multiprocessing import spawn as multiprocessing_spawn
+
+    raw_spawn_executable = multiprocessing_spawn.get_executable()
+    spawn_executable = Path(os.fsdecode(raw_spawn_executable)).absolute()
+    expected_executable = (
+        Path(sys.executable).absolute()
+        if expected_spawn_executable is None
+        else expected_spawn_executable.absolute()
+    )
+    if spawn_executable != expected_executable:
+        raise RunnerContractError(
+            "multiprocessing spawn executable differs lexically from benchmark Python"
+        )
+    try:
+        if spawn_executable.resolve(strict=True) != Path(sys.executable).resolve(
+            strict=True
+        ):
+            raise RunnerContractError(
+                "multiprocessing spawn executable differs from benchmark Python"
+            )
+    except OSError as error:
+        raise RunnerContractError(
+            "multiprocessing spawn executable is unavailable"
+        ) from error
+    incompatible_flags = (
+        "debug",
+        "inspect",
+        "interactive",
+        "optimize",
+        "dont_write_bytecode",
+        "no_user_site",
+        "no_site",
+        "ignore_environment",
+        "verbose",
+        "bytes_warning",
+        "quiet",
+        "isolated",
+        "dev_mode",
+        "utf8_mode",
+        "warn_default_encoding",
+        "safe_path",
+    )
+    if (
+        any(getattr(sys.flags, name) for name in incompatible_flags)
+        or sys._xoptions
+        or sys.warnoptions
+    ):
+        raise RunnerContractError(
+            "nondefault Python flags are unsupported for publication spawning"
+        )
+    selected_spawn_search_path = (
+        publication_python_spawn_search_path()
+        if spawn_search_path is None
+        else spawn_search_path
+    )
+    if (
+        not isinstance(selected_spawn_search_path, tuple)
+        or not selected_spawn_search_path
+        or any(
+            not isinstance(value, str) or not Path(value).is_absolute()
+            for value in selected_spawn_search_path
+        )
+    ):
+        raise TypeError("spawn_search_path must contain absolute path strings")
     if (
         isinstance(poll_interval_seconds, bool)
         or not isinstance(poll_interval_seconds, (int, float))
@@ -4556,7 +4826,21 @@ def execute_adapter_in_spawned_process(
         daemon=False,
     )
     started = time.monotonic()
-    process.start()
+    original_directory = os.open(
+        ".",
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    original_search_path = list(sys.path)
+    try:
+        os.chdir(publication_runtime_working_directory())
+        sys.path[:] = selected_spawn_search_path
+        process.start()
+    finally:
+        sys.path[:] = original_search_path
+        os.fchdir(original_directory)
+        os.close(original_directory)
     child_connection.close()
     if process.pid is None:  # pragma: no cover - multiprocessing invariant
         raise RunnerContractError("spawned adapter process has no process ID")
