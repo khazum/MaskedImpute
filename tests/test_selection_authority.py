@@ -372,6 +372,8 @@ def _attach_evaluation_manifest(
     sources=None,
     reconstruction=None,
     orthogonal=None,
+    null_de_audits=None,
+    orthogonal_audits=None,
 ):
     from maskimpute_benchmark.selection import _canonical_sha256
 
@@ -398,8 +400,10 @@ def _attach_evaluation_manifest(
         "reconstruction": {} if reconstruction is None else reconstruction,
         "orthogonal": {} if orthogonal is None else orthogonal,
         "sources": {} if sources is None else sources,
-        "null_de_audits": [],
-        "orthogonal_audits": [],
+        "null_de_audits": [] if null_de_audits is None else null_de_audits,
+        "orthogonal_audits": (
+            [] if orthogonal_audits is None else orthogonal_audits
+        ),
         "combined_score": None,
     }
     evaluation = {
@@ -1222,6 +1226,74 @@ def test_schema2_consumer_rejects_reconstruction_raw_artifact_alias(
         selection._select_for_repository(payload, repository, require_clean=False)
 
 
+def test_schema2_rehash_all_cannot_change_reconstructed_efficacy_metric(
+    tmp_path, monkeypatch
+):
+    import maskimpute_benchmark.development_evaluation as development_evaluation
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    independently_rebuilt_records = json.loads(json.dumps(payload["records"]))
+    efficacy = next(
+        row for row in payload["records"] if row["metric"] == "mse"
+    )
+    efficacy["value"] = float(efficacy["value"]) + 0.25
+    inputs = _reconstruction_inputs(authority, status, payload)
+    reconstruction = _minimal_reconstruction_evidence(
+        repository, input_hashes=inputs
+    )
+    payload = _attach_evaluation_manifest(
+        repository,
+        payload,
+        reconstruction=reconstruction,
+    )
+    plan = SimpleNamespace(
+        input_hashes=inputs,
+        plan_sha256=reconstruction["plan_sha256"],
+    )
+    evidence = SimpleNamespace(
+        checkpoint_file_sha256=reconstruction["checkpoint_file_sha256"],
+        checkpoint_sha256=reconstruction["checkpoint_sha256"],
+        plan_sha256=reconstruction["plan_sha256"],
+        input_hashes=inputs,
+        raw_artifacts=(),
+    )
+    monkeypatch.setattr(evaluation, "_validate_evaluation_source_evidence", lambda *_: {})
+    monkeypatch.setattr(evaluation, "_validate_orthogonal_evidence", lambda *_: {})
+    monkeypatch.setattr(evaluation, "_validate_evaluator_audits", lambda *_: {})
+    monkeypatch.setattr(evaluation, "_rebuild_reconstruction_plan", lambda *_: plan)
+    monkeypatch.setattr(
+        evaluation,
+        "_prepare_reconstruction_datasets",
+        lambda *_: {},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "load_completed_reconstruction_checkpoint",
+        lambda *_: evidence,
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "build_reconstruction_selection_records",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            records=tuple(independently_rebuilt_records),
+            null_de_audits=(),
+        ),
+    )
+
+    with pytest.raises(
+        evaluation.EvaluationManifestError,
+        match="reconstructed selection records",
+    ):
+        evaluation.validate_selection_evaluation_manifest(
+            repository, payload, authority, status
+        )
+
+
 def test_schema2_consumer_requires_bound_orthogonal_outputs(tmp_path, monkeypatch):
     import maskimpute_benchmark.evaluation_manifest as evaluation
     import maskimpute_benchmark.selection as selection
@@ -1292,6 +1364,157 @@ def test_schema2_consumer_requires_current_orthogonal_authority(tmp_path, monkey
 
     with pytest.raises(selection.SelectionAuthorityError, match="orthogonal authority"):
         selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_rehash_all_cannot_change_orthogonal_interval_and_audit(
+    tmp_path, monkeypatch
+):
+    import maskimpute_benchmark.development_evaluation as development_evaluation
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+    import maskimpute_benchmark.selection as selection
+    from maskimpute_benchmark.runner import derive_authorized_configurations
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    independently_recomputed_intervals = json.loads(
+        json.dumps(payload["orthogonal_intervals"])
+    )
+    independently_recomputed_audits = [
+        {
+            **row,
+            "reason": None,
+            "n_biological_units": 2,
+            "n_technical_units": 4,
+            "n_boot": 10_000,
+            "bootstrap_sha256": "6" * 64,
+            "aggregation": "fixed_evaluator_aggregation",
+            "inference_scope": "fixed_evaluator_scope",
+            "profile_scale": "fixed_evaluator_scale",
+        }
+        for row in independently_recomputed_intervals
+    ]
+    payload["orthogonal_intervals"][0]["estimate"] = 0.25
+    tampered_audits = json.loads(json.dumps(independently_recomputed_audits))
+    tampered_audits[0]["estimate"] = 0.25
+
+    ledger = json.loads(
+        (repository / "study/development_search.json").read_text(encoding="utf-8")
+    )
+    configurations = derive_authorized_configurations(
+        ledger["configurations"],
+        authority.ablation_specs,
+        authority.method_bindings,
+    )
+    orthogonal_authority = {
+        "inputs": [
+            {
+                "source_id": source_id,
+                "source_dataset_sha256": "1" * 64,
+                "method_input_sha256": "2" * 64,
+                "shape": [2, 2],
+                "cell_ids_sha256": "3" * 64,
+                "gene_ids_sha256": "4" * 64,
+            }
+            for source_id in (
+                "cite-seq-cbmc-rna-protein",
+                "tung-ipsc-ercc-bulk-replicates",
+            )
+        ],
+        "configurations": [
+            {
+                "configuration_id": value.configuration_id,
+                "configuration_sha256": value.configuration_sha256,
+                "payload": dict(value.payload),
+            }
+            for value in configurations
+            if value.method_id == "maskimpute" and value.kind == "candidate_search"
+        ],
+        "model_seeds": [42, 43, 44],
+        "artifact_bindings": {
+            "count_model_config_sha256": authority.count_model_config_sha256,
+            "retained_calibration_artifact_sha256": (
+                authority.retained_calibration.sha256
+            ),
+            "score_fit_policy": (
+                "refit_cross_fitted_count_score_from_truth_free_input"
+            ),
+        },
+    }
+    from maskimpute_benchmark.selection import _canonical_sha256
+
+    orthogonal_core = {
+        "schema_version": 1,
+        "artifact_type": "maskimpute_orthogonal_method_outputs",
+        "authority": orthogonal_authority,
+        "status": "completed",
+        "planned_record_count": 0,
+        "records": [],
+    }
+    orthogonal_manifest = {
+        **orthogonal_core,
+        "manifest_sha256": _canonical_sha256(orthogonal_core),
+    }
+    orthogonal_path = repository / (
+        "artifacts/study/development/evaluation/orthogonal/orthogonal_outputs.json"
+    )
+    orthogonal_path.parent.mkdir(parents=True, exist_ok=True)
+    orthogonal_path.write_text(
+        json.dumps(orthogonal_manifest, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    )
+    orthogonal = {
+        "manifest_path": str(orthogonal_path.relative_to(repository)),
+        "manifest_file_sha256": hashlib.sha256(orthogonal_path.read_bytes()).hexdigest(),
+        "manifest_sha256": orthogonal_manifest["manifest_sha256"],
+        "records": [],
+    }
+    payload = _attach_evaluation_manifest(
+        repository,
+        payload,
+        orthogonal=orthogonal,
+        orthogonal_audits=tampered_audits,
+    )
+    output_evidence = SimpleNamespace(
+        manifest_file_sha256=orthogonal["manifest_file_sha256"],
+        manifest_sha256=orthogonal["manifest_sha256"],
+        records=(),
+    )
+    panel = SimpleNamespace(method_inputs=(), cite=object(), tung=object())
+    monkeypatch.setattr(evaluation, "_validate_evaluation_source_evidence", lambda *_: {})
+    monkeypatch.setattr(evaluation, "_validate_reconstruction_evidence", lambda *_: {})
+    monkeypatch.setattr(evaluation, "_validate_evaluator_audits", lambda *_: {})
+    monkeypatch.setattr(
+        development_evaluation,
+        "load_orthogonal_output_evidence",
+        lambda *_args, **_kwargs: output_evidence,
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "prepare_real_orthogonal_panel",
+        lambda *_: panel,
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "_orthogonal_authority_core",
+        lambda *_args, **_kwargs: orthogonal_authority,
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "evaluate_real_orthogonal_intervals",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            intervals=tuple(independently_recomputed_intervals),
+            audits=tuple(independently_recomputed_audits),
+        ),
+    )
+
+    with pytest.raises(
+        evaluation.EvaluationManifestError,
+        match="orthogonal intervals.*independently recomputed",
+    ):
+        evaluation.validate_selection_evaluation_manifest(
+            repository, payload, authority, status
+        )
 
 
 def test_schema2_consumer_requires_complete_evaluator_audits(tmp_path, monkeypatch):

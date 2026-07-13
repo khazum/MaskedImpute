@@ -278,6 +278,7 @@ def _validate_reconstruction_evidence(
     authority: SelectionAuthority,
     status: Mapping[str, Any],
     data: Mapping[str, Any],
+    raw_null_de_audits: object,
 ) -> Mapping[str, str]:
     try:
         reconstruction = _exact_authority_mapping(
@@ -400,6 +401,39 @@ def _validate_reconstruction_evidence(
         raise SelectionAuthorityError(
             "reconstruction raw artifact denominator differs from checkpoint"
         )
+    try:
+        from .development_evaluation import build_reconstruction_selection_records
+
+        prepared = _prepare_reconstruction_datasets(repository, expected_plan)
+        rebuilt = build_reconstruction_selection_records(
+            evidence,
+            checkpoint_directory=(repository / expected_path).parent,
+            prepared_datasets=prepared,
+            declarations=authority.declarations,
+            method_bindings=authority.method_bindings,
+        )
+        rebuilt_records = [dict(value) for value in rebuilt.records]
+        rebuilt_audits = [dict(value) for value in rebuilt.null_de_audits]
+    except Exception as error:
+        raise SelectionAuthorityError(
+            "reconstruction selection records could not be independently rebuilt"
+        ) from error
+    if (
+        type(data.get("records")) is not list
+        or _canonical_json_bytes(data["records"])
+        != _canonical_json_bytes(rebuilt_records)
+    ):
+        raise SelectionAuthorityError(
+            "reconstructed selection records differ from validated checkpoint evidence"
+        )
+    if (
+        type(raw_null_de_audits) is not list
+        or _canonical_json_bytes(raw_null_de_audits)
+        != _canonical_json_bytes(rebuilt_audits)
+    ):
+        raise SelectionAuthorityError(
+            "null-DE audits differ from independently reconstructed evaluator evidence"
+        )
     return MappingProxyType(
         {
             "reconstruction_checkpoint_file_sha256": (evidence.checkpoint_file_sha256),
@@ -408,8 +442,54 @@ def _validate_reconstruction_evidence(
             "reconstruction_raw_artifacts_sha256": _canonical_sha256(
                 expected_raw_artifacts
             ),
+            "reconstructed_selection_records_sha256": _canonical_sha256(
+                rebuilt_records
+            ),
+            "reconstructed_null_de_audits_sha256": _canonical_sha256(
+                rebuilt_audits
+            ),
         }
     )
+
+
+def _prepare_reconstruction_datasets(
+    repository: Path,
+    expected_plan: object,
+) -> Mapping[str, object]:
+    """Reprepare the bound development panel and prove it yields the same plan."""
+
+    from .methods import load_method_registry
+    from .runner import (
+        build_competition_plan,
+        load_prepared_development_panel,
+        load_runner_authority,
+    )
+
+    module_root = Path(__file__).resolve().parents[1]
+    if repository.resolve(strict=True) != module_root:
+        raise SelectionAuthorityError(
+            "reconstruction datasets must be prepared from the active repository"
+        )
+    runner_authority = load_runner_authority()
+    bindings, prepared = load_prepared_development_panel(runner_authority)
+    registry = load_method_registry(repository / "study/methods.json")
+    independently_rebuilt_plan = build_competition_plan(
+        registry,
+        bindings,
+        runner_authority,
+        execution_environment_sha256=expected_plan.input_hashes[
+            "execution_environment_sha256"
+        ],
+    )
+    if (
+        independently_rebuilt_plan.plan_sha256 != expected_plan.plan_sha256
+        or dict(independently_rebuilt_plan.input_hashes)
+        != dict(expected_plan.input_hashes)
+    ):
+        raise SelectionAuthorityError(
+            "prepared development datasets differ from reconstruction plan authority"
+        )
+    return prepared
 
 
 def _rebuild_reconstruction_plan(
@@ -506,6 +586,8 @@ def _validate_orthogonal_evidence(
     repository: Path,
     raw_orthogonal: object,
     authority: SelectionAuthority | None = None,
+    data: Mapping[str, Any] | None = None,
+    raw_orthogonal_audits: object = None,
 ) -> Mapping[str, str]:
     try:
         orthogonal = _exact_authority_mapping(
@@ -593,6 +675,11 @@ def _validate_orthogonal_evidence(
                 raise SelectionAuthorityError(
                     f"orthogonal authority input {index} shape is invalid"
                 )
+        from .development_evaluation import (
+            OrthogonalConfiguration,
+            _orthogonal_authority_core,
+            prepare_real_orthogonal_panel,
+        )
         from .runner import derive_authorized_configurations
 
         ledger = _read_authority_json(repository, "study/development_search.json")
@@ -601,20 +688,21 @@ def _validate_orthogonal_evidence(
             authority.ablation_specs,
             authority.method_bindings,
         )
-        expected_configurations = [
-            {
-                "configuration_id": value.configuration_id,
-                "configuration_sha256": value.configuration_sha256,
-                "payload": dict(value.payload),
-            }
+        orthogonal_configurations = tuple(
+            OrthogonalConfiguration(
+                configuration_id=value.configuration_id,
+                configuration_sha256=value.configuration_sha256,
+                payload=dict(value.payload),
+            )
             for value in configurations
             if value.method_id == "maskimpute" and value.kind == "candidate_search"
-        ]
-        expected_authority = {
-            "inputs": inputs,
-            "configurations": expected_configurations,
-            "model_seeds": [42, 43, 44],
-            "artifact_bindings": {
+        )
+        panel = prepare_real_orthogonal_panel(repository)
+        expected_authority = _orthogonal_authority_core(
+            panel.method_inputs,
+            orthogonal_configurations,
+            (42, 43, 44),
+            {
                 "count_model_config_sha256": authority.count_model_config_sha256,
                 "retained_calibration_artifact_sha256": (
                     authority.retained_calibration.sha256
@@ -623,7 +711,7 @@ def _validate_orthogonal_evidence(
                     "refit_cross_fitted_count_score_from_truth_free_input"
                 ),
             },
-        }
+        )
         if raw_authority != expected_authority:
             raise SelectionAuthorityError(
                 "orthogonal authority differs from current selection authority"
@@ -645,11 +733,59 @@ def _validate_orthogonal_evidence(
         or [dict(value) for value in evidence.records] != orthogonal["records"]
     ):
         raise SelectionAuthorityError("orthogonal manifest binding is invalid")
+    if authority is not None:
+        try:
+            from .development_evaluation import evaluate_real_orthogonal_intervals
+
+            if data is None:
+                raise TypeError("selection data is absent")
+            independently_recomputed = evaluate_real_orthogonal_intervals(
+                evidence,
+                panel.cite,
+                panel.tung,
+                tuple(value.configuration_id for value in authority.attempts),
+            )
+            expected_intervals = [
+                dict(value) for value in independently_recomputed.intervals
+            ]
+            expected_audits = [dict(value) for value in independently_recomputed.audits]
+        except Exception as error:
+            raise SelectionAuthorityError(
+                "orthogonal intervals and audits could not be independently recomputed"
+            ) from error
+        if (
+            type(data.get("orthogonal_intervals")) is not list
+            or _canonical_json_bytes(data["orthogonal_intervals"])
+            != _canonical_json_bytes(expected_intervals)
+        ):
+            raise SelectionAuthorityError(
+                "orthogonal intervals differ from independently recomputed outputs"
+            )
+        if (
+            type(raw_orthogonal_audits) is not list
+            or _canonical_json_bytes(raw_orthogonal_audits)
+            != _canonical_json_bytes(expected_audits)
+        ):
+            raise SelectionAuthorityError(
+                "orthogonal audits differ from independently recomputed outputs"
+            )
     return MappingProxyType(
         {
             "orthogonal_manifest_file_sha256": evidence.manifest_file_sha256,
             "orthogonal_manifest_payload_sha256": evidence.manifest_sha256,
             "orthogonal_records_sha256": _canonical_sha256(orthogonal["records"]),
+            **(
+                {
+                    "recomputed_orthogonal_intervals_sha256": _canonical_sha256(
+                        expected_intervals
+                    ),
+                    "recomputed_orthogonal_audits_sha256": _canonical_sha256(
+                        expected_audits
+                    ),
+                }
+                if authority is not None
+                else {}
+            ),
         }
     )
 
@@ -872,10 +1008,19 @@ def validate_selection_evaluation_manifest(
         manifest, envelope = _validate_selection_evaluation_envelope(repository, data)
         sources = _validate_evaluation_source_evidence(repository, manifest["sources"])
         reconstruction = _validate_reconstruction_evidence(
-            repository, manifest["reconstruction"], authority, status, data
+            repository,
+            manifest["reconstruction"],
+            authority,
+            status,
+            data,
+            manifest["null_de_audits"],
         )
         orthogonal = _validate_orthogonal_evidence(
-            repository, manifest["orthogonal"], authority
+            repository,
+            manifest["orthogonal"],
+            authority,
+            data,
+            manifest["orthogonal_audits"],
         )
         audits = _validate_evaluator_audits(repository, manifest, data, authority)
     except EvaluationManifestError:
