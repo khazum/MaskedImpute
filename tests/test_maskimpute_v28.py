@@ -796,4 +796,4 @@ def test_selection_cli_and_v28_activation_share_canonical_fixed_paths() -> None:
     assert arguments.input == runner._V28_SELECTION_INPUT_PATH
     assert arguments.output == runner._V28_SELECTION_REPORT_PATH
     assert arguments.input.name == "development_selection_input.json"
-    assert arguments.output.name == "selection_report.json"
+    assert arguments.output.name == "development_selection_report.json"

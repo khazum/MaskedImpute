@@ -68,7 +68,7 @@ _V28_SELECTION_INPUT_PATH = (
 )
 _V28_SELECTION_REPORT_PATH = (
     Path(__file__).resolve().parents[1]
-    / "artifacts/study/development/evaluation/selection_report.json"
+    / "artifacts/study/development/evaluation/development_selection_report.json"
 )
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")

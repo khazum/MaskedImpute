@@ -16,7 +16,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from maskimpute_benchmark.selection import select_development_candidate  # noqa: E402
+from maskimpute_benchmark.selection import (  # noqa: E402
+    _select_for_repository,
+    select_development_candidate,
+)
 
 
 def _reject_constant(value: str) -> None:
@@ -53,6 +56,7 @@ def _load(path: Path) -> dict[str, Any]:
             "dataset_manifest_sha256",
             "count_score_manifest_sha256",
             "retained_calibration_artifact_sha256",
+            "evaluation_manifest_sha256",
             "result_sha256",
         },
         "selection input",
@@ -62,8 +66,13 @@ def _load(path: Path) -> dict[str, Any]:
     return root
 
 
-def _report(payload: dict[str, Any]) -> dict[str, Any]:
-    return select_development_candidate(payload).to_dict()
+def _report(payload: dict[str, Any], repository: Path | None = None) -> dict[str, Any]:
+    report = (
+        select_development_candidate(payload)
+        if repository is None
+        else _select_for_repository(payload, repository, require_clean=False)
+    )
+    return report.to_dict()
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -114,7 +123,7 @@ def _parser() -> argparse.ArgumentParser:
         "--output",
         type=Path,
         default=REPOSITORY_ROOT
-        / "artifacts/study/development/evaluation/selection_report.json",
+        / "artifacts/study/development/evaluation/development_selection_report.json",
     )
     return parser
 

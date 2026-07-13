@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import importlib.util
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -40,6 +41,16 @@ def _dataset_rows():
                         "dataset_sha256": hashlib.sha256(
                             f"dataset:{label}".encode()
                         ).hexdigest(),
+                        "output_file_sha256": hashlib.sha256(
+                            f"output:{label}".encode()
+                        ).hexdigest(),
+                        "truth_sha256": hashlib.sha256(
+                            f"truth:{mechanism}:{draw}".encode()
+                        ).hexdigest(),
+                        "output_path": f"dev/datasets/{mechanism}/{draw}/{view}.h5ad",
+                        "independent_unit_id": f"{mechanism}:{draw}",
+                        "cells": 900,
+                        "genes": 500,
                         "status": "completed",
                     }
                 )
@@ -169,6 +180,97 @@ def _ready_repository(tmp_path: Path):
     return repository, calibration_sha
 
 
+def _source_evidence(repository: Path):
+    from dataclasses import asdict
+
+    from maskimpute_benchmark.development_evaluation import (
+        validate_real_source_artifacts,
+    )
+    from maskimpute_benchmark.sources import load_source_ledger
+
+    source_specs = (
+        ("baron-pancreas-umi", "semisynthetic_source", "baron.dat"),
+        ("cite-seq-cbmc-rna-protein", "orthogonal_validation", "cbmc.dat"),
+        ("tung-ipsc-ercc-bulk-replicates", "orthogonal_validation", "tung.dat"),
+    )
+    sources = []
+    for index, (source_id, role, name) in enumerate(source_specs, start=1):
+        raw = f"source-{index}\n".encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        artifact = repository / "artifacts/external/data" / source_id / name
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(raw)
+        sources.append(
+            {
+                "id": source_id,
+                "role": role,
+                "mechanism": "semisynthetic" if index == 1 else None,
+                "source_type": "data",
+                "url": f"https://example.org/{source_id}",
+                "revision": f"GSE{index}:2026-07-12",
+                "license": "CC0-1.0",
+                "license_url": "https://example.org/license",
+                "citation_doi": f"10.1234/source.{index}",
+                "expected_checksum": None,
+                "eligibility": "eligible",
+                "endpoints": ["source_validation"],
+                "artifacts": [
+                    {
+                        "name": name,
+                        "url": f"https://example.org/{name}",
+                        "expected_checksum": {
+                            "algorithm": "sha256",
+                            "value": digest,
+                        },
+                    }
+                ],
+            }
+        )
+    ledger_path = repository / "study/sources.json"
+    ledger_path.write_text(json.dumps({"schema_version": 1, "sources": sources}))
+    ledger = load_source_ledger(ledger_path)
+    for source in sources:
+        artifact = source["artifacts"][0]
+        artifact_path = (
+            repository / "artifacts/external/data" / source["id"] / artifact["name"]
+        )
+        receipt = {
+            "schema_version": 1,
+            "source_id": source["id"],
+            "role": source["role"],
+            "source_type": "data",
+            "source_url": source["url"],
+            "revision": source["revision"],
+            "resolved_revision": source["revision"],
+            "license": source["license"],
+            "citation_doi": source["citation_doi"],
+            "verified_checksum": None,
+            "ledger_sha256": ledger.sha256,
+            "artifacts": [
+                {
+                    "name": artifact["name"],
+                    "sha256": artifact["expected_checksum"]["value"],
+                    "size_bytes": artifact_path.stat().st_size,
+                }
+            ],
+        }
+        receipt_path = (
+            repository / "artifacts/external/receipts" / f"{source['id']}.json"
+        )
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text(
+            json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n"
+        )
+    evidence = validate_real_source_artifacts(repository)
+    return {
+        "ledger_path": evidence.ledger_path,
+        "ledger_file_sha256": evidence.ledger_file_sha256,
+        "ledger_sha256": evidence.ledger_sha256,
+        "receipts": [asdict(value) for value in evidence.receipts],
+        "artifacts": [asdict(value) for value in evidence.artifacts],
+    }
+
+
 def _status_and_payload(authority):
     from maskimpute_benchmark.selection import _canonical_sha256
 
@@ -235,10 +337,18 @@ def _status_and_payload(authority):
     ]
     manifest_sha = "a" * 64
     status = {
+        "schema_version": 1,
         "namespace": "dev",
         "status": "completed",
+        "completed_count": 16,
+        "failed_count": 0,
+        "independent_unit_count": 8,
         "manifest_sha256": manifest_sha,
         "protocol_sha256": authority.file_sha256["study/protocol.json"],
+        "design_sha256": "f" * 64,
+        "seed_source_sha256": "9" * 64,
+        "execution_claim_id": None,
+        "round_id": None,
         "rows": datasets,
     }
     core = {
@@ -246,11 +356,202 @@ def _status_and_payload(authority):
         "dataset_manifest_sha256": manifest_sha,
         "count_score_manifest_sha256": authority.count_score_manifest.sha256,
         "retained_calibration_artifact_sha256": (authority.retained_calibration.sha256),
+        "evaluation_manifest_sha256": "e" * 64,
         "records": records,
         "orthogonal_intervals": intervals,
     }
     payload = {**core, "result_sha256": _canonical_sha256(core)}
     return status, payload
+
+
+def _attach_evaluation_manifest(
+    repository,
+    payload,
+    *,
+    corrupt=None,
+    sources=None,
+    reconstruction=None,
+    orthogonal=None,
+):
+    from maskimpute_benchmark.selection import _canonical_sha256
+
+    evidence_core = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"result_sha256", "evaluation_manifest_sha256"}
+    }
+    evaluation_core = {
+        "schema_version": 1,
+        "artifact_type": "maskimpute_development_selection_evaluation_manifest",
+        "selection_evidence_sha256": _canonical_sha256(evidence_core),
+        "dataset_manifest_sha256": payload["dataset_manifest_sha256"],
+        "count_score_manifest": {
+            "path": "artifacts/study/development/count_scores/manifest.json",
+            "file_sha256": payload["count_score_manifest_sha256"],
+        },
+        "retained_calibration_artifact": {
+            "path": (
+                "artifacts/study/development/calibration/retained_calibration.json"
+            ),
+            "file_sha256": payload["retained_calibration_artifact_sha256"],
+        },
+        "reconstruction": {} if reconstruction is None else reconstruction,
+        "orthogonal": {} if orthogonal is None else orthogonal,
+        "sources": {} if sources is None else sources,
+        "null_de_audits": [],
+        "orthogonal_audits": [],
+        "combined_score": None,
+    }
+    evaluation = {
+        **evaluation_core,
+        "manifest_sha256": _canonical_sha256(evaluation_core),
+    }
+    if corrupt is not None:
+        corrupt(evaluation)
+    path = (
+        repository / "artifacts/study/development/evaluation/evaluation_manifest.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(evaluation, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    result_core = {
+        key: value for key, value in payload.items() if key != "result_sha256"
+    }
+    result_core["evaluation_manifest_sha256"] = hashlib.sha256(
+        path.read_bytes()
+    ).hexdigest()
+    return {**result_core, "result_sha256": _canonical_sha256(result_core)}
+
+
+def _minimal_reconstruction_evidence(repository: Path, *, input_hashes=None):
+    from maskimpute_benchmark.selection import _canonical_sha256
+
+    checkpoint_core = {
+        "schema_version": 1,
+        "plan_sha256": "a" * 64,
+        "input_hashes": (
+            {"dataset_manifest_sha256": "0" * 64}
+            if input_hashes is None
+            else input_hashes
+        ),
+        "planned_run_count": 0,
+        "status": "completed",
+        "evaluation_scope": "reconstruction_only",
+        "selection_complete": False,
+        "selection_blockers": [],
+        "records": [],
+        "budget": {},
+    }
+    checkpoint = {
+        **checkpoint_core,
+        "checkpoint_sha256": _canonical_sha256(checkpoint_core),
+    }
+    path = (
+        repository
+        / "artifacts/study/development/competition-reconstruction/checkpoint.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(checkpoint, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    return {
+        "checkpoint_path": (
+            "artifacts/study/development/competition-reconstruction/checkpoint.json"
+        ),
+        "checkpoint_file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "checkpoint_sha256": checkpoint["checkpoint_sha256"],
+        "plan_sha256": checkpoint["plan_sha256"],
+        "input_hashes": checkpoint["input_hashes"],
+        "raw_artifacts": [],
+    }
+
+
+def _reconstruction_inputs(authority, status, payload):
+    return {
+        "dataset_manifest_sha256": payload["dataset_manifest_sha256"],
+        "dataset_design_sha256": status["design_sha256"],
+        "dataset_seed_source_sha256": status["seed_source_sha256"],
+        "protocol_sha256": authority.file_sha256["study/protocol.json"],
+        "method_registry_sha256": authority.file_sha256["study/methods.json"],
+        "selection_contract_sha256": authority.file_sha256[
+            "study/selection_contract.json"
+        ],
+        "development_search_sha256": authority.file_sha256[
+            "study/development_search.json"
+        ],
+        "ablation_registry_sha256": authority.file_sha256["study/ablations.json"],
+        "runner_authority_sha256": "8" * 64,
+        "execution_environment_sha256": "7" * 64,
+        "base_configuration_sha256": authority.base_maskimpute_config_sha256,
+        "count_model_config_sha256": authority.count_model_config_sha256,
+        "dataset_qc_policy_sha256": authority.dataset_qc_policy_sha256,
+        "count_score_manifest_sha256": payload["count_score_manifest_sha256"],
+        "retained_calibration_sha256": payload["retained_calibration_artifact_sha256"],
+    }
+
+
+def _minimal_orthogonal_evidence(repository: Path):
+    from maskimpute_benchmark.selection import _canonical_sha256
+
+    output_relative = "outputs/source-test--observed--deterministic.log2-cp10k-f64"
+    root = repository / "artifacts/study/development/evaluation/orthogonal"
+    output_path = root / output_relative
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes((1).to_bytes(8, "little"))
+    record = {
+        "source_id": "source-test",
+        "configuration": "observed",
+        "configuration_sha256": "0" * 64,
+        "model_seed": None,
+        "method_input_sha256": "1" * 64,
+        "status": "completed",
+        "reason": None,
+        "output_path": output_relative,
+        "output_file_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        "output_shape": [1, 1],
+        "output_dtype": "<f8",
+        "output_scale": "log2_cp10k_plus_1",
+    }
+    manifest_core = {
+        "schema_version": 1,
+        "artifact_type": "maskimpute_orthogonal_method_outputs",
+        "authority": {
+            "inputs": [
+                {
+                    "source_id": "source-test",
+                    "source_dataset_sha256": "9" * 64,
+                    "method_input_sha256": "1" * 64,
+                    "shape": [1, 1],
+                    "cell_ids_sha256": "2" * 64,
+                    "gene_ids_sha256": "3" * 64,
+                }
+            ],
+            "configurations": [],
+            "model_seeds": [],
+            "artifact_bindings": {},
+        },
+        "status": "completed",
+        "planned_record_count": 1,
+        "records": [record],
+    }
+    manifest = {
+        **manifest_core,
+        "manifest_sha256": _canonical_sha256(manifest_core),
+    }
+    manifest_path = root / "orthogonal_outputs.json"
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    return {
+        "manifest_path": (
+            "artifacts/study/development/evaluation/orthogonal/orthogonal_outputs.json"
+        ),
+        "manifest_file_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "manifest_sha256": manifest["manifest_sha256"],
+        "records": [record],
+    }, output_path
 
 
 def test_public_selection_api_accepts_results_only_not_design_authority():
@@ -411,6 +712,7 @@ def test_public_selection_blocks_until_the_ledger_binds_retained_calibration():
 def test_ready_public_selection_binds_results_to_all_repository_authorities(
     tmp_path, monkeypatch
 ):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
     import maskimpute_benchmark.selection as selection
 
     repository, calibration_sha = _ready_repository(tmp_path)
@@ -420,6 +722,11 @@ def test_ready_public_selection_binds_results_to_all_repository_authorities(
         selection,
         "_validate_development_dataset_status",
         lambda _repository: status,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "validate_selection_evaluation_manifest",
+        lambda *_args: SimpleNamespace(bindings={}),
     )
     report = selection._select_for_repository(
         payload,
@@ -571,6 +878,7 @@ def test_cli_forwards_results_without_reconstructing_caller_design(
         "dataset_manifest_sha256": "a" * 64,
         "count_score_manifest_sha256": "b" * 64,
         "retained_calibration_artifact_sha256": "c" * 64,
+        "evaluation_manifest_sha256": "e" * 64,
         "records": [],
         "orthogonal_intervals": [],
         "result_sha256": "d" * 64,
@@ -592,6 +900,66 @@ def test_cli_forwards_results_without_reconstructing_caller_design(
     assert script._report(loaded) == {"selected": sentinel}
 
 
+def test_cli_loaded_schema2_reaches_real_consumer_and_binds_manifest(
+    tmp_path, monkeypatch
+):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+    import maskimpute_benchmark.selection as selection
+
+    spec = importlib.util.spec_from_file_location(
+        "select_development_candidate_script_integration",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    payload = _attach_evaluation_manifest(
+        repository,
+        payload,
+        sources=_source_evidence(repository),
+        reconstruction={},
+        orthogonal={},
+    )
+    input_path = tmp_path / "schema2-selection-input.json"
+    input_path.write_text(json.dumps(payload), encoding="utf-8")
+    loaded = script._load(input_path)
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_validate_reconstruction_evidence",
+        lambda *_args: {"reconstruction_plan_sha256": "1" * 64},
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_validate_orthogonal_evidence",
+        lambda *_args: {"orthogonal_manifest_payload_sha256": "2" * 64},
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_validate_evaluator_audits",
+        lambda *_args: {"null_de_audits_sha256": "3" * 64},
+    )
+
+    report = script._report(loaded, repository)
+
+    assert report["selected_configuration"] == "v27-c01-direct-r1-g1"
+    assert (
+        report["authority_bindings"]["evaluation_manifest_file_sha256"]
+        == (payload["evaluation_manifest_sha256"])
+    )
+    assert (
+        report["authority_bindings"]["source_ledger_file_sha256"]
+        == (_source_evidence(repository)["ledger_file_sha256"])
+    )
+
+
 def test_result_payload_cannot_supply_attempts_declarations_or_design(tmp_path):
     import maskimpute_benchmark.selection as selection
 
@@ -601,6 +969,7 @@ def test_result_payload_cannot_supply_attempts_declarations_or_design(tmp_path):
         "dataset_manifest_sha256": "a" * 64,
         "count_score_manifest_sha256": "c" * 64,
         "retained_calibration_artifact_sha256": "d" * 64,
+        "evaluation_manifest_sha256": "e" * 64,
         "records": [],
         "orthogonal_intervals": [],
         "attempts": [],
@@ -611,6 +980,461 @@ def test_result_payload_cannot_supply_attempts_declarations_or_design(tmp_path):
 
     with pytest.raises(selection.SelectionAuthorityError, match="missing or extra"):
         selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_consumer_requires_fixed_evaluation_manifest(tmp_path, monkeypatch):
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    payload_core = {
+        key: value for key, value in payload.items() if key != "result_sha256"
+    }
+    payload_core["evaluation_manifest_sha256"] = "e" * 64
+    payload = {
+        **payload_core,
+        "result_sha256": selection._canonical_sha256(payload_core),
+    }
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+
+    with pytest.raises(
+        selection.SelectionAuthorityError, match="evaluation manifest.*absent"
+    ):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+@pytest.mark.parametrize(
+    ("corrupt", "message"),
+    (
+        (
+            lambda evaluation: evaluation.__setitem__("manifest_sha256", "0" * 64),
+            "evaluation manifest payload checksum",
+        ),
+        (
+            lambda evaluation: (
+                evaluation.__setitem__("selection_evidence_sha256", "0" * 64),
+                evaluation.__setitem__(
+                    "manifest_sha256",
+                    __import__(
+                        "maskimpute_benchmark.selection", fromlist=["_canonical_sha256"]
+                    )._canonical_sha256(
+                        {
+                            key: value
+                            for key, value in evaluation.items()
+                            if key != "manifest_sha256"
+                        }
+                    ),
+                ),
+            ),
+            "selection evidence checksum",
+        ),
+    ),
+)
+def test_schema2_consumer_rejects_evaluation_envelope_tampering(
+    tmp_path, monkeypatch, corrupt, message
+):
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    payload = _attach_evaluation_manifest(repository, payload, corrupt=corrupt)
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+
+    with pytest.raises(selection.SelectionAuthorityError, match=message):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_consumer_revalidates_source_evidence(tmp_path, monkeypatch):
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    payload = _attach_evaluation_manifest(repository, payload)
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+
+    with pytest.raises(selection.SelectionAuthorityError, match="source evidence"):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_consumer_rejects_changed_bound_source_bytes(tmp_path, monkeypatch):
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    sources = _source_evidence(repository)
+    payload = _attach_evaluation_manifest(repository, payload, sources=sources)
+    first_artifact = repository / sources["artifacts"][0]["path"]
+    first_artifact.write_bytes(b"tampered")
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+
+    with pytest.raises(selection.SelectionAuthorityError, match="source evidence"):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_consumer_requires_bound_reconstruction_checkpoint(
+    tmp_path, monkeypatch
+):
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    payload = _attach_evaluation_manifest(
+        repository, payload, sources=_source_evidence(repository)
+    )
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+
+    with pytest.raises(
+        selection.SelectionAuthorityError, match="reconstruction.*checkpoint"
+    ):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_consumer_rejects_reconstruction_input_authority_drift(
+    tmp_path, monkeypatch
+):
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    payload = _attach_evaluation_manifest(
+        repository,
+        payload,
+        sources=_source_evidence(repository),
+        reconstruction=_minimal_reconstruction_evidence(repository),
+    )
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+
+    with pytest.raises(selection.SelectionAuthorityError, match="plan/input authority"):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_consumer_rebuilds_reconstruction_plan_authority(tmp_path, monkeypatch):
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    reconstruction = _minimal_reconstruction_evidence(
+        repository,
+        input_hashes=_reconstruction_inputs(authority, status, payload),
+    )
+    payload = _attach_evaluation_manifest(
+        repository,
+        payload,
+        sources=_source_evidence(repository),
+        reconstruction=reconstruction,
+    )
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+
+    with pytest.raises(
+        selection.SelectionAuthorityError, match="reconstruction plan authority"
+    ):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_consumer_rejects_reconstruction_raw_artifact_alias(
+    tmp_path, monkeypatch
+):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+    import maskimpute_benchmark.development_evaluation as development_evaluation
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    inputs = _reconstruction_inputs(authority, status, payload)
+    reconstruction = _minimal_reconstruction_evidence(repository, input_hashes=inputs)
+    reconstruction["raw_artifacts"] = [
+        {
+            "run_id": "run-forged",
+            "kind": "stdout",
+            "path": "artifacts/study/development/competition-reconstruction/checkpoint.json",
+            "file_sha256": reconstruction["checkpoint_file_sha256"],
+        }
+    ]
+    payload = _attach_evaluation_manifest(
+        repository,
+        payload,
+        sources=_source_evidence(repository),
+        reconstruction=reconstruction,
+    )
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_rebuild_reconstruction_plan",
+        lambda *_args: SimpleNamespace(
+            input_hashes=inputs, plan_sha256=reconstruction["plan_sha256"]
+        ),
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "load_completed_reconstruction_checkpoint",
+        lambda *_args: SimpleNamespace(
+            checkpoint_file_sha256=reconstruction["checkpoint_file_sha256"],
+            checkpoint_sha256=reconstruction["checkpoint_sha256"],
+            plan_sha256=reconstruction["plan_sha256"],
+            input_hashes=inputs,
+            raw_artifacts=(),
+        ),
+    )
+
+    with pytest.raises(
+        selection.SelectionAuthorityError, match="raw artifact denominator"
+    ):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_consumer_requires_bound_orthogonal_outputs(tmp_path, monkeypatch):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    payload = _attach_evaluation_manifest(
+        repository,
+        payload,
+        sources=_source_evidence(repository),
+        reconstruction={},
+    )
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_validate_reconstruction_evidence",
+        lambda *_args: {},
+    )
+
+    with pytest.raises(selection.SelectionAuthorityError, match="orthogonal.*binding"):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_orthogonal_evidence_revalidates_every_output_byte(tmp_path):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    orthogonal, output_path = _minimal_orthogonal_evidence(repository)
+    output_path.write_bytes(b"tampered")
+
+    with pytest.raises(
+        evaluation.EvaluationManifestError, match="orthogonal output.*checksum"
+    ):
+        evaluation._validate_orthogonal_evidence(repository, orthogonal)
+
+
+def test_schema2_consumer_requires_current_orthogonal_authority(tmp_path, monkeypatch):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    orthogonal, _output_path = _minimal_orthogonal_evidence(repository)
+    payload = _attach_evaluation_manifest(
+        repository,
+        payload,
+        sources=_source_evidence(repository),
+        reconstruction={},
+        orthogonal=orthogonal,
+    )
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_validate_reconstruction_evidence",
+        lambda *_args: {},
+    )
+
+    with pytest.raises(selection.SelectionAuthorityError, match="orthogonal authority"):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_schema2_consumer_requires_complete_evaluator_audits(tmp_path, monkeypatch):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    payload = _attach_evaluation_manifest(
+        repository,
+        payload,
+        sources=_source_evidence(repository),
+        reconstruction={},
+        orthogonal={},
+    )
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_validate_reconstruction_evidence",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_validate_orthogonal_evidence",
+        lambda *_args: {},
+    )
+
+    with pytest.raises(
+        selection.SelectionAuthorityError, match="null-DE audit denominator"
+    ):
+        selection._select_for_repository(payload, repository, require_clean=False)
+
+
+def test_evaluator_audits_cannot_change_selection_values(tmp_path):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+
+    repository = tmp_path / "repository"
+    checkpoint_path = (
+        repository
+        / "artifacts/study/development/competition-reconstruction/checkpoint.json"
+    )
+    checkpoint_path.parent.mkdir(parents=True)
+    run = {
+        "run_id": "run-observed-test",
+        "method_id": "observed",
+        "configuration_id": "registry-default",
+        "configuration_kind": "registry",
+        "mechanism": "symsim",
+        "biological_id": "draw-01",
+        "technical_view": "moderate",
+        "dataset_id": "dataset-test",
+        "model_seed": None,
+        "evaluator_output_file_sha256": "4" * 64,
+    }
+    checkpoint = {"records": [{"run": run}]}
+    checkpoint_path.write_text(
+        json.dumps(checkpoint, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    checkpoint_sha256 = "5" * 64
+    entropy = hashlib.sha256()
+    entropy.update(b"maskimpute-null-de-post-execution-entropy-v1\0")
+    entropy.update(checkpoint_sha256.encode("ascii"))
+    entropy.update(b"\0symsim\0draw-01")
+    null_record = {
+        "mechanism": "symsim",
+        "biological_id": "draw-01",
+        "technical_view": "moderate",
+        "dataset_id": "dataset-test",
+        "method": "observed",
+        "model_seed": None,
+        "metric": "null_de_fpr",
+        "value": 0.05,
+        "status": "completed",
+    }
+    interval = {
+        "configuration": "v27-c01-direct-r1-g1",
+        "endpoint": "rna_protein_concordance",
+        "comparison": "observed",
+        "estimate": 0.0,
+        "ci_lower": -0.01,
+        "ci_upper": 0.01,
+        "status": "completed",
+    }
+    manifest = {
+        "reconstruction": {
+            "checkpoint_path": (
+                "artifacts/study/development/competition-reconstruction/checkpoint.json"
+            ),
+            "checkpoint_file_sha256": hashlib.sha256(
+                checkpoint_path.read_bytes()
+            ).hexdigest(),
+            "checkpoint_sha256": checkpoint_sha256,
+        },
+        "null_de_audits": [
+            {
+                "run_id": run["run_id"],
+                "dataset_id": run["dataset_id"],
+                "method": "observed",
+                "model_seed": None,
+                "status": "completed",
+                "value": 0.10,
+                "nominal_alpha": 0.05,
+                "n_tested_genes": 100,
+                "fixed_gene_count": 100,
+                "split_entropy_sha256": entropy.hexdigest(),
+                "split_entropy_derivation": (
+                    "sha256(completed_checkpoint_sha256,mechanism,biological_id)"
+                ),
+                "split_sha256": "6" * 64,
+                "gene_mask_sha256": "7" * 64,
+                "reason": None,
+                "evaluator_output_file_sha256": "4" * 64,
+            }
+        ],
+        "orthogonal_audits": [
+            {
+                **interval,
+                "reason": None,
+                "n_biological_units": 1,
+                "n_technical_units": 4,
+                "n_boot": 100,
+                "bootstrap_sha256": "8" * 64,
+                "aggregation": "paired_cell_bootstrap",
+                "inference_scope": "single_specimen",
+                "profile_scale": "matched_marker_rank_correlation_across_cells",
+            }
+        ],
+    }
+    data = {"records": [null_record], "orthogonal_intervals": [interval]}
+    authority = SimpleNamespace(
+        attempts=(), declarations=(SimpleNamespace(id="observed"),)
+    )
+
+    with pytest.raises(
+        evaluation.EvaluationManifestError,
+        match="null-DE audit differs from its selection record",
+    ):
+        evaluation._validate_evaluator_audits(repository, manifest, data, authority)
 
 
 def test_result_payload_checksum_is_verified_before_dataset_access(
@@ -624,6 +1448,7 @@ def test_result_payload_checksum_is_verified_before_dataset_access(
         "dataset_manifest_sha256": "a" * 64,
         "count_score_manifest_sha256": "c" * 64,
         "retained_calibration_artifact_sha256": "d" * 64,
+        "evaluation_manifest_sha256": "e" * 64,
         "records": [],
         "orthogonal_intervals": [],
         "result_sha256": "b" * 64,

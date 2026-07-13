@@ -2721,6 +2721,7 @@ def _select_for_repository(
             "dataset_manifest_sha256",
             "count_score_manifest_sha256",
             "retained_calibration_artifact_sha256",
+            "evaluation_manifest_sha256",
             "records",
             "orthogonal_intervals",
             "result_sha256",
@@ -2733,7 +2734,6 @@ def _select_for_repository(
     result_core = {key: value for key, value in data.items() if key != "result_sha256"}
     if _canonical_sha256(result_core) != result_sha:
         raise SelectionAuthorityError("development result checksum mismatch")
-
     status = _validate_development_dataset_status(repository)
     if not isinstance(status, Mapping):
         raise SelectionAuthorityError("validated development status is not a mapping")
@@ -2809,6 +2809,19 @@ def _select_for_repository(
         status,
         MappingProxyType(dataset_bindings),
     )
+    try:
+        from .evaluation_manifest import (
+            EvaluationManifestError,
+            validate_selection_evaluation_manifest,
+        )
+
+        evaluation_evidence = validate_selection_evaluation_manifest(
+            repository, data, authority, status
+        )
+    except EvaluationManifestError as error:
+        raise SelectionAuthorityError(
+            f"development evaluation manifest failed validation: {error}"
+        ) from error
 
     report = _evaluate_development_candidates(
         data["records"],
@@ -2839,6 +2852,7 @@ def _select_for_repository(
             "retained_calibration_artifact_sha256": calibration_sha,
             "count_score_manifest_sha256": count_score_sha,
             **artifact_bindings,
+            **dict(evaluation_evidence.bindings),
         }
     )
     return SelectionReport(
