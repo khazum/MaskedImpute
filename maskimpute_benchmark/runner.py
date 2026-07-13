@@ -1920,6 +1920,7 @@ class ExecutionRequest:
     count_score_manifest_sha256: str | None
     retained_calibration_path: str | None
     retained_calibration_sha256: str | None
+    calibration_usage: str
     calibration_context: CalibrationFoldContext | None
     timeout_seconds: float
     max_rss_bytes: int
@@ -1940,6 +1941,7 @@ class ExecutionRequest:
         technical_view: str,
         dataset_id: str,
         timeout_seconds: int | float,
+        calibration_usage: str = "development_holdout",
     ) -> ExecutionRequest:
         if not isinstance(method_spec, MethodSpec):
             raise TypeError("method_spec must be a MethodSpec")
@@ -1949,6 +1951,11 @@ class ExecutionRequest:
             raise TypeError("configuration must be an AuthorizedConfiguration")
         if configuration.method_id != method_spec.id:
             raise RunnerContractError("configuration method does not match MethodSpec")
+        if calibration_usage not in {
+            "development_holdout",
+            "retained_all_development",
+        }:
+            raise RunnerContractError("calibration usage is invalid")
         context = (
             authority.execution_context
             if isinstance(authority, RunnerAuthority)
@@ -2021,7 +2028,9 @@ class ExecutionRequest:
                     biological_id=biological_id,
                     technical_view=technical_view,
                 )
-                if configuration.requires_calibration and mechanism == "symsim"
+                if configuration.requires_calibration
+                and mechanism == "symsim"
+                and calibration_usage == "development_holdout"
                 else None
             )
         else:
@@ -2047,6 +2056,7 @@ class ExecutionRequest:
             "count_score_manifest_sha256": score_sha,
             "retained_calibration_path": calibration_path,
             "retained_calibration_sha256": calibration_sha,
+            "calibration_usage": calibration_usage,
             "calibration_context": (
                 None if calibration_context is None else asdict(calibration_context)
             ),
@@ -2076,6 +2086,7 @@ class ExecutionRequest:
             count_score_manifest_sha256=score_sha,
             retained_calibration_path=calibration_path,
             retained_calibration_sha256=calibration_sha,
+            calibration_usage=calibration_usage,
             calibration_context=calibration_context,
             timeout_seconds=float(timeout),
             max_rss_bytes=int(values["max_rss_bytes"]),
@@ -2084,6 +2095,11 @@ class ExecutionRequest:
         )
 
     def validate_integrity(self) -> None:
+        if self.calibration_usage not in {
+            "development_holdout",
+            "retained_all_development",
+        }:
+            raise RunnerContractError("calibration usage is invalid")
         configuration = json.loads(self.configuration_payload_json)
         base_configuration = (
             None
@@ -2114,6 +2130,7 @@ class ExecutionRequest:
             "count_score_manifest_sha256": self.count_score_manifest_sha256,
             "retained_calibration_path": self.retained_calibration_path,
             "retained_calibration_sha256": self.retained_calibration_sha256,
+            "calibration_usage": self.calibration_usage,
             "calibration_context": (
                 None
                 if self.calibration_context is None
@@ -4109,7 +4126,10 @@ class RepositoryAdapterDispatcher:
             return AdapterOutcome.failed("retained_calibration_file_checksum_mismatch")
         from maskimpute import MaskImputeConfig, PreZeroCountModelConfig
         from maskimpute.calibration import load_calibration_artifact
-        from maskimpute_benchmark.methods.maskimpute import _run_in_tree
+        from maskimpute_benchmark.methods.maskimpute import (
+            _run_in_tree,
+            run_frozen_final_in_tree,
+        )
 
         base = json.loads(request.base_configuration_json)
         configuration = json.loads(request.configuration_payload_json)
@@ -4136,23 +4156,42 @@ class RepositoryAdapterDispatcher:
         decoder, decoder_config = maskimpute_decoder_for_configuration(
             authorized_configuration
         )
-        execution = _run_in_tree(
-            request.method_spec,
-            request.method_input,
-            variant_id=variant_id,
-            calibration_artifact=calibration,
-            seed=request.model_seed,
-            config=config,
-            count_model_config=count_config,
-            device="cuda",
-            development_mechanism=request.mechanism,
-            development_biological_id=request.biological_id,
-            decoder=decoder,
-            decoder_config=decoder_config,
-        )
+        if request.calibration_usage == "retained_all_development":
+            execution = run_frozen_final_in_tree(
+                request.method_spec,
+                request.method_input,
+                variant_id=variant_id,
+                calibration_artifact=calibration,
+                seed=request.model_seed,
+                config=config,
+                count_model_config=count_config,
+                device="cuda",
+                mechanism=request.mechanism,
+                biological_id=request.biological_id,
+                decoder=decoder,
+                decoder_config=decoder_config,
+            )
+        else:
+            execution = _run_in_tree(
+                request.method_spec,
+                request.method_input,
+                variant_id=variant_id,
+                calibration_artifact=calibration,
+                seed=request.model_seed,
+                config=config,
+                count_model_config=count_config,
+                device="cuda",
+                development_mechanism=request.mechanism,
+                development_biological_id=request.biological_id,
+                decoder=decoder,
+                decoder_config=decoder_config,
+            )
         diagnostics = execution.ablation_result.diagnostics
         score_diagnostics = diagnostics.get("score")
-        if request.count_score_manifest_sha256 is not None:
+        if (
+            request.count_score_manifest_sha256 is not None
+            and request.calibration_usage == "development_holdout"
+        ):
             if not isinstance(score_diagnostics, Mapping):
                 raise RunnerContractError(
                     "MaskImpute score diagnostics are unavailable"

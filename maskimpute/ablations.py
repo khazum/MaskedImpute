@@ -640,6 +640,7 @@ def _fit_ablation_once(
     cell_ids: object,
     development_mechanism: str,
     development_biological_id: str,
+    calibration_usage: str = "development_holdout",
     decoder: str = "scaled_gaussian",
     decoder_config: object | None = None,
 ):
@@ -670,6 +671,11 @@ def _fit_ablation_once(
     config = replace(config)
     if config.seed not in registry.model_seeds:
         raise ValueError("config seed is outside the tracked ablation seed panel")
+    if calibration_usage not in {
+        "development_holdout",
+        "retained_all_development",
+    }:
+        raise ValueError("calibration_usage is invalid")
     if development_mechanism not in {
         "symsim",
         "sergio",
@@ -677,7 +683,12 @@ def _fit_ablation_once(
         "semisynthetic",
     }:
         raise ValueError("development_mechanism is outside the tracked panel")
-    if development_biological_id not in {"draw-01", "draw-02"}:
+    allowed_biological_ids = (
+        {"draw-01", "draw-02"}
+        if calibration_usage == "development_holdout"
+        else {f"draw-{draw:02d}" for draw in range(1, 6)}
+    )
+    if development_biological_id not in allowed_biological_ids:
         raise ValueError("development_biological_id is outside the tracked panel")
     resolved_config = resolve_training_config(config, trusted_spec)
 
@@ -699,7 +710,12 @@ def _fit_ablation_once(
     calibration_fold_receipt = None
     if trusted_spec.score_source == "retained_calibrator":
         observed_zero = counts == 0
-        if development_mechanism == "symsim":
+        if calibration_usage == "retained_all_development":
+            probability[observed_zero] = verified_calibration.transform(
+                direct_score[observed_zero]
+            )
+            calibration_scope = "retained_all_development_for_final_inference"
+        elif development_mechanism == "symsim":
             probability[observed_zero] = (
                 verified_calibration.transform_for_development_holdout(
                     direct_score[observed_zero],

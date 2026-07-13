@@ -332,11 +332,58 @@ def run_v28_development_candidate(
     )
 
 
+def run_frozen_final_in_tree(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    *,
+    variant_id: str,
+    calibration_artifact: CalibrationArtifact,
+    seed: int,
+    config: MaskImputeConfig,
+    count_model_config: PreZeroCountModelConfig,
+    device: str | torch.device,
+    mechanism: str,
+    biological_id: str,
+    decoder: str = "scaled_gaussian",
+    decoder_config: object | None = None,
+) -> MaskImputeAdapterExecution:
+    """Run one frozen candidate/control with the all-development final calibrator."""
+
+    if spec.id == "maskimpute":
+        if variant_id not in {"maskimpute-reference", "direct-score"}:
+            raise ValueError("final MaskImpute variant is not selected authority")
+    elif spec.id == "capacity-matched-ae":
+        if (
+            variant_id != "capacity-matched-ae"
+            or decoder != "scaled_gaussian"
+            or decoder_config is not None
+        ):
+            raise ValueError("capacity-matched final control requires scaled_gaussian")
+    else:
+        raise ValueError("final in-tree execution accepts only the frozen method pair")
+    return _run_in_tree(
+        spec,
+        method_input,
+        variant_id=variant_id,
+        calibration_artifact=calibration_artifact,
+        seed=seed,
+        config=config,
+        count_model_config=count_model_config,
+        device=device,
+        development_mechanism=mechanism,
+        development_biological_id=biological_id,
+        calibration_usage="retained_all_development",
+        decoder=decoder,
+        decoder_config=decoder_config,
+    )
+
+
 __all__ = [
     "MaskImputeAdapterExecution",
     "finalize_maskimpute_output",
     "maskimpute_to_evaluator_counts",
     "run_capacity_matched_ae",
+    "run_frozen_final_in_tree",
     "run_maskimpute",
     "run_v28_development_candidate",
 ]

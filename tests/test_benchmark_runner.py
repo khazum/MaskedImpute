@@ -993,6 +993,65 @@ def test_calibrated_development_completion_requires_matching_lodo_fold_receipt()
     assert accepted.calibration_fold_receipt == receipt
 
 
+def test_final_calibrated_request_uses_all_development_without_lodo_receipt() -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("maskimpute")
+    authority = _authority(maskimpute_ready=True)
+    configuration = next(
+        value
+        for value in authority.configurations
+        if value.configuration_id == "calibrated-score"
+    )
+
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=42,
+        configuration=configuration,
+        authority=authority,
+        mechanism="symsim",
+        biological_id="draw-03",
+        technical_view="moderate",
+        dataset_id="dataset-final",
+        timeout_seconds=5,
+        calibration_usage="retained_all_development",
+    )
+
+    assert request.calibration_usage == "retained_all_development"
+    assert request.calibration_context is None
+    request.validate_integrity()
+
+
+def test_frozen_final_in_tree_preserves_selected_direct_score_variant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.methods.maskimpute as adapter
+
+    registry = load_method_registry(Path("study/methods.json"))
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(adapter, "_run_in_tree", fake_run)
+    observed = adapter.run_frozen_final_in_tree(
+        registry.by_id("maskimpute"),
+        object(),
+        variant_id="direct-score",
+        calibration_artifact=object(),
+        seed=42,
+        config=object(),
+        count_model_config=object(),
+        device="cpu",
+        mechanism="symsim",
+        biological_id="draw-03",
+    )
+
+    assert observed is not None
+    assert captured["variant_id"] == "direct-score"
+    assert captured["calibration_usage"] == "retained_all_development"
+
+
 def test_qc_excludes_only_zero_library_cells_before_one_shared_method_input() -> None:
     from maskimpute_benchmark.schema import benchmark_dataset_sha256
 
