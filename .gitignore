@@ -12,6 +12,7 @@ htmlcov/
 .coverage.*
 .ipynb_checkpoints/
 .venv/
+.venv_scvi/
 .env/
 .env.*
 .worktrees/

@@ -11,23 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 # Historical sources remain byte-for-byte available for provenance, while
 # third-party trees are outside the terminology contract for MaskImpute.
 EXCLUDED_PREFIXES = (
-    ".venv_scvi/",
     "historical/v26_neurips/",
-    "AutoClass/",
     "DenseLayerPack/",
-    "MAGIC/",
-    "SAVER/",
-    "rds2py/",
-    "splatter/",
-    "temp/single-cell-3prime-paper/",
 )
 EXCLUDED_EXACT_PATHS = {
-    "AutoClass",
-    "MAGIC",
-    "SAVER",
-    "rds2py",
-    "splatter",
-    "temp/single-cell-3prime-paper",
     # These binding policy documents must name the terminology they prohibit.
     "docs/superpowers/plans/2026-07-12-method-competition.md",
     "docs/superpowers/specs/2026-07-12-genome-biology-study-design.md",
