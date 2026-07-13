@@ -1446,6 +1446,20 @@ def test_implementation_source_digest_is_sorted_raw_and_symlink_safe(
     with pytest.raises(RunnerContractError, match="directory.*symlink"):
         implementation_source_sha256(roots[0])
 
+    entrypoint_root = tmp_path / "linked-entrypoint-root"
+    _write_implementation_source_fixture(entrypoint_root)
+    entrypoint = entrypoint_root / "scripts/run_development_competition.py"
+    entrypoint.unlink()
+    entrypoint.parent.rmdir()
+    outside_scripts = tmp_path / "outside-scripts"
+    outside_scripts.mkdir()
+    (outside_scripts / "run_development_competition.py").write_bytes(b"outside = True\n")
+    (entrypoint_root / "scripts").symlink_to(
+        outside_scripts, target_is_directory=True
+    )
+    with pytest.raises(RunnerContractError, match="directory.*symlink"):
+        implementation_source_sha256(entrypoint_root)
+
 
 def test_public_cli_exposes_only_operational_output_and_environment_paths() -> None:
     completed = subprocess.run(

@@ -22,7 +22,13 @@ from maskimpute.ablations import (
 )
 from maskimpute.calibration import CalibrationArtifact
 
-from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
+from .base import (
+    MethodContractError,
+    MethodInput,
+    MethodOutputSnapshot,
+    MethodSpec,
+    snapshot_method_output,
+)
 from .observed import (
     AdapterExecution,
     CompatibilityEvent,
@@ -79,6 +85,10 @@ def finalize_maskimpute_output(
     }:
         if spec.id != "maskimpute":
             raise ValueError("MaskImpute variant requires its method spec")
+        if not spec.preserves_observed_positives:
+            raise MethodContractError(
+                "MaskImpute method specification must preserve observed positives"
+            )
     else:
         raise ValueError("variant is not a tracked in-tree execution")
     validation_spec = (

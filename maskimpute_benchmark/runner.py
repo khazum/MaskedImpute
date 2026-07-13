@@ -199,13 +199,14 @@ def _read_implementation_source(path: Path, relative: str) -> bytes:
             f"implementation source changed while hashing: {relative}"
         ) from error
 
-    def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    def identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
         return (
             value.st_dev,
             value.st_ino,
             value.st_mode,
             value.st_size,
             value.st_mtime_ns,
+            value.st_ctime_ns,
         )
 
     if identity(before) != identity(opened) or identity(opened) != identity(after):
@@ -277,7 +278,29 @@ def implementation_source_sha256(repository_root: Path | None = None) -> str:
                 path = current_path / file_name
                 paths.append((path.relative_to(root).as_posix(), path))
     for relative in _IMPLEMENTATION_SOURCE_FILES:
-        paths.append((relative, root / relative))
+        path = root / relative
+        parent = path.parent
+        while parent != root:
+            parent_relative = parent.relative_to(root).as_posix()
+            try:
+                parent_metadata = parent.lstat()
+            except OSError as error:
+                raise RunnerContractError(
+                    "implementation source directory is unavailable: "
+                    f"{parent_relative}"
+                ) from error
+            if stat.S_ISLNK(parent_metadata.st_mode):
+                raise RunnerContractError(
+                    "implementation source directory must not be a symlink: "
+                    f"{parent_relative}"
+                )
+            if not stat.S_ISDIR(parent_metadata.st_mode):
+                raise RunnerContractError(
+                    "implementation source path must be a directory: "
+                    f"{parent_relative}"
+                )
+            parent = parent.parent
+        paths.append((relative, path))
     paths.sort(key=lambda item: os.fsencode(item[0]))
     if len({relative for relative, _ in paths}) != len(paths):
         raise RunnerContractError("implementation source paths are not unique")

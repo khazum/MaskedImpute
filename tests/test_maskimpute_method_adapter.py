@@ -96,7 +96,13 @@ def test_full_denoising_alone_may_change_observed_positive_counts():
     denoised = counts.astype(np.float64)
     denoised[counts > 0] += 0.5
 
-    for selective_variant in ("maskimpute-reference", "direct-score", "no-gate"):
+    for selective_variant in (
+        "maskimpute-reference",
+        "direct-score",
+        "no-gate",
+        "no-pre-zero-regularizer",
+        "no-explicit-mask",
+    ):
         with pytest.raises(MethodContractError, match="preserve observed positives"):
             finalize_maskimpute_output(
                 spec,
@@ -112,6 +118,29 @@ def test_full_denoising_alone_may_change_observed_positive_counts():
         variant_id="full-denoising",
     )
     np.testing.assert_array_equal(snapshot.matrix, denoised)
+
+
+def test_selective_maskimpute_rejects_forged_nonpreserving_method_spec():
+    from dataclasses import replace
+
+    from maskimpute_benchmark.methods.base import MethodContractError
+    from maskimpute_benchmark.methods.maskimpute import finalize_maskimpute_output
+    from maskimpute_benchmark.methods.registry import load_method_registry
+
+    counts = np.array([[5, 0, 1], [2, 3, 0]], dtype=np.int64)
+    method_input = _method_input(counts)
+    registry_spec = load_method_registry(Path("study/methods.json")).by_id("maskimpute")
+    forged_spec = replace(registry_spec, preserves_observed_positives=False)
+    changed = counts.astype(np.float64)
+    changed[counts > 0] += 0.5
+
+    with pytest.raises(MethodContractError, match="preserve observed positives"):
+        finalize_maskimpute_output(
+            forged_spec,
+            method_input,
+            changed,
+            variant_id="maskimpute-reference",
+        )
 
 
 def test_maskimpute_and_capacity_control_adapters_execute_bound_outputs():
