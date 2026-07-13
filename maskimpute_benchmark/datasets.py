@@ -25,7 +25,9 @@ from .simulators import (
     FinalManifestClaim,
     SimulationArtifact,
     SimulationRequest,
+    SimulatorRuntimeAssets,
     load_final_manifest_claim,
+    load_simulator_runtime_assets,
     run_semisynthetic_pair,
     run_sergio_pair,
     run_sparsim_pair,
@@ -81,7 +83,12 @@ _STATUS_KEYS = frozenset(
 )
 
 Adapter = Callable[
-    [Sequence[SimulationRequest], Protocol, FinalManifestClaim | None],
+    [
+        Sequence[SimulationRequest],
+        Protocol,
+        FinalManifestClaim | None,
+        SimulatorRuntimeAssets | None,
+    ],
     tuple[SimulationArtifact, SimulationArtifact],
 ]
 
@@ -447,8 +454,7 @@ def _file_sha256_secure(
         raise DatasetRegistryError(f"{name} could not be hashed") from error
     if (
         (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino)
-        or (named_after.st_dev, named_after.st_ino)
-        != (before.st_dev, before.st_ino)
+        or (named_after.st_dev, named_after.st_ino) != (before.st_dev, before.st_ino)
         or named_after.st_mode != before.st_mode
         or named_after.st_nlink != before.st_nlink
         or named_after.st_uid != before.st_uid
@@ -659,20 +665,22 @@ def _design_sha256(
     protocol_sha256: str,
     panel: DevelopmentPanel,
     claim: FinalManifestClaim | None,
+    runtime_assets: SimulatorRuntimeAssets | None,
 ) -> str:
-    return canonical_sha256(
-        {
-            "schema": "maskimpute-dataset-panel-design-v1",
-            "namespace": namespace,
-            "protocol_sha256": protocol_sha256,
-            "development_panel_sha256": panel.file_sha256,
-            "seed_source_sha256": (
-                panel.file_sha256 if claim is None else claim.seed_manifest_sha256
-            ),
-            "execution_claim_id": None if claim is None else claim.execution_claim_id,
-            "round_id": None if claim is None else claim.round_id,
-        }
-    )
+    payload: dict[str, object] = {
+        "schema": "maskimpute-dataset-panel-design-v1",
+        "namespace": namespace,
+        "protocol_sha256": protocol_sha256,
+        "development_panel_sha256": panel.file_sha256,
+        "seed_source_sha256": (
+            panel.file_sha256 if claim is None else claim.seed_manifest_sha256
+        ),
+        "execution_claim_id": None if claim is None else claim.execution_claim_id,
+        "round_id": None if claim is None else claim.round_id,
+    }
+    if runtime_assets is not None:
+        payload["runtime_assets_sha256"] = runtime_assets.semantic_sha256
+    return canonical_sha256(payload)
 
 
 def _relative(root: Path, path: Path, name: str) -> str:
@@ -877,6 +885,7 @@ def _receipt_payload(
     design: _PairDesign,
     namespace: str,
     rows: Sequence[Mapping[str, object]],
+    runtime_assets: SimulatorRuntimeAssets | None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema_version": 1,
@@ -886,6 +895,8 @@ def _receipt_payload(
         "biological_id": design.biological_id,
         "rows": [dict(row) for row in rows],
     }
+    if runtime_assets is not None:
+        payload["runtime_assets_sha256"] = runtime_assets.semantic_sha256
     payload["receipt_sha256"] = canonical_sha256(payload)
     return payload
 
@@ -897,6 +908,7 @@ def _execute_pair(
     namespace: str,
     protocol: Protocol,
     claim: FinalManifestClaim | None,
+    runtime_assets: SimulatorRuntimeAssets | None,
     results_root: Path,
 ) -> list[dict[str, object]]:
     receipt_path = _receipt_path(results_root, design)
@@ -908,6 +920,7 @@ def _execute_pair(
             design_sha256=design_sha256,
             namespace=namespace,
             results_root=results_root,
+            runtime_assets=runtime_assets,
         )
     if any(os.path.lexists(request.output_path) for request in design.requests):
         raise DatasetRegistryError(
@@ -920,7 +933,12 @@ def _execute_pair(
             "closed simulator adapter mapping is incomplete"
         ) from error
     try:
-        artifacts = adapter(design.requests, protocol, claim)
+        artifacts = adapter(
+            design.requests,
+            protocol,
+            claim,
+            runtime_assets=runtime_assets,
+        )
         rows, log = _completed_rows(design, artifacts, results_root)
     except Exception as error:
         log = _log_record(design, namespace, status="failed", error=error)
@@ -942,7 +960,7 @@ def _execute_pair(
         for row in rows:
             row["log_path"] = log_relative
             row["log_sha256"] = log_hash
-    receipt = _receipt_payload(design_sha256, design, namespace, rows)
+    receipt = _receipt_payload(design_sha256, design, namespace, rows, runtime_assets)
     _publish_new_json(receipt_path, receipt)
     return rows
 
@@ -1212,8 +1230,9 @@ def _validate_receipt(
     design_sha256: str,
     namespace: str,
     results_root: Path,
+    runtime_assets: SimulatorRuntimeAssets | None,
 ) -> list[dict[str, object]]:
-    if set(receipt) != {
+    expected_keys = {
         "schema_version",
         "design_sha256",
         "namespace",
@@ -1221,7 +1240,10 @@ def _validate_receipt(
         "biological_id",
         "rows",
         "receipt_sha256",
-    }:
+    }
+    if runtime_assets is not None:
+        expected_keys.add("runtime_assets_sha256")
+    if set(receipt) != expected_keys:
         raise DatasetRegistryError("dataset pair receipt has wrong schema")
     expected_hash = canonical_sha256(
         {key: value for key, value in receipt.items() if key != "receipt_sha256"}
@@ -1234,6 +1256,10 @@ def _validate_receipt(
         or receipt.get("namespace") != namespace
         or receipt.get("mechanism") != design.mechanism
         or receipt.get("biological_id") != design.biological_id
+        or (
+            runtime_assets is not None
+            and receipt.get("runtime_assets_sha256") != runtime_assets.semantic_sha256
+        )
     ):
         raise DatasetRegistryError("dataset pair receipt mismatches design")
     return _validate_rows(
@@ -1248,6 +1274,7 @@ def _status_payload(
     design_sha256: str,
     panel: DevelopmentPanel,
     claim: FinalManifestClaim | None,
+    runtime_assets: SimulatorRuntimeAssets | None,
     designs: Sequence[_PairDesign],
     rows: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
@@ -1269,6 +1296,9 @@ def _status_payload(
         "failed_count": failed,
         "rows": [dict(row) for row in rows],
     }
+    if runtime_assets is not None:
+        payload["runtime_assets_sha256"] = runtime_assets.semantic_sha256
+        payload["runtime_assets_receipt"] = runtime_assets.semantic_receipt
     payload["manifest_sha256"] = canonical_sha256(payload)
     return payload
 
@@ -1382,6 +1412,42 @@ def _load_inputs(
     return protocol, protocol_file, panel
 
 
+def _load_runtime_assets_for_namespace(
+    repository: Path,
+    namespace: str,
+    protocol: Protocol,
+    *,
+    simulator_assets_root: Path | None,
+    simulator_r_environment: Path | None,
+) -> SimulatorRuntimeAssets | None:
+    supplied = (simulator_assets_root, simulator_r_environment)
+    if namespace == protocol.development.namespace:
+        if any(value is not None for value in supplied):
+            raise DatasetRegistryError(
+                "development generation uses its established runtime asset defaults"
+            )
+        return None
+    if namespace != protocol.final.namespace:
+        raise DatasetRegistryError("namespace must match the protocol exactly")
+    if any(value is None for value in supplied):
+        raise DatasetRegistryError(
+            "final generation requires both explicit runtime asset paths"
+        )
+    assert simulator_assets_root is not None
+    assert simulator_r_environment is not None
+    try:
+        return load_simulator_runtime_assets(
+            repository,
+            external_root=simulator_assets_root,
+            r_environment=simulator_r_environment,
+            require_outside_repository=True,
+        )
+    except (OSError, TypeError, ValueError) as error:
+        raise DatasetRegistryError(
+            f"invalid final runtime asset paths: {error}"
+        ) from error
+
+
 def generate_dataset_panel(
     *,
     repo: Path,
@@ -1389,6 +1455,8 @@ def generate_dataset_panel(
     round_dir: Path | None = None,
     protocol_path: Path | None = None,
     development_panel_path: Path | None = None,
+    simulator_assets_root: Path | None = None,
+    simulator_r_environment: Path | None = None,
 ) -> dict[str, object]:
     """Generate or strictly resume the complete development or final panel."""
 
@@ -1413,7 +1481,14 @@ def generate_dataset_panel(
         raise DatasetRegistryError(
             "final dataset panel must use the exact frozen protocol bytes"
         )
-    design_hash = _design_sha256(namespace, protocol_hash, panel, claim)
+    runtime_assets = _load_runtime_assets_for_namespace(
+        repository,
+        namespace,
+        protocol,
+        simulator_assets_root=simulator_assets_root,
+        simulator_r_environment=simulator_r_environment,
+    )
+    design_hash = _design_sha256(namespace, protocol_hash, panel, claim, runtime_assets)
     designs = _designs(
         namespace=namespace,
         protocol=protocol,
@@ -1432,6 +1507,8 @@ def generate_dataset_panel(
                 if development_panel_path is None
                 else development_panel_path
             ),
+            simulator_assets_root=simulator_assets_root,
+            simulator_r_environment=simulator_r_environment,
         )
     rows: list[dict[str, object]] = []
     for design in designs:
@@ -1442,6 +1519,7 @@ def generate_dataset_panel(
                 namespace=namespace,
                 protocol=protocol,
                 claim=claim,
+                runtime_assets=runtime_assets,
                 results_root=results_root,
             )
         )
@@ -1463,6 +1541,7 @@ def generate_dataset_panel(
         design_sha256=design_hash,
         panel=panel,
         claim=claim,
+        runtime_assets=runtime_assets,
         designs=designs,
         rows=validated_rows,
     )
@@ -1488,6 +1567,8 @@ def validate_dataset_status(
     round_dir: Path | None = None,
     protocol_path: Path | None = None,
     development_panel_path: Path | None = None,
+    simulator_assets_root: Path | None = None,
+    simulator_r_environment: Path | None = None,
 ) -> dict[str, object]:
     """Revalidate a canonical status manifest and every bound output byte."""
 
@@ -1496,11 +1577,14 @@ def validate_dataset_status(
     )
     repository = repo.resolve(strict=True)
     payload = _read_canonical_json(path, "dataset status manifest")
-    if set(payload) != _STATUS_KEYS:
-        raise DatasetRegistryError("dataset status manifest has wrong schema")
     namespace = payload.get("namespace")
     if namespace not in {protocol.development.namespace, protocol.final.namespace}:
         raise DatasetRegistryError("dataset status namespace is invalid")
+    expected_status_keys = set(_STATUS_KEYS)
+    if namespace == protocol.final.namespace:
+        expected_status_keys.update({"runtime_assets_sha256", "runtime_assets_receipt"})
+    if set(payload) != expected_status_keys:
+        raise DatasetRegistryError("dataset status manifest has wrong schema")
     results_root, expected_path = _paths(repository, namespace, round_dir)
     if path.absolute() != expected_path.absolute():
         raise DatasetRegistryError("dataset status path is not canonical")
@@ -1518,7 +1602,14 @@ def validate_dataset_status(
         raise DatasetRegistryError(
             "final dataset status does not use the exact frozen protocol bytes"
         )
-    design_hash = _design_sha256(namespace, protocol_hash, panel, claim)
+    runtime_assets = _load_runtime_assets_for_namespace(
+        repository,
+        namespace,
+        protocol,
+        simulator_assets_root=simulator_assets_root,
+        simulator_r_environment=simulator_r_environment,
+    )
+    design_hash = _design_sha256(namespace, protocol_hash, panel, claim, runtime_assets)
     designs = _designs(
         namespace=namespace,
         protocol=protocol,
@@ -1543,6 +1634,9 @@ def validate_dataset_status(
         "round_id": None if claim is None else claim.round_id,
         "independent_unit_count": len(designs),
     }
+    if runtime_assets is not None:
+        expected_top["runtime_assets_sha256"] = runtime_assets.semantic_sha256
+        expected_top["runtime_assets_receipt"] = runtime_assets.semantic_receipt
     for key, expected in expected_top.items():
         if payload.get(key) != expected:
             raise DatasetRegistryError(f"dataset status {key} mismatches design")

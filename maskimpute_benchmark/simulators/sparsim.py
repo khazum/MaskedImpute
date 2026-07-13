@@ -24,7 +24,12 @@ import pandas as pd
 
 from ..protocol import Protocol, canonical_sha256, file_sha256
 from ..schema import benchmark_dataset_sha256
-from ..sources import SourceLedgerError, fetch_sources, load_source_ledger
+from ..sources import (
+    SourceLedgerError,
+    fetch_sources,
+    load_source_ledger,
+    verify_fetched_sources,
+)
 from .base import (
     FinalManifestClaim,
     SimulationArtifact,
@@ -34,6 +39,12 @@ from .base import (
     validate_paired_simulation_requests,
 )
 from .native import seal_native_outputs
+from .runtime_assets import (
+    SimulatorRuntimeAssets,
+    revalidate_simulator_runtime_asset_identity,
+    simulator_runtime_asset_values,
+    simulator_runtime_source_receipt,
+)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -202,10 +213,17 @@ def _proportional_allocations(cells: int) -> dict[str, int]:
     return allocations
 
 
-def _verify_sparsim_source() -> dict[str, object]:
+def _verify_sparsim_source(
+    *, external_root: Path | None = None, immutable: bool = False
+) -> dict[str, object]:
+    selected_root = _EXTERNAL_ROOT if external_root is None else external_root
+    checkout = (
+        _CHECKOUT if external_root is None else selected_root / "checkouts/sparsim"
+    )
     try:
         ledger = load_source_ledger(_LEDGER_PATH)
-        receipt = fetch_sources(ledger, _EXTERNAL_ROOT, source_ids=("sparsim",))[0]
+        verifier = verify_fetched_sources if immutable else fetch_sources
+        receipt = verifier(ledger, selected_root, source_ids=("sparsim",))[0]
     except (OSError, SourceLedgerError, TypeError, ValueError) as error:
         raise SimulationContractError(
             f"pinned SPARSim source is not pristine: {error}"
@@ -221,7 +239,7 @@ def _verify_sparsim_source() -> dict[str, object]:
             "SPARSim source receipt does not match the exact pin"
         )
     for logical_path in _SOURCE_PATHS.values():
-        path = _CHECKOUT / logical_path
+        path = checkout / logical_path
         if path.is_symlink() or not path.is_file():
             raise SimulationContractError(
                 f"pinned SPARSim source file is unavailable: {logical_path}"
@@ -229,10 +247,16 @@ def _verify_sparsim_source() -> dict[str, object]:
     return receipt
 
 
-def _source_file_receipt() -> dict[str, dict[str, str]]:
+def _source_file_receipt(
+    *, external_root: Path | None = None
+) -> dict[str, dict[str, str]]:
+    selected_root = _EXTERNAL_ROOT if external_root is None else external_root
+    checkout = (
+        _CHECKOUT if external_root is None else selected_root / "checkouts/sparsim"
+    )
     receipt: dict[str, dict[str, str]] = {}
     for role, logical_path in _SOURCE_PATHS.items():
-        path = _CHECKOUT / logical_path
+        path = checkout / logical_path
         if path.is_symlink() or not path.is_file():
             raise SimulationContractError(
                 f"pinned SPARSim source file is unavailable: {logical_path}"
@@ -273,12 +297,16 @@ def _compiler_version_sha256() -> str:
     )
 
 
-def _environment_receipt() -> dict[str, object]:
+def _environment_receipt(*, r_environment: Path | None = None) -> dict[str, object]:
+    selected_environment = _R_ENVIRONMENT if r_environment is None else r_environment
+    rscript = (
+        _RSCRIPT if r_environment is None else selected_environment / "bin/Rscript"
+    )
     if (
-        _R_ENVIRONMENT.is_symlink()
-        or not _R_ENVIRONMENT.is_dir()
-        or _RSCRIPT.is_symlink()
-        or not _RSCRIPT.is_file()
+        selected_environment.is_symlink()
+        or not selected_environment.is_dir()
+        or rscript.is_symlink()
+        or not rscript.is_file()
     ):
         raise SimulationContractError("pinned SPARSim R environment is unavailable")
     try:
@@ -289,7 +317,7 @@ def _environment_receipt() -> dict[str, object]:
         raise SimulationContractError("SPARSim compiler is not a regular file")
     records: list[dict[str, object]] = []
     try:
-        for path in sorted((_R_ENVIRONMENT / "conda-meta").glob("*.json")):
+        for path in sorted((selected_environment / "conda-meta").glob("*.json")):
             value = _load_json_bytes(
                 _canonical_json_bytes(json.loads(path.read_text(encoding="utf-8"))),
                 f"environment record {path.name}",
@@ -325,7 +353,7 @@ def _environment_receipt() -> dict[str, object]:
         raise SimulationContractError(
             "pinned SPARSim R environment has no package lock"
         )
-    r_sha256 = file_sha256(_RSCRIPT)
+    r_sha256 = file_sha256(rscript)
     compiler_sha256 = file_sha256(compiler)
     compiler_version_sha256 = _compiler_version_sha256()
     payload = {
@@ -353,8 +381,22 @@ def _environment_receipt() -> dict[str, object]:
 
 
 def _execute_sparsim(
-    config_path: Path, output_dir: Path, *, timeout_seconds: int
+    config_path: Path,
+    output_dir: Path,
+    *,
+    timeout_seconds: int,
+    external_root: Path | None = None,
+    r_environment: Path | None = None,
+    direct_r: bool = False,
 ) -> None:
+    selected_root = _EXTERNAL_ROOT if external_root is None else external_root
+    selected_environment = _R_ENVIRONMENT if r_environment is None else r_environment
+    rscript = (
+        _RSCRIPT if r_environment is None else selected_environment / "bin/Rscript"
+    )
+    checkout = (
+        _CHECKOUT if external_root is None else selected_root / "checkouts/sparsim"
+    )
     if _RUNNER.is_symlink() or not _RUNNER.is_file():
         raise SimulationContractError("tracked SPARSim R runner is unavailable")
     with tempfile.TemporaryDirectory(prefix="maskimpute-sparsim-build-") as build:
@@ -368,23 +410,48 @@ def _execute_sparsim(
             "HOME": build_path.as_posix(),
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
-            "PATH": f"{(_R_ENVIRONMENT / 'bin').as_posix()}:/usr/bin:/bin",
+            "PATH": f"{(selected_environment / 'bin').as_posix()}:/usr/bin:/bin",
             "R_ENVIRON_USER": "/dev/null",
             "R_MAKEVARS_USER": makevars.as_posix(),
             "R_PROFILE_USER": "/dev/null",
             "TZ": "UTC",
         }
+        if direct_r:
+            r_home = selected_environment / "lib/R"
+            r_library = r_home / "library"
+            executable = r_home / "bin/exec/R"
+            environment.update(
+                {
+                    "R_HOME": r_home.as_posix(),
+                    "R_LIBS": r_library.as_posix(),
+                    "R_LIBS_SITE": r_library.as_posix(),
+                    "R_LIBS_USER": r_library.as_posix(),
+                }
+            )
+            command = [
+                executable.as_posix(),
+                "--vanilla",
+                "--slave",
+                f"--file={_RUNNER.as_posix()}",
+                "--args",
+                config_path.as_posix(),
+                checkout.as_posix(),
+                output_dir.as_posix(),
+                build_path.as_posix(),
+            ]
+        else:
+            command = [
+                rscript.as_posix(),
+                "--vanilla",
+                _RUNNER.as_posix(),
+                config_path.as_posix(),
+                checkout.as_posix(),
+                output_dir.as_posix(),
+                build_path.as_posix(),
+            ]
         try:
             completed = subprocess.run(
-                [
-                    _RSCRIPT.as_posix(),
-                    "--vanilla",
-                    _RUNNER.as_posix(),
-                    config_path.as_posix(),
-                    _CHECKOUT.as_posix(),
-                    output_dir.as_posix(),
-                    build_path.as_posix(),
-                ],
+                command,
                 cwd=_REPO_ROOT,
                 env=environment,
                 check=False,
@@ -1261,6 +1328,8 @@ def run_sparsim_pair(
     requests: Sequence[SimulationRequest],
     protocol: Protocol,
     final_manifest: FinalManifestClaim | None = None,
+    *,
+    runtime_assets: SimulatorRuntimeAssets | None = None,
 ) -> tuple[SimulationArtifact, SimulationArtifact]:
     """Generate paired count-depth views from one exact SPARSim gene matrix."""
 
@@ -1293,9 +1362,41 @@ def run_sparsim_pair(
                 f"SPARSim refuses to overwrite an existing result: {request.output_path}"
             )
 
-    before_source = _verify_sparsim_source()
-    before_source_files = _source_file_receipt()
-    before_environment = _environment_receipt()
+    runtime_assets_sha256: str | None = None
+    if runtime_assets is None:
+        verify_source = _verify_sparsim_source
+        source_file_receipt = _source_file_receipt
+        environment_receipt = _environment_receipt
+        execute = _execute_sparsim
+    else:
+        external_root, r_environment, runtime_assets_sha256 = (
+            simulator_runtime_asset_values(runtime_assets)
+        )
+        verify_source = lambda: simulator_runtime_source_receipt(  # noqa: E731
+            runtime_assets, "sparsim"
+        )
+        source_file_receipt = lambda: _source_file_receipt(  # noqa: E731
+            external_root=external_root
+        )
+        environment_receipt = lambda: _environment_receipt(  # noqa: E731
+            r_environment=r_environment
+        )
+
+        def execute(
+            config_path: Path, output_dir: Path, *, timeout_seconds: int
+        ) -> None:
+            _execute_sparsim(
+                config_path,
+                output_dir,
+                timeout_seconds=timeout_seconds,
+                external_root=external_root,
+                r_environment=r_environment,
+                direct_r=True,
+            )
+
+    before_source = verify_source()
+    before_source_files = source_file_receipt()
+    before_environment = environment_receipt()
     config = _pair_config(by_view, before_environment, before_source_files)
     config_bytes = _canonical_json_bytes(config)
     config_sha256 = hashlib.sha256(config_bytes).hexdigest()
@@ -1309,7 +1410,7 @@ def run_sparsim_pair(
         config_path = stage / "config.json"
         config_path.write_bytes(config_bytes)
         try:
-            _execute_sparsim(
+            execute(
                 config_path,
                 stage,
                 timeout_seconds=protocol.final_timeout_seconds,
@@ -1317,9 +1418,9 @@ def run_sparsim_pair(
         except BaseException as error:
             runner_error = error
         try:
-            after_source = _verify_sparsim_source()
-            after_source_files = _source_file_receipt()
-            after_environment = _environment_receipt()
+            after_source = verify_source()
+            after_source_files = source_file_receipt()
+            after_environment = environment_receipt()
         except Exception as error:
             raise SimulationContractError(
                 "SPARSim source or environment was not pristine after execution"
@@ -1410,6 +1511,8 @@ def run_sparsim_pair(
                 "simulation_request": simulation_scientific_identity(request),
                 "source_receipt": before_source,
             }
+            if runtime_assets_sha256 is not None:
+                metadata["runtime_assets_sha256"] = runtime_assets_sha256
             manifest_metadata[name] = metadata
             staging_manifests[name] = seal_native_outputs(files, metadata)
 
@@ -1450,6 +1553,8 @@ def run_sparsim_pair(
             validate_paired_simulation_requests(
                 ordered_requests, protocol, final_manifest
             )
+            if runtime_assets is not None:
+                revalidate_simulator_runtime_asset_identity(runtime_assets)
             native_directory, native_created, native_identity = (
                 _publish_native_directory(files, output_parent)
             )

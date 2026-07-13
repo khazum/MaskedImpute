@@ -21,7 +21,12 @@ import pandas as pd
 
 from ..protocol import Protocol, canonical_sha256, file_sha256
 from ..schema import benchmark_dataset_sha256
-from ..sources import SourceLedgerError, fetch_sources, load_source_ledger
+from ..sources import (
+    SourceLedgerError,
+    fetch_sources,
+    load_source_ledger,
+    verify_fetched_sources,
+)
 from .base import (
     FinalManifestClaim,
     SimulationArtifact,
@@ -31,14 +36,18 @@ from .base import (
     validate_paired_simulation_requests,
 )
 from .native import seal_native_outputs
+from .runtime_assets import (
+    SimulatorRuntimeAssets,
+    revalidate_simulator_runtime_asset_identity,
+    simulator_runtime_asset_values,
+    simulator_runtime_source_receipt,
+)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LEDGER_PATH = _REPO_ROOT / "study/sources.json"
 _EXTERNAL_ROOT = _REPO_ROOT / "artifacts/external"
-_CHECKOUT = _EXTERNAL_ROOT / "checkouts/symsim"
 _R_ENVIRONMENT = _REPO_ROOT / "artifacts/envs/symsim-r44"
-_RSCRIPT = _R_ENVIRONMENT / "bin/Rscript"
 _RUNNER = _REPO_ROOT / "scripts/simulators/run_symsim.R"
 _SYMSIM_COMMIT = "76a674b407ce44bf2690a9161cf28b905598d0a5"
 _SYMSIM_TREE = "12d9c7e9e8c22bb0bae917aec7860627dcb8489b"
@@ -134,10 +143,14 @@ def map_symsim_r_seeds(
     return mapped
 
 
-def _verify_symsim_source() -> dict[str, object]:
+def _verify_symsim_source(
+    *, external_root: Path | None = None, immutable: bool = False
+) -> dict[str, object]:
+    selected_root = _EXTERNAL_ROOT if external_root is None else external_root
     try:
         ledger = load_source_ledger(_LEDGER_PATH)
-        receipt = fetch_sources(ledger, _EXTERNAL_ROOT, source_ids=("symsim",))[0]
+        verifier = verify_fetched_sources if immutable else fetch_sources
+        receipt = verifier(ledger, selected_root, source_ids=("symsim",))[0]
     except (OSError, SourceLedgerError, TypeError, ValueError) as error:
         raise SimulationContractError(
             f"pinned SymSim source is not pristine: {error}"
@@ -155,17 +168,19 @@ def _verify_symsim_source() -> dict[str, object]:
     return receipt
 
 
-def _environment_receipt() -> dict[str, object]:
+def _environment_receipt(*, r_environment: Path | None = None) -> dict[str, object]:
+    selected_environment = _R_ENVIRONMENT if r_environment is None else r_environment
+    rscript = selected_environment / "bin/Rscript"
     if (
-        _R_ENVIRONMENT.is_symlink()
-        or not _R_ENVIRONMENT.is_dir()
-        or _RSCRIPT.is_symlink()
-        or not _RSCRIPT.is_file()
+        selected_environment.is_symlink()
+        or not selected_environment.is_dir()
+        or rscript.is_symlink()
+        or not rscript.is_file()
     ):
         raise SimulationContractError("pinned SymSim R environment is unavailable")
     records: list[dict[str, object]] = []
     try:
-        for path in sorted((_R_ENVIRONMENT / "conda-meta").glob("*.json")):
+        for path in sorted((selected_environment / "conda-meta").glob("*.json")):
             value = _load_json_bytes(
                 path.read_bytes(), f"environment record {path.name}"
             )
@@ -198,7 +213,7 @@ def _environment_receipt() -> dict[str, object]:
         ) from error
     if not records:
         raise SimulationContractError("pinned SymSim R environment has no package lock")
-    executable_sha256 = file_sha256(_RSCRIPT)
+    executable_sha256 = file_sha256(rscript)
     payload = {
         "schema": "maskimpute-conda-environment-v1",
         "r_executable_sha256": executable_sha256,
@@ -213,29 +228,63 @@ def _environment_receipt() -> dict[str, object]:
 
 
 def _execute_symsim(
-    config_path: Path, output_dir: Path, *, timeout_seconds: int
+    config_path: Path,
+    output_dir: Path,
+    *,
+    timeout_seconds: int,
+    external_root: Path | None = None,
+    r_environment: Path | None = None,
+    direct_r: bool = False,
 ) -> None:
+    selected_external = _EXTERNAL_ROOT if external_root is None else external_root
+    selected_environment = _R_ENVIRONMENT if r_environment is None else r_environment
+    rscript = selected_environment / "bin/Rscript"
+    checkout = selected_external / "checkouts/symsim"
     if not _RUNNER.is_file() or _RUNNER.is_symlink():
         raise SimulationContractError("tracked SymSim R runner is unavailable")
     environment = {
         "HOME": output_dir.as_posix(),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "PATH": f"{(_R_ENVIRONMENT / 'bin').as_posix()}:/usr/bin:/bin",
+        "PATH": f"{(selected_environment / 'bin').as_posix()}:/usr/bin:/bin",
         "R_ENVIRON_USER": "/dev/null",
         "R_PROFILE_USER": "/dev/null",
         "TZ": "UTC",
     }
+    if direct_r:
+        r_home = selected_environment / "lib/R"
+        r_library = r_home / "library"
+        executable = r_home / "bin/exec/R"
+        environment.update(
+            {
+                "R_HOME": r_home.as_posix(),
+                "R_LIBS": r_library.as_posix(),
+                "R_LIBS_SITE": r_library.as_posix(),
+                "R_LIBS_USER": r_library.as_posix(),
+            }
+        )
+        command = [
+            executable.as_posix(),
+            "--vanilla",
+            "--slave",
+            f"--file={_RUNNER.as_posix()}",
+            "--args",
+            config_path.as_posix(),
+            checkout.as_posix(),
+            output_dir.as_posix(),
+        ]
+    else:
+        command = [
+            rscript.as_posix(),
+            "--vanilla",
+            _RUNNER.as_posix(),
+            config_path.as_posix(),
+            checkout.as_posix(),
+            output_dir.as_posix(),
+        ]
     try:
         completed = subprocess.run(
-            [
-                _RSCRIPT.as_posix(),
-                "--vanilla",
-                _RUNNER.as_posix(),
-                config_path.as_posix(),
-                _CHECKOUT.as_posix(),
-                output_dir.as_posix(),
-            ],
+            command,
             cwd=_REPO_ROOT,
             env=environment,
             check=False,
@@ -916,6 +965,8 @@ def run_symsim_pair(
     requests: Sequence[SimulationRequest],
     protocol: Protocol,
     final_manifest: FinalManifestClaim | None = None,
+    *,
+    runtime_assets: SimulatorRuntimeAssets | None = None,
 ) -> tuple[SimulationArtifact, SimulationArtifact]:
     """Generate paired moderate/severe views from one exact SymSim truth draw."""
 
@@ -947,8 +998,36 @@ def run_symsim_pair(
     _reject_output_symlink_components(output_parent)
 
     config = _pair_config(by_view)
-    before_source = _verify_symsim_source()
-    before_environment = _environment_receipt()
+    runtime_assets_sha256: str | None = None
+    if runtime_assets is None:
+        verify_source = _verify_symsim_source
+        environment_receipt = _environment_receipt
+        execute = _execute_symsim
+    else:
+        external_root, r_environment, runtime_assets_sha256 = (
+            simulator_runtime_asset_values(runtime_assets)
+        )
+        verify_source = lambda: simulator_runtime_source_receipt(  # noqa: E731
+            runtime_assets, "symsim"
+        )
+        environment_receipt = lambda: _environment_receipt(  # noqa: E731
+            r_environment=r_environment
+        )
+
+        def execute(
+            config_path: Path, output_dir: Path, *, timeout_seconds: int
+        ) -> None:
+            _execute_symsim(
+                config_path,
+                output_dir,
+                timeout_seconds=timeout_seconds,
+                external_root=external_root,
+                r_environment=r_environment,
+                direct_r=True,
+            )
+
+    before_source = verify_source()
+    before_environment = environment_receipt()
     stage = Path(tempfile.mkdtemp(prefix="maskimpute-symsim-native-"))
     published = False
     runner_error: Exception | None = None
@@ -956,7 +1035,7 @@ def run_symsim_pair(
         config_path = stage / "config.json"
         config_path.write_bytes(_canonical_json_bytes(config))
         try:
-            _execute_symsim(
+            execute(
                 config_path,
                 stage,
                 timeout_seconds=protocol.final_timeout_seconds,
@@ -964,8 +1043,8 @@ def run_symsim_pair(
         except Exception as error:  # source/environment must still be rechecked
             runner_error = error
         try:
-            after_source = _verify_symsim_source()
-            after_environment = _environment_receipt()
+            after_source = verify_source()
+            after_environment = environment_receipt()
         except Exception as error:
             raise SimulationContractError(
                 "SymSim source or environment was not pristine after execution"
@@ -1028,6 +1107,8 @@ def run_symsim_pair(
                 "simulation_request": simulation_scientific_identity(request),
                 "source_receipt": before_source,
             }
+            if runtime_assets_sha256 is not None:
+                metadata["runtime_assets_sha256"] = runtime_assets_sha256
             manifest_metadata[name] = metadata
             staging_manifests[name] = seal_native_outputs(files, metadata)
 
@@ -1056,6 +1137,8 @@ def run_symsim_pair(
             # R execution and both serialization round trips are complete, but
             # no result path exists yet.  This is the terminal authoritative
             # check before the atomic publication sequence.
+            if runtime_assets is not None:
+                revalidate_simulator_runtime_asset_identity(runtime_assets)
             validate_paired_simulation_requests(
                 ordered_requests, protocol, final_manifest
             )

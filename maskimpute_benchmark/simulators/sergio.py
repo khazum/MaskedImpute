@@ -26,7 +26,12 @@ import scipy
 
 from ..protocol import Protocol, canonical_sha256, file_sha256
 from ..schema import benchmark_dataset_sha256
-from ..sources import SourceLedgerError, fetch_sources, load_source_ledger
+from ..sources import (
+    SourceLedgerError,
+    fetch_sources,
+    load_source_ledger,
+    verify_fetched_sources,
+)
 from .base import (
     FinalManifestClaim,
     SimulationArtifact,
@@ -36,6 +41,12 @@ from .base import (
     validate_paired_simulation_requests,
 )
 from .native import seal_native_outputs
+from .runtime_assets import (
+    SimulatorRuntimeAssets,
+    revalidate_simulator_runtime_asset_identity,
+    simulator_runtime_asset_values,
+    simulator_runtime_source_receipt,
+)
 from .symsim import _revalidate_published_final_claim
 
 
@@ -198,10 +209,19 @@ def _profile_for_genes(genes: int) -> dict[str, object]:
     raise SimulationContractError("SERGIO supports at most 1200 requested genes")
 
 
-def _verify_sergio_source() -> dict[str, object]:
+def _verify_sergio_source(
+    *, external_root: Path | None = None, immutable: bool = False
+) -> dict[str, object]:
+    selected_root = _EXTERNAL_ROOT if external_root is None else external_root
+    module_path = (
+        _MODULE_PATH
+        if external_root is None
+        else selected_root / "checkouts/sergio/SERGIO/sergio.py"
+    )
     try:
         ledger = load_source_ledger(_LEDGER_PATH)
-        receipt = fetch_sources(ledger, _EXTERNAL_ROOT, source_ids=("sergio",))[0]
+        verifier = verify_fetched_sources if immutable else fetch_sources
+        receipt = verifier(ledger, selected_root, source_ids=("sergio",))[0]
     except (OSError, SourceLedgerError, TypeError, ValueError) as error:
         raise SimulationContractError(
             f"pinned SERGIO source is not pristine: {error}"
@@ -216,7 +236,7 @@ def _verify_sergio_source() -> dict[str, object]:
         raise SimulationContractError(
             "SERGIO source receipt does not match the exact pin"
         )
-    if _MODULE_PATH.is_symlink() or not _MODULE_PATH.is_file():
+    if module_path.is_symlink() or not module_path.is_file():
         raise SimulationContractError("pinned SERGIO module path is unavailable")
     return receipt
 
@@ -240,8 +260,16 @@ def _environment_receipt() -> dict[str, object]:
 
 
 def _execute_sergio(
-    config_path: Path, output_dir: Path, *, timeout_seconds: int
+    config_path: Path,
+    output_dir: Path,
+    *,
+    timeout_seconds: int,
+    external_root: Path | None = None,
 ) -> None:
+    selected_root = _EXTERNAL_ROOT if external_root is None else external_root
+    checkout = (
+        _CHECKOUT if external_root is None else selected_root / "checkouts/sergio"
+    )
     if _RUNNER.is_symlink() or not _RUNNER.is_file():
         raise SimulationContractError("tracked SERGIO Python runner is unavailable")
     environment = {
@@ -259,7 +287,7 @@ def _execute_sergio(
                 "-B",
                 _RUNNER.as_posix(),
                 config_path.as_posix(),
-                _CHECKOUT.as_posix(),
+                checkout.as_posix(),
                 output_dir.as_posix(),
             ],
             cwd=_REPO_ROOT,
@@ -1025,6 +1053,8 @@ def run_sergio_pair(
     requests: Sequence[SimulationRequest],
     protocol: Protocol,
     final_manifest: FinalManifestClaim | None = None,
+    *,
+    runtime_assets: SimulatorRuntimeAssets | None = None,
 ) -> tuple[SimulationArtifact, SimulationArtifact]:
     """Generate paired moderate/severe views from one clean SERGIO draw."""
 
@@ -1061,7 +1091,29 @@ def run_sergio_pair(
 
     config = _pair_config(by_view)
     config_bytes = _canonical_json_bytes(config)
-    before_source = _verify_sergio_source()
+    runtime_assets_sha256: str | None = None
+    if runtime_assets is None:
+        verify_source = _verify_sergio_source
+        execute = _execute_sergio
+    else:
+        external_root, _r_environment, runtime_assets_sha256 = (
+            simulator_runtime_asset_values(runtime_assets)
+        )
+        verify_source = lambda: simulator_runtime_source_receipt(  # noqa: E731
+            runtime_assets, "sergio"
+        )
+
+        def execute(
+            config_path: Path, output_dir: Path, *, timeout_seconds: int
+        ) -> None:
+            _execute_sergio(
+                config_path,
+                output_dir,
+                timeout_seconds=timeout_seconds,
+                external_root=external_root,
+            )
+
+    before_source = verify_source()
     before_environment = _environment_receipt()
     stage = Path(tempfile.mkdtemp(prefix="maskimpute-sergio-native-"))
     native_directory: Path | None = None
@@ -1073,7 +1125,7 @@ def run_sergio_pair(
         config_path = stage / "config.json"
         config_path.write_bytes(config_bytes)
         try:
-            _execute_sergio(
+            execute(
                 config_path,
                 stage,
                 timeout_seconds=protocol.final_timeout_seconds,
@@ -1081,7 +1133,7 @@ def run_sergio_pair(
         except BaseException as error:  # source/environment must still be rechecked
             runner_error = error
         try:
-            after_source = _verify_sergio_source()
+            after_source = verify_source()
             after_environment = _environment_receipt()
         except Exception as error:
             raise SimulationContractError(
@@ -1194,6 +1246,8 @@ def run_sergio_pair(
                 "simulation_request": simulation_scientific_identity(request),
                 "source_receipt": before_source,
             }
+            if runtime_assets_sha256 is not None:
+                metadata["runtime_assets_sha256"] = runtime_assets_sha256
             manifest_metadata[name] = metadata
             staging_manifests[name] = seal_native_outputs(files, metadata)
 
@@ -1233,6 +1287,8 @@ def run_sergio_pair(
             validate_paired_simulation_requests(
                 ordered_requests, protocol, final_manifest
             )
+            if runtime_assets is not None:
+                revalidate_simulator_runtime_asset_identity(runtime_assets)
             native_directory, native_created, native_identity = (
                 _publish_native_directory(files, output_parent)
             )

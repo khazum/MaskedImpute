@@ -28,7 +28,12 @@ import pandas as pd
 
 from ..protocol import Protocol, canonical_sha256, file_sha256
 from ..schema import benchmark_dataset_sha256
-from ..sources import SourceLedgerError, fetch_sources, load_source_ledger
+from ..sources import (
+    SourceLedgerError,
+    fetch_sources,
+    load_source_ledger,
+    verify_fetched_sources,
+)
 from .base import (
     FinalManifestClaim,
     SimulationArtifact,
@@ -38,6 +43,12 @@ from .base import (
     validate_paired_simulation_requests,
 )
 from .native import seal_native_outputs
+from .runtime_assets import (
+    SimulatorRuntimeAssets,
+    revalidate_simulator_runtime_asset_identity,
+    simulator_runtime_asset_values,
+    simulator_runtime_source_receipt,
+)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -242,12 +253,19 @@ def _read_regular_bytes(path: Path, *, maximum_bytes: int) -> bytes:
         os.close(descriptor)
 
 
-def _verify_semisynthetic_source() -> tuple[Path, dict[str, object]]:
+def _verify_semisynthetic_source(
+    *, external_root: Path | None = None, immutable: bool = False
+) -> tuple[Path, dict[str, object]]:
+    selected_root = _EXTERNAL_ROOT if external_root is None else external_root
+    archive_path = (
+        _ARCHIVE
+        if external_root is None
+        else selected_root / "data/baron-pancreas-umi/GSE84133_RAW.tar"
+    )
     try:
         ledger = load_source_ledger(_LEDGER_PATH)
-        receipt = fetch_sources(
-            ledger, _EXTERNAL_ROOT, source_ids=("baron-pancreas-umi",)
-        )[0]
+        verifier = verify_fetched_sources if immutable else fetch_sources
+        receipt = verifier(ledger, selected_root, source_ids=("baron-pancreas-umi",))[0]
     except (OSError, SourceLedgerError, TypeError, ValueError) as error:
         raise SimulationContractError(
             f"pinned semisynthetic source is unavailable: {error}"
@@ -256,7 +274,7 @@ def _verify_semisynthetic_source() -> tuple[Path, dict[str, object]]:
     expected_artifact = {
         "name": _ARCHIVE_NAME,
         "sha256": _ARCHIVE_SHA256,
-        "size_bytes": _ARCHIVE.stat().st_size if _ARCHIVE.is_file() else -1,
+        "size_bytes": archive_path.stat().st_size if archive_path.is_file() else -1,
     }
     if (
         receipt.get("source_id") != "baron-pancreas-umi"
@@ -264,12 +282,12 @@ def _verify_semisynthetic_source() -> tuple[Path, dict[str, object]]:
         or not isinstance(artifacts, list)
         or len(artifacts) != 1
         or artifacts[0] != expected_artifact
-        or file_sha256(_ARCHIVE) != _ARCHIVE_SHA256
+        or file_sha256(archive_path) != _ARCHIVE_SHA256
     ):
         raise SimulationContractError(
             "semisynthetic source receipt does not match the exact Baron archive pin"
         )
-    return _ARCHIVE, receipt
+    return archive_path, receipt
 
 
 def _source_archive_sha256(source_receipt: Mapping[str, object]) -> str:
@@ -1627,6 +1645,8 @@ def run_semisynthetic_pair(
     requests: Sequence[SimulationRequest],
     protocol: Protocol,
     final_manifest: FinalManifestClaim | None = None,
+    *,
+    runtime_assets: SimulatorRuntimeAssets | None = None,
 ) -> tuple[SimulationArtifact, SimulationArtifact]:
     """Generate paired thinnings from one fitted Gamma-Poisson reference proxy."""
 
@@ -1659,7 +1679,18 @@ def run_semisynthetic_pair(
                 f"semisynthetic adapter refuses to overwrite a result: {request.output_path}"
             )
 
-    archive_path, before_source = _verify_semisynthetic_source()
+    runtime_assets_sha256: str | None = None
+    if runtime_assets is None:
+        verify_source = _verify_semisynthetic_source
+    else:
+        external_root, _r_environment, runtime_assets_sha256 = (
+            simulator_runtime_asset_values(runtime_assets)
+        )
+        verify_source = lambda: (  # noqa: E731
+            external_root / "data/baron-pancreas-umi/GSE84133_RAW.tar",
+            simulator_runtime_source_receipt(runtime_assets, "baron-pancreas-umi"),
+        )
+    archive_path, before_source = verify_source()
     stage = Path(tempfile.mkdtemp(prefix="maskimpute-semisynthetic-native-"))
     native_directory: Path | None = None
     native_identity: tuple[int, int] | None = None
@@ -1681,7 +1712,7 @@ def run_semisynthetic_pair(
         except BaseException as error:
             generation_error = error
         try:
-            after_path, after_source = _verify_semisynthetic_source()
+            after_path, after_source = verify_source()
         except Exception as error:
             raise SimulationContractError(
                 "semisynthetic source was not pristine after generation"
@@ -1733,6 +1764,8 @@ def run_semisynthetic_pair(
                 },
                 "source_receipt": before_source,
             }
+            if runtime_assets_sha256 is not None:
+                metadata["runtime_assets_sha256"] = runtime_assets_sha256
             manifest_metadata[name] = metadata
             staging_manifests[name] = seal_native_outputs(files, metadata)
 
@@ -1771,6 +1804,8 @@ def run_semisynthetic_pair(
             validate_paired_simulation_requests(
                 ordered_requests, protocol, final_manifest
             )
+            if runtime_assets is not None:
+                revalidate_simulator_runtime_asset_identity(runtime_assets)
             native_directory, native_created, native_identity = (
                 _publish_native_directory(files, output_parent)
             )

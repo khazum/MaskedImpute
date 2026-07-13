@@ -15,6 +15,7 @@ from maskimpute_benchmark.sources import (
     _assert_tracked_bytes,
     fetch_sources,
     load_source_ledger,
+    verify_fetched_sources,
 )
 
 
@@ -128,9 +129,7 @@ def test_publication_ledger_covers_pinned_panel_and_orthogonal_data() -> None:
         "GSE77288_molecules-raw-single-per-lane.txt.gz",
         "GSE77288_reads-raw-bulk-per-lane.txt.gz",
     }
-    assert {
-        endpoint for source in orthogonal for endpoint in source.endpoints
-    } >= {
+    assert {endpoint for source in orthogonal for endpoint in source.endpoints} >= {
         "rna_protein_concordance",
         "ercc_recovery",
         "technical_replicate_concordance",
@@ -244,9 +243,10 @@ def test_fetch_git_source_detaches_exact_commit_and_writes_canonical_receipt(
     checkout = fetch_root / "checkouts" / "local-source"
     assert _run_git("rev-parse", "HEAD", cwd=checkout) == commit
     assert _run_git("rev-parse", "HEAD^{tree}", cwd=checkout) == tree
-    assert subprocess.run(
-        ["git", "symbolic-ref", "-q", "HEAD"], cwd=checkout
-    ).returncode == 1
+    assert (
+        subprocess.run(["git", "symbolic-ref", "-q", "HEAD"], cwd=checkout).returncode
+        == 1
+    )
     assert _run_git("status", "--porcelain=v1", cwd=checkout) == ""
     config = (checkout / ".git" / "config").read_text(encoding="utf-8")
     assert "credential" not in config.casefold()
@@ -266,6 +266,40 @@ def test_fetch_git_source_detaches_exact_commit_and_writes_canonical_receipt(
     ).encode("utf-8")
 
 
+def test_existing_source_verifier_is_filesystem_read_only(tmp_path: Path) -> None:
+    upstream, commit, tree = _make_upstream(tmp_path)
+    ledger = _load_local(tmp_path, _git_ledger_payload(upstream, commit, tree))
+    root = tmp_path / "external"
+    expected = fetch_sources(ledger, root, allow_local_urls=True)
+
+    def identity() -> dict[str, tuple[int, int, int, int, int, int, int]]:
+        return {
+            path.relative_to(root).as_posix(): (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_nlink,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+            for path in sorted(root.rglob("*"))
+            for metadata in (path.lstat(),)
+        }
+
+    before = identity()
+    observed = verify_fetched_sources(
+        ledger,
+        root,
+        source_ids=("local-source",),
+        allow_local_urls=True,
+    )
+    after = identity()
+
+    assert observed == expected
+    assert after == before
+
+
 def test_fetch_rejects_dirty_or_wrong_existing_checkout(tmp_path: Path) -> None:
     upstream, commit, tree = _make_upstream(tmp_path)
     ledger = _load_local(tmp_path, _git_ledger_payload(upstream, commit, tree))
@@ -279,7 +313,9 @@ def test_fetch_rejects_dirty_or_wrong_existing_checkout(tmp_path: Path) -> None:
     wrong_root = tmp_path / "wrong-root"
     wrong_checkout = wrong_root / "checkouts" / "local-source"
     wrong_checkout.parent.mkdir(parents=True)
-    _run_git("clone", "-q", upstream.as_posix(), wrong_checkout.as_posix(), cwd=tmp_path)
+    _run_git(
+        "clone", "-q", upstream.as_posix(), wrong_checkout.as_posix(), cwd=tmp_path
+    )
     (upstream / "source.txt").write_text("new upstream bytes\n", encoding="utf-8")
     _run_git("commit", "-qam", "later", cwd=upstream)
     _run_git("pull", "-q", cwd=wrong_checkout)
@@ -367,7 +403,9 @@ def test_fetch_rejects_tracked_symlink_that_escapes_checkout(
         fetch_sources(ledger, tmp_path / "external", allow_local_urls=True)
 
 
-def test_fetch_never_updates_a_correct_pin_when_upstream_advances(tmp_path: Path) -> None:
+def test_fetch_never_updates_a_correct_pin_when_upstream_advances(
+    tmp_path: Path,
+) -> None:
     upstream, commit, tree = _make_upstream(tmp_path)
     ledger = _load_local(tmp_path, _git_ledger_payload(upstream, commit, tree))
     fetch_root = tmp_path / "external"
@@ -532,7 +570,10 @@ def test_fetch_rejects_case_colliding_untracked_file_hidden_by_git_config(
     "names",
     [
         ("Case.txt", "case.txt"),
-        ("caf\N{LATIN SMALL LETTER E WITH ACUTE}.txt", "cafe\N{COMBINING ACUTE ACCENT}.txt"),
+        (
+            "caf\N{LATIN SMALL LETTER E WITH ACUTE}.txt",
+            "cafe\N{COMBINING ACUTE ACCENT}.txt",
+        ),
     ],
 )
 def test_fetch_rejects_nonportable_tracked_path_collisions(
@@ -573,7 +614,9 @@ def test_fetch_rejects_local_object_replacement_metadata(
         fetch_sources(ledger, fetch_root, allow_local_urls=True)
 
 
-def test_fetch_rejects_nonignored_destination_inside_git_worktree(tmp_path: Path) -> None:
+def test_fetch_rejects_nonignored_destination_inside_git_worktree(
+    tmp_path: Path,
+) -> None:
     upstream, commit, tree = _make_upstream(tmp_path)
     ledger = _load_local(tmp_path, _git_ledger_payload(upstream, commit, tree))
     project = tmp_path / "project"
@@ -757,9 +800,7 @@ def test_data_fetch_verifies_bytes_and_rejects_corrupt_existing_file(
     outside = tmp_path / "data-outside"
     (escape_root / "data").mkdir(parents=True)
     outside.mkdir()
-    (escape_root / "data" / "local-data").symlink_to(
-        outside, target_is_directory=True
-    )
+    (escape_root / "data" / "local-data").symlink_to(outside, target_is_directory=True)
     with pytest.raises(SourceLedgerError, match="symlink"):
         fetch_sources(ledger, escape_root, allow_local_urls=True)
     assert not (outside / "source.bin").exists()

@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 import maskimpute_benchmark.datasets as datasets_module
+import maskimpute_benchmark.simulators.runtime_assets as runtime_assets_module
 import maskimpute_benchmark.study as study_module
 from maskimpute_benchmark.datasets import (
     DatasetRegistryError,
@@ -88,6 +89,8 @@ def panel_repo(tmp_path: Path) -> Path:
         json.dumps(_panel_payload(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    for name in ("sources.json", "simulator_runtime_assets.json"):
+        (repo / f"study/{name}").write_bytes(Path(f"study/{name}").read_bytes())
     _git(repo, "init")
     _git(repo, "config", "user.name", "Dataset Registry Test")
     _git(repo, "config", "user.email", "registry@example.invalid")
@@ -150,7 +153,7 @@ def _fake_adapter_factory(
     *,
     fail: tuple[str, str] | None = None,
 ):
-    def adapter(requests, protocol, final_manifest=None):
+    def adapter(requests, protocol, final_manifest=None, runtime_assets=None):
         ordered = tuple(requests)
         calls.append((ordered, final_manifest))
         if fail == (ordered[0].mechanism, ordered[0].biological_id):
@@ -196,6 +199,57 @@ def _install_fake_adapters(monkeypatch: pytest.MonkeyPatch, adapter) -> None:
     )
 
 
+def _fake_final_runtime_paths(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    external_root = tmp_path / "publication-assets"
+    r_environment = tmp_path / "publication-r"
+    external_root.mkdir(exist_ok=True)
+    (r_environment / "bin").mkdir(parents=True, exist_ok=True)
+    (r_environment / "bin/Rscript").write_text("fixture\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runtime_assets_module,
+        "_collect_source_receipts",
+        lambda _ledger, _root: (
+            "5a6f60c5de980a20eb118d0b82913112650f1956562aec4c92d37d8314c9f29e",
+            ({"source_id": "fixture", "sha256": "a" * 64},),
+        ),
+    )
+    authority = json.loads(
+        (repo / "study/simulator_runtime_assets.json").read_text(encoding="utf-8")
+    )
+    monkeypatch.setattr(
+        runtime_assets_module,
+        "_r_environment_receipt",
+        lambda _repository, _path, _authority: {
+            "environment_id": "simulator-r",
+            "inventory_sha256": "e" * 64,
+            "lock_file_sha256": authority["r_environment"]["lock_file_sha256"],
+            "schema": "maskimpute-simulator-r-runtime-receipt-v1",
+        },
+    )
+    monkeypatch.setattr(
+        runtime_assets_module,
+        "_directory_content_receipt",
+        lambda _path: {
+            "entry_count": authority["r_environment"]["tree_entry_count"],
+            "sha256": authority["r_environment"]["tree_sha256"],
+        },
+    )
+    monkeypatch.setattr(
+        runtime_assets_module,
+        "_source_snapshot_content_receipt",
+        lambda _path: {
+            "entry_count": authority["source_snapshot"]["tree_entry_count"],
+            "sha256": authority["source_snapshot"]["tree_sha256"],
+        },
+    )
+    return {
+        "simulator_assets_root": external_root,
+        "simulator_r_environment": r_environment,
+    }
+
+
 def _generate_dev(
     repo: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -220,6 +274,22 @@ def test_tracked_development_panel_is_exact_and_development_only() -> None:
     assert panel.draws_per_mechanism == 2
     assert panel.cells == protocol.development.cells
     assert panel.genes == protocol.development.genes
+
+
+def test_development_receipts_retain_the_existing_path_free_schema(
+    panel_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    status, _calls = _generate_dev(panel_repo, monkeypatch)
+    receipt = json.loads(
+        (
+            panel_repo
+            / "artifacts/study/development/results/receipts/symsim/draw-01.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert "runtime_assets_sha256" not in status
+    assert "runtime_assets_receipt" not in status
+    assert "runtime_assets_sha256" not in receipt
 
 
 def test_development_generation_has_exact_design_and_seed_cardinality(
@@ -369,15 +439,29 @@ def test_final_requires_claim_and_exact_seed_cardinality_before_adapter_access(
 
 
 def test_final_generation_consumes_only_claimed_seeds_and_writes_under_results(
-    panel_repo: Path, monkeypatch: pytest.MonkeyPatch
+    panel_repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     round_dir = _prepare_final_round(panel_repo)
     assert_final_runnable(panel_repo, round_dir)
     calls: list[tuple[tuple[SimulationRequest, ...], object]] = []
-    _install_fake_adapters(monkeypatch, _fake_adapter_factory(calls))
+    received_assets: list[object] = []
+    fake = _fake_adapter_factory(calls)
+
+    def adapter(requests, protocol, final_manifest=None, runtime_assets=None):
+        received_assets.append(runtime_assets)
+        return fake(requests, protocol, final_manifest, runtime_assets)
+
+    _install_fake_adapters(monkeypatch, adapter)
+    runtime_paths = _fake_final_runtime_paths(panel_repo, tmp_path, monkeypatch)
+    external_root = runtime_paths["simulator_assets_root"]
+    r_environment = runtime_paths["simulator_r_environment"]
 
     status = generate_dataset_panel(
-        repo=panel_repo, namespace="final", round_dir=round_dir
+        repo=panel_repo,
+        namespace="final",
+        round_dir=round_dir,
+        simulator_assets_root=external_root,
+        simulator_r_environment=r_environment,
     )
 
     manifest = json.loads(
@@ -395,6 +479,9 @@ def test_final_generation_consumes_only_claimed_seeds_and_writes_under_results(
     assert len(used_seeds) == 60
     assert used_seeds == claimed_seeds
     assert all(claim is not None for _pair, claim in calls)
+    assert all(asset is received_assets[0] for asset in received_assets)
+    assert status["runtime_assets_sha256"] == received_assets[0].semantic_sha256
+    assert status["runtime_assets_receipt"] == received_assets[0].semantic_receipt
     assert status["independent_unit_count"] == 20
     assert status["completed_count"] == 40
     assert all(
@@ -407,26 +494,54 @@ def test_final_generation_consumes_only_claimed_seeds_and_writes_under_results(
         round_dir / "results/dataset_status.json",
         repo=panel_repo,
         round_dir=round_dir,
+        simulator_assets_root=external_root,
+        simulator_r_environment=r_environment,
     )
     assert validated == status
+    pair_receipt = json.loads(
+        (round_dir / "results/receipts/symsim/draw-01.json").read_text(encoding="utf-8")
+    )
+    assert pair_receipt["runtime_assets_sha256"] == status["runtime_assets_sha256"]
+    assert not (panel_repo / "artifacts/external").exists()
+    assert not (panel_repo / "artifacts/envs").exists()
+    load_final_manifest_claim(panel_repo, round_dir)
+
+
+def test_final_generation_requires_explicit_runtime_asset_paths(
+    panel_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    round_dir = _prepare_final_round(panel_repo)
+    assert_final_runnable(panel_repo, round_dir)
+    _install_fake_adapters(monkeypatch, _fake_adapter_factory([]))
+
+    with pytest.raises(DatasetRegistryError, match="runtime asset paths"):
+        generate_dataset_panel(
+            repo=panel_repo,
+            namespace="final",
+            round_dir=round_dir,
+        )
 
 
 def test_final_sequential_adapters_revalidate_claim_after_prior_publication(
-    panel_repo: Path, monkeypatch: pytest.MonkeyPatch
+    panel_repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     round_dir = _prepare_final_round(panel_repo)
     assert_final_runnable(panel_repo, round_dir)
     calls: list[tuple[tuple[SimulationRequest, ...], object]] = []
     fake = _fake_adapter_factory(calls)
 
-    def strict_adapter(requests, protocol, final_manifest=None):
+    def strict_adapter(requests, protocol, final_manifest=None, runtime_assets=None):
         validate_paired_simulation_requests(requests, protocol, final_manifest)
-        return fake(requests, protocol, final_manifest)
+        return fake(requests, protocol, final_manifest, runtime_assets)
 
     _install_fake_adapters(monkeypatch, strict_adapter)
+    runtime_paths = _fake_final_runtime_paths(panel_repo, tmp_path, monkeypatch)
 
     status = generate_dataset_panel(
-        repo=panel_repo, namespace="final", round_dir=round_dir
+        repo=panel_repo,
+        namespace="final",
+        round_dir=round_dir,
+        **runtime_paths,
     )
 
     assert status["status"] == "completed"
@@ -563,7 +678,7 @@ def test_status_rejects_noncanonical_json_bytes(
 
 
 def test_final_rejects_wrong_seed_count(
-    panel_repo: Path, monkeypatch: pytest.MonkeyPatch
+    panel_repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     round_dir = _prepare_final_round(panel_repo, seed_count=59)
     assert_final_runnable(panel_repo, round_dir)
@@ -572,12 +687,18 @@ def test_final_rejects_wrong_seed_count(
         raise AssertionError("adapter accessed after seed cardinality failure")
 
     _install_fake_adapters(monkeypatch, forbidden_adapter)
+    runtime_paths = _fake_final_runtime_paths(panel_repo, tmp_path, monkeypatch)
     with pytest.raises(DatasetRegistryError, match="exactly 60"):
-        generate_dataset_panel(repo=panel_repo, namespace="final", round_dir=round_dir)
+        generate_dataset_panel(
+            repo=panel_repo,
+            namespace="final",
+            round_dir=round_dir,
+            **runtime_paths,
+        )
 
 
 def test_final_rejects_a_claimed_seed_that_collides_with_development(
-    panel_repo: Path, monkeypatch: pytest.MonkeyPatch
+    panel_repo: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     protocol = load_protocol(panel_repo / "study/protocol.json")
     panel = load_development_panel(
@@ -599,8 +720,14 @@ def test_final_rejects_a_claimed_seed_that_collides_with_development(
         raise AssertionError("adapter accessed after namespace collision")
 
     _install_fake_adapters(monkeypatch, forbidden_adapter)
+    runtime_paths = _fake_final_runtime_paths(panel_repo, tmp_path, monkeypatch)
     with pytest.raises(DatasetRegistryError, match="collides with development"):
-        generate_dataset_panel(repo=panel_repo, namespace="final", round_dir=round_dir)
+        generate_dataset_panel(
+            repo=panel_repo,
+            namespace="final",
+            round_dir=round_dir,
+            **runtime_paths,
+        )
 
 
 def test_cli_exposes_no_seed_or_dimension_overrides() -> None:
@@ -608,3 +735,5 @@ def test_cli_exposes_no_seed_or_dimension_overrides() -> None:
 
     for forbidden in ("--seed", "--cells", "--genes", "--draws", "--mechanism"):
         assert forbidden not in script
+    assert "--simulator-assets-root" in script
+    assert "--simulator-r-environment" in script
