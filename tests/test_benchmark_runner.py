@@ -49,6 +49,7 @@ from maskimpute_benchmark.runner import (
     load_runner_authority,
     validate_development_manifest_payload,
 )
+from maskimpute_benchmark.runtime_environments import build_runtime_environment_lock
 
 
 METHODS_PATH = Path("study/methods.json")
@@ -725,6 +726,55 @@ def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environmen
     assert environments.executable_for("scvi") == (
         repository / "artifacts/envs/scvi-py312/bin/python"
     ).resolve(strict=True)
+
+
+def test_execution_environment_registry_binds_exact_runtime_lock(
+    tmp_path: Path,
+) -> None:
+    lock = build_runtime_environment_lock(
+        {
+            "afmf": ("python", Path(sys.executable)),
+            "benchmark": ("python", Path(sys.executable)),
+        }
+    )
+    lock_path = tmp_path / "runtime-lock.json"
+    lock_path.write_text(
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    environments = ExecutionEnvironmentRegistry.fixed(
+        tmp_path,
+        {"afmf": Path(sys.executable)},
+        runtime_lock_path=lock_path,
+        benchmark_python=Path(sys.executable),
+    )
+
+    assert environments.runtime_lock_sha256 is not None
+    assert environments.executable_for("afmf") == Path(sys.executable).resolve()
+
+
+def test_execution_environment_registry_rejects_runtime_drift(
+    tmp_path: Path,
+) -> None:
+    lock = build_runtime_environment_lock(
+        {"benchmark": ("python", Path(sys.executable))}
+    )
+    lock_path = tmp_path / "runtime-lock.json"
+    lock_path.write_text(
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RunnerContractError, match="runtime IDs mismatch"):
+        ExecutionEnvironmentRegistry.fixed(
+            tmp_path,
+            {"afmf": Path(sys.executable)},
+            runtime_lock_path=lock_path,
+            benchmark_python=Path(sys.executable),
+        )
 
 
 def test_spawned_executor_uses_parent_sampled_resources_not_executor_claims() -> None:

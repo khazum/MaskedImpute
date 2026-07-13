@@ -21,6 +21,7 @@ import re
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 from types import MappingProxyType
@@ -31,6 +32,11 @@ import numpy as np
 from .methods import AdapterExecution, MethodInput, MethodSpec
 from .methods.registry import MethodRegistry
 from .protocol import canonical_sha256
+from .runtime_environments import (
+    RuntimeEnvironmentError,
+    load_runtime_environment_lock,
+    validate_runtime_environment_lock,
+)
 
 
 DEVELOPMENT_MODEL_SEEDS = (42, 43, 44)
@@ -46,6 +52,10 @@ SELECTION_COMPLETENESS_BLOCKERS = (
 )
 _IMPLEMENTATION_SOURCE_DIRECTORIES = ("maskimpute", "maskimpute_benchmark")
 _IMPLEMENTATION_SOURCE_FILES = ("scripts/run_development_competition.py",)
+_DEVELOPMENT_RUNTIME_LOCK_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "environments/development-runtime.lock.json"
+)
 _TRACKED_V28_REVISION_PATH = (
     Path(__file__).resolve().parents[1] / "study/v28_revision.json"
 )
@@ -3656,12 +3666,16 @@ class ExecutionEnvironmentRegistry:
     repository_root: Path
     executable_paths: tuple[tuple[str, str | None], ...]
     registry_sha256: str
+    runtime_lock_sha256: str | None
 
     @classmethod
     def fixed(
         cls,
         repository_root: Path,
         overrides: Mapping[str, Path] | None = None,
+        *,
+        runtime_lock_path: Path | None = None,
+        benchmark_python: Path | None = None,
     ) -> ExecutionEnvironmentRegistry:
         if not isinstance(repository_root, Path):
             raise TypeError("repository_root must be a pathlib.Path")
@@ -3740,14 +3754,48 @@ class ExecutionEnvironmentRegistry:
                 "declared_path": display_path(declared_path),
                 "executable_sha256": _file_sha256(resolved),
             }
+        runtime_lock_sha256: str | None = None
+        runtime_receipt: dict[str, object] | None = None
+        if runtime_lock_path is not None:
+            if not isinstance(runtime_lock_path, Path):
+                raise TypeError("runtime_lock_path must be a pathlib.Path")
+            if not isinstance(benchmark_python, Path):
+                raise TypeError(
+                    "benchmark_python must be a pathlib.Path with a runtime lock"
+                )
+            declarations: dict[str, tuple[Literal["python", "r"], Path]] = {
+                "benchmark": ("python", benchmark_python)
+            }
+            r_methods = {"alra", "saver"}
+            for method_id, executable_path in entries:
+                if executable_path is None:
+                    continue
+                declarations[method_id] = (
+                    "r" if method_id in r_methods else "python",
+                    Path(executable_path),
+                )
+            try:
+                runtime_lock = load_runtime_environment_lock(runtime_lock_path)
+                runtime_receipt = validate_runtime_environment_lock(
+                    runtime_lock, declarations
+                )
+            except RuntimeEnvironmentError as error:
+                raise RunnerContractError(str(error)) from error
+            runtime_lock_sha256 = runtime_lock.file_sha256
         body = {
-            "schema": "maskimpute-execution-environment-registry-v1",
+            "schema": (
+                "maskimpute-execution-environment-registry-v2"
+                if runtime_receipt is not None
+                else "maskimpute-execution-environment-registry-v1"
+            ),
             "methods": receipt,
+            "runtime_lock": runtime_receipt,
         }
         return cls(
             repository_root=repository,
             executable_paths=tuple(entries),
             registry_sha256=canonical_sha256(body),
+            runtime_lock_sha256=runtime_lock_sha256,
         )
 
     def executable_for(self, method_id: str) -> Path | None:
@@ -4284,7 +4332,12 @@ def _run_competition_with_authority(
     from .methods import load_method_registry
 
     registry = load_method_registry(repository / "study/methods.json")
-    environments = ExecutionEnvironmentRegistry.fixed(repository, environment_overrides)
+    environments = ExecutionEnvironmentRegistry.fixed(
+        repository,
+        environment_overrides,
+        runtime_lock_path=_DEVELOPMENT_RUNTIME_LOCK_PATH,
+        benchmark_python=Path(sys.executable),
+    )
     plan = build_competition_plan(
         registry,
         bindings,
