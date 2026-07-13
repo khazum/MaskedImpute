@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -793,6 +794,82 @@ def test_execution_environment_registry_rejects_runtime_drift(
             runtime_lock_path=lock_path,
             benchmark_python=python,
         )
+
+
+def test_execution_environment_registry_revalidates_bytes_and_environment_per_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = tmp_path / "python-environment"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+        check=True,
+    )
+    python = environment / "bin/python"
+    lock = build_runtime_environment_lock(
+        {
+            "afmf": ("python", python),
+            "benchmark": ("python", python),
+        }
+    )
+    lock_path = tmp_path / "runtime-lock.json"
+    lock_path.write_text(
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    environments = ExecutionEnvironmentRegistry.fixed(
+        tmp_path,
+        {"afmf": python},
+        runtime_lock_path=lock_path,
+        benchmark_python=python,
+    )
+    environments.revalidate_for("afmf")
+    with monkeypatch.context() as context:
+        context.setenv("PATH", os.environ.get("PATH", "") + ":/runtime-drift")
+        with pytest.raises(RunnerContractError, match="environment changed"):
+            environments.revalidate_for("afmf")
+    environments.revalidate_for("afmf")
+    site_packages = next(
+        path for path in (environment / "lib").glob("python*/site-packages")
+    )
+    (site_packages / "publication_shadow.py").write_text(
+        "VALUE = 'runtime-drift'\n", encoding="utf-8"
+    )
+    with pytest.raises(RunnerContractError, match="runtime identity mismatch"):
+        environments.revalidate_for("afmf")
+
+
+def test_dispatcher_revalidates_runtime_before_and_after_each_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = Path.cwd()
+    environments = ExecutionEnvironmentRegistry.fixed(repository)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "revalidate_for",
+        lambda self, method_id: calls.append(method_id),
+    )
+    dispatcher = RepositoryAdapterDispatcher(repository, environments)
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+
+    outcome = dispatcher(request)
+
+    assert outcome.status == "completed"
+    assert calls == ["observed", "observed"]
 
 
 def test_spawned_executor_uses_parent_sampled_resources_not_executor_claims() -> None:

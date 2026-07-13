@@ -10,6 +10,7 @@ import pytest
 
 from maskimpute_benchmark.runtime_environments import (
     RuntimeEnvironmentError,
+    _directory_content_sha256,
     build_runtime_environment_lock,
     load_runtime_environment_lock,
     probe_python_environment,
@@ -70,6 +71,23 @@ def test_python_probe_executes_symlinked_virtual_environment_launcher(
     assert inventory["launcher"]["kind"] == "symlink"
 
 
+def test_python_probe_binds_loose_importable_runtime_bytes(tmp_path: Path) -> None:
+    python = _isolated_python(tmp_path)
+    before = probe_python_environment(python)
+    site_packages = next(
+        path
+        for path in (python.parents[1] / "lib").glob("python*/site-packages")
+    )
+    (site_packages / "publication_shadow.py").write_text(
+        "VALUE = 'changed-runtime'\n", encoding="utf-8"
+    )
+
+    after = probe_python_environment(python)
+
+    assert before != after
+    assert before["runtime_roots"] != after["runtime_roots"]
+
+
 def test_r_probe_binds_selected_method_library_bytes(tmp_path: Path) -> None:
     rscript = shutil.which("Rscript")
     r = shutil.which("R")
@@ -108,6 +126,24 @@ def test_r_probe_binds_selected_method_library_bytes(tmp_path: Path) -> None:
     )
     assert package["version"] == "1.0.0"
     assert package["file_count"] > 0
+
+
+def test_directory_inventory_hashes_symlinked_directory_target_tree(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "root"
+    target = tmp_path / "target"
+    root.mkdir()
+    target.mkdir()
+    payload = target / "payload.py"
+    payload.write_text("VALUE = 1\n", encoding="utf-8")
+    (root / "linked").symlink_to(target, target_is_directory=True)
+    before, _count = _directory_content_sha256(root)
+    payload.write_text("VALUE = 2\n", encoding="utf-8")
+
+    after, _count = _directory_content_sha256(root)
+
+    assert before != after
 
 
 def test_lock_round_trip_and_exact_runtime_validation(tmp_path: Path) -> None:

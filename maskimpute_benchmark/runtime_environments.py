@@ -99,6 +99,32 @@ for distribution in importlib.metadata.distributions():
 packages.sort(key=lambda value: (value["name"], value["precedence"], value["version"]))
 if len({(value["name"], value["precedence"], value["version"], value["content_sha256"]) for value in packages}) != len(packages):
     raise RuntimeError("installed distributions contain duplicate identities")
+root_candidates = [
+    ("base-prefix-lib", Path(sys.base_prefix) / "lib"),
+    ("prefix-lib", Path(sys.prefix) / "lib"),
+]
+covered = [path.resolve(strict=True) for _role, path in root_candidates if path.exists()]
+for index, value in enumerate(sys.path):
+    if not value or not Path(value).exists():
+        continue
+    selected = Path(value).resolve(strict=True)
+    if any(selected == root or selected.is_relative_to(root) for root in covered):
+        continue
+    root_candidates.append((f"search-path-{index:03d}", Path(value)))
+observed_roots = set()
+runtime_roots = []
+for role, path in root_candidates:
+    if not path.exists():
+        continue
+    resolved = path.resolve(strict=True)
+    if resolved in observed_roots:
+        continue
+    observed_roots.add(resolved)
+    runtime_roots.append({
+        "kind": "directory" if path.is_dir() else "file",
+        "path": str(path.absolute()),
+        "role": role,
+    })
 payload = {
     "schema": "maskimpute-python-runtime-inventory-v1",
     "interpreter": {
@@ -108,8 +134,44 @@ payload = {
         "version": list(sys.version_info[:3]),
     },
     "packages": packages,
+    "_runtime_root_paths": sorted(runtime_roots, key=lambda value: value["role"]),
 }
 print(json.dumps(payload, allow_nan=False, separators=(",", ":"), sort_keys=True))
+"""
+
+
+_PYTHON_ROOT_PROBE = r"""
+import json
+from pathlib import Path
+import sys
+
+root_candidates = [
+    ("base-prefix-lib", Path(sys.base_prefix) / "lib"),
+    ("prefix-lib", Path(sys.prefix) / "lib"),
+]
+covered = [path.resolve(strict=True) for _role, path in root_candidates if path.exists()]
+for index, value in enumerate(sys.path):
+    if not value or not Path(value).exists():
+        continue
+    selected = Path(value).resolve(strict=True)
+    if any(selected == root or selected.is_relative_to(root) for root in covered):
+        continue
+    root_candidates.append((f"search-path-{index:03d}", Path(value)))
+observed = set()
+roots = []
+for role, path in root_candidates:
+    if not path.exists():
+        continue
+    resolved = path.resolve(strict=True)
+    if resolved in observed:
+        continue
+    observed.add(resolved)
+    roots.append({
+        "kind": "directory" if path.is_dir() else "file",
+        "path": str(path.absolute()),
+        "role": role,
+    })
+print(json.dumps(sorted(roots, key=lambda value: value["role"]), separators=(",", ":"), sort_keys=True))
 """
 
 
@@ -133,10 +195,23 @@ if (anyDuplicated(rows[, c("name", "version", "precedence", "path")])) {
 cat("MASKIMPUTE-R-RUNTIME-INVENTORY-V1\n")
 cat(paste(R.version$major, R.version$minor, R.version$platform,
           length(.libPaths()), sep = "\t"), "\n", sep = "")
+for (index in seq_along(library_paths)) {
+  cat("LIB", index - 1L, library_paths[[index]], sep = "\t")
+  cat("\n")
+}
 for (index in seq_len(nrow(rows))) {
   package_path <- normalizePath(rows$path[[index]], mustWork = TRUE)
-  cat(rows$name[[index]], rows$version[[index]], rows$precedence[[index]],
+  cat("PKG", rows$name[[index]], rows$version[[index]], rows$precedence[[index]],
       package_path, sep = "\t")
+  cat("\n")
+}
+"""
+
+
+_R_ROOT_PROBE = r"""
+paths <- normalizePath(.libPaths(), mustWork = TRUE)
+for (index in seq_along(paths)) {
+  cat(index - 1L, paths[[index]], sep = "\t")
   cat("\n")
 }
 """
@@ -179,63 +254,248 @@ def _file_sha256(path: Path) -> str:
 
 
 def _directory_content_sha256(path: Path) -> tuple[str, int]:
-    try:
-        root_metadata = path.lstat()
-    except OSError as error:
-        raise RuntimeEnvironmentError("runtime package directory is unavailable") from error
-    if stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode):
-        raise RuntimeEnvironmentError("runtime package path is not a secure directory")
-    entries: list[tuple[str, Path]] = []
-    for current, directory_names, file_names in os.walk(path, followlinks=False):
-        directory_names.sort()
-        file_names.sort()
-        current_path = Path(current)
-        for name in tuple(directory_names):
-            child = current_path / name
-            if child.is_symlink():
-                entries.append((child.relative_to(path).as_posix(), child))
-                directory_names.remove(name)
-        for name in file_names:
-            child = current_path / name
-            entries.append((child.relative_to(path).as_posix(), child))
-    entries.sort(key=lambda item: os.fsencode(item[0]))
-    digest = hashlib.sha256()
-    digest.update(b"maskimpute-runtime-package-directory-v1\0")
-    for relative, item in entries:
-        encoded = os.fsencode(relative)
-        digest.update(len(encoded).to_bytes(8, "little"))
-        digest.update(encoded)
+    cache: dict[Path, tuple[str, int]] = {}
+
+    def read_regular(item: Path) -> tuple[bytes, os.stat_result]:
         try:
             before = item.lstat()
-            if stat.S_ISLNK(before.st_mode):
-                target = os.fsencode(os.readlink(item))
-                digest.update(b"L")
-                digest.update(len(target).to_bytes(8, "little"))
-                digest.update(target)
-                resolved = item.resolve(strict=True)
-                if resolved.is_file():
-                    payload = resolved.read_bytes()
-                    digest.update(len(payload).to_bytes(8, "little"))
-                    digest.update(payload)
-            elif stat.S_ISREG(before.st_mode):
-                payload = item.read_bytes()
-                digest.update(b"F")
-                digest.update(len(payload).to_bytes(8, "little"))
-                digest.update(payload)
-            else:
+            if not stat.S_ISREG(before.st_mode):
                 raise RuntimeEnvironmentError(
-                    "runtime package contains a special filesystem entry"
+                    "runtime root contains a non-regular file"
                 )
-            after = item.lstat()
+            descriptor = os.open(
+                item,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                opened = os.fstat(descriptor)
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            after_path = item.lstat()
         except RuntimeEnvironmentError:
             raise
         except OSError as error:
             raise RuntimeEnvironmentError(
-                "runtime package changed while hashing"
+                "runtime root changed while hashing a file"
             ) from error
-        if _stat_identity(before) != _stat_identity(after):
-            raise RuntimeEnvironmentError("runtime package changed while hashing")
-    return digest.hexdigest(), len(entries)
+        identity = _stat_identity(before)
+        if any(
+            _stat_identity(value) != identity
+            for value in (opened, after, after_path)
+        ):
+            raise RuntimeEnvironmentError("runtime root file changed while hashing")
+        return b"".join(chunks), before
+
+    def hash_directory(directory: Path, ancestry: frozenset[Path]) -> tuple[str, int]:
+        resolved = directory.resolve(strict=True)
+        if resolved in ancestry:
+            raise RuntimeEnvironmentError("runtime root contains a directory cycle")
+        if resolved in cache:
+            return cache[resolved]
+        try:
+            before = directory.lstat()
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+                raise RuntimeEnvironmentError(
+                    "runtime package path is not a secure directory"
+                )
+            children = sorted(os.scandir(directory), key=lambda item: os.fsencode(item.name))
+        except RuntimeEnvironmentError:
+            raise
+        except OSError as error:
+            raise RuntimeEnvironmentError(
+                "runtime package directory is unavailable"
+            ) from error
+        digest = hashlib.sha256()
+        digest.update(b"maskimpute-runtime-directory-v2\0")
+        digest.update(stat.S_IMODE(before.st_mode).to_bytes(4, "little"))
+        count = 1
+        for child_entry in children:
+            child = Path(child_entry.path)
+            encoded = os.fsencode(child_entry.name)
+            digest.update(len(encoded).to_bytes(8, "little"))
+            digest.update(encoded)
+            try:
+                child_before = child.lstat()
+                if stat.S_ISLNK(child_before.st_mode):
+                    target_text = os.fsencode(os.readlink(child))
+                    target = child.resolve(strict=True)
+                    digest.update(b"L")
+                    digest.update(len(target_text).to_bytes(8, "little"))
+                    digest.update(target_text)
+                    if target.is_file():
+                        payload, _target_metadata = read_regular(target)
+                        digest.update(b"F")
+                        digest.update(len(payload).to_bytes(8, "little"))
+                        digest.update(payload)
+                        nested_count = 1
+                    elif target.is_dir():
+                        nested_sha, nested_count = hash_directory(
+                            target, ancestry.union({resolved})
+                        )
+                        digest.update(b"D")
+                        digest.update(bytes.fromhex(nested_sha))
+                    else:
+                        raise RuntimeEnvironmentError(
+                            "runtime root symlink target is not regular"
+                        )
+                    child_after = child.lstat()
+                    if _stat_identity(child_before) != _stat_identity(child_after):
+                        raise RuntimeEnvironmentError(
+                            "runtime root symlink changed while hashing"
+                        )
+                    count += 1 + nested_count
+                elif stat.S_ISDIR(child_before.st_mode):
+                    nested_sha, nested_count = hash_directory(
+                        child, ancestry.union({resolved})
+                    )
+                    digest.update(b"D")
+                    digest.update(bytes.fromhex(nested_sha))
+                    count += nested_count
+                elif stat.S_ISREG(child_before.st_mode):
+                    payload, metadata = read_regular(child)
+                    digest.update(b"F")
+                    digest.update(stat.S_IMODE(metadata.st_mode).to_bytes(4, "little"))
+                    digest.update(len(payload).to_bytes(8, "little"))
+                    digest.update(payload)
+                    count += 1
+                else:
+                    raise RuntimeEnvironmentError(
+                        "runtime root contains a special filesystem entry"
+                    )
+            except RuntimeEnvironmentError:
+                raise
+            except OSError as error:
+                raise RuntimeEnvironmentError(
+                    "runtime root changed while enumerating"
+                ) from error
+        try:
+            after = directory.lstat()
+            after_children = sorted(
+                (entry.name for entry in os.scandir(directory)), key=os.fsencode
+            )
+        except OSError as error:
+            raise RuntimeEnvironmentError(
+                "runtime root changed after enumeration"
+            ) from error
+        if (
+            _stat_identity(before) != _stat_identity(after)
+            or [entry.name for entry in children] != after_children
+        ):
+            raise RuntimeEnvironmentError("runtime root changed while hashing")
+        result = (digest.hexdigest(), count)
+        cache[resolved] = result
+        return result
+
+    return hash_directory(path, frozenset())
+
+
+def _runtime_file_content_sha256(path: Path) -> tuple[str, int]:
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode):
+            target_text = os.fsencode(os.readlink(path))
+            target = path.resolve(strict=True)
+            digest = hashlib.sha256(
+                b"maskimpute-runtime-root-symlink-v1\0" + target_text
+            )
+            if target.is_file():
+                digest.update(target.read_bytes())
+            elif target.is_dir():
+                nested_sha, nested_count = _directory_content_sha256(target)
+                digest.update(bytes.fromhex(nested_sha))
+                return digest.hexdigest(), nested_count + 1
+            else:
+                raise RuntimeEnvironmentError("runtime root symlink target is invalid")
+        elif stat.S_ISREG(before.st_mode):
+            digest = hashlib.sha256(
+                b"maskimpute-runtime-root-file-v1\0" + path.read_bytes()
+            )
+        else:
+            raise RuntimeEnvironmentError("runtime root file is invalid")
+        after = path.lstat()
+    except RuntimeEnvironmentError:
+        raise
+    except OSError as error:
+        raise RuntimeEnvironmentError("runtime root file changed while hashing") from error
+    if _stat_identity(before) != _stat_identity(after):
+        raise RuntimeEnvironmentError("runtime root file changed while hashing")
+    return digest.hexdigest(), 1
+
+
+def _validated_runtime_root_paths(
+    raw_roots: object,
+) -> tuple[tuple[str, Literal["directory", "file"], Path], ...]:
+    if not isinstance(raw_roots, list) or not raw_roots:
+        raise RuntimeEnvironmentError("runtime probe did not expose its roots")
+    result: list[tuple[str, Literal["directory", "file"], Path]] = []
+    roles: set[str] = set()
+    for raw_root in raw_roots:
+        if not isinstance(raw_root, dict) or set(raw_root) != {"role", "kind", "path"}:
+            raise RuntimeEnvironmentError("runtime probe root declaration is invalid")
+        role = raw_root.get("role")
+        kind = raw_root.get("kind")
+        raw_path = raw_root.get("path")
+        if (
+            not isinstance(role, str)
+            or re.fullmatch(r"[a-z][a-z0-9-]*", role) is None
+            or role in roles
+            or kind not in {"directory", "file"}
+            or not isinstance(raw_path, str)
+            or not Path(raw_path).is_absolute()
+        ):
+            raise RuntimeEnvironmentError("runtime probe root identity is invalid")
+        roles.add(role)
+        path = Path(raw_path)
+        try:
+            for parent in path.parents:
+                if stat.S_ISLNK(parent.lstat().st_mode):
+                    raise RuntimeEnvironmentError(
+                        "runtime root parent directory must not be a symlink"
+                    )
+            path.resolve(strict=True)
+        except RuntimeEnvironmentError:
+            raise
+        except OSError as error:
+            raise RuntimeEnvironmentError("runtime root is unavailable") from error
+        if kind == "directory" and not path.is_dir():
+            raise RuntimeEnvironmentError("runtime root kind is inconsistent")
+        if kind == "file" and not path.is_file():
+            raise RuntimeEnvironmentError("runtime root kind is inconsistent")
+        result.append((role, kind, path))
+    return tuple(sorted(result, key=lambda item: item[0]))
+
+
+def _runtime_root_inventory(raw_roots: object) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    cache: dict[tuple[str, Path], tuple[str, int]] = {}
+    for role, kind, path in _validated_runtime_root_paths(raw_roots):
+        resolved = path.resolve(strict=True)
+        cache_key = (kind, resolved)
+        if cache_key not in cache:
+            cache[cache_key] = (
+                _directory_content_sha256(path)
+                if kind == "directory"
+                else _runtime_file_content_sha256(path)
+            )
+        content_sha256, entry_count = cache[cache_key]
+        result.append(
+            {
+                "role": role,
+                "kind": kind,
+                "content_sha256": content_sha256,
+                "entry_count": entry_count,
+            }
+        )
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +578,189 @@ def _revalidate_executable(executable: _ExecutableIdentity) -> None:
         or executable.invocation.resolve(strict=True) != executable.target
     ):
         raise RuntimeEnvironmentError("runtime executable changed during inventory")
+
+
+def _runtime_root_identity_sha256(path: Path) -> str:
+    cache: dict[Path, str] = {}
+
+    def hash_directory(directory: Path, ancestry: frozenset[Path]) -> str:
+        resolved = directory.resolve(strict=True)
+        if resolved in ancestry:
+            raise RuntimeEnvironmentError("runtime identity contains a directory cycle")
+        if resolved in cache:
+            return cache[resolved]
+        try:
+            before = directory.lstat()
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+                raise RuntimeEnvironmentError("runtime identity root is not a directory")
+            children = sorted(os.scandir(directory), key=lambda item: os.fsencode(item.name))
+        except RuntimeEnvironmentError:
+            raise
+        except OSError as error:
+            raise RuntimeEnvironmentError(
+                "runtime identity directory is unavailable"
+            ) from error
+        digest = hashlib.sha256()
+        digest.update(b"maskimpute-runtime-metadata-identity-v1\0")
+        digest.update(repr(_stat_identity(before)).encode("ascii"))
+        for entry in children:
+            child = Path(entry.path)
+            encoded = os.fsencode(entry.name)
+            digest.update(len(encoded).to_bytes(8, "little"))
+            digest.update(encoded)
+            try:
+                child_before = child.lstat()
+                digest.update(repr(_stat_identity(child_before)).encode("ascii"))
+                if stat.S_ISLNK(child_before.st_mode):
+                    target_text = os.fsencode(os.readlink(child))
+                    target = child.resolve(strict=True)
+                    digest.update(b"L" + len(target_text).to_bytes(8, "little"))
+                    digest.update(target_text)
+                    if target.is_dir():
+                        nested = hash_directory(target, ancestry.union({resolved}))
+                        digest.update(bytes.fromhex(nested))
+                    elif target.is_file():
+                        digest.update(repr(_stat_identity(target.stat())).encode("ascii"))
+                    else:
+                        raise RuntimeEnvironmentError(
+                            "runtime identity symlink target is invalid"
+                        )
+                    if _stat_identity(child.lstat()) != _stat_identity(child_before):
+                        raise RuntimeEnvironmentError(
+                            "runtime identity symlink changed during traversal"
+                        )
+                elif stat.S_ISDIR(child_before.st_mode):
+                    nested = hash_directory(child, ancestry.union({resolved}))
+                    digest.update(bytes.fromhex(nested))
+                elif not stat.S_ISREG(child_before.st_mode):
+                    raise RuntimeEnvironmentError(
+                        "runtime identity contains a special filesystem entry"
+                    )
+            except RuntimeEnvironmentError:
+                raise
+            except OSError as error:
+                raise RuntimeEnvironmentError(
+                    "runtime identity changed during traversal"
+                ) from error
+        try:
+            after = directory.lstat()
+            names_after = sorted(
+                (entry.name for entry in os.scandir(directory)), key=os.fsencode
+            )
+        except OSError as error:
+            raise RuntimeEnvironmentError(
+                "runtime identity changed after traversal"
+            ) from error
+        if (
+            _stat_identity(before) != _stat_identity(after)
+            or [entry.name for entry in children] != names_after
+        ):
+            raise RuntimeEnvironmentError("runtime identity changed during traversal")
+        value = digest.hexdigest()
+        cache[resolved] = value
+        return value
+
+    if path.is_dir() and not path.is_symlink():
+        return hash_directory(path, frozenset())
+    try:
+        metadata = path.lstat()
+        digest = hashlib.sha256(b"maskimpute-runtime-metadata-file-v1\0")
+        digest.update(repr(_stat_identity(metadata)).encode("ascii"))
+        if stat.S_ISLNK(metadata.st_mode):
+            target = path.resolve(strict=True)
+            digest.update(os.fsencode(os.readlink(path)))
+            digest.update(repr(_stat_identity(target.stat())).encode("ascii"))
+        elif not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeEnvironmentError("runtime identity file is invalid")
+        after = path.lstat()
+    except RuntimeEnvironmentError:
+        raise
+    except OSError as error:
+        raise RuntimeEnvironmentError("runtime identity file is unavailable") from error
+    if _stat_identity(metadata) != _stat_identity(after):
+        raise RuntimeEnvironmentError("runtime identity file changed")
+    return digest.hexdigest()
+
+
+def _python_runtime_root_paths(executable: _ExecutableIdentity) -> object:
+    raw = _run_probe(
+        [str(executable.invocation), "-I", "-c", _PYTHON_ROOT_PROBE], "Python"
+    )
+    try:
+        return json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_reject_constant,
+            object_pairs_hook=_unique_object,
+        )
+    except RuntimeEnvironmentError:
+        raise
+    except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeEnvironmentError("Python runtime roots are invalid") from error
+
+
+def _r_runtime_root_paths(
+    executable: _ExecutableIdentity, library_paths: tuple[Path, ...]
+) -> object:
+    raw = _run_probe(
+        [str(executable.invocation), "--vanilla", "-e", _R_ROOT_PROBE],
+        "R",
+        r_library_paths=library_paths,
+    )
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeError as error:
+        raise RuntimeEnvironmentError("R runtime roots are invalid") from error
+    roots: list[dict[str, str]] = []
+    for line in lines:
+        fields = line.split("\t")
+        if len(fields) != 2 or not fields[0].isdigit():
+            raise RuntimeEnvironmentError("R runtime root row is invalid")
+        roots.append(
+            {
+                "role": f"library-path-{int(fields[0]):03d}",
+                "kind": "directory",
+                "path": fields[1],
+            }
+        )
+    return roots
+
+
+def runtime_environment_identity_sha256(
+    kind: Literal["python", "r"],
+    executable: Path,
+    *,
+    r_library_paths: tuple[Path, ...] = (),
+) -> str:
+    """Return a fast ctime/inode tree identity for pre/post row revalidation."""
+
+    selected = _executable(executable)
+    libraries = _r_library_paths(r_library_paths) if kind == "r" else ()
+    if kind == "python":
+        raw_roots = _python_runtime_root_paths(selected)
+    elif kind == "r":
+        raw_roots = _r_runtime_root_paths(selected, libraries)
+    else:
+        raise RuntimeEnvironmentError("runtime kind must be python or r")
+    roots = [
+        {
+            "role": role,
+            "kind": root_kind,
+            "identity_sha256": _runtime_root_identity_sha256(path),
+        }
+        for role, root_kind, path in _validated_runtime_root_paths(raw_roots)
+    ]
+    _revalidate_executable(selected)
+    return canonical_sha256(
+        {
+            "schema": "maskimpute-runtime-metadata-snapshot-v1",
+            "kind": kind,
+            "launcher_kind": selected.launcher_kind,
+            "launcher_sha256": selected.launcher_sha256,
+            "invocation_state": selected.invocation_state,
+            "target_state": selected.target_state,
+            "roots": roots,
+        }
+    )
 
 
 def _probe_environment(*, r_library_paths: tuple[Path, ...] = ()) -> dict[str, str]:
@@ -425,6 +868,7 @@ def _validate_inventory(
         "packages",
         "executable_sha256",
         "launcher",
+        "runtime_roots",
     }
     if set(value) != expected_keys:
         raise RuntimeEnvironmentError("runtime inventory fields are invalid")
@@ -477,12 +921,45 @@ def _validate_inventory(
         ):
             raise RuntimeEnvironmentError("R interpreter identity is invalid")
     packages = _validate_packages(value.get("packages"), kind)
+    raw_roots = value.get("runtime_roots")
+    if not isinstance(raw_roots, list) or not raw_roots:
+        raise RuntimeEnvironmentError("runtime root inventory is invalid")
+    runtime_roots: list[dict[str, object]] = []
+    roles: set[str] = set()
+    for raw_root in raw_roots:
+        if not isinstance(raw_root, dict) or set(raw_root) != {
+            "role",
+            "kind",
+            "content_sha256",
+            "entry_count",
+        }:
+            raise RuntimeEnvironmentError("runtime root entry is invalid")
+        role = raw_root.get("role")
+        root_kind = raw_root.get("kind")
+        content_sha256 = raw_root.get("content_sha256")
+        entry_count = raw_root.get("entry_count")
+        if (
+            not isinstance(role, str)
+            or re.fullmatch(r"[a-z][a-z0-9-]*", role) is None
+            or role in roles
+            or root_kind not in {"directory", "file"}
+            or not isinstance(content_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", content_sha256) is None
+            or type(entry_count) is not int
+            or entry_count < 1
+        ):
+            raise RuntimeEnvironmentError("runtime root identity is invalid")
+        roles.add(role)
+        runtime_roots.append(dict(raw_root))
+    if runtime_roots != sorted(runtime_roots, key=lambda item: item["role"]):
+        raise RuntimeEnvironmentError("runtime roots are not sorted")
     return {
         "schema": schema,
         "interpreter": dict(interpreter),
         "packages": packages,
         "executable_sha256": executable_sha256,
         "launcher": dict(launcher),
+        "runtime_roots": runtime_roots,
     }
 
 
@@ -505,6 +982,8 @@ def probe_python_environment(executable: Path) -> dict[str, object]:
         raise RuntimeEnvironmentError("Python runtime probe returned invalid JSON") from error
     if not isinstance(value, dict):
         raise RuntimeEnvironmentError("Python runtime probe did not return an object")
+    raw_roots = value.pop("_runtime_root_paths", None)
+    value["runtime_roots"] = _runtime_root_inventory(raw_roots)
     value["executable_sha256"] = _file_sha256(selected.target)
     value["launcher"] = {
         "kind": selected.launcher_kind,
@@ -553,21 +1032,37 @@ def probe_r_environment(
     identity = lines[1].split("\t")
     if len(identity) != 4 or not identity[3].isdigit():
         raise RuntimeEnvironmentError("R runtime interpreter identity is invalid")
-    packages: list[dict[str, str]] = []
+    packages: list[dict[str, object]] = []
+    raw_roots: list[dict[str, str]] = []
     for line in lines[2:]:
         fields = line.split("\t")
-        if len(fields) != 4 or not fields[2].isdigit():
+        if fields[0] == "LIB" and len(fields) == 3 and fields[1].isdigit():
+            raw_roots.append(
+                {
+                    "role": f"library-path-{int(fields[1]):03d}",
+                    "kind": "directory",
+                    "path": fields[2],
+                }
+            )
+            continue
+        if (
+            fields[0] != "PKG"
+            or len(fields) != 5
+            or not fields[3].isdigit()
+        ):
             raise RuntimeEnvironmentError("R runtime package row is invalid")
-        content_sha256, file_count = _directory_content_sha256(Path(fields[3]))
+        content_sha256, file_count = _directory_content_sha256(Path(fields[4]))
         packages.append(
             {
-                "name": fields[0],
-                "version": fields[1],
+                "name": fields[1],
+                "version": fields[2],
                 "content_sha256": content_sha256,
                 "file_count": file_count,
-                "precedence": int(fields[2]),
+                "precedence": int(fields[3]),
             }
         )
+    if len(raw_roots) != int(identity[3]):
+        raise RuntimeEnvironmentError("R runtime library roots are incomplete")
     inventory = _validate_inventory(
         {
             "schema": _R_SCHEMA,
@@ -583,6 +1078,7 @@ def probe_r_environment(
                 "kind": selected.launcher_kind,
                 "sha256": selected.launcher_sha256,
             },
+            "runtime_roots": _runtime_root_inventory(raw_roots),
         },
         "r",
     )
@@ -647,6 +1143,7 @@ def build_runtime_environment_lock(
     if set(libraries) - set(environments):
         raise RuntimeEnvironmentError("R library paths name an unknown environment")
     entries: list[dict[str, object]] = []
+    inventory_cache: dict[tuple[str, str, tuple[str, ...]], dict[str, object]] = {}
     for environment_id in sorted(environments):
         if not isinstance(environment_id, str) or not _SAFE_ID.fullmatch(environment_id):
             raise RuntimeEnvironmentError("runtime environment ID is invalid")
@@ -664,9 +1161,16 @@ def build_runtime_environment_lock(
             raise RuntimeEnvironmentError(
                 "R library paths cannot be assigned to a Python environment"
             )
-        inventory = probe_runtime_environment(
-            kind, executable, r_library_paths=selected_libraries
+        cache_key = (
+            kind,
+            executable.absolute().as_posix(),
+            tuple(path.absolute().as_posix() for path in selected_libraries),
         )
+        if cache_key not in inventory_cache:
+            inventory_cache[cache_key] = probe_runtime_environment(
+                kind, executable, r_library_paths=selected_libraries
+            )
+        inventory = inventory_cache[cache_key]
         entries.append(
             {
                 "id": environment_id,
@@ -793,6 +1297,7 @@ def validate_runtime_environment_lock(
     if observed_ids != expected_ids:
         raise RuntimeEnvironmentError("runtime IDs mismatch frozen lock")
     receipts: list[tuple[str, str]] = []
+    inventory_cache: dict[tuple[str, str, tuple[str, ...]], dict[str, object]] = {}
     for environment_id in sorted(observed_ids):
         declaration = environments[environment_id]
         if (
@@ -802,29 +1307,61 @@ def validate_runtime_environment_lock(
             or not isinstance(declaration[1], Path)
         ):
             raise RuntimeEnvironmentError("runtime environment declaration is invalid")
-        entry = lock.by_id(environment_id)
         kind, executable = declaration
-        if kind != entry.kind:
-            raise RuntimeEnvironmentError(
-                f"runtime kind mismatch for {environment_id}"
-            )
         selected_libraries = tuple(libraries.get(environment_id, ()))
         if kind != "r" and selected_libraries:
             raise RuntimeEnvironmentError(
                 "R library paths cannot be assigned to a Python environment"
             )
-        inventory = probe_runtime_environment(
-            kind, executable, r_library_paths=selected_libraries
+        entry = lock.by_id(environment_id)
+        if kind != entry.kind:
+            raise RuntimeEnvironmentError(
+                f"runtime kind mismatch for {environment_id}"
+            )
+        cache_key = (
+            kind,
+            executable.absolute().as_posix(),
+            tuple(path.absolute().as_posix() for path in selected_libraries),
         )
-        if inventory != entry.inventory:
+        if cache_key not in inventory_cache:
+            inventory_cache[cache_key] = probe_runtime_environment(
+                kind, executable, r_library_paths=selected_libraries
+            )
+        if inventory_cache[cache_key] != entry.inventory:
             raise RuntimeEnvironmentError(
                 f"runtime inventory mismatch for {environment_id}"
             )
-        receipts.append((environment_id, entry.inventory_sha256))
+        inventory_sha256 = entry.inventory_sha256
+        receipts.append((environment_id, inventory_sha256))
     return {
         "lock_file_sha256": lock.file_sha256,
         "environment_inventory_sha256s": tuple(receipts),
     }
+
+
+def validate_runtime_environment_entry(
+    lock: RuntimeEnvironmentLock,
+    environment_id: str,
+    kind: Literal["python", "r"],
+    executable: Path,
+    *,
+    r_library_paths: tuple[Path, ...] = (),
+) -> str:
+    """Rehash one executable runtime immediately around one method execution."""
+
+    if not isinstance(lock, RuntimeEnvironmentLock):
+        raise TypeError("lock must be a RuntimeEnvironmentLock")
+    entry = lock.by_id(environment_id)
+    if kind != entry.kind:
+        raise RuntimeEnvironmentError(f"runtime kind mismatch for {environment_id}")
+    inventory = probe_runtime_environment(
+        kind, executable, r_library_paths=r_library_paths
+    )
+    if inventory != entry.inventory:
+        raise RuntimeEnvironmentError(
+            f"runtime inventory mismatch for {environment_id}"
+        )
+    return entry.inventory_sha256
 
 
 __all__ = [
@@ -836,5 +1373,7 @@ __all__ = [
     "probe_python_environment",
     "probe_r_environment",
     "probe_runtime_environment",
+    "runtime_environment_identity_sha256",
     "validate_runtime_environment_lock",
+    "validate_runtime_environment_entry",
 ]

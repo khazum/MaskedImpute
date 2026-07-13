@@ -35,6 +35,7 @@ from .protocol import canonical_sha256
 from .runtime_environments import (
     RuntimeEnvironmentError,
     load_runtime_environment_lock,
+    runtime_environment_identity_sha256,
     validate_runtime_environment_lock,
 )
 
@@ -3663,6 +3664,24 @@ class AdapterExecutor(Protocol):
     def __call__(self, request: ExecutionRequest) -> AdapterOutcome: ...
 
 
+_EXECUTION_ENVIRONMENT_KEYS = (
+    "CUDA_VISIBLE_DEVICES",
+    "HOME",
+    "LD_LIBRARY_PATH",
+    "MKL_NUM_THREADS",
+    "OMP_NUM_THREADS",
+    "PATH",
+    "R_LIBS",
+    "R_LIBS_SITE",
+    "R_LIBS_USER",
+    "TMPDIR",
+)
+
+
+def _execution_environment_snapshot() -> tuple[tuple[str, str | None], ...]:
+    return tuple((key, os.environ.get(key)) for key in _EXECUTION_ENVIRONMENT_KEYS)
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionEnvironmentRegistry:
     """Explicit executable paths for every adapter environment available locally."""
@@ -3671,6 +3690,11 @@ class ExecutionEnvironmentRegistry:
     executable_paths: tuple[tuple[str, str | None], ...]
     registry_sha256: str
     runtime_lock_sha256: str | None
+    runtime_lock_path: Path | None
+    benchmark_python: Path | None
+    r_library_paths: tuple[tuple[str, tuple[str, ...]], ...]
+    execution_environment: tuple[tuple[str, str | None], ...]
+    runtime_identity_snapshots: tuple[tuple[str, str], ...]
 
     @classmethod
     def fixed(
@@ -3762,6 +3786,17 @@ class ExecutionEnvironmentRegistry:
             }
         runtime_lock_sha256: str | None = None
         runtime_receipt: dict[str, object] | None = None
+        runtime_identity_snapshots: tuple[tuple[str, str], ...] = ()
+        normalized_r_libraries = tuple(
+            (
+                environment_id,
+                tuple(path.absolute().as_posix() for path in paths),
+            )
+            for environment_id, paths in sorted(
+                ({} if r_library_paths is None else r_library_paths).items()
+            )
+        )
+        execution_environment = _execution_environment_snapshot()
         if runtime_lock_path is not None:
             if not isinstance(runtime_lock_path, Path):
                 raise TypeError("runtime_lock_path must be a pathlib.Path")
@@ -3787,6 +3822,31 @@ class ExecutionEnvironmentRegistry:
                     declarations,
                     r_library_paths=r_library_paths,
                 )
+                libraries = {} if r_library_paths is None else r_library_paths
+                identity_cache: dict[tuple[str, str, tuple[str, ...]], str] = {}
+                identities: list[tuple[str, str]] = []
+                for environment_id, (kind, executable) in sorted(
+                    declarations.items()
+                ):
+                    selected_libraries = tuple(libraries.get(environment_id, ()))
+                    cache_key = (
+                        kind,
+                        executable.absolute().as_posix(),
+                        tuple(
+                            path.absolute().as_posix()
+                            for path in selected_libraries
+                        ),
+                    )
+                    if cache_key not in identity_cache:
+                        identity_cache[cache_key] = (
+                            runtime_environment_identity_sha256(
+                                kind,
+                                executable,
+                                r_library_paths=selected_libraries,
+                            )
+                        )
+                    identities.append((environment_id, identity_cache[cache_key]))
+                runtime_identity_snapshots = tuple(identities)
             except RuntimeEnvironmentError as error:
                 raise RunnerContractError(str(error)) from error
             runtime_lock_sha256 = runtime_lock.file_sha256
@@ -3798,12 +3858,23 @@ class ExecutionEnvironmentRegistry:
             ),
             "methods": receipt,
             "runtime_lock": runtime_receipt,
+            "execution_environment": execution_environment,
+            "runtime_identity_snapshots": runtime_identity_snapshots,
         }
         return cls(
             repository_root=repository,
             executable_paths=tuple(entries),
             registry_sha256=canonical_sha256(body),
             runtime_lock_sha256=runtime_lock_sha256,
+            runtime_lock_path=(
+                None if runtime_lock_path is None else runtime_lock_path.resolve(strict=True)
+            ),
+            benchmark_python=(
+                None if benchmark_python is None else benchmark_python.absolute()
+            ),
+            r_library_paths=normalized_r_libraries,
+            execution_environment=execution_environment,
+            runtime_identity_snapshots=runtime_identity_snapshots,
         )
 
     def executable_for(self, method_id: str) -> Path | None:
@@ -3811,6 +3882,46 @@ class ExecutionEnvironmentRegistry:
             if observed_method == method_id:
                 return None if path is None else Path(path)
         return None
+
+    def revalidate_for(self, method_id: str) -> None:
+        """Rehash the exact runtime and inherited execution environment for one row."""
+
+        if _execution_environment_snapshot() != self.execution_environment:
+            raise RunnerContractError(
+                "execution-affecting environment changed after plan construction"
+            )
+        if self.runtime_lock_path is None:
+            return
+        try:
+            lock = load_runtime_environment_lock(self.runtime_lock_path)
+            if lock.file_sha256 != self.runtime_lock_sha256:
+                raise RuntimeEnvironmentError("runtime lock changed after planning")
+            if method_id in {"observed", "maskimpute", "capacity-matched-ae"}:
+                environment_id = "benchmark"
+                kind: Literal["python", "r"] = "python"
+                executable = self.benchmark_python
+            else:
+                environment_id = method_id
+                kind = "r" if method_id in {"alra", "saver"} else "python"
+                executable = self.executable_for(method_id)
+            if executable is None:
+                return
+            libraries = dict(self.r_library_paths)
+            lock.by_id(environment_id)
+            observed_identity = runtime_environment_identity_sha256(
+                kind,
+                executable,
+                r_library_paths=tuple(
+                    Path(path) for path in libraries.get(environment_id, ())
+                ),
+            )
+            expected_identity = dict(self.runtime_identity_snapshots).get(environment_id)
+            if observed_identity != expected_identity:
+                raise RuntimeEnvironmentError(
+                    f"runtime identity mismatch for {environment_id}"
+                )
+        except RuntimeEnvironmentError as error:
+            raise RunnerContractError(str(error)) from error
 
 
 def _score_manifest_entry(
@@ -4089,6 +4200,14 @@ class RepositoryAdapterDispatcher:
         )
 
     def __call__(self, request: ExecutionRequest) -> AdapterOutcome:
+        method_id = request.method_spec.id
+        self.environments.revalidate_for(method_id)
+        try:
+            return self._execute_validated(request)
+        finally:
+            self.environments.revalidate_for(method_id)
+
+    def _execute_validated(self, request: ExecutionRequest) -> AdapterOutcome:
         request.validate_integrity()
         method_id = request.method_spec.id
         try:
