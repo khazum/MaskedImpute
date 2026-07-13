@@ -1927,6 +1927,8 @@ def _load_selection_authority(
         "source_policy",
         "integration_status",
         "integration_reason",
+        "execution_scope",
+        "applicability_reason",
     }
     method_rows: dict[str, dict[str, Any]] = {}
     for index, raw in enumerate(methods_root["methods"]):
@@ -1941,6 +1943,41 @@ def _load_selection_authority(
         if row["track"] not in _TRACKS or type(row["stochastic"]) is not bool:
             raise SelectionAuthorityError(
                 f"method {method_id} track or stochasticity is invalid"
+            )
+        execution_scope = row["execution_scope"]
+        applicability_reason = row["applicability_reason"]
+        if execution_scope not in {
+            "same_input_required",
+            "external_reference_only",
+            "historical_not_run",
+            "not_applicable",
+        }:
+            raise SelectionAuthorityError(
+                f"method {method_id} execution scope is invalid"
+            )
+        if execution_scope == "same_input_required" and (
+            row["track"] != "same_input" or applicability_reason is not None
+        ):
+            raise SelectionAuthorityError(
+                f"method {method_id} same-input execution scope is inconsistent"
+            )
+        if execution_scope == "external_reference_only" and (
+            row["track"] != "external_reference"
+            or applicability_reason is not None
+        ):
+            raise SelectionAuthorityError(
+                f"method {method_id} external-reference execution scope is inconsistent"
+            )
+        if execution_scope == "historical_not_run" and applicability_reason is not None:
+            raise SelectionAuthorityError(
+                f"method {method_id} historical execution scope is inconsistent"
+            )
+        if execution_scope == "not_applicable" and (
+            not isinstance(applicability_reason, str)
+            or re.fullmatch(r"[a-z][a-z0-9_]*", applicability_reason) is None
+        ):
+            raise SelectionAuthorityError(
+                f"method {method_id} applicability reason is invalid"
             )
         expected_seed_policy = "required" if row["stochastic"] else "not_applicable"
         if row["seed_policy"] != expected_seed_policy:

@@ -1326,6 +1326,8 @@ def build_competition_plan(
     }
     plan_configurations: list[AuthorizedConfiguration] = []
     for spec in registry.methods:
+        if spec.execution_scope != "same_input_required":
+            continue
         if spec.id in {"maskimpute", "capacity-matched-ae"}:
             configurations = authority_by_method.get(spec.id, ())
             if not configurations:
@@ -1338,6 +1340,8 @@ def build_competition_plan(
     ordinal = 0
     for binding in dataset_values:
         for spec in registry.methods:
+            if spec.execution_scope != "same_input_required":
+                continue
             configurations = tuple(
                 value for value in plan_configurations if value.method_id == spec.id
             )
@@ -4117,16 +4121,35 @@ class RepositoryAdapterDispatcher:
                 seed = request.model_seed
                 if seed is None:
                     return AdapterOutcome.failed(f"stochastic_seed_missing:{method_id}")
-                if method_id in {"alra", "saver"}:
-                    from .methods import run_alra, run_saver
+                if method_id == "alra":
+                    from .methods import run_alra
 
-                    function = run_alra if method_id == "alra" else run_saver
-                    execution = function(
+                    execution = run_alra(
                         request.method_spec,
                         request.method_input,
                         source_dir=source_dir,
                         rscript=executable,
                         seed=seed,
+                    )
+                elif method_id == "saver":
+                    from .methods import run_saver
+
+                    execution = run_saver(
+                        request.method_spec,
+                        request.method_input,
+                        source_dir=source_dir,
+                        rscript=executable,
+                        seed=seed,
+                        library_dir=(
+                            self.repository_root / "artifacts/envs/saver-r/library"
+                        ),
+                        lock_manifest=(
+                            self.repository_root / "environments/saver-r.lock.json"
+                        ),
+                        build_receipt=(
+                            self.repository_root
+                            / "environments/saver-r.build-receipt.json"
+                        ),
                     )
                 else:
                     from .methods import (

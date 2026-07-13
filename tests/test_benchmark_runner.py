@@ -348,11 +348,12 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
 
     plan = build_competition_plan(registry, datasets, _authority())
 
-    deterministic = {"observed", "d3impute", "sctsi"}
+    deterministic = {"observed"}
     ordinary = {
         method.id
         for method in registry.methods
-        if method.id not in {"maskimpute", "capacity-matched-ae"}
+        if method.execution_scope == "same_input_required"
+        and method.id not in {"maskimpute", "capacity-matched-ae"}
     }
     expected_per_dataset = (
         sum(1 if method_id in deterministic else 3 for method_id in ordinary) + 3 * 3
@@ -360,6 +361,11 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
     expected = len(datasets) * expected_per_dataset
     assert len(plan.entries) == expected
     assert len({entry.run_id for entry in plan.entries}) == expected
+    assert not {
+        method.id
+        for method in registry.methods
+        if method.execution_scope != "same_input_required"
+    } & {entry.method_id for entry in plan.entries}
     assert plan.input_hashes["dataset_manifest_sha256"] == SHA_A
     assert plan.input_hashes["method_registry_sha256"] == "2" * 64
     assert plan.input_hashes["implementation_source_sha256"] == (
