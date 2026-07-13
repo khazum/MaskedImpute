@@ -3664,22 +3664,13 @@ class AdapterExecutor(Protocol):
     def __call__(self, request: ExecutionRequest) -> AdapterOutcome: ...
 
 
-_EXECUTION_ENVIRONMENT_KEYS = (
-    "CUDA_VISIBLE_DEVICES",
-    "HOME",
-    "LD_LIBRARY_PATH",
-    "MKL_NUM_THREADS",
-    "OMP_NUM_THREADS",
-    "PATH",
-    "R_LIBS",
-    "R_LIBS_SITE",
-    "R_LIBS_USER",
-    "TMPDIR",
-)
-
-
-def _execution_environment_snapshot() -> tuple[tuple[str, str | None], ...]:
-    return tuple((key, os.environ.get(key)) for key in _EXECUTION_ENVIRONMENT_KEYS)
+def _execution_environment_snapshot() -> str:
+    return canonical_sha256(
+        {
+            "schema": "maskimpute-process-environment-v1",
+            "variables": sorted(os.environ.items()),
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3693,7 +3684,7 @@ class ExecutionEnvironmentRegistry:
     runtime_lock_path: Path | None
     benchmark_python: Path | None
     r_library_paths: tuple[tuple[str, tuple[str, ...]], ...]
-    execution_environment: tuple[tuple[str, str | None], ...]
+    execution_environment_sha256: str
     runtime_identity_snapshots: tuple[tuple[str, str], ...]
 
     @classmethod
@@ -3796,7 +3787,7 @@ class ExecutionEnvironmentRegistry:
                 ({} if r_library_paths is None else r_library_paths).items()
             )
         )
-        execution_environment = _execution_environment_snapshot()
+        execution_environment_sha256 = _execution_environment_snapshot()
         if runtime_lock_path is not None:
             if not isinstance(runtime_lock_path, Path):
                 raise TypeError("runtime_lock_path must be a pathlib.Path")
@@ -3858,7 +3849,7 @@ class ExecutionEnvironmentRegistry:
             ),
             "methods": receipt,
             "runtime_lock": runtime_receipt,
-            "execution_environment": execution_environment,
+            "execution_environment_sha256": execution_environment_sha256,
             "runtime_identity_snapshots": runtime_identity_snapshots,
         }
         return cls(
@@ -3873,7 +3864,7 @@ class ExecutionEnvironmentRegistry:
                 None if benchmark_python is None else benchmark_python.absolute()
             ),
             r_library_paths=normalized_r_libraries,
-            execution_environment=execution_environment,
+            execution_environment_sha256=execution_environment_sha256,
             runtime_identity_snapshots=runtime_identity_snapshots,
         )
 
@@ -3886,7 +3877,7 @@ class ExecutionEnvironmentRegistry:
     def revalidate_for(self, method_id: str) -> None:
         """Rehash the exact runtime and inherited execution environment for one row."""
 
-        if _execution_environment_snapshot() != self.execution_environment:
+        if _execution_environment_snapshot() != self.execution_environment_sha256:
             raise RunnerContractError(
                 "execution-affecting environment changed after plan construction"
             )

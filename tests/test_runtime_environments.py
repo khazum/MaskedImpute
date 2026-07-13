@@ -8,9 +8,11 @@ import sys
 
 import pytest
 
+import maskimpute_benchmark.runtime_environments as runtime_module
 from maskimpute_benchmark.runtime_environments import (
     RuntimeEnvironmentError,
     _directory_content_sha256,
+    _runtime_root_identity_sha256,
     build_runtime_environment_lock,
     load_runtime_environment_lock,
     probe_python_environment,
@@ -53,6 +55,10 @@ def test_python_probe_is_deterministic_and_package_sorted() -> None:
         == {"name", "version", "content_sha256", "file_count", "precedence"}
         for package in packages
     )
+    root_roles = {value["role"] for value in first["runtime_roots"]}
+    assert any(role.startswith("native-dependency-") for role in root_roles)
+    if Path("/proc/driver/nvidia/version").is_file():
+        assert {"gpu-driver-version", "nvidia-smi-executable"} <= root_roles
 
 
 def test_python_probe_executes_symlinked_virtual_environment_launcher(
@@ -144,6 +150,36 @@ def test_directory_inventory_hashes_symlinked_directory_target_tree(
     after, _count = _directory_content_sha256(root)
 
     assert before != after
+
+
+@pytest.mark.parametrize(
+    "function", (_directory_content_sha256, _runtime_root_identity_sha256)
+)
+def test_runtime_tree_rejects_mutation_of_already_visited_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    function,
+) -> None:
+    root = tmp_path / "root"
+    nested = root / "nested"
+    nested.mkdir(parents=True)
+    visited = root / "a.txt"
+    visited.write_text("before\n", encoding="utf-8")
+    (nested / "z.txt").write_text("nested\n", encoding="utf-8")
+    real_scandir = runtime_module.os.scandir
+    changed = False
+
+    def mutating_scandir(path):
+        nonlocal changed
+        if Path(path) == nested and not changed:
+            changed = True
+            visited.write_text("after\n", encoding="utf-8")
+        return real_scandir(path)
+
+    monkeypatch.setattr(runtime_module.os, "scandir", mutating_scandir)
+
+    with pytest.raises(RuntimeEnvironmentError, match="after it was visited"):
+        function(root)
 
 
 def test_lock_round_trip_and_exact_runtime_validation(tmp_path: Path) -> None:

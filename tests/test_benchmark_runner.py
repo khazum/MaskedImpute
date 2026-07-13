@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -826,7 +825,7 @@ def test_execution_environment_registry_revalidates_bytes_and_environment_per_ro
     )
     environments.revalidate_for("afmf")
     with monkeypatch.context() as context:
-        context.setenv("PATH", os.environ.get("PATH", "") + ":/runtime-drift")
+        context.setenv("OPENBLAS_NUM_THREADS", "publication-runtime-drift")
         with pytest.raises(RunnerContractError, match="environment changed"):
             environments.revalidate_for("afmf")
     environments.revalidate_for("afmf")
