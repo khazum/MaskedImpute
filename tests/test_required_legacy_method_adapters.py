@@ -14,7 +14,11 @@ import pandas as pd
 import pytest
 
 import maskimpute_benchmark.methods as benchmark_methods
-from maskimpute_benchmark.methods import load_method_registry, prepare_method_input
+from maskimpute_benchmark.methods import (
+    SourceSpec,
+    load_method_registry,
+    prepare_method_input,
+)
 from maskimpute_benchmark.methods.observed import AdapterUnavailableError
 from maskimpute_benchmark.methods.sccr import (
     _SCCR_GRAPH_RECONSTRUCTION,
@@ -71,6 +75,85 @@ def _cached_source(name: str) -> Path:
     return source
 
 
+def _fake_pinned_spec(tmp_path: Path, method_id: str):
+    source = tmp_path / f"{method_id}-source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "test@example.org"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.name", "Test"], check=True
+    )
+    (source / "method.py").write_text("pass\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "method.py"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "pin"], check=True)
+    remote = "https://example.org/pinned.git"
+    subprocess.run(
+        ["git", "-C", str(source), "remote", "add", "origin", remote],
+        check=True,
+    )
+    revision = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    spec = replace(
+        _registry().by_id(method_id),
+        source=SourceSpec(
+            kind="git",
+            url=remote,
+            revision=revision,
+            tree=tree,
+            cache_path="unused",
+            freeze_binding=None,
+        ),
+    )
+    return source, spec
+
+
+def _fake_cpu_sccr_launcher(tmp_path: Path) -> Path:
+    launcher = tmp_path / "fake-cpu-sccr"
+    launcher.write_text(
+        f"""#!{sys.executable}
+from pathlib import Path
+import sys
+import numpy as np
+
+requested = sys.argv[17]
+device = "cpu" if requested == "auto" else requested
+values = np.load(sys.argv[6], allow_pickle=False)
+np.save(Path(sys.argv[7]), values, allow_pickle=False)
+receipt = {{
+    "device": device,
+    "graph_contract_revision": {SCCR_GRAPH_CONTRACT_REVISION!r},
+    "graph_contract_sha256": {SCCR_GRAPH_CONTRACT_SHA256!r},
+    "graph_contract_url": "https://github.com/Junseok0207/scFP.git",
+    "numpy_version": str(np.__version__),
+    "python_version": sys.version.split()[0],
+    "sccr_module": str(Path(sys.argv[5]) / "scCR.py"),
+    "torch_num_threads": "3",
+    "torch_version": "2.4.1",
+}}
+Path(sys.argv[8]).write_text(
+    "".join(f"{{key}}\\t{{receipt[key]}}\\n" for key in sorted(receipt)),
+    encoding="utf-8",
+)
+""",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    return launcher
+
+
 def _fake_scsdae_launcher(tmp_path: Path, mode: str) -> Path:
     launcher = tmp_path / f"fake-scsdae-{mode}"
     launcher.write_text(
@@ -82,6 +165,10 @@ import numpy as np
 mode = {mode!r}
 driver = sys.argv[4]
 if "adapter probe expected" in driver:
+    if mode == "kernel_probe_failure":
+        print("MASKIMPUTE_LEGACY_GPU_KERNEL_INCOMPATIBLE gpu=/gpu:0")
+        print("first-gpu0-kernel-failed", file=sys.stderr)
+        raise SystemExit(9)
     print("probe-ok")
     raise SystemExit(0)
 if mode == "run_failure":
@@ -130,7 +217,7 @@ def test_required_legacy_configs_match_pinned_defaults() -> None:
         complete_relation_weight=0.05,
         soft_propagation_weight=0.99,
         final_blend_weight=0.01,
-        device="cuda:0",
+        device=None,
     )
     assert SCSDaeConfig() == SCSDaeConfig(
         batch_size=256,
@@ -433,6 +520,53 @@ def test_sccr_real_pinned_tiny_smoke_when_torch_environment_is_available(
     assert "upstream_parameter_override" in codes
 
 
+def test_sccr_default_device_uses_cpu_when_selected_executable_has_no_cuda(
+    tmp_path: Path,
+) -> None:
+    method_input = _method_input(cells=10, genes=7)
+    source, spec = _fake_pinned_spec(tmp_path, "sccr")
+    launcher = _fake_cpu_sccr_launcher(tmp_path)
+
+    execution = run_sccr(
+        spec,
+        method_input,
+        source_dir=source,
+        python_executable=launcher,
+        seed=42,
+        config=SCCRConfig(neighbors=3, gene_neighbors=1, iterations=1),
+        work_root=tmp_path,
+    )
+
+    assert execution.command is not None
+    assert execution.command[-1] == "auto"
+    assert dict(execution.environment_receipt)["device"] == "cpu"
+    assert spec.resources.gpu_mode == "required"
+
+
+def test_sccr_default_device_uses_cuda_in_supported_selected_executable(
+    tmp_path: Path,
+) -> None:
+    python = Path("/tmp/maskimpute-supported/bin/python")
+    if not python.is_file():
+        pytest.skip("supported CUDA executable is absent")
+    source = _cached_source("sccr")
+    method_input = _method_input(cells=10, genes=7)
+
+    execution = run_sccr(
+        _registry().by_id("sccr"),
+        method_input,
+        source_dir=source,
+        python_executable=python,
+        seed=42,
+        config=SCCRConfig(neighbors=3, gene_neighbors=1, iterations=1),
+        work_root=tmp_path,
+    )
+
+    assert dict(execution.environment_receipt)["device"] == "cuda:0"
+    assert execution.command is not None
+    assert execution.command[-1] == "auto"
+
+
 def test_scsdae_missing_environment_returns_full_source_attempt_receipt(
     tmp_path: Path,
 ) -> None:
@@ -505,6 +639,45 @@ def test_scsdae_failed_run_receipt_retains_probe_and_run_evidence(
     assert b"run-stderr" in error.stderr
     assert attempt.stdout_sha256 == error.stdout_sha256
     assert attempt.stderr_sha256 == error.stderr_sha256
+
+
+def test_scsdae_gpu0_kernel_probe_failure_uses_canonical_retained_receipt(
+    tmp_path: Path,
+) -> None:
+    method_input = _method_input(cells=8, genes=6)
+    source, spec = _fake_pinned_spec(tmp_path, "scsdae")
+    launcher = _fake_scsdae_launcher(tmp_path, "kernel_probe_failure")
+
+    with pytest.raises(SCSDaeUnavailableError) as captured:
+        run_scsdae(
+            spec,
+            method_input,
+            source_dir=source,
+            python_executable=launcher,
+            seed=42,
+            config=replace(
+                SCSDaeConfig(),
+                autoencoder_iterations=1,
+                pretrain_iterations=1,
+                gpu_index=0,
+            ),
+            work_root=tmp_path,
+        )
+
+    error = captured.value
+    attempt = error.attempt_receipt
+    assert error.reason_code == "legacy_gpu_kernel_incompatible"
+    assert attempt.reason_code == "legacy_gpu_kernel_incompatible"
+    assert attempt.probe_command == error.command
+    assert attempt.run_command is None
+    assert attempt.probe_stdout_sha256 == hashlib.sha256(
+        b"MASKIMPUTE_LEGACY_GPU_KERNEL_INCOMPATIBLE gpu=/gpu:0\n"
+    ).hexdigest()
+    assert attempt.probe_stderr_sha256 == hashlib.sha256(
+        b"first-gpu0-kernel-failed\n"
+    ).hexdigest()
+    assert attempt.run_stdout_sha256 == hashlib.sha256(b"").hexdigest()
+    assert attempt.run_stderr_sha256 == hashlib.sha256(b"").hexdigest()
 
 
 def test_scsdae_malformed_shape_is_wrapped_with_complete_attempt_receipt(

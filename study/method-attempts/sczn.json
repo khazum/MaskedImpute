@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "method_id": "sczn",
+  "audit_date": "2026-07-12",
+  "source": {
+    "url": "https://github.com/A-uo/scZN.git",
+    "revision": "ab3dfd01497809e8a24b638539c0680f8aa80580",
+    "tree": "240b09c753794a04c06a98753482faf4062d8e02",
+    "checkout_status": "pristine"
+  },
+  "files": {
+    "README.md": "4e9ebcad10188e6363f98d77e517d83b6df81b274941a027e2189afdb51fc19e",
+    "scZN.ipynb": "edbdd5e431dbd8582be05377b05dc6ebc37875cb02da93661c030763dda75e85"
+  },
+  "declared_dependencies": {
+    "torch": "2.3.0",
+    "numpy": "1.26.4",
+    "pandas": "2.2.1"
+  },
+  "license_evidence": {
+    "status": "NOASSERTION",
+    "license_file": null,
+    "readme_license_statement": null,
+    "redistribution_permission_inferred": false
+  },
+  "packaging_evidence": {
+    "implementation_container": "dataset_specific_notebook",
+    "callable_entrypoint": null,
+    "command_line_entrypoint": null,
+    "package_manifest": null,
+    "hard_coded_input_paths": true,
+    "hard_coded_output_path": true,
+    "seed_contract": null
+  },
+  "truth_free_evidence": {
+    "cell_type_labels_required": true,
+    "label_derived_expression_prior": true,
+    "supervised_classification_loss": true,
+    "unsupervised_same_input_path_found": false
+  },
+  "output_evidence": {
+    "writes_labeled_csv": true,
+    "copies_observed_positive_entries": true,
+    "runtime_identifier_validation": false,
+    "reusable_output_contract": false
+  },
+  "outcome": "unavailable",
+  "reason_code": "upstream_not_packaged_as_callable_method"
+}

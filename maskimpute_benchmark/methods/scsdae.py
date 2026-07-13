@@ -80,6 +80,27 @@ if not gpu_available:
     raise RuntimeError(
         "MASKIMPUTE_LEGACY_GPU_UNAVAILABLE: frozen method resources require a GPU"
     )
+try:
+    probe_graph = tf.Graph()
+    with probe_graph.as_default():
+        with tf.device("/gpu:0"):
+            probe_value = tf.matmul(
+                tf.constant([[1.0]], dtype=tf.float32),
+                tf.constant([[1.0]], dtype=tf.float32),
+            )
+        probe_config = tf.ConfigProto(allow_soft_placement=False)
+        with tf.Session(graph=probe_graph, config=probe_config) as probe_session:
+            observed_probe = probe_session.run(probe_value)
+    if observed_probe.shape != (1, 1) or float(observed_probe[0, 0]) != 1.0:
+        raise RuntimeError("logical GPU0 matrix probe returned an invalid value")
+except Exception:
+    print(
+        "MASKIMPUTE_LEGACY_GPU_KERNEL_INCOMPATIBLE gpu=/gpu:0",
+        file=sys.stderr,
+        flush=True,
+    )
+    raise
+print("MASKIMPUTE_SCSDAE_PREFLIGHT gpu0_kernel=ok", flush=True)
 """
 
 
@@ -349,10 +370,14 @@ def _legacy_failure_reason(error: AdapterUnavailableError) -> AdapterUnavailable
             stdout=error.stdout,
             stderr=error.stderr,
         )
-    if b"CUBLAS_STATUS_EXECUTION_FAILED" in combined or b"cuda_timer.cc" in combined:
+    if (
+        b"MASKIMPUTE_LEGACY_GPU_KERNEL_INCOMPATIBLE" in combined
+        or b"CUBLAS_STATUS_EXECUTION_FAILED" in combined
+        or b"cuda_timer.cc" in combined
+    ):
         return AdapterUnavailableError(
             "legacy_gpu_kernel_incompatible",
-            "TensorFlow 1.12/CUDA 9.2 exposed the registry-required GPU but failed its first legacy cuBLAS operation",
+            "TensorFlow 1.12 exposed the registry-required logical GPU0 but failed the exact first matrix kernel probe",
             command=error.command,
             stdout=error.stdout,
             stderr=error.stderr,

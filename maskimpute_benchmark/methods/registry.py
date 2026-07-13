@@ -24,6 +24,7 @@ from .base import (
 
 
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
+_SAFE_REASON = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
 _GIT_OBJECT = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _DOI = re.compile(r"10\.[0-9]{4,9}/[-._;()/:A-Za-z0-9]+\Z")
@@ -46,12 +47,22 @@ _SOURCE_POLICIES = frozenset(
 _INTEGRATION_STATUSES = frozenset(
     {"implemented", "pending", "pending_legacy_attempt", "unavailable"}
 )
+_EXECUTION_SCOPES = frozenset(
+    {
+        "same_input_required",
+        "external_reference_only",
+        "historical_not_run",
+        "not_applicable",
+    }
+)
 _METHOD_KEYS = frozenset(
     {
         "id",
         "display_name",
         "role",
         "track",
+        "execution_scope",
+        "applicability_reason",
         "input_scale",
         "output_scale",
         "stochastic",
@@ -70,6 +81,16 @@ _METHOD_KEYS = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
+class MethodPlanEntry:
+    """Minimal immutable scheduling decision derived from the method registry."""
+
+    method_id: str
+    execution_scope: str
+    applicability_reason: str | None
+    executable: bool
+
+
+@dataclass(frozen=True, slots=True)
 class MethodRegistry:
     """Immutable ordered method denominator."""
 
@@ -85,6 +106,19 @@ class MethodRegistry:
             if spec.id == method_id:
                 return spec
         raise KeyError(method_id)
+
+    def execution_plan(self) -> tuple[MethodPlanEntry, ...]:
+        """Return the closed scheduling/applicability plan in registry order."""
+
+        return tuple(
+            MethodPlanEntry(
+                method_id=spec.id,
+                execution_scope=spec.execution_scope,
+                applicability_reason=spec.applicability_reason,
+                executable=spec.executable,
+            )
+            for spec in self.methods
+        )
 
 
 def _reject_constant(value: str) -> None:
@@ -343,6 +377,53 @@ def _parse_method(value: object) -> MethodSpec:
         raise MethodContractError(
             f"method {method_id} track must be same_input or external_reference"
         )
+    execution_scope = data["execution_scope"]
+    if execution_scope not in _EXECUTION_SCOPES:
+        raise MethodContractError(
+            f"method {method_id} execution_scope must be one of {sorted(_EXECUTION_SCOPES)}"
+        )
+    applicability_reason = _string(
+        data["applicability_reason"],
+        f"method {method_id} applicability_reason",
+        nullable=True,
+    )
+    if applicability_reason is not None and not _SAFE_REASON.fullmatch(
+        applicability_reason
+    ):
+        raise MethodContractError(
+            f"method {method_id} applicability_reason must be a safe reason code"
+        )
+    if execution_scope == "same_input_required":
+        if track != "same_input":
+            raise MethodContractError(
+                f"method {method_id} same_input_required scope requires same_input track"
+            )
+        if applicability_reason is not None:
+            raise MethodContractError(
+                f"method {method_id} executable scope applicability_reason must be null"
+            )
+    elif execution_scope == "external_reference_only":
+        if track != "external_reference":
+            raise MethodContractError(
+                f"method {method_id} external_reference_only scope requires external_reference track"
+            )
+        if applicability_reason is not None:
+            raise MethodContractError(
+                f"method {method_id} executable scope applicability_reason must be null"
+            )
+    elif execution_scope == "historical_not_run":
+        if track != "same_input":
+            raise MethodContractError(
+                f"method {method_id} historical_not_run scope requires same_input track"
+            )
+        if applicability_reason is not None:
+            raise MethodContractError(
+                f"method {method_id} historical_not_run applicability_reason must be null"
+            )
+    elif applicability_reason is None:
+        raise MethodContractError(
+            f"method {method_id} not_applicable scope requires applicability_reason"
+        )
     for field in ("input_scale", "output_scale"):
         if data[field] not in _SCALES:
             raise MethodContractError(
@@ -404,6 +485,8 @@ def _parse_method(value: object) -> MethodSpec:
         display_name=display_name,
         role=role,
         track=track,
+        execution_scope=execution_scope,
+        applicability_reason=applicability_reason,
         input_scale=data["input_scale"],
         output_scale=data["output_scale"],
         stochastic=stochastic,
@@ -518,6 +601,7 @@ def verify_cached_method_sources(
 
 
 __all__ = [
+    "MethodPlanEntry",
     "MethodRegistry",
     "load_method_registry",
     "verify_cached_method_sources",

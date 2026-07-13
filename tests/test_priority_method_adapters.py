@@ -5,6 +5,7 @@ import importlib
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import anndata as ad
@@ -14,7 +15,11 @@ import pytest
 from scipy.stats import boxcox
 
 import maskimpute_benchmark.methods as benchmark_methods
-from maskimpute_benchmark.methods import load_method_registry, prepare_method_input
+from maskimpute_benchmark.methods import (
+    SourceSpec,
+    load_method_registry,
+    prepare_method_input,
+)
 from maskimpute_benchmark.methods.observed import AdapterUnavailableError
 
 
@@ -81,6 +86,83 @@ def _cached_source(source_name: str) -> Path:
     if not source_dir.is_dir():
         pytest.skip(f"ignored pinned-source cache is absent: {source_name}")
     return source_dir
+
+
+def _fake_pinned_source(tmp_path: Path, method_id: str):
+    source = tmp_path / f"{method_id}-source"
+    source.mkdir()
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "test@example.org"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.name", "Test"], check=True
+    )
+    (source / "method.py").write_text("pass\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "method.py"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "pin"], check=True)
+    remote = "https://example.org/pinned.git"
+    subprocess.run(
+        ["git", "-C", str(source), "remote", "add", "origin", remote],
+        check=True,
+    )
+    revision = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tree = subprocess.run(
+        ["git", "-C", str(source), "rev-parse", "HEAD^{tree}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return source, replace(
+        _registry().by_id(method_id),
+        source=SourceSpec(
+            kind="git",
+            url=remote,
+            revision=revision,
+            tree=tree,
+            cache_path="unused",
+            freeze_binding=None,
+        ),
+    )
+
+
+def _fake_negative_afmf_launcher(tmp_path: Path) -> Path:
+    launcher = tmp_path / "fake-negative-afmf"
+    launcher.write_text(
+        f"""#!{sys.executable}
+from pathlib import Path
+import sys
+import numpy as np
+
+values = np.load(sys.argv[6], allow_pickle=False)
+output = np.ones_like(values, dtype=np.float64)
+output[0, 0] = -0.25
+output[1, 1] = -2.5
+np.save(Path(sys.argv[7]), output, allow_pickle=False)
+receipt = {{
+    "afmf_module": str(Path(sys.argv[5]) / "runafMF.py"),
+    "numpy_version": str(np.__version__),
+    "pandas_version": "2.2.1",
+    "python_version": sys.version.split()[0],
+    "sklearn_version": "1.5.0",
+}}
+Path(sys.argv[8]).write_text(
+    "".join(f"{{key}}\\t{{receipt[key]}}\\n" for key in sorted(receipt)),
+    encoding="utf-8",
+)
+print("negative-native-output")
+print("negative-native-stderr", file=sys.stderr)
+""",
+        encoding="utf-8",
+    )
+    launcher.chmod(0o755)
+    return launcher
 
 
 def _assert_snapshot(snapshot, method_id: str, method_input, scale: str) -> None:
@@ -348,6 +430,35 @@ def test_real_pinned_afmf_tiny_smoke(tmp_path: Path) -> None:
     assert "upstream_iteration_override" in {
         event.code for event in execution.compatibility_log
     }
+
+
+def test_afmf_negative_native_output_fails_closed_with_bound_diagnostics(
+    tmp_path: Path,
+) -> None:
+    method_input = _method_input(cells=100, genes=100)
+    source, spec = _fake_pinned_source(tmp_path, "afmf")
+    launcher = _fake_negative_afmf_launcher(tmp_path)
+
+    with pytest.raises(AdapterUnavailableError) as captured:
+        afmf_adapter.run_afmf(
+            spec,
+            method_input,
+            source_dir=source,
+            python_executable=launcher,
+            seed=42,
+            config=afmf_adapter.AFMFConfig(iterations=2),
+            work_root=tmp_path,
+        )
+
+    error = captured.value
+    assert error.reason_code == "upstream_negative_native_output"
+    assert error.detail == "afMF native output negative_count=2 minimum=-2.5"
+    assert error.command is not None
+    assert error.stdout == b"negative-native-output\n"
+    assert error.stderr == (
+        b"negative-native-stderr\n"
+        b"MASKIMPUTE_AFMF_NATIVE_OUTPUT negative_count=2 minimum=-2.5\n"
+    )
 
 
 def test_real_pinned_d3impute_tiny_smoke_is_fixed_seed_reproducible(

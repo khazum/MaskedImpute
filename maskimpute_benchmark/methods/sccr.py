@@ -99,6 +99,8 @@ torch.manual_seed(seed)
 torch.set_num_threads(3)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed)
+if device_name == "auto":
+    device_name = "cuda:0" if torch.cuda.is_available() else "cpu"
 if device_name.startswith("cuda:") and not torch.cuda.is_available():
     raise RuntimeError("requested scCR CUDA device is unavailable")
 device = torch.device(device_name)
@@ -189,7 +191,7 @@ class SCCRConfig:
     complete_relation_weight: float = 0.05
     soft_propagation_weight: float = 0.99
     final_blend_weight: float = 0.01
-    device: str = "cuda:0"
+    device: str | None = None
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -213,8 +215,12 @@ class SCCRConfig:
                 or not 0.0 <= float(value) <= 1.0
             ):
                 raise ValueError(f"{name} must be finite and in [0, 1]")
-        if self.device != "cpu" and re.fullmatch(r"cuda:[0-9]+", self.device) is None:
-            raise ValueError("device must be cpu or an explicit cuda:<index>")
+        if (
+            self.device is not None
+            and self.device != "cpu"
+            and re.fullmatch(r"cuda:[0-9]+", self.device) is None
+        ):
+            raise ValueError("device must be null, cpu, or an explicit cuda:<index>")
 
 
 def reconstructed_sccr_knn_dense(
@@ -376,7 +382,7 @@ def run_sccr(
         ),
         CompatibilityEvent(
             "upstream_defaults",
-            f"k={config.neighbors}, k_col={config.gene_neighbors}, sym={config.symmetric_final_graph}, iter={config.iterations}, alpha={config.complete_relation_weight}, beta={config.soft_propagation_weight}, gamma={config.final_blend_weight}, device={config.device}",
+            f"k={config.neighbors}, k_col={config.gene_neighbors}, sym={config.symmetric_final_graph}, iter={config.iterations}, alpha={config.complete_relation_weight}, beta={config.soft_propagation_weight}, gamma={config.final_blend_weight}, device={'auto' if config.device is None else config.device}",
         ),
         CompatibilityEvent(
             "seed_binding",
@@ -384,7 +390,7 @@ def run_sccr(
         ),
         CompatibilityEvent(
             "resource_behavior",
-            "truth-free direct entrypoint retains pinned main.py torch.set_num_threads(3) within the registry ceiling of eight CPU cores",
+            "the selected executable uses cuda:0 only when its own torch.cuda.is_available() is true and otherwise uses CPU; truth-free direct entrypoint retains pinned main.py torch.set_num_threads(3) within the registry ceiling",
         ),
         CompatibilityEvent(
             "output_convention",
@@ -426,7 +432,7 @@ def run_sccr(
             repr(float(config.complete_relation_weight)),
             repr(float(config.soft_propagation_weight)),
             repr(float(config.final_blend_weight)),
-            config.device,
+            "auto" if config.device is None else config.device,
         )
         result = execute_pinned_command(
             spec,

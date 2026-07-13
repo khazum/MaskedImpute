@@ -13,6 +13,7 @@ from scipy import sparse
 
 from maskimpute_benchmark.methods import (
     MethodContractError,
+    MethodPlanEntry,
     build_method_status_table,
     canonical_run_record_bytes,
     load_method_registry,
@@ -45,7 +46,18 @@ MANDATORY_METHODS = {
     "sccr",
     "scgacl",
     "sctacl",
+    "sczn",
     "scsdae",
+    "d3impute",
+    "sctsi",
+}
+
+REQUIRED_SAME_INPUT_METHODS = MANDATORY_METHODS - {
+    "scimpute",
+    "wedge",
+    "scgacl",
+    "sctacl",
+    "sczn",
     "d3impute",
     "sctsi",
 }
@@ -119,6 +131,148 @@ def test_tracked_registry_declares_complete_prespecified_denominator() -> None:
     assert registry.by_id("d3impute").track == "external_reference"
     assert registry.by_id("sctsi").track == "external_reference"
     assert registry.by_id("scsdae").integration_status == "pending_legacy_attempt"
+
+
+def test_execution_plan_separates_required_external_historical_and_inapplicable() -> (
+    None
+):
+    registry = load_method_registry(METHODS_PATH)
+    plan = {entry.method_id: entry for entry in registry.execution_plan()}
+
+    assert set(plan) == MANDATORY_METHODS
+    assert all(isinstance(entry, MethodPlanEntry) for entry in plan.values())
+    assert {
+        method_id
+        for method_id, entry in plan.items()
+        if entry.execution_scope == "same_input_required"
+    } == REQUIRED_SAME_INPUT_METHODS
+    assert all(plan[method_id].executable for method_id in REQUIRED_SAME_INPUT_METHODS)
+    assert {
+        method_id
+        for method_id, entry in plan.items()
+        if entry.execution_scope == "external_reference_only"
+    } == {"d3impute", "sctsi"}
+    assert plan["d3impute"].executable
+    assert plan["sctsi"].executable
+    assert plan["scimpute"].execution_scope == "historical_not_run"
+    assert plan["wedge"].execution_scope == "historical_not_run"
+    assert not plan["scimpute"].executable
+    assert not plan["wedge"].executable
+    assert plan["scgacl"].execution_scope == "not_applicable"
+    assert plan["scgacl"].applicability_reason == (
+        "upstream_no_dataset_general_truth_free_configuration"
+    )
+    assert plan["sctacl"].execution_scope == "not_applicable"
+    assert plan["sctacl"].applicability_reason == (
+        "upstream_incomplete_no_full_count_imputation_output"
+    )
+    assert plan["sczn"].execution_scope == "not_applicable"
+    assert plan["sczn"].applicability_reason == (
+        "upstream_not_packaged_as_callable_method"
+    )
+    assert not plan["scgacl"].executable
+    assert not plan["sctacl"].executable
+    assert not plan["sczn"].executable
+
+
+def test_sczn_source_attempt_receipt_binds_packaging_license_labels_and_output() -> (
+    None
+):
+    registry = load_method_registry(METHODS_PATH)
+    spec = registry.by_id("sczn")
+    receipt = json.loads(
+        Path("study/method-attempts/sczn.json").read_text(encoding="utf-8")
+    )
+
+    assert spec.source.revision == "ab3dfd01497809e8a24b638539c0680f8aa80580"
+    assert spec.source.tree == "240b09c753794a04c06a98753482faf4062d8e02"
+    assert spec.license.status == "NOASSERTION"
+    assert receipt["source"] == {
+        "url": spec.source.url,
+        "revision": spec.source.revision,
+        "tree": spec.source.tree,
+        "checkout_status": "pristine",
+    }
+    assert receipt["outcome"] == "unavailable"
+    assert receipt["reason_code"] == "upstream_not_packaged_as_callable_method"
+    assert receipt["license_evidence"]["status"] == "NOASSERTION"
+    assert receipt["packaging_evidence"]["callable_entrypoint"] is None
+    assert receipt["packaging_evidence"]["implementation_container"] == (
+        "dataset_specific_notebook"
+    )
+    assert receipt["truth_free_evidence"]["cell_type_labels_required"] is True
+    assert receipt["truth_free_evidence"]["supervised_classification_loss"] is True
+    assert receipt["output_evidence"]["writes_labeled_csv"] is True
+    assert receipt["output_evidence"]["runtime_identifier_validation"] is False
+
+
+def test_scgimpute_discovery_receipt_records_dated_public_source_search() -> None:
+    receipt = json.loads(
+        Path("study/method-attempts/scgimpute.json").read_text(encoding="utf-8")
+    )
+
+    assert receipt["method_id"] == "scgimpute"
+    assert receipt["paper"]["doi"] == "10.1016/j.compbiolchem.2025.108856"
+    assert receipt["paper"]["publication"] == {
+        "journal": "Computational Biology and Chemistry",
+        "volume": "121",
+        "article": "108856",
+        "date": "2026-04",
+    }
+    assert receipt["source_search"]["search_date"] == "2026-07-12"
+    assert receipt["source_search"]["public_repository"] is None
+    assert receipt["registry_disposition"] == "not_added_to_execution_registry"
+    assert receipt["outcome"] == "unavailable"
+    assert receipt["reason_code"] == "public_source_not_located"
+
+
+def test_execution_scope_corrects_sctacl_scale_and_sccr_resource_mode() -> None:
+    registry = load_method_registry(METHODS_PATH)
+
+    assert registry.by_id("sctacl").output_scale == "method_native_normalized"
+    assert registry.by_id("sccr").resources.gpu_required is True
+    assert registry.by_id("sccr").resources.max_gpu_gib == 14
+    assert registry.by_id("sccr").resources.gpu_mode == "required"
+    assert registry.by_id("saver").resources.gpu_mode == "forbidden"
+    assert registry.by_id("scsdae").resources.gpu_mode == "required"
+
+
+@pytest.mark.parametrize(
+    ("scope", "reason", "message"),
+    [
+        ("external_reference_only", None, "external_reference"),
+        ("not_applicable", None, "applicability_reason"),
+        ("same_input_required", "not_really", "applicability_reason"),
+        ("invented_scope", None, "execution_scope"),
+    ],
+)
+def test_registry_rejects_inconsistent_execution_applicability(
+    tmp_path: Path,
+    scope: str,
+    reason: str | None,
+    message: str,
+) -> None:
+    payload = _registry_payload()
+    methods = payload["methods"]
+    assert isinstance(methods, list)
+    observed = next(item for item in methods if item["id"] == "observed")
+    observed["execution_scope"] = scope
+    observed["applicability_reason"] = reason
+
+    with pytest.raises(MethodContractError, match=message):
+        load_method_registry(_write_registry(tmp_path, payload))
+
+
+def test_status_table_uses_nonexecution_scope_before_integration_readiness() -> None:
+    registry = load_method_registry(METHODS_PATH)
+    rows = {row.method_id: row for row in build_method_status_table(registry, ())}
+
+    assert rows["scimpute"].status == "historical_not_run"
+    assert rows["scimpute"].reason is None
+    assert rows["scgacl"].status == "not_applicable"
+    assert rows["scgacl"].reason == (
+        "upstream_no_dataset_general_truth_free_configuration"
+    )
 
 
 def test_every_method_declares_source_license_citation_environment_and_budget() -> None:

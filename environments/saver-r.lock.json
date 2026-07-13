@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "environment_id": "saver-r",
+  "r_version": "4.6.1",
+  "installed_library_sha256": "322f92768dc7a9df5f347965cffb19a87541abe7cae9aa39efa7416f9a2da2f3",
+  "build_receipt_sha256": "4b2a8a1dee6465801a800bece066bd0d34ea6c737d5d8b641a824ee187d2e6a9",
+  "packages": [
+    {
+      "package": "codetools",
+      "version": "0.2-20",
+      "url": "https://github.com/cran/codetools/archive/60bc8a4ad86e9af626e57eb79c3aae3ed03a9a3d.tar.gz",
+      "sha256": "c6a9102451cddbb6f238d1587004c8fcad3aaf2b422ba2a7857048fc09cef1af"
+    },
+    {
+      "package": "iterators",
+      "version": "1.0.14",
+      "url": "https://github.com/cran/iterators/archive/2715fa5c57242ed6c7b70ee8d97f8cf4a386824f.tar.gz",
+      "sha256": "48ab915bb2aca825cc4ae934414585cab748b33b17f4f9f8456b1c27f50f6efb"
+    },
+    {
+      "package": "foreach",
+      "version": "1.5.2",
+      "url": "https://github.com/cran/foreach/archive/d4bac0edb0db3ab7e5ee7eab172f1bfe0fa0c0b7.tar.gz",
+      "sha256": "385b420dd99b2f9685fed3a2af6c270ebcc76cd7acf34314d0ecc1599f7847d5"
+    },
+    {
+      "package": "lattice",
+      "version": "0.22-9",
+      "url": "https://github.com/cran/lattice/archive/8c2c68398636ed97a2f29c5cba878fb1a3cd0675.tar.gz",
+      "sha256": "1f5f47ec0f2ea1453ef954082d574af7348fab4fb5ce7dfd5cb60e2488cc9b18"
+    },
+    {
+      "package": "Matrix",
+      "version": "1.7-5",
+      "url": "https://github.com/cran/Matrix/archive/96f735418be2cd873ebdb2d57935d5ad76cdc0b7.tar.gz",
+      "sha256": "7141db45ec81d3f04b6d25dfbc8cbaa116522de0744ebff9542d9099287ba095"
+    },
+    {
+      "package": "Rcpp",
+      "version": "1.1.2",
+      "url": "https://github.com/cran/Rcpp/archive/a76e1c9bab241d008940626641cf7ad48cbc7383.tar.gz",
+      "sha256": "046ab2f0bda27b3c8b44cce39593402dd7699ae5d2003bc6169ce663073e500a"
+    },
+    {
+      "package": "RcppEigen",
+      "version": "0.3.4.0.2",
+      "url": "https://github.com/cran/RcppEigen/archive/79a4e57807600c4184f2d4503ea979f560ac9d64.tar.gz",
+      "sha256": "aaa80b3497f8bc1676e69876e65c44caa608060e19a4a32be78b865a9040ccec"
+    },
+    {
+      "package": "shape",
+      "version": "1.4.6.1",
+      "url": "https://github.com/cran/shape/archive/398818969b4503a2b4435ddb1ace081985e402f4.tar.gz",
+      "sha256": "36035825e99d4f57b67df7cbe71ac1e3fe79882eccdd085641a37cf4f931c4d1"
+    },
+    {
+      "package": "survival",
+      "version": "3.8-9",
+      "url": "https://github.com/cran/survival/archive/c5e5fa1f0b0f009dd6510b968483bf03590c1061.tar.gz",
+      "sha256": "99e65be4354bae625343004cd28ea3602360f431b4fb88a6b24ae19c3be6c9a7"
+    },
+    {
+      "package": "doParallel",
+      "version": "1.0.17",
+      "url": "https://github.com/cran/doParallel/archive/e32f793639847b1711521ef2fb7b7eb87a6ac0de.tar.gz",
+      "sha256": "dc804b81b358e708807c89c2784124c16e90385ed33de3bcab8e2d711192cee1"
+    },
+    {
+      "package": "glmnet",
+      "version": "5.0",
+      "url": "https://github.com/cran/glmnet/archive/51f61a9819a79a9e3dbe3e88861cadfd23cc1828.tar.gz",
+      "sha256": "a4d7682a779242ad8d4c8dee4778ec5c5f365aa32d1fbe614d1306ddf2dac3d0"
+    }
+  ],
+  "upstream_saver": {
+    "package": "SAVER",
+    "version": "1.1.3",
+    "url": "https://github.com/mohuangx/SAVER.git",
+    "revision": "ad9bde51bffaa1413e57d88f15d2b452c6331253",
+    "tree": "76884afc63ef27d78ce929bd608b29dad2b0a0be"
+  }
+}

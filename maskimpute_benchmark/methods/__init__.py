@@ -67,6 +67,7 @@ from .observed import (
     verify_pinned_source,
 )
 from .registry import (
+    MethodPlanEntry,
     MethodRegistry,
     load_method_registry,
     verify_cached_method_sources,
@@ -378,6 +379,7 @@ __all__ = [
     "MethodContractError",
     "MethodInput",
     "MethodOutputSnapshot",
+    "MethodPlanEntry",
     "MethodRegistry",
     "MethodRunRecord",
     "MethodSpec",

@@ -86,6 +86,14 @@ class ResourceSpec:
     max_rss_gib: int | float
     max_gpu_gib: int | float
 
+    @property
+    def gpu_mode(self) -> str:
+        """Return the closed GPU scheduling mode used by the runner budget."""
+
+        if self.gpu_required:
+            return "required"
+        return "forbidden"
+
 
 @dataclass(frozen=True, slots=True)
 class MethodSpec:
@@ -95,6 +103,8 @@ class MethodSpec:
     display_name: str
     role: str
     track: str
+    execution_scope: str
+    applicability_reason: str | None
     input_scale: str
     output_scale: str
     stochastic: bool
@@ -108,6 +118,15 @@ class MethodSpec:
     source_policy: str
     integration_status: str
     integration_reason: str | None
+
+    @property
+    def executable(self) -> bool:
+        """Whether a planner may schedule this method in its declared scope."""
+
+        return self.execution_scope in {
+            "same_input_required",
+            "external_reference_only",
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -810,6 +829,9 @@ def build_method_status_table(
         elif method_records:
             status = "completed"
             reason = None
+        elif not spec.executable:
+            status = spec.execution_scope
+            reason = spec.applicability_reason
         else:
             status = spec.integration_status
             reason = spec.integration_reason

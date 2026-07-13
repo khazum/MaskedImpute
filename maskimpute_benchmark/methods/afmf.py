@@ -63,7 +63,7 @@ native = module.afMF(
     random_seed=seed,
 )
 output = np.asarray(native, dtype=np.float64).T
-if output.shape != counts.shape or not np.isfinite(output).all() or (output < 0).any():
+if output.shape != counts.shape or not np.isfinite(output).all():
     raise RuntimeError("afMF output is invalid")
 np.save(output_path, output, allow_pickle=False)
 receipt = {
@@ -242,6 +242,25 @@ def run_afmf(
             timeout_seconds=spec.resources.timeout_seconds,
         )
         output = read_npy_output(output_path)
+        if output.dtype.kind in {"i", "u", "f"}:
+            negative = output < 0
+            negative_count = int(np.count_nonzero(negative))
+            if negative_count:
+                minimum = format(float(np.min(output)), ".17g")
+                diagnostic = (
+                    "MASKIMPUTE_AFMF_NATIVE_OUTPUT "
+                    f"negative_count={negative_count} minimum={minimum}\n"
+                ).encode("ascii")
+                stderr = result.stderr
+                if stderr and not stderr.endswith(b"\n"):
+                    stderr += b"\n"
+                raise AdapterUnavailableError(
+                    "upstream_negative_native_output",
+                    f"afMF native output negative_count={negative_count} minimum={minimum}",
+                    command=command,
+                    stdout=result.stdout,
+                    stderr=stderr + diagnostic,
+                )
         receipt = read_environment_receipt(
             receipt_path,
             expected_keys=frozenset(

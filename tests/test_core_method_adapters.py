@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -17,6 +19,7 @@ import maskimpute_benchmark.methods.dca as dca_adapter
 import maskimpute_benchmark.methods.magic as magic_adapter
 import maskimpute_benchmark.methods.saver as saver_adapter
 from maskimpute_benchmark.methods import (
+    EnvironmentSpec,
     SourceSpec,
     load_method_registry,
     prepare_method_input,
@@ -60,6 +63,23 @@ from maskimpute_benchmark.methods.scvi import (
 METHODS_PATH = Path("study/methods.json")
 SOURCE_ROOT = Path("artifacts/method-sources")
 SOURCE_SHA = "d" * 64
+SAVER_LOCK_PATH = Path("environments/saver-r.lock.json")
+SAVER_BUILD_RECEIPT_PATH = Path("environments/saver-r.build-receipt.json")
+SAVER_LIBRARY_PATH = Path("/tmp/maskimpute-saver-r461/library")
+SAVER_PACKAGE_VERSIONS = {
+    "Matrix": "1.7-5",
+    "Rcpp": "1.1.2",
+    "RcppEigen": "0.3.4.0.2",
+    "codetools": "0.2-20",
+    "doParallel": "1.0.17",
+    "foreach": "1.5.2",
+    "glmnet": "5.0",
+    "iterators": "1.0.14",
+    "lattice": "0.22-9",
+    "shape": "1.4.6.1",
+    "survival": "3.8-9",
+    "SAVER": "1.1.3",
+}
 
 
 def _method_input(
@@ -453,11 +473,11 @@ def test_dca_binds_tensorflow_gpu_growth_and_receipts_it(
     assert "TF_FORCE_GPU_ALLOW_GROWTH=true" in compatibility["allocator_policy"]
 
 
-def test_core_adapter_registry_metadata_does_not_promote_unlocked_environments() -> (
+def test_core_adapter_registry_metadata_only_promotes_locked_saver_environment() -> (
     None
 ):
     registry = _registry()
-    for method_id in ("alra", "magic", "dca", "scvi", "saver"):
+    for method_id in ("alra", "magic", "dca", "scvi"):
         spec = registry.by_id(method_id)
         assert spec.integration_status == "pending"
         assert spec.integration_reason is not None
@@ -467,8 +487,49 @@ def test_core_adapter_registry_metadata_does_not_promote_unlocked_environments()
     assert "environment_lock_pending" in registry.by_id("alra").integration_reason
     assert "environment_lock_pending" in registry.by_id("magic").integration_reason
     assert "environment_lock_pending" in registry.by_id("dca").integration_reason
-    assert "environment_lock_pending" in registry.by_id("saver").integration_reason
     assert "requires_python_3_12_or_newer" in registry.by_id("scvi").integration_reason
+    saver = registry.by_id("saver")
+    assert saver.integration_status == "implemented"
+    assert saver.integration_reason == "locked_r461_real_tiny_smoke_passed"
+    assert saver.environment.status == "ready"
+    assert saver.environment.lock_sha256 == hashlib.sha256(
+        SAVER_LOCK_PATH.read_bytes()
+    ).hexdigest()
+
+
+def test_saver_lock_manifest_and_build_receipt_cover_complete_dependency_closure() -> (
+    None
+):
+    manifest = json.loads(SAVER_LOCK_PATH.read_text(encoding="utf-8"))
+    packages = {item["package"]: item for item in manifest["packages"]}
+    receipt = json.loads(SAVER_BUILD_RECEIPT_PATH.read_text(encoding="utf-8"))
+
+    assert manifest["schema_version"] == 1
+    assert manifest["environment_id"] == "saver-r"
+    assert manifest["r_version"] == "4.6.1"
+    assert len(manifest["installed_library_sha256"]) == 64
+    assert manifest["build_receipt_sha256"] == hashlib.sha256(
+        SAVER_BUILD_RECEIPT_PATH.read_bytes()
+    ).hexdigest()
+    assert {name: item["version"] for name, item in packages.items()} == {
+        name: version
+        for name, version in SAVER_PACKAGE_VERSIONS.items()
+        if name != "SAVER"
+    }
+    assert all(item["url"].startswith("https://github.com/cran/") for item in packages.values())
+    assert all(len(item["sha256"]) == 64 for item in packages.values())
+    assert manifest["upstream_saver"] == {
+        "package": "SAVER",
+        "version": "1.1.3",
+        "url": "https://github.com/mohuangx/SAVER.git",
+        "revision": "ad9bde51bffaa1413e57d88f15d2b452c6331253",
+        "tree": "76884afc63ef27d78ce929bd608b29dad2b0a0be",
+    }
+    assert receipt["status"] == "real_tiny_smoke_passed"
+    assert receipt["installed_library_sha256"] == manifest[
+        "installed_library_sha256"
+    ]
+    assert receipt["package_versions"] == SAVER_PACKAGE_VERSIONS
 
 
 @pytest.mark.parametrize(
@@ -947,29 +1008,55 @@ def test_saver_missing_dependencies_are_a_failed_attempt_not_silent_replacement(
         pytest.skip("Rscript is unavailable")
     method_input = _method_input(cells=8, genes=6)
 
-    try:
-        execution = run_saver(
+    with pytest.raises(AdapterUnavailableError) as captured:
+        run_saver(
             _registry().by_id("saver"),
             method_input,
             source_dir=_cached_source("saver"),
             rscript=Path(rscript_value),
             seed=42,
+            library_dir=tmp_path / "missing-saver-library",
+            lock_manifest=SAVER_LOCK_PATH,
+            build_receipt=SAVER_BUILD_RECEIPT_PATH,
             work_root=tmp_path,
         )
-    except AdapterUnavailableError as error:
-        assert error.reason_code in {
-            "upstream_dependency_missing",
-            "upstream_nonzero_exit",
-        }
-        assert error.command is not None
-    else:
-        _assert_snapshot_bound(execution.snapshot, "saver", method_input)
-        _assert_evaluator_scales(execution, method_input)
+    assert captured.value.reason_code == "environment_library_missing"
+    assert captured.value.command is None
 
 
-def _has_saver_dependencies(rscript: str) -> bool:
+def test_saver_rejects_a_mutated_installed_library_before_execution(
+    tmp_path: Path,
+) -> None:
+    rscript_value = shutil.which("Rscript")
+    if rscript_value is None:
+        pytest.skip("Rscript is unavailable")
+    library_dir = tmp_path / "mutated-saver-library"
+    for package in SAVER_PACKAGE_VERSIONS:
+        (library_dir / package).mkdir(parents=True)
+    (library_dir / "SAVER" / "modified-code.R").write_text(
+        "stop('mutated')\n", encoding="utf-8"
+    )
+
+    with pytest.raises(AdapterUnavailableError) as captured:
+        run_saver(
+            _registry().by_id("saver"),
+            _method_input(cells=8, genes=6),
+            source_dir=_cached_source("saver"),
+            rscript=Path(rscript_value),
+            seed=42,
+            library_dir=library_dir,
+            lock_manifest=SAVER_LOCK_PATH,
+            build_receipt=SAVER_BUILD_RECEIPT_PATH,
+            work_root=tmp_path,
+        )
+    assert captured.value.reason_code == "environment_library_digest_mismatch"
+    assert captured.value.command is None
+
+
+def _has_saver_dependencies(rscript: str, library_dir: Path) -> bool:
     expression = (
-        'packages<-c("Matrix","doParallel","foreach","glmnet","iterators");'
+        f'.libPaths(c({str(library_dir)!r}, .Library));'
+        f"packages<-c({','.join(repr(name) for name in SAVER_PACKAGE_VERSIONS)});"
         "quit(status=!all(vapply(packages,requireNamespace,logical(1),quietly=TRUE)))"
     )
     result = subprocess.run(
@@ -984,16 +1071,32 @@ def test_real_pinned_saver_fixed_seed_is_reproducible_when_dependencies_exist(
     tmp_path: Path,
 ) -> None:
     rscript_value = shutil.which("Rscript")
-    if rscript_value is None or not _has_saver_dependencies(rscript_value):
+    if (
+        rscript_value is None
+        or not SAVER_LIBRARY_PATH.is_dir()
+        or not _has_saver_dependencies(rscript_value, SAVER_LIBRARY_PATH)
+    ):
         pytest.skip("SAVER dependency environment is unavailable")
     method_input = _method_input(cells=8, genes=6)
+    manifest_sha256 = hashlib.sha256(SAVER_LOCK_PATH.read_bytes()).hexdigest()
+    qualification_spec = replace(
+        _registry().by_id("saver"),
+        environment=EnvironmentSpec(
+            id="saver-r",
+            status="ready",
+            lock_sha256=manifest_sha256,
+        ),
+    )
     runs = [
         run_saver(
-            _registry().by_id("saver"),
+            qualification_spec,
             method_input,
             source_dir=_cached_source("saver"),
             rscript=Path(rscript_value),
             seed=42,
+            library_dir=SAVER_LIBRARY_PATH,
+            lock_manifest=SAVER_LOCK_PATH,
+            build_receipt=SAVER_BUILD_RECEIPT_PATH,
             work_root=tmp_path,
         )
         for _ in range(2)
@@ -1002,7 +1105,20 @@ def test_real_pinned_saver_fixed_seed_is_reproducible_when_dependencies_exist(
     assert runs[0].snapshot.matrix_sha256 == runs[1].snapshot.matrix_sha256
     np.testing.assert_array_equal(runs[0].snapshot.matrix, runs[1].snapshot.matrix)
     _assert_evaluator_scales(runs[0], method_input)
-    assert dict(runs[0].environment_receipt)["saver_version"] == "1.1.3"
+    receipt = dict(runs[0].environment_receipt)
+    assert receipt["manifest_sha256"] == manifest_sha256
+    assert receipt["installed_library_sha256"] == json.loads(
+        SAVER_LOCK_PATH.read_text(encoding="utf-8")
+    )["installed_library_sha256"]
+    assert receipt["build_receipt_sha256"] == hashlib.sha256(
+        SAVER_BUILD_RECEIPT_PATH.read_bytes()
+    ).hexdigest()
+    assert receipt["saver_library_dir"] == str(SAVER_LIBRARY_PATH.resolve())
+    for package, version in SAVER_PACKAGE_VERSIONS.items():
+        key = package.casefold() + "_version"
+        assert receipt[key] == version
+    assert runs[0].command is not None
+    assert all("install.packages" not in argument for argument in runs[0].command)
     assert "evaluator_scale_conversion" in [
         event.code for event in runs[0].compatibility_log
     ]

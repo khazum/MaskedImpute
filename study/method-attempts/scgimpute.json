@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "method_id": "scgimpute",
+  "paper": {
+    "title": "scGImpute: A hybrid BiLayer multi-head graph attention-based imputation framework for zero dropout in single-cell sequencing datasets",
+    "doi": "10.1016/j.compbiolchem.2025.108856",
+    "url": "https://www.sciencedirect.com/science/article/abs/pii/S1476927125005201",
+    "publication": {
+      "journal": "Computational Biology and Chemistry",
+      "volume": "121",
+      "article": "108856",
+      "date": "2026-04"
+    }
+  },
+  "source_search": {
+    "search_date": "2026-07-12",
+    "surfaces": [
+      "primary_paper_landing_page",
+      "github_repository_search",
+      "github_code_search",
+      "public_web_search"
+    ],
+    "queries": [
+      "10.1016/j.compbiolchem.2025.108856 source code",
+      "scGImpute GitHub",
+      "site:github.com scGImpute"
+    ],
+    "primary_paper_public_source_url": null,
+    "public_repository": null
+  },
+  "registry_disposition": "not_added_to_execution_registry",
+  "outcome": "unavailable",
+  "reason_code": "public_source_not_located"
+}
