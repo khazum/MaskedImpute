@@ -3676,6 +3676,7 @@ class ExecutionEnvironmentRegistry:
         *,
         runtime_lock_path: Path | None = None,
         benchmark_python: Path | None = None,
+        r_library_paths: Mapping[str, Sequence[Path]] | None = None,
     ) -> ExecutionEnvironmentRegistry:
         if not isinstance(repository_root, Path):
             raise TypeError("repository_root must be a pathlib.Path")
@@ -3742,17 +3743,18 @@ class ExecutionEnvironmentRegistry:
                     ),
                 }
                 continue
-            resolved = declared_path.resolve(strict=True)
-            metadata = resolved.stat()
-            if not stat.S_ISREG(metadata.st_mode) or not os.access(resolved, os.X_OK):
+            invocation = declared_path.absolute()
+            target = invocation.resolve(strict=True)
+            metadata = target.stat()
+            if not stat.S_ISREG(metadata.st_mode) or not os.access(invocation, os.X_OK):
                 raise RunnerContractError(
                     f"environment executable is not an executable file: {declared_path}"
                 )
-            entries.append((method_id, str(resolved)))
+            entries.append((method_id, str(invocation)))
             receipt[method_id] = {
                 "status": "ready",
                 "declared_path": display_path(declared_path),
-                "executable_sha256": _file_sha256(resolved),
+                "executable_sha256": _file_sha256(target),
             }
         runtime_lock_sha256: str | None = None
         runtime_receipt: dict[str, object] | None = None
@@ -3777,7 +3779,9 @@ class ExecutionEnvironmentRegistry:
             try:
                 runtime_lock = load_runtime_environment_lock(runtime_lock_path)
                 runtime_receipt = validate_runtime_environment_lock(
-                    runtime_lock, declarations
+                    runtime_lock,
+                    declarations,
+                    r_library_paths=r_library_paths,
                 )
             except RuntimeEnvironmentError as error:
                 raise RunnerContractError(str(error)) from error
@@ -4337,6 +4341,9 @@ def _run_competition_with_authority(
         environment_overrides,
         runtime_lock_path=_DEVELOPMENT_RUNTIME_LOCK_PATH,
         benchmark_python=Path(sys.executable),
+        r_library_paths={
+            "saver": (repository / "artifacts/envs/saver-r/library",)
+        },
     )
     plan = build_competition_plan(
         registry,

@@ -725,16 +725,22 @@ def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environmen
     assert unavailable.reason == "environment_executable_unavailable:magic"
     assert environments.executable_for("scvi") == (
         repository / "artifacts/envs/scvi-py312/bin/python"
-    ).resolve(strict=True)
+    ).absolute()
 
 
 def test_execution_environment_registry_binds_exact_runtime_lock(
     tmp_path: Path,
 ) -> None:
+    environment = tmp_path / "python-environment"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+        check=True,
+    )
+    python = environment / "bin/python"
     lock = build_runtime_environment_lock(
         {
-            "afmf": ("python", Path(sys.executable)),
-            "benchmark": ("python", Path(sys.executable)),
+            "afmf": ("python", python),
+            "benchmark": ("python", python),
         }
     )
     lock_path = tmp_path / "runtime-lock.json"
@@ -746,20 +752,26 @@ def test_execution_environment_registry_binds_exact_runtime_lock(
 
     environments = ExecutionEnvironmentRegistry.fixed(
         tmp_path,
-        {"afmf": Path(sys.executable)},
+        {"afmf": python},
         runtime_lock_path=lock_path,
-        benchmark_python=Path(sys.executable),
+        benchmark_python=python,
     )
 
     assert environments.runtime_lock_sha256 is not None
-    assert environments.executable_for("afmf") == Path(sys.executable).resolve()
+    assert environments.executable_for("afmf") == python.absolute()
 
 
 def test_execution_environment_registry_rejects_runtime_drift(
     tmp_path: Path,
 ) -> None:
+    environment = tmp_path / "python-environment"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+        check=True,
+    )
+    python = environment / "bin/python"
     lock = build_runtime_environment_lock(
-        {"benchmark": ("python", Path(sys.executable))}
+        {"benchmark": ("python", python)}
     )
     lock_path = tmp_path / "runtime-lock.json"
     lock_path.write_text(
@@ -771,9 +783,9 @@ def test_execution_environment_registry_rejects_runtime_drift(
     with pytest.raises(RunnerContractError, match="runtime IDs mismatch"):
         ExecutionEnvironmentRegistry.fixed(
             tmp_path,
-            {"afmf": Path(sys.executable)},
+            {"afmf": python},
             runtime_lock_path=lock_path,
-            benchmark_python=Path(sys.executable),
+            benchmark_python=python,
         )
 
 

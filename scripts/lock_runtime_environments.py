@@ -37,6 +37,13 @@ def _environment(value: str) -> tuple[str, Literal["python", "r"], Path]:
     return environment_id, kind, Path(raw_path)
 
 
+def _r_library(value: str) -> tuple[str, Path]:
+    environment_id, separator, raw_path = value.partition("=")
+    if not separator or not environment_id or not raw_path:
+        raise argparse.ArgumentTypeError("R library must be ID=/path")
+    return environment_id, Path(raw_path)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Probe selected runtime executables and write a canonical lock."
@@ -48,6 +55,14 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
         type=_environment,
         metavar="ID=KIND=EXECUTABLE",
+    )
+    parser.add_argument(
+        "--r-library",
+        action="append",
+        default=[],
+        type=_r_library,
+        metavar="ID=PATH",
+        help="selected isolated library path for an R environment; repeat in order",
     )
     return parser
 
@@ -72,6 +87,11 @@ def _write_exclusive(path: Path, value: object) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -81,8 +101,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if environment_id in environments:
             _parser().error(f"duplicate environment ID {environment_id}")
         environments[environment_id] = (kind, executable)
+    r_libraries: dict[str, list[Path]] = {}
+    for environment_id, path in arguments.r_library:
+        r_libraries.setdefault(environment_id, []).append(path)
     try:
-        lock = build_runtime_environment_lock(environments)
+        lock = build_runtime_environment_lock(
+            environments, r_library_paths=r_libraries
+        )
         _write_exclusive(arguments.output, lock)
     except (OSError, RuntimeEnvironmentError, ValueError) as error:
         print(json.dumps({"error": str(error)}, sort_keys=True), file=sys.stderr)
