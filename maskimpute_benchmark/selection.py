@@ -2723,6 +2723,43 @@ def _select_for_repository(
     *,
     require_clean: bool = True,
 ) -> SelectionReport:
+    if type(payload) is not dict:
+        raise SelectionAuthorityError(
+            "development result payload has missing or extra fields"
+        )
+    schema_version = payload.get("schema_version")
+    base_fields = {
+        "schema_version",
+        "dataset_manifest_sha256",
+        "count_score_manifest_sha256",
+        "retained_calibration_artifact_sha256",
+        "evaluation_manifest_sha256",
+        "records",
+        "orthogonal_intervals",
+        "result_sha256",
+    }
+    expected_fields = (
+        base_fields
+        if schema_version == 2
+        else {*base_fields, "revision_versions"}
+        if schema_version == 3
+        else base_fields
+    )
+    data = _exact_authority_mapping(
+        payload,
+        expected_fields,
+        "development result payload",
+    )
+    if schema_version not in {2, 3} or type(schema_version) is not int:
+        raise SelectionAuthorityError(
+            "development result schema_version must equal 2 or 3"
+        )
+    if schema_version == 3:
+        revision_versions = data["revision_versions"]
+        if revision_versions not in (["v28"], ["v28", "v29"]):
+            raise SelectionAuthorityError(
+                "development revision versions are incomplete or reordered"
+            )
     authority = _load_selection_authority(repository, require_clean=require_clean)
     if authority.retained_calibration.status != "ready":
         raise SelectionAuthorityError(
@@ -2751,22 +2788,6 @@ def _select_for_repository(
     if _file_sha256(count_score_path) != count_score_sha:
         raise SelectionAuthorityError("count-score manifest checksum mismatch")
 
-    data = _exact_authority_mapping(
-        payload,
-        {
-            "schema_version",
-            "dataset_manifest_sha256",
-            "count_score_manifest_sha256",
-            "retained_calibration_artifact_sha256",
-            "evaluation_manifest_sha256",
-            "records",
-            "orthogonal_intervals",
-            "result_sha256",
-        },
-        "development result payload",
-    )
-    if data["schema_version"] != 2 or type(data["schema_version"]) is not int:
-        raise SelectionAuthorityError("development result schema_version must equal 2")
     result_sha = _authority_sha(data["result_sha256"], "development result checksum")
     result_core = {key: value for key, value in data.items() if key != "result_sha256"}
     if _canonical_sha256(result_core) != result_sha:
@@ -2846,41 +2867,65 @@ def _select_for_repository(
         status,
         MappingProxyType(dataset_bindings),
     )
-    try:
-        from .evaluation_manifest import (
-            EvaluationManifestError,
-            validate_selection_evaluation_manifest,
-        )
+    if schema_version == 2:
+        try:
+            from .evaluation_manifest import (
+                EvaluationManifestError,
+                validate_selection_evaluation_manifest,
+            )
 
-        evaluation_evidence = validate_selection_evaluation_manifest(
-            repository, data, authority, status
-        )
-    except EvaluationManifestError as error:
-        raise SelectionAuthorityError(
-            f"development evaluation manifest failed validation: {error}"
-        ) from error
+            evaluation_evidence = validate_selection_evaluation_manifest(
+                repository, data, authority, status
+            )
+        except EvaluationManifestError as error:
+            raise SelectionAuthorityError(
+                f"development evaluation manifest failed validation: {error}"
+            ) from error
+        selection_authority = authority
+    else:
+        try:
+            from .revision_evaluation import (
+                RevisionEvaluationError,
+                validate_revision_selection_evaluation,
+            )
+
+            evaluation_evidence = validate_revision_selection_evaluation(
+                repository,
+                data,
+                data["revision_versions"][-1],
+                require_clean=require_clean,
+            )
+        except RevisionEvaluationError as error:
+            raise SelectionAuthorityError(
+                f"development revision evaluation failed validation: {error}"
+            ) from error
+        selection_authority = evaluation_evidence.authority
+        if not isinstance(selection_authority, SelectionAuthority):
+            raise SelectionAuthorityError(
+                "development revision evaluation returned invalid authority"
+            )
 
     report = _evaluate_development_candidates(
         data["records"],
-        authority.attempts,
-        authority.declarations,
+        selection_authority.attempts,
+        selection_authority.declarations,
         data["orthogonal_intervals"],
-        mechanisms=authority.mechanisms,
-        biological_ids=authority.biological_ids,
-        technical_views=authority.technical_views,
-        model_seeds=authority.model_seeds,
+        mechanisms=selection_authority.mechanisms,
+        biological_ids=selection_authority.biological_ids,
+        technical_views=selection_authority.technical_views,
+        model_seeds=selection_authority.model_seeds,
         required_orthogonal_endpoints=tuple(
-            policy.id for policy in authority.endpoint_policies
+            policy.id for policy in selection_authority.endpoint_policies
         ),
         dataset_bindings=MappingProxyType(dataset_bindings),
-        method_bindings=authority.method_bindings,
-        endpoint_policies=authority.endpoint_policies,
-        revision_policy=authority.revision_policy,
-        exclusions=authority.exclusions,
+        method_bindings=selection_authority.method_bindings,
+        endpoint_policies=selection_authority.endpoint_policies,
+        revision_policy=selection_authority.revision_policy,
+        exclusions=selection_authority.exclusions,
     )
     bindings = {
         relative.replace("/", "_").replace(".", "_") + "_sha256": digest
-        for relative, digest in authority.file_sha256.items()
+        for relative, digest in selection_authority.file_sha256.items()
     }
     bindings.update(
         {

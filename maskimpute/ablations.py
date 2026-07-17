@@ -643,6 +643,7 @@ def _fit_ablation_once(
     calibration_usage: str = "development_holdout",
     decoder: str = "scaled_gaussian",
     decoder_config: object | None = None,
+    structure_config: object | None = None,
 ):
     """Fit one development ablation from verified, truth-free score artifacts.
 
@@ -662,8 +663,10 @@ def _fit_ablation_once(
     trusted_spec, registry, registry_sha256 = _trusted_ablation_spec(spec)
     if decoder not in {"scaled_gaussian", "negative_binomial"}:
         raise ValueError("decoder must be scaled_gaussian or negative_binomial")
-    if decoder == "scaled_gaussian" and decoder_config is not None:
-        raise ValueError("scaled_gaussian does not accept decoder_config")
+    if decoder == "scaled_gaussian" and (
+        decoder_config is not None or structure_config is not None
+    ):
+        raise ValueError("scaled_gaussian does not accept decoder/structure config")
     if decoder == "negative_binomial" and trusted_spec.id != registry.reference.id:
         raise ValueError("negative_binomial is a reference-only development revision")
     if type(config) is not MaskImputeConfig:
@@ -671,25 +674,35 @@ def _fit_ablation_once(
     config = replace(config)
     if config.seed not in registry.model_seeds:
         raise ValueError("config seed is outside the tracked ablation seed panel")
+    mechanisms = {"symsim", "sergio", "sparsim", "semisynthetic"}
     if calibration_usage not in {
         "development_holdout",
         "retained_all_development",
     }:
         raise ValueError("calibration_usage is invalid")
-    if development_mechanism not in {
-        "symsim",
-        "sergio",
-        "sparsim",
-        "semisynthetic",
-    }:
-        raise ValueError("development_mechanism is outside the tracked panel")
-    allowed_biological_ids = (
-        {"draw-01", "draw-02"}
-        if calibration_usage == "development_holdout"
-        else {f"draw-{draw:02d}" for draw in range(1, 6)}
-    )
-    if development_biological_id not in allowed_biological_ids:
-        raise ValueError("development_biological_id is outside the tracked panel")
+    if calibration_usage == "development_holdout":
+        if development_mechanism not in mechanisms:
+            raise ValueError("development_mechanism is outside the tracked panel")
+        if development_biological_id not in {"draw-01", "draw-02"}:
+            raise ValueError("development_biological_id is outside the tracked panel")
+    else:
+        final_identity = (
+            development_mechanism in mechanisms
+            and development_biological_id
+            in {f"draw-{draw:02d}" for draw in range(1, 6)}
+        )
+        external_identity = (
+            development_mechanism
+            in {
+                "cite-seq-cbmc-rna-protein",
+                "tung-ipsc-ercc-bulk-replicates",
+            }
+            and development_biological_id == "external"
+        )
+        if not (final_identity or external_identity):
+            raise ValueError(
+                "retained-all-development inference identity is outside authority"
+            )
     resolved_config = resolve_training_config(config, trusted_spec)
 
     counts = validate_observed_counts(observed_counts)
@@ -714,7 +727,11 @@ def _fit_ablation_once(
             probability[observed_zero] = verified_calibration.transform(
                 direct_score[observed_zero]
             )
-            calibration_scope = "retained_all_development_for_final_inference"
+            calibration_scope = (
+                "retained_all_development_for_external_inference"
+                if development_biological_id == "external"
+                else "retained_all_development_for_final_inference"
+            )
         elif development_mechanism == "symsim":
             probability[observed_zero] = (
                 verified_calibration.transform_for_development_holdout(
@@ -813,22 +830,40 @@ def _fit_ablation_once(
         )
     else:
         from maskimpute.nb_model import NegativeBinomialDecoderConfig
-        from maskimpute.train import train_v28
+        from maskimpute.train import train_v28, train_v29
 
         if type(decoder_config) is not NegativeBinomialDecoderConfig:
             raise TypeError(
                 "negative_binomial decoder_config must be an exact "
                 "NegativeBinomialDecoderConfig"
             )
-        v28_outcome = train_v28(
-            counts,
-            probability,
-            resolved_config,
-            device,
-            decoder_config=decoder_config,
-        )
-        outcome = v28_outcome.training
-        dispersion = v28_outcome.dispersion
+        if structure_config is None:
+            revised_outcome = train_v28(
+                counts,
+                probability,
+                resolved_config,
+                device,
+                decoder_config=decoder_config,
+            )
+            structure = None
+        else:
+            from maskimpute.structure import StructurePenaltyConfig
+
+            if type(structure_config) is not StructurePenaltyConfig:
+                raise TypeError(
+                    "structure_config must be an exact StructurePenaltyConfig"
+                )
+            revised_outcome = train_v29(
+                counts,
+                probability,
+                resolved_config,
+                device,
+                decoder_config=decoder_config,
+                structure_config=structure_config,
+            )
+            structure = revised_outcome.structure
+        outcome = revised_outcome.training
+        dispersion = revised_outcome.dispersion
 
     selected_device = next(outcome.model.parameters()).device
     expression = torch.as_tensor(
@@ -883,7 +918,11 @@ def _fit_ablation_once(
             .astype(np.float64)
         )
         invalid_decoder_message = "negative-binomial decoder produced invalid counts"
-        method_version = "v28-development-candidate-single-run"
+        method_version = (
+            "v28-development-candidate-single-run"
+            if structure_config is None
+            else "v29-development-candidate-single-run"
+        )
         primary_loss_name = (
             "artificially_masked_observed_positive_negative_binomial_nll"
         )
@@ -907,6 +946,17 @@ def _fit_ablation_once(
             "gene_dispersion_sha256": hashlib.sha256(dispersion_bytes).hexdigest(),
             "validation_positive_values_excluded_from_dispersion": True,
         }
+        if structure_config is not None:
+            assert structure is not None
+            decoder_diagnostics["structure_preservation"] = {
+                "variable_gene_panel": "observed_count_variance_fixed_before_training",
+                "neighborhood": "observed_input_knn_fixed_before_training",
+                "variable_gene_sha256": structure.variable_gene_sha256,
+                "neighborhood_sha256": structure.neighborhood_sha256,
+                "config": structure_config.to_dict(),
+                "truth_or_evaluation_labels_used": False,
+                "additional_trainable_parameters": 0,
+            }
     if not np.all(np.isfinite(denoised_counts)) or np.any(denoised_counts < 0):
         raise FloatingPointError(invalid_decoder_message)
     output_counts = apply_ablation_output(
