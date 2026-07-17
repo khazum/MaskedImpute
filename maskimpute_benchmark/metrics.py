@@ -248,6 +248,23 @@ def _pairwise_distance_distortion(
     return _metric(np.mean(values), n_pairs)
 
 
+def _mean_gene_wasserstein_distance(
+    imputed: np.ndarray, truth: np.ndarray
+) -> MetricValue:
+    """Average exact empirical 1-Wasserstein distance across genes.
+
+    Both matrices contain the same number of equally weighted cells.  In one
+    dimension, pairing their sorted values therefore gives the exact empirical
+    1-Wasserstein distance for a gene without a fitted bandwidth or a random
+    projection.
+    """
+
+    sorted_imputed = np.sort(imputed, axis=0)
+    sorted_truth = np.sort(truth, axis=0)
+    per_gene = np.mean(np.abs(sorted_imputed - sorted_truth), axis=0)
+    return _metric(np.mean(per_gene), truth.shape[1])
+
+
 def _reconstruction_metric_names() -> list[str]:
     names: list[str] = []
     for subset in _SUBSETS:
@@ -258,6 +275,7 @@ def _reconstruction_metric_names() -> list[str]:
             "mean_distortion",
             "variance_distortion",
             "false_positive_expression",
+            "mean_gene_wasserstein_distance",
             "corr_err",
             "n_corr_genes",
             "cell_correlation_distortion",
@@ -343,6 +361,9 @@ def reconstruction_metrics(
     )
     result["variance_distortion"] = _metric(
         np.mean(variance_difference), truth_array.shape[1]
+    )
+    result["mean_gene_wasserstein_distance"] = _mean_gene_wasserstein_distance(
+        imputed_array, truth_array
     )
 
     pre_zero_n = int(masks["pre_dropout_zero"].sum())

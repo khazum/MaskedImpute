@@ -175,6 +175,27 @@ def test_reconstruction_distortion_and_false_positive_rate_are_complete(
     assert result["false_positive_expression"] == MetricValue(1.0, 3, None)
 
 
+def test_mean_gene_wasserstein_distance_is_hand_calculated() -> None:
+    truth = np.array([[0.0, 0.0], [2.0, 4.0]])
+    observed = truth.copy()
+    imputed = np.array([[1.0, 1.0], [1.0, 3.0]])
+
+    result = reconstruction_metrics(imputed, observed, truth)
+
+    # Each gene has empirical 1-Wasserstein distance 1 on the common scale.
+    assert result["mean_gene_wasserstein_distance"] == MetricValue(1.0, 2, None)
+
+
+def test_mean_gene_wasserstein_distance_ignores_cell_order() -> None:
+    truth = np.array([[0.0, 4.0], [2.0, 0.0], [1.0, 3.0]])
+    observed = truth.copy()
+    imputed = truth[[2, 0, 1]]
+
+    result = reconstruction_metrics(imputed, observed, truth)
+
+    assert result["mean_gene_wasserstein_distance"] == MetricValue(0.0, 2, None)
+
+
 def test_truth_zero_and_nonzero_estimands_include_ambient_observed_positive() -> None:
     truth = np.array([[0.0, 2.0], [0.0, 3.0]])
     observed = np.array([[5.0, 2.0], [0.0, 0.0]])
