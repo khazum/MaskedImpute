@@ -3666,6 +3666,12 @@ class CheckpointStore:
             raise RunnerContractError(
                 "checkpoint retained matrix dimensions are invalid"
             )
+        if run.get("observed_zero_count") > (
+            run["retained_cell_count"] * run["retained_gene_count"]
+        ):
+            raise RunnerContractError(
+                "checkpoint observed_zero_count exceeds retained matrix entries"
+            )
         calibration_artifact = run.get("calibration_artifact_sha256")
         if calibration_artifact is None:
             if (

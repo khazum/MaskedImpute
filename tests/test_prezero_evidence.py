@@ -565,6 +565,58 @@ def test_development_checkpoint_rejects_semantically_invalid_score_payload(
         store.load(plan)
 
 
+def test_checkpoint_rejects_observed_zero_count_larger_than_retained_matrix(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    entry = _entry(prepared, "observed")
+    plan = CompetitionPlan(
+        schema_version=1,
+        input_hashes={
+            "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+            "implementation_source_sha256": implementation_source_sha256(),
+        },
+        entries=(entry,),
+        plan_sha256="c" * 64,
+    )
+    execution = run_observed(
+        load_method_registry(METHODS).by_id("observed"), prepared.method_input
+    )
+    attempt = evaluate_adapter_outcome(
+        entry,
+        prepared,
+        AdapterOutcome.completed(
+            execution,
+            runtime_seconds=1,
+            peak_rss_bytes=1,
+            peak_gpu_bytes=0,
+        ),
+    )
+    store = CheckpointStore(tmp_path / "impossible-zero-count")
+    store.append(plan, None, attempt, DevelopmentBudget())
+
+    def mutate(payload: dict[str, object]) -> None:
+        record = payload["records"][0]
+        record["run"]["observed_zero_count"] = 9
+        evidence = record["p_pre_zero_evidence"]
+        evidence["overall"]["n"] = 9
+        for metric in evidence["overall"]["metrics"].values():
+            metric["n"] = 9
+        for stratum_type in (
+            "library_size_quartiles",
+            "truth_expression_bins",
+        ):
+            first = evidence["strata"][stratum_type][0]
+            first["n"] += 3
+            for metric in first["metrics"].values():
+                metric["n"] = first["n"]
+        _rebind_score_payload(payload)
+
+    _rewrite_checkpoint(store, mutate)
+    with pytest.raises(RunnerContractError, match="observed_zero_count"):
+        store.load(plan)
+
+
 def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
     tmp_path: Path,
 ) -> None:
