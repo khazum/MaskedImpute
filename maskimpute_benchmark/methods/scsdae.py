@@ -184,7 +184,10 @@ runpy.run_path(str(source_script), run_name="__main__")
 upstream_output = output_dir / "autoencoder_r.csv"
 if not upstream_output.is_file():
     raise RuntimeError("pinned scSDAE did not write autoencoder_r.csv")
-native = pd.read_csv(upstream_output, header=None).values
+# Pinned pandas.to_csv writes its default integer column header even though
+# upstream disables only the row index.  Consume that serialization header;
+# treating it as data adds one synthetic cell to every result.
+native = pd.read_csv(upstream_output, header=0).values
 native = np.asarray(native, dtype=np.float64)
 source_frame = pd.read_csv(input_path, index_col=0)
 expected_shape = (source_frame.shape[1], source_frame.shape[0])
@@ -214,7 +217,7 @@ receipt_path.write_text(
 
 @dataclass(frozen=True, slots=True)
 class SCSDaeConfig:
-    """Exact pinned CLI defaults plus the required legacy GPU index."""
+    """Exact scientific defaults plus the study host's physical GPU binding."""
 
     batch_size: int = 256
     autoencoder_iterations: int = 2000
@@ -225,7 +228,7 @@ class SCSDaeConfig:
     l1_regularization: float = 0.0
     l2_regularization: float = 0.0
     gene_scale: bool = False
-    gpu_index: int = 3
+    gpu_index: int = 0
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -536,6 +539,10 @@ def run_scsdae(
             "a source-verified 30-second subprocess preflight requires Python 3.6/3.7, TensorFlow 1.12.0, Keras 2.2.4, and a TensorFlow-visible GPU; modern or hanging legacy stacks fail closed",
         ),
         CompatibilityEvent(
+            "gpu_device_binding",
+            f"pinned CLI default GPU_SET=3 is an operational device ordinal, not a scientific hyperparameter; the study binds physical GPU index {config.gpu_index} and the subprocess sees it as logical GPU0",
+        ),
+        CompatibilityEvent(
             "seed_binding",
             "adapter wrapper sets Python, NumPy, and TensorFlow graph seeds before executing the exact pinned script via runpy",
         ),
@@ -550,6 +557,10 @@ def run_scsdae(
         CompatibilityEvent(
             "output_convention",
             "pinned save_imputation retains observed log-counts-per-million entries, fills only zeros from decoder output, and serializes four decimal places; adapter does not clip or overwrite values",
+        ),
+        CompatibilityEvent(
+            "upstream_serialization",
+            "adapter consumes the integer column header written by pinned pandas.DataFrame.to_csv(index=None); header values are metadata and never matrix data",
         ),
         CompatibilityEvent(
             "evaluator_scale_conversion",

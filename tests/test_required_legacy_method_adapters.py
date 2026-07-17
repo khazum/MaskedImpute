@@ -229,7 +229,7 @@ def test_required_legacy_configs_match_pinned_defaults() -> None:
         l1_regularization=0.0,
         l2_regularization=0.0,
         gene_scale=False,
-        gpu_index=3,
+        gpu_index=0,
     )
 
 
@@ -601,6 +601,41 @@ def test_scsdae_missing_environment_returns_full_source_attempt_receipt(
     assert error.attempt_receipt.stderr_sha256 == error.stderr_sha256
     assert error.attempt_receipt.probe_command is None
     assert error.attempt_receipt.run_command is None
+
+
+def test_scsdae_real_pinned_gpu0_tiny_smoke_parses_upstream_header(
+    tmp_path: Path,
+) -> None:
+    python = Path("/tmp/maskimpute-scsdae-conda/bin/python")
+    if not python.is_file():
+        pytest.skip("exact legacy scSDAE environment is absent")
+    method_input = _method_input(cells=16, genes=10)
+
+    execution = run_scsdae(
+        _registry().by_id("scsdae"),
+        method_input,
+        source_dir=_cached_source("scsdae"),
+        python_executable=python,
+        seed=42,
+        config=SCSDaeConfig(
+            batch_size=16,
+            autoencoder_iterations=1,
+            pretrain_iterations=1,
+            gpu_index=0,
+        ),
+        work_root=tmp_path,
+    )
+
+    _assert_snapshot(execution.snapshot, "scsdae", method_input)
+    assert execution.snapshot.shape == (16, 10)
+    receipt = dict(execution.environment_receipt)
+    assert receipt["gpu_available"] == "true"
+    assert receipt["gpu_index"] == "0"
+    assert receipt["tensorflow_version"] == "1.12.0"
+    assert receipt["keras_version"] == "2.2.4"
+    assert "gpu_device_binding" in {
+        event.code for event in execution.compatibility_log
+    }
 
 
 def test_scsdae_failed_run_receipt_retains_probe_and_run_evidence(
