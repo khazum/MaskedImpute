@@ -3266,11 +3266,16 @@ def balanced_null_split(
         for rank, index in enumerate(ordered):
             selected[index] = rank % 2 == 0
     digest = hashlib.sha256()
-    digest.update(b"maskimpute-null-de-balanced-split-v2\0")
+    # The assignment is keyed by stable cell ID, so its public identity must
+    # not depend on an otherwise equivalent AnnData row ordering.  Canonicalize
+    # the receipt in ID order while returning assignments in caller order.
+    digest.update(b"maskimpute-null-de-balanced-split-v3\0")
     digest.update(entropy_sha256.encode("ascii"))
-    for cell_id, stratum, assignment in zip(
-        identifiers, groups, selected.tolist(), strict=True
-    ):
+    canonical_assignments = sorted(
+        zip(identifiers, groups, selected.tolist(), strict=True),
+        key=lambda value: value[0],
+    )
+    for cell_id, stratum, assignment in canonical_assignments:
         digest.update(b"\0")
         digest.update(cell_id.encode("utf-8"))
         digest.update(b"\0")
