@@ -2740,11 +2740,19 @@ def _selection_downstream_denominators(
             record.get("biological_id"),
             record.get("technical_view"),
             record.get("dataset_id"),
+            record.get("dataset_sha256"),
             record.get("method"),
+            record.get("method_sha256"),
             record.get("model_seed"),
         )
-        if any(not isinstance(value, str) or not value for value in key[:5]) or (
-            key[5] is not None and (isinstance(key[5], bool) or type(key[5]) is not int)
+        if (
+            any(not isinstance(value, str) or not value for value in key[:7])
+            or not _SHA256.fullmatch(str(key[4]))
+            or not _SHA256.fullmatch(str(key[6]))
+            or (
+                key[7] is not None
+                and (isinstance(key[7], bool) or type(key[7]) is not int)
+            )
         ):
             raise SelectionAuthorityError(
                 f"selection record {index} denominator identity is invalid"

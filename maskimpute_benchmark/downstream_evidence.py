@@ -29,6 +29,7 @@ from .downstream_evaluation import (
     terminal_downstream_endpoints,
 )
 from .protocol import canonical_sha256
+from .runner import AuthorizedConfiguration
 from .schema import benchmark_dataset_sha256, validate_benchmark_dataset
 
 
@@ -471,6 +472,59 @@ def bind_evaluator_dataset(
     )
 
 
+def bind_prepared_evaluator_panel(
+    dataset_bindings: Sequence[object],
+    prepared_datasets: Mapping[str, object],
+    *,
+    dataset_root: str | Path,
+) -> tuple[DatasetEvidenceBinding, ...]:
+    """Bridge runner-prepared QC identities to persisted evaluator H5AD files."""
+
+    if isinstance(dataset_bindings, (str, bytes)) or not isinstance(
+        dataset_bindings, Sequence
+    ):
+        raise TypeError("dataset_bindings must be a sequence")
+    if not isinstance(prepared_datasets, Mapping):
+        raise TypeError("prepared_datasets must be a mapping")
+    root = Path(dataset_root).absolute()
+    result: list[DatasetEvidenceBinding] = []
+    seen: set[str] = set()
+    for index, runner_binding in enumerate(dataset_bindings):
+        dataset_id = getattr(runner_binding, "dataset_id", None)
+        output_path = getattr(runner_binding, "output_path", None)
+        if (
+            not isinstance(dataset_id, str)
+            or not dataset_id
+            or dataset_id in seen
+            or not isinstance(output_path, str)
+            or not output_path
+        ):
+            raise DownstreamEvidenceError(f"runner dataset binding {index} is invalid")
+        relative = PurePosixPath(output_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise DownstreamEvidenceError("runner dataset output path is unsafe")
+        prepared = prepared_datasets.get(dataset_id)
+        audit = getattr(prepared, "audit", None)
+        retained_cell_ids = getattr(audit, "retained_cell_ids", None)
+        if retained_cell_ids is None:
+            raise DownstreamEvidenceError(
+                f"prepared evaluator identity is absent for {dataset_id}"
+            )
+        bound = bind_evaluator_dataset(
+            root.joinpath(*relative.parts),
+            retained_cell_ids=retained_cell_ids,
+        )
+        if bound.dataset_id != dataset_id:
+            raise DownstreamEvidenceError("runner and evaluator dataset IDs differ")
+        result.append(bound)
+        seen.add(dataset_id)
+    if not result or tuple(value.dataset_id for value in result) != tuple(
+        getattr(value, "dataset_id", None) for value in dataset_bindings
+    ):
+        raise DownstreamEvidenceError("prepared evaluator panel order differs")
+    return tuple(result)
+
+
 @dataclass(frozen=True, slots=True)
 class DownstreamPlanEntry:
     ordinal: int
@@ -487,6 +541,7 @@ class DownstreamPlanEntry:
     configuration_id: str
     configuration_sha256: str
     configuration_kind: str
+    method_artifact_sha256: str
     method_input_sha256: str
     retained_cell_ids_sha256: str
     status: str
@@ -515,6 +570,7 @@ class DownstreamPlanEntry:
             "configuration_id": self.configuration_id,
             "configuration_sha256": self.configuration_sha256,
             "configuration_kind": self.configuration_kind,
+            "method_artifact_sha256": self.method_artifact_sha256,
             "method_input_sha256": self.method_input_sha256,
             "retained_cell_ids_sha256": self.retained_cell_ids_sha256,
             "status": self.status,
@@ -545,6 +601,7 @@ class DownstreamEvidencePlan:
     source_manifest_file_sha256: str
     source_manifest_payload_sha256: str
     datasets: tuple[DatasetEvidenceBinding, ...]
+    configurations: tuple[AuthorizedConfiguration, ...]
     entries: tuple[DownstreamPlanEntry, ...]
     plan_sha256: str
 
@@ -557,6 +614,7 @@ class DownstreamEvidencePlan:
             "source_manifest_file_sha256": self.source_manifest_file_sha256,
             "source_manifest_payload_sha256": self.source_manifest_payload_sha256,
             "datasets": [value.to_dict() for value in self.datasets],
+            "configurations": [value.to_dict() for value in self.configurations],
             "entries": [value.to_dict() for value in self.entries],
             "planned_denominator_count": len(self.entries),
         }
@@ -574,6 +632,7 @@ _PLAN_FIELDS = frozenset(
         "source_manifest_file_sha256",
         "source_manifest_payload_sha256",
         "datasets",
+        "configurations",
         "entries",
         "planned_denominator_count",
         "plan_sha256",
@@ -593,6 +652,66 @@ _DATASET_BINDING_FIELDS = frozenset(
         "trajectory_binding_sha256",
     }
 )
+_CONFIGURATION_FIELDS = frozenset(
+    {
+        "method_id",
+        "configuration_id",
+        "kind",
+        "configuration_sha256",
+        "payload",
+        "requires_count_score",
+        "requires_calibration",
+    }
+)
+
+
+def _method_artifact_sha256(configuration: AuthorizedConfiguration) -> str:
+    """Derive the selection-authority artifact from one sealed configuration."""
+
+    if not isinstance(configuration, AuthorizedConfiguration):
+        raise TypeError("configuration must be an AuthorizedConfiguration")
+    payload = dict(configuration.payload)
+    if configuration.kind != "registry":
+        return configuration.configuration_sha256
+    method = payload.get("method")
+    if (
+        configuration.configuration_id != "registry-default"
+        or set(payload) != {"schema", "method"}
+        or payload.get("schema")
+        != "maskimpute-registry-default-configuration-v1"
+        or not isinstance(method, Mapping)
+        or method.get("id") != configuration.method_id
+    ):
+        raise DownstreamEvidenceError(
+            "registry configuration method payload differs"
+        )
+    return canonical_sha256(dict(method))
+
+
+def _configuration_from_payload(value: object) -> AuthorizedConfiguration:
+    if not isinstance(value, Mapping) or set(value) != _CONFIGURATION_FIELDS:
+        raise DownstreamEvidenceError("persisted configuration schema differs")
+    payload = value.get("payload")
+    if not isinstance(payload, Mapping):
+        raise DownstreamEvidenceError("persisted configuration payload is invalid")
+    try:
+        configuration = AuthorizedConfiguration.create(
+            method_id=value.get("method_id"),
+            configuration_id=value.get("configuration_id"),
+            kind=value.get("kind"),
+            payload=dict(payload),
+            requires_count_score=value.get("requires_count_score"),
+            requires_calibration=value.get("requires_calibration"),
+            configuration_sha256=value.get("configuration_sha256"),
+        )
+    except (TypeError, ValueError) as error:
+        raise DownstreamEvidenceError(
+            "persisted configuration authority is invalid"
+        ) from error
+    if configuration.to_dict() != dict(value):
+        raise DownstreamEvidenceError("persisted configuration authority differs")
+    _method_artifact_sha256(configuration)
+    return configuration
 
 
 def _dataset_binding_from_payload(value: object) -> DatasetEvidenceBinding:
@@ -802,10 +921,14 @@ def _validated_plan_entry(
     source_kind: str,
     source_root: Path,
     datasets: Mapping[str, DatasetEvidenceBinding],
+    configurations: Mapping[
+        tuple[str, str, str, str], AuthorizedConfiguration
+    ],
 ) -> DownstreamPlanEntry:
     run = source.payload.get("run")
     if not isinstance(run, Mapping):
         raise DownstreamEvidenceError("source record run is malformed")
+    method_id = _text(run.get("method_id"), "method_id")
     dataset_id = _text(run.get("dataset_id"), "run dataset_id")
     binding = datasets.get(dataset_id)
     if binding is None:
@@ -826,6 +949,25 @@ def _validated_plan_entry(
         raise DownstreamEvidenceError("run retained cell identity differs")
     if run.get("retained_gene_count") != len(binding.gene_ids):
         raise DownstreamEvidenceError("run retained gene count differs")
+
+    configuration_id = _text(run.get("configuration_id"), "configuration_id")
+    configuration_sha256 = _digest(
+        run.get("configuration_sha256"), "configuration checksum"
+    )
+    configuration_kind = _text(
+        run.get("configuration_kind"), "configuration_kind"
+    )
+    configuration = configurations.get(
+        (
+            method_id,
+            configuration_id,
+            configuration_kind,
+            configuration_sha256,
+        )
+    )
+    if configuration is None:
+        raise DownstreamEvidenceError("run configuration authority differs")
+    method_artifact_sha256 = _method_artifact_sha256(configuration)
 
     status = _text(run.get("status"), "run status")
     if status not in _RUN_STATUSES:
@@ -933,18 +1075,17 @@ def _validated_plan_entry(
         source_record_path=source.path,
         source_record_sha256=source.sha256,
         run_id=_text(run.get("run_id"), "run_id"),
-        method_id=_text(run.get("method_id"), "method_id"),
+        method_id=method_id,
         dataset_id=dataset_id,
         source_dataset_sha256=source_dataset_sha256,
         mechanism=_text(run.get("mechanism"), "run mechanism"),
         biological_id=_text(run.get("biological_id"), "run biological_id"),
         technical_view=_text(run.get("technical_view"), "run technical_view"),
         model_seed=_optional_model_seed(run.get("model_seed")),
-        configuration_id=_text(run.get("configuration_id"), "configuration_id"),
-        configuration_sha256=_digest(
-            run.get("configuration_sha256"), "configuration checksum"
-        ),
-        configuration_kind=_text(run.get("configuration_kind"), "configuration_kind"),
+        configuration_id=configuration_id,
+        configuration_sha256=configuration_sha256,
+        configuration_kind=configuration_kind,
+        method_artifact_sha256=method_artifact_sha256,
         method_input_sha256=_digest(
             run.get("method_input_sha256"), "method input checksum"
         ),
@@ -966,6 +1107,7 @@ def build_downstream_evidence_plan(
     *,
     source_kind: str,
     datasets: Sequence[DatasetEvidenceBinding],
+    configurations: Sequence[AuthorizedConfiguration],
 ) -> DownstreamEvidencePlan:
     """Bind a sealed development checkpoint or final execution manifest."""
 
@@ -989,6 +1131,36 @@ def build_downstream_evidence_plan(
         raise DownstreamEvidenceError("dataset bindings contain duplicate IDs")
     for value in dataset_values:
         _read_bound_dataset(value)
+    configuration_values = tuple(configurations)
+    if not configuration_values or any(
+        not isinstance(value, AuthorizedConfiguration)
+        for value in configuration_values
+    ):
+        raise TypeError(
+            "configurations must contain AuthorizedConfiguration values"
+        )
+    configuration_lookup = {
+        (
+            value.method_id,
+            value.configuration_id,
+            value.kind,
+            value.configuration_sha256,
+        ): value
+        for value in configuration_values
+    }
+    configuration_identities = {
+        (value.method_id, value.configuration_id, value.kind)
+        for value in configuration_values
+    }
+    if (
+        len(configuration_lookup) != len(configuration_values)
+        or len(configuration_identities) != len(configuration_values)
+    ):
+        raise DownstreamEvidenceError(
+            "configuration authority contains duplicate identities"
+        )
+    for value in configuration_values:
+        _method_artifact_sha256(value)
     manifest_path, manifest_file_sha, manifest_payload_sha, source_records = (
         _development_source(root)
         if source_kind == "development"
@@ -1000,11 +1172,35 @@ def build_downstream_evidence_plan(
             source_kind=source_kind,
             source_root=root,
             datasets=dataset_lookup,
+            configurations=configuration_lookup,
         )
         for record in source_records
     )
     if not entries:
         raise DownstreamEvidenceError("source has no downstream denominators")
+    referenced_configuration_keys = {
+        (
+            entry.method_id,
+            entry.configuration_id,
+            entry.configuration_kind,
+            entry.configuration_sha256,
+        )
+        for entry in entries
+    }
+    referenced_configurations = tuple(
+        sorted(
+            (
+                configuration_lookup[key]
+                for key in referenced_configuration_keys
+            ),
+            key=lambda value: (
+                value.method_id,
+                value.configuration_id,
+                value.kind,
+                value.configuration_sha256,
+            ),
+        )
+    )
     provisional = DownstreamEvidencePlan(
         source_root=str(root),
         source_kind=source_kind,
@@ -1012,6 +1208,7 @@ def build_downstream_evidence_plan(
         source_manifest_file_sha256=manifest_file_sha,
         source_manifest_payload_sha256=manifest_payload_sha,
         datasets=tuple(sorted(dataset_values, key=lambda value: value.dataset_id)),
+        configurations=referenced_configurations,
         entries=entries,
         plan_sha256="0" * 64,
     )
@@ -1022,8 +1219,88 @@ def build_downstream_evidence_plan(
         source_manifest_file_sha256=provisional.source_manifest_file_sha256,
         source_manifest_payload_sha256=provisional.source_manifest_payload_sha256,
         datasets=provisional.datasets,
+        configurations=provisional.configurations,
         entries=provisional.entries,
         plan_sha256=canonical_sha256(provisional.body()),
+    )
+
+
+def build_development_downstream_evidence_plan(
+    repository: str | Path,
+    *,
+    checkpoint_directory: str | Path | None = None,
+) -> DownstreamEvidencePlan:
+    """Build the production development plan from runner-prepared persisted data."""
+
+    from .methods import load_method_registry
+    from .runner import load_prepared_development_panel, load_runner_authority
+
+    root = Path(repository).resolve(strict=True)
+    if root != Path(__file__).resolve().parents[1]:
+        raise DownstreamEvidenceError(
+            "development downstream stage must use the active repository"
+        )
+    authority = load_runner_authority()
+    registry = load_method_registry(root / "study/methods.json")
+    configured_method_ids = {value.method_id for value in authority.configurations}
+    configurations = tuple(authority.configurations) + tuple(
+        AuthorizedConfiguration.registry_default(spec)
+        for spec in registry.methods
+        if spec.execution_scope == "same_input_required"
+        and spec.id not in configured_method_ids
+    )
+    runner_bindings, prepared = load_prepared_development_panel(authority)
+    datasets = bind_prepared_evaluator_panel(
+        runner_bindings,
+        prepared,
+        dataset_root=root / "artifacts/study/development/results",
+    )
+    source = (
+        root / "artifacts/study/development/competition-reconstruction"
+        if checkpoint_directory is None
+        else Path(checkpoint_directory).absolute()
+    )
+    return build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=datasets,
+        configurations=configurations,
+    )
+
+
+def build_final_downstream_evidence_plan(
+    repository: str | Path,
+    round_directory: str | Path,
+) -> DownstreamEvidencePlan:
+    """Build the production final plan from the frozen round's persisted data."""
+
+    from .final_runner import _configuration_for_method, load_prepared_final_panel
+    from .methods import load_method_registry
+    from .publication_freeze import validate_frozen_method
+
+    root = Path(repository).resolve(strict=True)
+    if root != Path(__file__).resolve().parents[1]:
+        raise DownstreamEvidenceError(
+            "final downstream stage must use the active repository"
+        )
+    round_root = Path(round_directory).resolve(strict=True)
+    frozen_method = validate_frozen_method(root)
+    registry = load_method_registry(root / "study/methods.json")
+    configurations = tuple(
+        _configuration_for_method(spec.id, spec, frozen_method)
+        for spec in registry.methods
+    )
+    runner_bindings, prepared = load_prepared_final_panel(root, round_root)
+    datasets = bind_prepared_evaluator_panel(
+        runner_bindings,
+        prepared,
+        dataset_root=round_root / "results",
+    )
+    return build_downstream_evidence_plan(
+        round_root / "results/final/execution",
+        source_kind="final",
+        datasets=datasets,
+        configurations=configurations,
     )
 
 
@@ -1117,6 +1394,7 @@ _ENDPOINT_ROW_FIELDS = frozenset(
         "model_seed",
         "configuration_id",
         "configuration_sha256",
+        "method_artifact_sha256",
         "endpoint",
         "value",
         "status",
@@ -1153,6 +1431,7 @@ _RECORD_BODY_FIELDS = frozenset(
         "model_seed",
         "configuration_id",
         "configuration_sha256",
+        "method_artifact_sha256",
         "run_status",
         "run_reason",
         "endpoints",
@@ -1188,6 +1467,7 @@ def _endpoint_row(
         "model_seed": entry.model_seed,
         "configuration_id": entry.configuration_id,
         "configuration_sha256": entry.configuration_sha256,
+        "method_artifact_sha256": entry.method_artifact_sha256,
         "endpoint": endpoint.endpoint,
         "value": endpoint.value if upstream_completed else None,
         "status": endpoint.status if upstream_completed else entry.status,
@@ -1244,6 +1524,7 @@ def _evaluate_entry(
         "model_seed": entry.model_seed,
         "configuration_id": entry.configuration_id,
         "configuration_sha256": entry.configuration_sha256,
+        "method_artifact_sha256": entry.method_artifact_sha256,
         "run_status": entry.status,
         "run_reason": entry.reason,
         "endpoints": [_endpoint_row(plan, entry, endpoint) for endpoint in endpoints],
@@ -1327,6 +1608,7 @@ def _expected_record_common(
         "model_seed": entry.model_seed,
         "configuration_id": entry.configuration_id,
         "configuration_sha256": entry.configuration_sha256,
+        "method_artifact_sha256": entry.method_artifact_sha256,
         "run_status": entry.status,
         "run_reason": entry.reason,
     }
@@ -1355,6 +1637,7 @@ def _validate_endpoint_rows(
             "model_seed": entry.model_seed,
             "configuration_id": entry.configuration_id,
             "configuration_sha256": entry.configuration_sha256,
+            "method_artifact_sha256": entry.method_artifact_sha256,
             "endpoint": expected_endpoint,
             "upstream_status": entry.status,
             "upstream_reason": entry.reason,
@@ -1456,6 +1739,7 @@ def _revalidate_plan(plan: DownstreamEvidencePlan) -> None:
         plan.source_root,
         source_kind=plan.source_kind,
         datasets=plan.datasets,
+        configurations=plan.configurations,
     )
     if rebuilt.to_dict() != plan.to_dict():
         raise DownstreamEvidenceError("downstream plan sources changed")
@@ -1575,12 +1859,9 @@ class DownstreamEvidenceManifest:
     payload: Mapping[str, object]
 
 
-def load_downstream_evidence_manifest(
-    output_directory: str | Path,
-) -> DownstreamEvidenceManifest:
-    """Validate a complete downstream manifest and every referenced row file."""
-
-    output_root = Path(output_directory).absolute()
+def _load_persisted_plan(
+    output_root: Path,
+) -> tuple[DownstreamEvidencePlan, dict[str, object], str]:
     plan_payload, _plan_raw, plan_file_sha = _strict_json(
         output_root / "plan.json", "downstream plan"
     )
@@ -1598,13 +1879,49 @@ def load_downstream_evidence_manifest(
     persisted_datasets = tuple(
         _dataset_binding_from_payload(value) for value in raw_datasets
     )
-    rebuilt = build_downstream_evidence_plan(
-        _text(plan_payload.get("source_root"), "persisted source root"),
-        source_kind=_text(plan_payload.get("source_kind"), "persisted source kind"),
-        datasets=persisted_datasets,
+    raw_configurations = plan_payload.get("configurations")
+    if not isinstance(raw_configurations, list):
+        raise DownstreamEvidenceError(
+            "persisted downstream configurations are invalid"
+        )
+    persisted_configurations = tuple(
+        _configuration_from_payload(value) for value in raw_configurations
     )
+    try:
+        rebuilt = build_downstream_evidence_plan(
+            _text(plan_payload.get("source_root"), "persisted source root"),
+            source_kind=_text(plan_payload.get("source_kind"), "persisted source kind"),
+            datasets=persisted_datasets,
+            configurations=persisted_configurations,
+        )
+    except DownstreamEvidenceError:
+        raise
+    except (TypeError, ValueError) as error:
+        raise DownstreamEvidenceError(
+            "persisted downstream plan cannot be revalidated"
+        ) from error
     if rebuilt.to_dict() != plan_payload:
         raise DownstreamEvidenceError("persisted downstream plan sources changed")
+    return rebuilt, plan_payload, plan_file_sha
+
+
+def load_downstream_evidence_plan(
+    output_directory: str | Path,
+) -> DownstreamEvidencePlan:
+    """Reload a persisted plan after revalidating all source and dataset bindings."""
+
+    plan, _payload, _file_sha = _load_persisted_plan(Path(output_directory).absolute())
+    return plan
+
+
+def load_downstream_evidence_manifest(
+    output_directory: str | Path,
+) -> DownstreamEvidenceManifest:
+    """Validate a complete downstream manifest and every referenced row file."""
+
+    output_root = Path(output_directory).absolute()
+    rebuilt, plan_payload, plan_file_sha = _load_persisted_plan(output_root)
+    plan_sha = rebuilt.plan_sha256
     manifest, _manifest_raw, _manifest_file_sha = _strict_json(
         output_root / "downstream_manifest.json", "downstream manifest"
     )
@@ -1688,7 +2005,9 @@ def downstream_denominator_key(record: Mapping[str, object]) -> tuple[object, ..
         record.get("biological_id"),
         record.get("technical_view"),
         record.get("dataset_id"),
+        record.get("dataset_sha256"),
         record.get("method"),
+        record.get("method_artifact_sha256"),
         record.get("model_seed"),
     )
 
@@ -1719,9 +2038,13 @@ __all__ = [
     "DownstreamEvidenceManifest",
     "DownstreamEvidencePlan",
     "bind_evaluator_dataset",
+    "bind_prepared_evaluator_panel",
+    "build_development_downstream_evidence_plan",
     "build_downstream_evidence_plan",
+    "build_final_downstream_evidence_plan",
     "downstream_denominator_key",
     "load_downstream_evidence_manifest",
+    "load_downstream_evidence_plan",
     "run_downstream_evidence",
     "validate_downstream_evidence_completeness",
 ]
