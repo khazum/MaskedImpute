@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import secrets
 import stat
+from types import MappingProxyType
 from typing import Any
 
 from .external_reference_development import (
@@ -26,8 +27,21 @@ from .runtime_environments import (
     load_runtime_environment_lock,
 )
 from .revisions import (
+    RevisionActivation,
+    RevisionAuthorityError,
     development_selection_stage_paths,
     revision_stage_paths,
+    validate_revision_activation,
+)
+from .selection import (
+    SelectionAuthorityError,
+    _validate_schema_four_source_projection,
+    _validate_selection_source_payload,
+    validate_downstream_selection_completeness,
+)
+from .selection_promotion import (
+    SelectionPromotionError,
+    _secure_canonical_json as _secure_selection_json,
 )
 from .study import (
     StudyStateError,
@@ -140,6 +154,34 @@ class PublicationStageLayout:
     active_stage: str
     revision_versions: tuple[str, ...]
     stages: tuple[PublicationStagePaths, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedPublicationStageEvidence:
+    """Stable semantic and byte receipts retained for one validated stage."""
+
+    stage: str
+    source_input: Mapping[str, object]
+    source_input_file_sha256: str
+    source_result_sha256: str
+    complete_input: Mapping[str, object]
+    complete_input_file_sha256: str
+    complete_result_sha256: str
+    report: Mapping[str, object]
+    report_file_sha256: str
+    downstream_manifest_file_sha256: str
+    downstream_manifest_sha256: str
+    downstream_plan_sha256: str
+    activation: RevisionActivation | None
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationStageEvidenceReceipt:
+    """Immutable exact evidence retained for the resolved development prefix."""
+
+    active_stage: str
+    revision_versions: tuple[str, ...]
+    stages: tuple[ValidatedPublicationStageEvidence, ...]
 
 
 def _publication_stage_paths(stage: str) -> PublicationStagePaths:
@@ -404,6 +446,350 @@ def _resolve_publication_stage(repository: Path) -> PublicationStageLayout:
         revision_versions=revision_versions,
         stages=tuple(candidates[stage] for stage in order),
     )
+
+
+def _freeze_receipt_json(value: object) -> object:
+    if type(value) is dict:
+        return MappingProxyType(
+            {key: _freeze_receipt_json(nested) for key, nested in value.items()}
+        )
+    if type(value) is list:
+        return tuple(_freeze_receipt_json(nested) for nested in value)
+    return value
+
+
+def _read_publication_stage_core(
+    repository: Path,
+    paths: PublicationStagePaths,
+) -> tuple[
+    dict[str, Any],
+    str,
+    dict[str, Any],
+    str,
+    dict[str, Any],
+    str,
+    dict[str, Any],
+    str,
+]:
+    try:
+        source, source_file_sha256 = _secure_selection_json(
+            repository / paths.source_input,
+            f"{paths.stage} source selection input",
+        )
+        complete, complete_file_sha256 = _secure_selection_json(
+            repository / paths.complete_input,
+            f"{paths.stage} selection-complete input",
+        )
+        report, report_file_sha256 = _secure_selection_json(
+            repository / paths.report,
+            f"{paths.stage} selection report",
+        )
+        downstream_manifest, downstream_manifest_file_sha256 = (
+            _secure_selection_json(
+                repository / paths.downstream_manifest,
+                f"{paths.stage} downstream manifest",
+            )
+        )
+    except SelectionPromotionError as error:
+        raise PublicationFreezeError(
+            f"{paths.stage} publication stage core evidence is unsafe or noncanonical"
+        ) from error
+    return (
+        source,
+        source_file_sha256,
+        complete,
+        complete_file_sha256,
+        report,
+        report_file_sha256,
+        downstream_manifest,
+        downstream_manifest_file_sha256,
+    )
+
+
+def _validate_publication_stage_evidence(
+    repository: Path,
+    layout: PublicationStageLayout,
+) -> tuple[PublicationStageEvidenceReceipt, dict[str, object]]:
+    """Replay the exact schema-4 selection and activation prefix without fallback."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    if type(layout) is not PublicationStageLayout:
+        raise TypeError("layout must be an exact PublicationStageLayout")
+    root = Path(os.path.abspath(repository))
+    if _resolve_publication_stage(root) != layout:
+        raise PublicationFreezeError(
+            "publication stage changed before selection replay"
+        )
+
+    expected_complete_fields = {
+        "schema_version",
+        "revision_versions",
+        "dataset_manifest_sha256",
+        "count_score_manifest_sha256",
+        "retained_calibration_artifact_sha256",
+        "evaluation_manifest_sha256",
+        "records",
+        "orthogonal_intervals",
+        "downstream_evidence",
+        "result_sha256",
+    }
+    retained: list[ValidatedPublicationStageEvidence] = []
+    snapshots: list[
+        tuple[
+            PublicationStagePaths,
+            dict[str, Any],
+            str,
+            dict[str, Any],
+            str,
+            dict[str, Any],
+            str,
+            dict[str, Any],
+            str,
+        ]
+    ] = []
+
+    for index, paths in enumerate(layout.stages):
+        (
+            source,
+            source_file_sha256,
+            complete,
+            complete_file_sha256,
+            report,
+            report_file_sha256,
+            downstream_manifest,
+            downstream_manifest_file_sha256,
+        ) = _read_publication_stage_core(root, paths)
+        snapshots.append(
+            (
+                paths,
+                source,
+                source_file_sha256,
+                complete,
+                complete_file_sha256,
+                report,
+                report_file_sha256,
+                downstream_manifest,
+                downstream_manifest_file_sha256,
+            )
+        )
+
+        expected_versions = list(layout.revision_versions[:index])
+        expected_source_stage = None if paths.stage == "base" else paths.stage
+        try:
+            source_stage = _validate_selection_source_payload(source)
+        except SelectionAuthorityError as error:
+            raise PublicationFreezeError(
+                f"{paths.stage} source selection input is invalid: {error}"
+            ) from error
+        if source_stage != expected_source_stage:
+            raise PublicationFreezeError(
+                f"{paths.stage} source selection input stage differs"
+            )
+        source_result_sha256 = _sha256(
+            source.get("result_sha256"),
+            f"{paths.stage} source selection result checksum",
+        )
+        if (
+            set(complete) != expected_complete_fields
+            or complete.get("schema_version") != 4
+            or type(complete.get("schema_version")) is not int
+            or complete.get("revision_versions") != expected_versions
+        ):
+            raise PublicationFreezeError(
+                f"{paths.stage} selection-complete input is not exact schema 4"
+            )
+        complete_result_sha256 = _sha256(
+            complete.get("result_sha256"),
+            f"{paths.stage} selection-complete result checksum",
+        )
+        complete_body = {
+            key: value for key, value in complete.items() if key != "result_sha256"
+        }
+        if canonical_sha256(complete_body) != complete_result_sha256:
+            raise PublicationFreezeError(
+                f"{paths.stage} selection-complete result checksum mismatch"
+            )
+        downstream_binding = complete.get("downstream_evidence")
+        if not isinstance(downstream_binding, Mapping):
+            raise PublicationFreezeError(
+                f"{paths.stage} selection-complete downstream binding is invalid"
+            )
+        if downstream_binding.get("path") != paths.downstream_directory:
+            raise PublicationFreezeError(
+                f"{paths.stage} downstream path is not fixed"
+            )
+        try:
+            _validate_schema_four_source_projection(
+                root,
+                complete,
+                downstream_binding,
+            )
+            downstream = validate_downstream_selection_completeness(
+                root,
+                complete.get("records"),
+                downstream_binding,
+            )
+        except SelectionAuthorityError as error:
+            raise PublicationFreezeError(
+                f"{paths.stage} schema-4 selection evidence is invalid: {error}"
+            ) from error
+        downstream_manifest_sha256 = _sha256(
+            downstream.get("downstream_manifest_sha256"),
+            f"{paths.stage} downstream manifest checksum",
+        )
+        downstream_plan_sha256 = _sha256(
+            downstream.get("downstream_plan_sha256"),
+            f"{paths.stage} downstream plan checksum",
+        )
+        if (
+            downstream.get("downstream_manifest_file_sha256")
+            != downstream_manifest_file_sha256
+            or downstream_binding.get("manifest_file_sha256")
+            != downstream_manifest_file_sha256
+            or downstream_binding.get("manifest_sha256")
+            != downstream_manifest_sha256
+            or downstream_binding.get("plan_sha256") != downstream_plan_sha256
+        ):
+            raise PublicationFreezeError(
+                f"{paths.stage} downstream binding differs from the fixed archive"
+            )
+
+        try:
+            recomputed = _recompute_selection_report(root, complete)
+        except Exception as error:
+            raise PublicationFreezeError(
+                f"{paths.stage} selection report could not be recomputed: {error}"
+            ) from error
+        if report != recomputed:
+            raise PublicationFreezeError(
+                f"{paths.stage} selection report differs from recomputation"
+            )
+
+        terminal = index == len(layout.stages) - 1
+        if not terminal:
+            required_trigger = layout.stages[index + 1].stage
+            if (
+                report.get("trigger") != required_trigger
+                or report.get("selected_configuration") is not None
+            ):
+                raise PublicationFreezeError(
+                    f"{paths.stage} preceding selection report does not authorize "
+                    f"the exact {required_trigger} activation"
+                )
+        else:
+            trigger = report.get("trigger")
+            if trigger == "downgrade_claim":
+                raise PublicationFreezeError(
+                    f"{paths.stage} terminal selection requests claim downgrade"
+                )
+            if trigger != "freeze_candidate":
+                raise PublicationFreezeError(
+                    f"{paths.stage} terminal selection trigger is not freeze_candidate"
+                )
+            selected = report.get("selected_configuration")
+            assessments = report.get("assessments")
+            selected_rows = (
+                [
+                    row
+                    for row in assessments
+                    if isinstance(row, Mapping)
+                    and row.get("configuration_id") == selected
+                ]
+                if isinstance(assessments, list) and isinstance(selected, str)
+                else []
+            )
+            expected_selected_version = (
+                "v27" if layout.active_stage == "base" else layout.active_stage
+            )
+            if (
+                len(selected_rows) != 1
+                or selected_rows[0].get("version") != expected_selected_version
+            ):
+                raise PublicationFreezeError(
+                    "selected version differs from the resolved active stage"
+                )
+
+        activation: RevisionActivation | None = None
+        if paths.stage != "base":
+            preceding = retained[-1]
+            try:
+                activation = validate_revision_activation(
+                    root,
+                    paths.stage,
+                    require_clean=True,
+                )
+            except RevisionAuthorityError as error:
+                raise PublicationFreezeError(
+                    f"{paths.stage} revision activation is invalid: {error}"
+                ) from error
+            if (
+                activation.version != paths.stage
+                or activation.trigger != paths.stage
+                or activation.selection_input_path
+                != paths.activation_selection_input
+                or activation.selection_report_path
+                != paths.activation_selection_report
+                or activation.selection_input_file_sha256
+                != preceding.complete_input_file_sha256
+                or activation.selection_result_sha256
+                != preceding.complete_result_sha256
+                or activation.selection_report_file_sha256
+                != preceding.report_file_sha256
+            ):
+                raise PublicationFreezeError(
+                    f"{paths.stage} activation hashes differ from retained evidence"
+                )
+
+        frozen_source = _freeze_receipt_json(source)
+        frozen_complete = _freeze_receipt_json(complete)
+        frozen_report = _freeze_receipt_json(report)
+        assert isinstance(frozen_source, Mapping)
+        assert isinstance(frozen_complete, Mapping)
+        assert isinstance(frozen_report, Mapping)
+        retained.append(
+            ValidatedPublicationStageEvidence(
+                stage=paths.stage,
+                source_input=frozen_source,
+                source_input_file_sha256=source_file_sha256,
+                source_result_sha256=source_result_sha256,
+                complete_input=frozen_complete,
+                complete_input_file_sha256=complete_file_sha256,
+                complete_result_sha256=complete_result_sha256,
+                report=frozen_report,
+                report_file_sha256=report_file_sha256,
+                downstream_manifest_file_sha256=(
+                    downstream_manifest_file_sha256
+                ),
+                downstream_manifest_sha256=downstream_manifest_sha256,
+                downstream_plan_sha256=downstream_plan_sha256,
+                activation=activation,
+            )
+        )
+
+    if _resolve_publication_stage(root) != layout:
+        raise PublicationFreezeError(
+            "publication stage changed during selection replay"
+        )
+    for snapshot in snapshots:
+        paths = snapshot[0]
+        observed = _read_publication_stage_core(root, paths)
+        if observed != snapshot[1:]:
+            raise PublicationFreezeError(
+                f"{paths.stage} core evidence changed during selection replay"
+            )
+
+    receipt = PublicationStageEvidenceReceipt(
+        active_stage=layout.active_stage,
+        revision_versions=layout.revision_versions,
+        stages=tuple(retained),
+    )
+    active_report = _json_copy(
+        snapshots[-1][5],
+        "active selection report",
+    )
+    assert isinstance(active_report, dict)
+    return receipt, active_report
 
 
 def _json_copy(value: object, label: str) -> Any:

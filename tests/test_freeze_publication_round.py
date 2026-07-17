@@ -2151,3 +2151,342 @@ def test_unknown_stage_family_suffix_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(PublicationFreezeError, match="unknown.*stage|stage.*suffix"):
         _resolve_publication_stage(repository)
+
+
+def _schema_four_stage_chain(
+    tmp_path: Path,
+    active_stage: str,
+) -> tuple[Path, dict[str, dict[str, object]]]:
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
+
+    order = {
+        "base": ("base",),
+        "v28": ("base", "v28"),
+        "v29": ("base", "v28", "v29"),
+    }[active_stage]
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    reports: dict[str, dict[str, object]] = {}
+    for index, stage in enumerate(order):
+        _materialize_publication_stage_footprint(repository, stage)
+        versions = [] if stage == "base" else list(order[1 : index + 1])
+        source_core: dict[str, object] = {
+            "schema_version": 2 if stage == "base" else 3,
+            "dataset_manifest_sha256": "1" * 64,
+            "count_score_manifest_sha256": "2" * 64,
+            "retained_calibration_artifact_sha256": "3" * 64,
+            "evaluation_manifest_sha256": "4" * 64,
+            "records": [],
+            "orthogonal_intervals": [],
+        }
+        if stage != "base":
+            source_core["revision_versions"] = versions
+        source = {**source_core, "result_sha256": canonical_sha256(source_core)}
+        paths = development_selection_stage_paths(None if stage == "base" else stage)
+        _write_json(repository / paths.source_selection_input, source)
+        source_file_sha256 = hashlib.sha256(
+            (repository / paths.source_selection_input).read_bytes()
+        ).hexdigest()
+        binding = {
+            "path": paths.downstream_directory,
+            "source_selection_input_path": paths.source_selection_input,
+            "source_selection_input_file_sha256": source_file_sha256,
+            "source_selection_result_sha256": source["result_sha256"],
+            "manifest_file_sha256": hashlib.sha256(
+                (repository / paths.downstream_directory / "downstream_manifest.json").read_bytes()
+            ).hexdigest(),
+            "manifest_sha256": hashlib.sha256(f"{stage}:manifest".encode()).hexdigest(),
+            "plan_sha256": hashlib.sha256(f"{stage}:plan".encode()).hexdigest(),
+        }
+        complete_core = {
+            **{
+                key: value
+                for key, value in source.items()
+                if key not in {"schema_version", "revision_versions", "result_sha256"}
+            },
+            "schema_version": 4,
+            "revision_versions": versions,
+            "downstream_evidence": binding,
+        }
+        complete = {
+            **complete_core,
+            "result_sha256": canonical_sha256(complete_core),
+        }
+        _write_json(repository / paths.selection_complete_input, complete)
+
+        if stage != active_stage:
+            next_stage = order[index + 1]
+            report = deepcopy(_selection_report())
+            report["trigger"] = next_stage
+            report["selected_configuration"] = None
+            report["pareto_set"] = []
+        else:
+            report = deepcopy(_selection_report())
+            selected_version = "v27" if stage == "base" else stage
+            selected_id = (
+                "v27-parent"
+                if stage == "base"
+                else "v28-c01-nb-parent-c03"
+                if stage == "v28"
+                else "v29-structure-child"
+            )
+            report["selected_configuration"] = selected_id
+            report["pareto_set"] = [selected_id]
+            report["assessments"][0]["configuration_id"] = selected_id
+            report["assessments"][0]["version"] = selected_version
+        reports[stage] = report
+        _write_json(repository / paths.selection_report, report)
+    return repository, reports
+
+
+def _patch_schema_four_stage_replay(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: Path,
+    reports: dict[str, dict[str, object]],
+) -> list[str]:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+    from maskimpute_benchmark.revisions import RevisionActivation, revision_stage_paths
+
+    def stage_for(payload: dict[str, object]) -> str:
+        versions = payload["revision_versions"]
+        return "base" if versions == [] else versions[-1]
+
+    monkeypatch.setattr(
+        freeze_module,
+        "validate_downstream_selection_completeness",
+        lambda _repository, _records, binding: {
+            "downstream_manifest_file_sha256": binding["manifest_file_sha256"],
+            "downstream_manifest_sha256": binding["manifest_sha256"],
+            "downstream_plan_sha256": binding["plan_sha256"],
+        },
+    )
+    monkeypatch.setattr(
+        freeze_module,
+        "_recompute_selection_report",
+        lambda _repository, payload: deepcopy(reports[stage_for(payload)]),
+    )
+    calls: list[str] = []
+
+    def activate(_repository: Path, version: str, *, require_clean: bool = True):
+        assert require_clean is True
+        calls.append(version)
+        paths = revision_stage_paths(version)
+        selection_input = json.loads(
+            (repository / paths.activation_selection_input).read_text(encoding="utf-8")
+        )
+        return RevisionActivation(
+            version=version,
+            trigger=version,
+            selection_input_path=paths.activation_selection_input,
+            selection_input_file_sha256=hashlib.sha256(
+                (repository / paths.activation_selection_input).read_bytes()
+            ).hexdigest(),
+            selection_result_sha256=selection_input["result_sha256"],
+            selection_report_path=paths.activation_selection_report,
+            selection_report_file_sha256=hashlib.sha256(
+                (repository / paths.activation_selection_report).read_bytes()
+            ).hexdigest(),
+        )
+
+    monkeypatch.setattr(freeze_module, "validate_revision_activation", activate)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("active_stage", "expected_order"),
+    (
+        ("base", ("base",)),
+        ("v28", ("base", "v28")),
+        ("v29", ("base", "v28", "v29")),
+    ),
+)
+def test_schema_four_stage_chain_revalidates_exact_activation_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    active_stage: str,
+    expected_order: tuple[str, ...],
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        _resolve_publication_stage,
+        _validate_publication_stage_evidence,
+    )
+
+    repository, reports = _schema_four_stage_chain(tmp_path, active_stage)
+    calls = _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+
+    receipt, active_report = _validate_publication_stage_evidence(
+        repository,
+        _resolve_publication_stage(repository),
+    )
+
+    assert tuple(stage.stage for stage in receipt.stages) == expected_order
+    assert calls == list(expected_order[1:])
+    assert receipt.stages[0].activation is None
+    assert all(stage.activation is not None for stage in receipt.stages[1:])
+    assert active_report == reports[active_stage]
+    assert active_report["trigger"] == "freeze_candidate"
+    for stage in receipt.stages:
+        assert stage.source_result_sha256 == stage.source_input["result_sha256"]
+        assert stage.complete_result_sha256 == stage.complete_input["result_sha256"]
+
+
+def test_activation_chain_rejects_wrong_retained_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+    from maskimpute_benchmark.publication_freeze import (
+        PublicationFreezeError,
+        _resolve_publication_stage,
+        _validate_publication_stage_evidence,
+    )
+    from maskimpute_benchmark.revisions import RevisionActivation, revision_stage_paths
+
+    repository, reports = _schema_four_stage_chain(tmp_path, "v28")
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+    paths = revision_stage_paths("v28")
+    monkeypatch.setattr(
+        freeze_module,
+        "validate_revision_activation",
+        lambda *_args, **_kwargs: RevisionActivation(
+            version="v28",
+            trigger="v28",
+            selection_input_path=paths.activation_selection_input,
+            selection_input_file_sha256="0" * 64,
+            selection_result_sha256="0" * 64,
+            selection_report_path=paths.activation_selection_report,
+            selection_report_file_sha256="0" * 64,
+        ),
+    )
+
+    with pytest.raises(PublicationFreezeError, match="activation.*retained|hash"):
+        _validate_publication_stage_evidence(
+            repository,
+            _resolve_publication_stage(repository),
+        )
+
+
+def test_schema_four_stage_rejects_nonpromoted_complete_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        PublicationFreezeError,
+        _resolve_publication_stage,
+        _validate_publication_stage_evidence,
+    )
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
+
+    repository, reports = _schema_four_stage_chain(tmp_path, "base")
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+    complete_path = (
+        repository
+        / development_selection_stage_paths(None).selection_complete_input
+    )
+    complete = json.loads(complete_path.read_text(encoding="utf-8"))
+    complete["schema_version"] = 2
+    complete.pop("revision_versions")
+    complete.pop("downstream_evidence")
+    complete["result_sha256"] = canonical_sha256(
+        {key: value for key, value in complete.items() if key != "result_sha256"}
+    )
+    _write_json(complete_path, complete)
+
+    with pytest.raises(PublicationFreezeError, match="schema 4|selection-complete"):
+        _validate_publication_stage_evidence(
+            repository,
+            _resolve_publication_stage(repository),
+        )
+
+
+def test_no_selection_fallback_from_downgrade_v29(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        PublicationFreezeError,
+        _resolve_publication_stage,
+        _validate_publication_stage_evidence,
+    )
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
+
+    repository, reports = _schema_four_stage_chain(tmp_path, "v29")
+    reports["v29"]["trigger"] = "downgrade_claim"
+    terminal = development_selection_stage_paths("v29").selection_report
+    _write_json(repository / terminal, reports["v29"])
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+
+    with pytest.raises(PublicationFreezeError, match="downgrade|terminal"):
+        _validate_publication_stage_evidence(
+            repository,
+            _resolve_publication_stage(repository),
+        )
+
+
+def test_schema_four_stage_rejects_selected_version_older_than_active_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        PublicationFreezeError,
+        _resolve_publication_stage,
+        _validate_publication_stage_evidence,
+    )
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
+
+    repository, reports = _schema_four_stage_chain(tmp_path, "v29")
+    reports["v29"]["selected_configuration"] = "v28-c01-nb-parent-c03"
+    reports["v29"]["assessments"][0]["configuration_id"] = (
+        "v28-c01-nb-parent-c03"
+    )
+    reports["v29"]["assessments"][0]["version"] = "v28"
+    terminal = development_selection_stage_paths("v29").selection_report
+    _write_json(repository / terminal, reports["v29"])
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+
+    with pytest.raises(PublicationFreezeError, match="selected version|active stage"):
+        _validate_publication_stage_evidence(
+            repository,
+            _resolve_publication_stage(repository),
+        )
+
+
+def test_schema_four_stage_rejects_core_file_changed_during_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+    from maskimpute_benchmark.publication_freeze import (
+        PublicationFreezeError,
+        _resolve_publication_stage,
+        _validate_publication_stage_evidence,
+    )
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
+
+    repository, reports = _schema_four_stage_chain(tmp_path, "base")
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+    complete_path = (
+        repository
+        / development_selection_stage_paths(None).selection_complete_input
+    )
+
+    def mutate_after_recompute(_repository: Path, payload: dict[str, object]):
+        changed = deepcopy(payload)
+        changed["dataset_manifest_sha256"] = "f" * 64
+        changed["result_sha256"] = canonical_sha256(
+            {key: value for key, value in changed.items() if key != "result_sha256"}
+        )
+        _write_json(complete_path, changed)
+        return deepcopy(reports["base"])
+
+    monkeypatch.setattr(
+        freeze_module,
+        "_recompute_selection_report",
+        mutate_after_recompute,
+    )
+
+    with pytest.raises(PublicationFreezeError, match="changed during.*replay"):
+        _validate_publication_stage_evidence(
+            repository,
+            _resolve_publication_stage(repository),
+        )
