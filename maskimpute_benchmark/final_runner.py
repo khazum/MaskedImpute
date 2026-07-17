@@ -12,6 +12,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 from types import MappingProxyType
 from typing import Literal
 import zlib
@@ -43,6 +44,8 @@ from .runner import (
     RunnerContractError,
     RunPlanEntry,
     SpawnedRepositoryExecutor,
+    _prezero_evaluator_targets,
+    _unlink_owned_staging_temporary,
     enforce_calibration_fold_receipt,
     evaluate_adapter_outcome,
     prepare_dataset_pair_for_execution,
@@ -51,7 +54,9 @@ from .runner import (
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
-_STAGING_FILE = re.compile(r"\..+\.[A-Za-z0-9_-]{6,}\.tmp\Z")
+_STAGING_FILE = re.compile(
+    r"\.(?P<canonical>.+)\.(?P<token>[a-z0-9_]{8})\.tmp\Z"
+)
 _TRANSACTION_FILE = re.compile(r"[0-9]{8}\.json\Z")
 _FINAL_RUN_ID = re.compile(r"final-[a-z0-9-]+\Z")
 _FINAL_DRAWS = tuple(f"draw-{draw:02d}" for draw in range(1, 6))
@@ -1261,7 +1266,8 @@ def _remove_stale_result_temporaries(round_dir: Path) -> tuple[str, ...]:
         ) from error
     removed: list[str] = []
     for path in entries:
-        if _STAGING_FILE.fullmatch(path.name) is None:
+        match = _STAGING_FILE.fullmatch(path.name)
+        if match is None:
             continue
         try:
             result_relative = path.relative_to(results)
@@ -1275,36 +1281,17 @@ def _remove_stale_result_temporaries(round_dir: Path) -> tuple[str, ...]:
         }:
             continue
         try:
-            metadata = path.lstat()
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or stat.S_ISLNK(metadata.st_mode)
-                or metadata.st_uid != os.geteuid()
-                or metadata.st_nlink not in {1, 2}
-                or path.parent.resolve(strict=True) != path.parent.absolute()
-            ):
-                raise FinalRunnerContractError(
-                    "stale final result temporary is not an owned regular file"
-                )
             relative = path.relative_to(destination).as_posix()
-            path.unlink()
-            directory = os.open(
-                path.parent,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_CLOEXEC", 0),
+            _unlink_owned_staging_temporary(
+                path,
+                path.with_name(match.group("canonical")),
+                "stale final result temporary",
             )
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-            if os.path.lexists(path):
-                raise FinalRunnerContractError(
-                    "stale final result temporary survived removal"
-                )
             removed.append(relative)
         except FinalRunnerContractError:
             raise
+        except RunnerContractError as error:
+            raise FinalRunnerContractError(str(error)) from error
         except OSError as error:
             raise FinalRunnerContractError(
                 "stale final result temporary could not be removed"
@@ -1487,15 +1474,107 @@ def _recover_scaling_transactions_for_resume(
 class FinalResultStore:
     """Append-only per-attempt artifacts plus one immutable completion manifest."""
 
-    def __init__(self, output_dir: Path, plan: FinalExecutionPlan) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        plan: FinalExecutionPlan,
+        prepared_datasets: Mapping[str, PreparedDataset],
+        execution_authority: ExecutionAuthorityContext,
+        *,
+        authority_repository: Path | None = None,
+    ) -> None:
         if not isinstance(output_dir, Path):
             raise TypeError("output_dir must be a pathlib.Path")
         if not isinstance(plan, FinalExecutionPlan):
             raise TypeError("plan must be a FinalExecutionPlan")
+        if not isinstance(prepared_datasets, Mapping):
+            raise TypeError("prepared_datasets must be a mapping")
+        if not isinstance(execution_authority, ExecutionAuthorityContext):
+            raise TypeError(
+                "execution_authority must be an ExecutionAuthorityContext"
+            )
+        if (
+            plan.input_hashes.get("execution_authority_sha256")
+            != execution_authority.authority_sha256
+        ):
+            raise FinalRunnerContractError(
+                "final result authority differs from the execution plan"
+            )
         self.output_dir = output_dir.absolute()
         self.plan = plan
-        self._artifacts = CheckpointStore(self.output_dir)
+        self.prepared_datasets = MappingProxyType(
+            self._validate_prepared_datasets(prepared_datasets)
+        )
+        self.execution_authority = execution_authority
+        self._artifacts = CheckpointStore(
+            self.output_dir,
+            authority_repository=authority_repository,
+        )
         self._records_cache: tuple[dict[str, object], ...] | None = None
+
+    def _validate_prepared_datasets(
+        self, prepared_datasets: Mapping[str, PreparedDataset]
+    ) -> dict[str, PreparedDataset]:
+        planned_dataset_ids = {entry.run.dataset_id for entry in self.plan.entries}
+        if set(prepared_datasets) != planned_dataset_ids:
+            raise FinalRunnerContractError(
+                "prepared dataset authority does not exactly cover the final plan"
+            )
+        result: dict[str, PreparedDataset] = {}
+        for dataset_id in sorted(planned_dataset_ids):
+            prepared = prepared_datasets.get(dataset_id)
+            if not isinstance(prepared, PreparedDataset):
+                raise FinalRunnerContractError(
+                    f"prepared final dataset is invalid for {dataset_id}"
+                )
+            entries = tuple(
+                entry.run
+                for entry in self.plan.entries
+                if entry.run.dataset_id == dataset_id
+            )
+            expected_binding = {
+                (
+                    entry.source_dataset_sha256,
+                    entry.mechanism,
+                    entry.biological_id,
+                    entry.technical_view,
+                )
+                for entry in entries
+            }
+            actual_binding = (
+                prepared.binding.dataset_sha256,
+                prepared.binding.mechanism,
+                prepared.binding.biological_id,
+                prepared.binding.technical_view,
+            )
+            if (
+                prepared.binding.dataset_id != dataset_id
+                or expected_binding != {actual_binding}
+                or prepared.method_input.source_dataset_sha256
+                != prepared.binding.dataset_sha256
+                or prepared.method_input.shape[0]
+                != prepared.audit.retained_cell_count
+                or prepared.method_input.obs_ids
+                != prepared.audit.retained_cell_ids
+            ):
+                raise FinalRunnerContractError(
+                    f"prepared final dataset differs from plan binding {dataset_id}"
+                )
+            observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
+            if observed.shape != prepared.method_input.shape or not np.array_equal(
+                observed, prepared.method_input.counts
+            ):
+                raise FinalRunnerContractError(
+                    f"prepared final observations differ from method input {dataset_id}"
+                )
+            if truth_kind != "orthogonal_only" and (
+                truth is None or truth.shape != prepared.method_input.shape
+            ):
+                raise FinalRunnerContractError(
+                    f"prepared final truth differs from method input {dataset_id}"
+                )
+            result[dataset_id] = prepared
+        return result
 
     @property
     def manifest_path(self) -> Path:
@@ -1551,15 +1630,21 @@ class FinalResultStore:
         finally:
             os.close(directory)
 
-    def _stored_final_attempt(self, attempt: EvaluatedAttempt) -> dict[str, object]:
+    def _stored_final_attempt(
+        self,
+        attempt: EvaluatedAttempt,
+        *,
+        artifacts: CheckpointStore | None = None,
+    ) -> dict[str, object]:
         """Store one compressed evaluator matrix and omit its redundant native form."""
 
+        artifact_store = self._artifacts if artifacts is None else artifacts
         without_dense_outputs = replace(
             attempt,
             native_output=None,
             evaluator_output=None,
         )
-        stored = self._artifacts._stored_attempt(without_dense_outputs)
+        stored = artifact_store._stored_attempt(without_dense_outputs)
         run = stored["run"]
         assert isinstance(run, dict)
         run["native_output_retention"] = (
@@ -1579,7 +1664,7 @@ class FinalResultStore:
         evaluator = np.asarray(attempt.evaluator_output, dtype="<f8", order="C")
         raw = evaluator.tobytes(order="C")
         compressed = zlib.compress(raw, level=_FINAL_OUTPUT_COMPRESSION_LEVEL)
-        relative, digest = self._artifacts._publish_immutable(
+        relative, digest = artifact_store._publish_immutable(
             f"runs/{attempt.run.run_id}.log2-cp10k-f64.zlib",
             compressed,
         )
@@ -1598,10 +1683,14 @@ class FinalResultStore:
         return stored
 
     def _validate_final_output_storage(
-        self, run: Mapping[str, object]
+        self,
+        run: Mapping[str, object],
+        *,
+        artifacts: CheckpointStore | None = None,
     ) -> dict[str, object]:
         """Validate bounded decompression and return a raw-store validation view."""
 
+        artifact_store = self._artifacts if artifacts is None else artifacts
         validation_run = dict(run)
         native_present = run.get("native_output_sha256") is not None
         if run.get("native_output_retention") != (
@@ -1661,7 +1750,7 @@ class FinalResultStore:
                 run.get("evaluator_output_file_sha256"),
                 "compressed evaluator output file",
             )
-            path = self._artifacts._safe_artifact_path(
+            path = artifact_store._safe_artifact_path(
                 path_value,
                 "compressed evaluator output",
             )
@@ -1763,6 +1852,19 @@ class FinalResultStore:
                 plan_entry.run.requires_calibration
                 and value.get("retained_calibration_sha256") is None
             )
+            or value.get("count_score_manifest_sha256")
+            != (
+                self.execution_authority.count_score_manifest_sha256
+                if plan_entry.run.requires_count_score
+                else None
+            )
+            or value.get("retained_calibration_sha256")
+            != (
+                self.execution_authority.retained_calibration_sha256
+                if plan_entry.run.method_id
+                in {"maskimpute", "capacity-matched-ae"}
+                else None
+            )
         ):
             raise FinalRunnerContractError(
                 "final execution request receipt differs from its plan"
@@ -1793,7 +1895,7 @@ class FinalResultStore:
             run = value.get("run")
             if not isinstance(run, Mapping):
                 raise FinalRunnerContractError("final execution run is invalid")
-            receipt = self._validate_execution_request_receipt(
+            self._validate_execution_request_receipt(
                 value.get("execution_request"), plan_entry, run
             )
             validation_run = self._validate_final_output_storage(run)
@@ -1804,15 +1906,20 @@ class FinalResultStore:
                     "p_pre_zero_evidence": value["p_pre_zero_evidence"],
                 },
                 plan_entry.run,
-                final_calibration_artifact_sha256=(
-                    None
-                    if receipt is None
-                    else receipt.get("retained_calibration_sha256")
+                prepared=self.prepared_datasets[plan_entry.run.dataset_id],
+                expected_dataset_qc_policy_sha256=DatasetQCPolicy.fixed().sha256,
+                expected_score_config_sha256=(
+                    self.execution_authority.count_model_config_sha256
                 ),
+                expected_calibration_file_sha256=(
+                    self.execution_authority.retained_calibration_sha256
+                ),
+                execution_authority=self.execution_authority,
+                calibration_usage="retained_all_development",
             )
         except (RunnerContractError, OSError, ValueError) as error:
             raise FinalRunnerContractError(
-                "final execution record or artifact is invalid"
+                f"final execution record or artifact is invalid: {error}"
             ) from error
         return value
 
@@ -1876,7 +1983,6 @@ class FinalResultStore:
             )
         if attempt.run.run_id != plan_entry.run.run_id:
             raise FinalRunnerContractError("final attempt differs from its plan entry")
-        intent_path = self._publish_transaction_intent(plan_entry, attempt)
         request_receipt: dict[str, object] | None = None
         if execution_request is not None:
             if not isinstance(execution_request, ExecutionRequest):
@@ -1921,6 +2027,57 @@ class FinalResultStore:
                 ),
             }
         try:
+            with tempfile.TemporaryDirectory(
+                prefix="maskimpute-final-attempt-stage-"
+            ) as staging_name:
+                staging = CheckpointStore(
+                    Path(staging_name),
+                    authority_repository=self._artifacts.authority_repository,
+                )
+                staged_base = json.loads(
+                    _canonical_bytes(
+                        self._stored_final_attempt(attempt, artifacts=staging)
+                    ).decode("utf-8")
+                )
+                staged = {
+                    "run": staged_base["run"],
+                    "metrics": staged_base["metrics"],
+                    "p_pre_zero_evidence": staged_base["p_pre_zero_evidence"],
+                    "execution_request": request_receipt,
+                }
+                self._validate_execution_request_receipt(
+                    request_receipt, plan_entry, staged["run"]
+                )
+                staged_validation_run = self._validate_final_output_storage(
+                    staged["run"], artifacts=staging
+                )
+                staging._validate_stored_record(
+                    {
+                        "run": staged_validation_run,
+                        "metrics": staged["metrics"],
+                        "p_pre_zero_evidence": staged["p_pre_zero_evidence"],
+                    },
+                    plan_entry.run,
+                    prepared=self.prepared_datasets[plan_entry.run.dataset_id],
+                    expected_dataset_qc_policy_sha256=DatasetQCPolicy.fixed().sha256,
+                    expected_score_config_sha256=(
+                        self.execution_authority.count_model_config_sha256
+                    ),
+                    expected_calibration_file_sha256=(
+                        self.execution_authority.retained_calibration_sha256
+                    ),
+                    execution_authority=self.execution_authority,
+                    calibration_usage="retained_all_development",
+                )
+                self._artifacts._prezero_authority_cache.update(
+                    staging._prezero_authority_cache
+                )
+        except (RunnerContractError, OSError, ValueError) as error:
+            raise FinalRunnerContractError(
+                "cannot publish final execution record"
+            ) from error
+        intent_path = self._publish_transaction_intent(plan_entry, attempt)
+        try:
             base_stored = json.loads(
                 _canonical_bytes(self._stored_final_attempt(attempt)).decode("utf-8")
             )
@@ -1941,11 +2098,16 @@ class FinalResultStore:
                     "p_pre_zero_evidence": stored["p_pre_zero_evidence"],
                 },
                 plan_entry.run,
-                final_calibration_artifact_sha256=(
-                    None
-                    if request_receipt is None
-                    else request_receipt["retained_calibration_sha256"]
+                prepared=self.prepared_datasets[plan_entry.run.dataset_id],
+                expected_dataset_qc_policy_sha256=DatasetQCPolicy.fixed().sha256,
+                expected_score_config_sha256=(
+                    self.execution_authority.count_model_config_sha256
                 ),
+                expected_calibration_file_sha256=(
+                    self.execution_authority.retained_calibration_sha256
+                ),
+                execution_authority=self.execution_authority,
+                calibration_usage="retained_all_development",
             )
             self._artifacts._publish_immutable(
                 f"records/{plan_entry.run.ordinal:08d}.json",
@@ -2378,6 +2540,7 @@ def execute_final_plan(
     if (
         plan.input_hashes.get("execution_authority_sha256")
         != authority.authority_sha256
+        or store.execution_authority != authority
     ):
         raise FinalRunnerContractError("final execution authority differs from plan")
     if os.path.lexists(store.manifest_path):
@@ -2830,7 +2993,13 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
             raise FinalRunnerContractError(
                 "final plan changed while materializing execution authority"
             )
-        store = FinalResultStore(destination / "results/final/execution", plan)
+        store = FinalResultStore(
+            destination / "results/final/execution",
+            plan,
+            prepared,
+            authority,
+            authority_repository=selected_repository,
+        )
         if resuming:
             existing_records = store.load_records()
             store._records_cache = existing_records

@@ -158,7 +158,11 @@ def _score_group(
     }
 
 
-def _attach_score_evidence(record: dict[str, Any]) -> None:
+def _attach_score_evidence(
+    record: dict[str, Any],
+    *,
+    matrix_present: bool | None = None,
+) -> None:
     run = record["run"]
     method = run["method_id"]
     run_status = run["status"]
@@ -169,6 +173,8 @@ def _attach_score_evidence(record: dict[str, Any]) -> None:
         evidence_status = "not_applicable"
         evidence_reason = "method_does_not_emit_p_pre_zero"
     numeric = method == "maskimpute" and run_status == "completed"
+    if matrix_present is None:
+        matrix_present = numeric
     draw_index = int(str(run["biological_id"]).split("-")[-1])
     view_offset = -0.01 if run["technical_view"] == "moderate" else 0.01
     seed_offset = {42: -0.03, 43: 0.0, 44: 0.03}.get(run["model_seed"], 0.0)
@@ -222,9 +228,9 @@ def _attach_score_evidence(record: dict[str, Any]) -> None:
             "retained_cell_ids_sha256",
         )
     }
-    if numeric:
+    if matrix_present:
         policy = {
-            "schema_version": 1,
+            "schema_version": 2,
             "probability_semantics": (
                 "pre_capture_count_is_zero_given_observed_counts"
             ),
@@ -233,7 +239,8 @@ def _attach_score_evidence(record: dict[str, Any]) -> None:
             "score_artifact_sha256": "1" * 64,
             "score_input_sha256": "2" * 64,
             "score_config_sha256": "3" * 64,
-            "calibration_artifact_sha256": "4" * 64,
+            "calibration_file_sha256": "4" * 64,
+            "calibration_payload_sha256": "5" * 64,
             "calibration_algorithm": "identity",
             "calibration_scope": "retained_all_development",
             "calibration_equivalence_reason": (
@@ -1441,6 +1448,31 @@ def test_prezero_score_evidence_is_a_separate_complete_descriptive_family() -> N
     assert len(family["group_summaries"]) == 3 * 9 * 7
     assert [row["metric"] for row in report["paired_comparisons"] if row["comparator_method_id"] == "dca"] == list(PRIMARY_METRICS)
     assert report["pareto"]["core_metrics"] == list(PRIMARY_METRICS)
+
+
+def test_conversion_terminal_run_preserves_its_authorized_score_artifact() -> None:
+    record = _record(
+        "maskimpute",
+        "unavailable",
+        ordinal=1,
+        model_seed=42,
+        run_reason="output_conversion_failed",
+    )
+    _attach_score_evidence(record, matrix_present=True)
+
+    report = _analysis([record])
+
+    overall = _matching(
+        report["score_evidence"]["group_summaries"],
+        method="maskimpute",
+        metric="auroc",
+        stratum_type="overall",
+        label="all_observed_zeros",
+    )
+    assert overall["status"] == "unavailable"
+    assert overall["unavailable_reason_counts"] == {
+        "output_conversion_failed": 1,
+    }
 
 
 def test_evidence_loader_binds_evaluated_receipt_manifest_and_ordered_records(

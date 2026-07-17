@@ -36,6 +36,7 @@ from .prezero_evidence import (
     PreZeroEvidenceError,
     encode_prezero_evidence,
     evaluate_prezero_evidence,
+    policy_from_score_diagnostics,
     validate_stored_prezero_evidence,
     zlib_compress_bound,
 )
@@ -93,6 +94,11 @@ _V28_SELECTION_REPORT_PATH = (
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
+_EVALUATOR_CONVERSION_REASON = re.compile(
+    r"evaluator_conversion_[a-z][a-z0-9_]*_detail_[0-9a-f]{64}\Z"
+)
+_DEVELOPMENT_TRANSACTION_FILE = re.compile(r"[0-9]{8}\.json\Z")
+_MKSTEMP_TOKEN = re.compile(r"[a-z0-9_]{8}\Z")
 _OUTCOME_STATUSES = frozenset(
     {
         "completed",
@@ -109,6 +115,113 @@ _OUTCOME_STATUSES = frozenset(
 
 class RunnerContractError(RuntimeError):
     """Raised when runner authority, planning, or execution fails closed."""
+
+
+def _stable_stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _unlink_owned_staging_temporary(
+    path: Path,
+    expected_canonical: Path,
+    name: str,
+) -> None:
+    """Remove one exact mkstemp sibling without following or blessing aliases."""
+
+    descriptor = -1
+    try:
+        parent = path.parent
+        if (
+            expected_canonical.parent != parent
+            or parent.resolve(strict=True) != parent.absolute()
+        ):
+            raise RunnerContractError(f"{name} parent is not canonical")
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink not in {1, 2}
+        ):
+            raise RunnerContractError(
+                f"{name} must be an owned regular file with one expected sibling"
+            )
+        sibling_identity: tuple[int, ...] | None = None
+        if before.st_nlink == 2:
+            try:
+                sibling = expected_canonical.lstat()
+            except OSError as error:
+                raise RunnerContractError(
+                    f"{name} hardlink lacks its exact canonical sibling"
+                ) from error
+            sibling_identity = _stable_stat_identity(sibling)
+            if (
+                not stat.S_ISREG(sibling.st_mode)
+                or stat.S_ISLNK(sibling.st_mode)
+                or sibling.st_uid != os.geteuid()
+                or sibling_identity != _stable_stat_identity(before)
+            ):
+                raise RunnerContractError(
+                    f"{name} hardlink differs from its exact canonical sibling"
+                )
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if _stable_stat_identity(before) != _stable_stat_identity(opened):
+            raise RunnerContractError(f"{name} changed while opening")
+        if sibling_identity is not None:
+            if _stable_stat_identity(expected_canonical.lstat()) != sibling_identity:
+                raise RunnerContractError(f"{name} canonical sibling changed")
+        if _stable_stat_identity(path.lstat()) != _stable_stat_identity(opened):
+            raise RunnerContractError(f"{name} changed before removal")
+        path.unlink()
+        after = os.fstat(descriptor)
+        expected_links = before.st_nlink - 1
+        if after.st_nlink != expected_links or os.path.lexists(path):
+            raise RunnerContractError(f"{name} survived safe removal")
+        if sibling_identity is not None:
+            sibling_after = expected_canonical.lstat()
+            if (
+                (sibling_after.st_dev, sibling_after.st_ino)
+                != (before.st_dev, before.st_ino)
+                or sibling_after.st_nlink != 1
+                or sibling_after.st_uid != os.geteuid()
+                or not stat.S_ISREG(sibling_after.st_mode)
+                or stat.S_ISLNK(sibling_after.st_mode)
+            ):
+                raise RunnerContractError(
+                    f"{name} canonical sibling changed during removal"
+                )
+        directory = os.open(
+            parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except RunnerContractError:
+        raise
+    except OSError as error:
+        raise RunnerContractError(f"{name} could not be removed safely") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2815,6 +2928,330 @@ def _evaluator_targets(
     return observed, truth, truth_kind, marker_mask
 
 
+def _prezero_evaluator_targets(
+    prepared: PreparedDataset,
+) -> tuple[np.ndarray, np.ndarray | None, str]:
+    """Return evaluator-private raw-count targets for realized score validation."""
+
+    if not isinstance(prepared, PreparedDataset):
+        raise TypeError("prepared must be a PreparedDataset")
+    if prepared.evaluator_dataset is None:
+        raise RunnerContractError(
+            "evaluator-private score authority is unavailable for p_pre_zero"
+        )
+    observed = _dense_evaluator_matrix(
+        prepared.evaluator_dataset.X, "observed counts for p_pre_zero"
+    )
+    truth_kind = prepared.evaluator_dataset.uns.get("truth_kind")
+    if not isinstance(truth_kind, str):
+        raise RunnerContractError("evaluator dataset truth_kind is invalid")
+    if truth_kind == "orthogonal_only":
+        truth = None
+    else:
+        truth_layer = prepared.evaluator_dataset.uns.get("primary_truth_layer")
+        if (
+            not isinstance(truth_layer, str)
+            or truth_layer not in prepared.evaluator_dataset.layers
+        ):
+            raise RunnerContractError("evaluator score truth layer is unavailable")
+        truth = _dense_evaluator_matrix(
+            prepared.evaluator_dataset.layers[truth_layer],
+            "p_pre_zero evaluator truth",
+        )
+    return observed, truth, truth_kind
+
+
+def _count_score_input_sha256(prepared: PreparedDataset) -> str:
+    """Recompute the count-model input digest from authoritative method counts."""
+
+    if not isinstance(prepared, PreparedDataset):
+        raise TypeError("prepared must be a PreparedDataset")
+    from maskimpute.count_model import _counts_sha256
+
+    return _counts_sha256(prepared.method_input.counts)
+
+
+def _derive_prezero_execution_authority(
+    prepared: PreparedDataset,
+    entry: RunPlanEntry,
+    context: ExecutionAuthorityContext,
+    *,
+    calibration_usage: str,
+    repository: Path,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Independently derive one exact realized-score matrix and policy."""
+
+    if not isinstance(prepared, PreparedDataset):
+        raise TypeError("prepared must be a PreparedDataset")
+    if not isinstance(entry, RunPlanEntry):
+        raise TypeError("entry must be a RunPlanEntry")
+    if not isinstance(context, ExecutionAuthorityContext):
+        raise TypeError("context must be an ExecutionAuthorityContext")
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    if entry.method_id != "maskimpute" or not entry.requires_count_score:
+        raise RunnerContractError(
+            "realized score authority requires a count-score MaskImpute entry"
+        )
+    if entry.dataset_id != prepared.binding.dataset_id:
+        raise RunnerContractError("score authority dataset differs from its plan entry")
+    repository = repository.resolve(strict=True)
+
+    def authority_path(relative_value: str, name: str) -> Path:
+        if not isinstance(relative_value, str):
+            raise RunnerContractError(f"{name} path must be a string")
+        relative = PurePosixPath(relative_value)
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            raise RunnerContractError(f"{name} path is unsafe")
+        path = repository.joinpath(*relative.parts)
+        for component in (path, *path.parents):
+            if component == repository.parent:
+                break
+            if os.path.lexists(component) and stat.S_ISLNK(
+                component.lstat().st_mode
+            ):
+                raise RunnerContractError(f"{name} path contains a symlink")
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            raise RunnerContractError(f"{name} file is unavailable") from error
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            raise RunnerContractError(f"{name} must be a unique regular file")
+        return path
+
+    calibration_file_sha256 = _require_sha256(
+        context.retained_calibration_sha256,
+        "retained calibration file checksum",
+    )
+    assert calibration_file_sha256 is not None
+    calibration_path = authority_path(
+        context.retained_calibration_path,
+        "retained calibration authority",
+    )
+    if _file_sha256(calibration_path) != calibration_file_sha256:
+        raise RunnerContractError("retained calibration file checksum mismatch")
+    try:
+        from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
+        from maskimpute.ablations import (
+            _derive_prezero_execution_policy,
+            load_ablation_registry,
+        )
+        from maskimpute.calibration import load_calibration_artifact
+
+        count_model_payload = json.loads(
+            context.count_model_config_json,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+        if (
+            not isinstance(count_model_payload, dict)
+            or canonical_sha256(count_model_payload)
+            != context.count_model_config_sha256
+        ):
+            raise RunnerContractError(
+                "count-model configuration differs from execution authority"
+            )
+        count_model_config = PreZeroCountModelConfig(**count_model_payload)
+        calibration = load_calibration_artifact(calibration_path)
+    except Exception as error:
+        raise RunnerContractError(
+            "retained score/calibration authority failed semantic validation"
+        ) from error
+
+    if calibration_usage == "development_holdout":
+        manifest_file_sha256 = _require_sha256(
+            context.count_score_manifest_sha256,
+            "development count-score manifest file checksum",
+        )
+        assert manifest_file_sha256 is not None
+        manifest_path = authority_path(
+            context.count_score_manifest_path,
+            "development count-score manifest authority",
+        )
+        if _file_sha256(manifest_path) != manifest_file_sha256:
+            raise RunnerContractError(
+                "development count-score manifest file checksum mismatch"
+            )
+        manifest = _load_strict_json(manifest_path, "development count-score manifest")
+        expected_manifest_fields = {
+            "schema_version",
+            "artifact_type",
+            "dataset_manifest_sha256",
+            "count_model_config_sha256",
+            "dataset_qc_policy_sha256",
+            "entries",
+            "manifest_sha256",
+        }
+        unsigned_manifest = {
+            name: value for name, value in manifest.items() if name != "manifest_sha256"
+        }
+        if (
+            set(manifest) != expected_manifest_fields
+            or manifest.get("schema_version") != 1
+            or manifest.get("artifact_type")
+            != "maskimpute_development_count_score_manifest"
+            or manifest.get("dataset_manifest_sha256")
+            != prepared.binding.manifest_sha256
+            or manifest.get("count_model_config_sha256")
+            != context.count_model_config_sha256
+            or manifest.get("dataset_qc_policy_sha256")
+            != DatasetQCPolicy.fixed().sha256
+            or manifest.get("manifest_sha256")
+            != canonical_sha256(unsigned_manifest)
+        ):
+            raise RunnerContractError(
+                "development count-score manifest authority is invalid"
+            )
+        entries = manifest.get("entries")
+        if not isinstance(entries, list):
+            raise RunnerContractError(
+                "development count-score manifest entries are invalid"
+            )
+        matches = [
+            value
+            for value in entries
+            if isinstance(value, Mapping)
+            and value.get("mechanism") == entry.mechanism
+            and value.get("biological_id") == entry.biological_id
+            and value.get("technical_view") == entry.technical_view
+            and value.get("dataset_id") == entry.dataset_id
+        ]
+        if len(matches) != 1:
+            raise RunnerContractError(
+                "development count-score manifest lacks one exact dataset entry"
+            )
+        try:
+            from .development_scores import (
+                _score_entry,
+                _score_filename,
+                load_count_score_artifact,
+            )
+
+            score = load_count_score_artifact(
+                manifest_path.parent / _score_filename(prepared)
+            )
+            score.score_for_counts(
+                prepared.method_input.counts,
+                prepared.method_input.obs_ids,
+            )
+            expected_entry = _score_entry(prepared, score)
+        except Exception as error:
+            raise RunnerContractError(
+                "development count-score artifact failed deterministic validation"
+            ) from error
+        if dict(matches[0]) != expected_entry:
+            raise RunnerContractError(
+                "development count-score entry differs from its deterministic artifact"
+            )
+    elif calibration_usage == "retained_all_development":
+        authority_file_sha256 = _require_sha256(
+            context.count_score_manifest_sha256,
+            "final count-score authority file checksum",
+        )
+        assert authority_file_sha256 is not None
+        authority_file = authority_path(
+            context.count_score_manifest_path,
+            "final count-score authority",
+        )
+        if _file_sha256(authority_file) != authority_file_sha256:
+            raise RunnerContractError(
+                "final count-score authority file checksum mismatch"
+            )
+        authority_payload = _load_strict_json(
+            authority_file, "final count-score authority"
+        )
+        expected_authority_fields = {
+            "schema_version",
+            "artifact_type",
+            "status",
+            "scope",
+            "frozen_method_sha256",
+            "execution_claim_sha256",
+            "execution_environment_sha256",
+            "dataset_manifest_sha256",
+            "selection_contract_file_sha256",
+            "count_model_config",
+            "count_model_config_sha256",
+            "payload_sha256",
+        }
+        unsigned_authority = {
+            name: value
+            for name, value in authority_payload.items()
+            if name != "payload_sha256"
+        }
+        if (
+            set(authority_payload) != expected_authority_fields
+            or authority_payload.get("schema_version") != 1
+            or authority_payload.get("artifact_type")
+            != "maskimpute_final_count_score_authority"
+            or authority_payload.get("status") != "ready"
+            or authority_payload.get("scope") != "truth_free_final_inference"
+            or authority_payload.get("dataset_manifest_sha256")
+            != prepared.binding.manifest_sha256
+            or authority_payload.get("count_model_config")
+            != count_model_payload
+            or authority_payload.get("count_model_config_sha256")
+            != context.count_model_config_sha256
+            or authority_payload.get("payload_sha256")
+            != canonical_sha256(unsigned_authority)
+        ):
+            raise RunnerContractError("final count-score authority is invalid")
+        for name in (
+            "frozen_method_sha256",
+            "execution_claim_sha256",
+            "execution_environment_sha256",
+            "selection_contract_file_sha256",
+        ):
+            _require_sha256(
+                authority_payload.get(name), f"final count-score authority {name}"
+            )
+        score = fit_p_pre_zero_count_model(
+            prepared.method_input.counts,
+            prepared.method_input.obs_ids,
+            count_model_config,
+        )
+    else:
+        raise RunnerContractError("score authority calibration usage is invalid")
+
+    if score.config_sha256 != context.count_model_config_sha256:
+        raise RunnerContractError(
+            "deterministic score configuration differs from execution authority"
+        )
+    registry = load_ablation_registry(
+        repository / "study/ablations.json"
+    )
+    score_spec = (
+        registry.reference
+        if entry.requires_calibration
+        else registry.by_id["direct-score"]
+    )
+    try:
+        probability, diagnostics = _derive_prezero_execution_policy(
+            prepared.method_input.counts,
+            prepared.method_input.obs_ids,
+            score,
+            calibration,
+            score_spec,
+            calibration_usage=calibration_usage,
+            development_mechanism=entry.mechanism,
+            development_biological_id=entry.biological_id,
+        )
+        policy = policy_from_score_diagnostics(diagnostics)
+    except Exception as error:
+        raise RunnerContractError(
+            "realized p_pre_zero derivation failed execution-policy validation"
+        ) from error
+    if policy["calibration_file_sha256"] != calibration_file_sha256:
+        raise RunnerContractError(
+            "calibration file and payload digest domains differ from authority"
+        )
+    return probability, policy
+
+
 def _evaluator_output_sha256(
     entry: RunPlanEntry,
     prepared: PreparedDataset,
@@ -3077,42 +3514,9 @@ def evaluate_adapter_outcome(
     )
     calibration_receipt = outcome.calibration_fold_receipt
     method_input_digest = method_input_sha256(prepared.method_input)
-    if prepared.evaluator_dataset is None:
-        score_observed = np.array(
-            prepared.method_input.counts,
-            dtype=np.float64,
-            copy=True,
-            order="C",
-        )
-        score_truth_kind = {
-            "symsim": "exact_pre_capture",
-            "sergio": "exact_continuous",
-            "sparsim": "exact_continuous",
-            "semisynthetic": "proxy_high_depth",
-        }.get(entry.mechanism, "orthogonal_only")
-        score_truth = None
-    else:
-        score_observed = _dense_evaluator_matrix(
-            prepared.evaluator_dataset.X, "observed counts for p_pre_zero"
-        )
-        score_truth_kind = prepared.evaluator_dataset.uns.get("truth_kind")
-        if not isinstance(score_truth_kind, str):
-            raise RunnerContractError("evaluator dataset truth_kind is invalid")
-        if score_truth_kind == "orthogonal_only":
-            score_truth = None
-        else:
-            score_truth_layer = prepared.evaluator_dataset.uns.get(
-                "primary_truth_layer"
-            )
-            if (
-                not isinstance(score_truth_layer, str)
-                or score_truth_layer not in prepared.evaluator_dataset.layers
-            ):
-                raise RunnerContractError("evaluator score truth layer is unavailable")
-            score_truth = _dense_evaluator_matrix(
-                prepared.evaluator_dataset.layers[score_truth_layer],
-                "p_pre_zero evaluator truth",
-            )
+    score_observed, score_truth, score_truth_kind = _prezero_evaluator_targets(
+        prepared
+    )
     try:
         p_pre_zero_evidence = evaluate_prezero_evidence(
             identity={
@@ -3249,6 +3653,73 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def _validate_prepared_dataset_authority(
+    plan: CompetitionPlan,
+    prepared_datasets: Mapping[str, PreparedDataset],
+) -> dict[str, PreparedDataset]:
+    """Require one exact evaluator-private authority for every planned dataset."""
+
+    if not isinstance(prepared_datasets, Mapping):
+        raise TypeError("prepared_datasets must be a mapping")
+    planned_dataset_ids = {entry.dataset_id for entry in plan.entries}
+    if set(prepared_datasets) != planned_dataset_ids:
+        raise RunnerContractError(
+            "prepared dataset authority does not exactly cover the competition plan"
+        )
+    prepared_by_dataset: dict[str, PreparedDataset] = {}
+    for dataset_id in sorted(planned_dataset_ids):
+        prepared = prepared_datasets.get(dataset_id)
+        if not isinstance(prepared, PreparedDataset):
+            raise RunnerContractError(
+                f"prepared dataset authority is invalid for {dataset_id}"
+            )
+        entries = tuple(
+            entry for entry in plan.entries if entry.dataset_id == dataset_id
+        )
+        expected_binding = {
+            (
+                entry.source_dataset_sha256,
+                entry.mechanism,
+                entry.biological_id,
+                entry.technical_view,
+            )
+            for entry in entries
+        }
+        actual_binding = (
+            prepared.binding.dataset_sha256,
+            prepared.binding.mechanism,
+            prepared.binding.biological_id,
+            prepared.binding.technical_view,
+        )
+        if (
+            prepared.binding.dataset_id != dataset_id
+            or expected_binding != {actual_binding}
+            or prepared.method_input.source_dataset_sha256
+            != prepared.binding.dataset_sha256
+            or prepared.method_input.shape[0] != prepared.audit.retained_cell_count
+            or prepared.method_input.shape[1] != prepared.binding.genes
+            or prepared.method_input.obs_ids != prepared.audit.retained_cell_ids
+        ):
+            raise RunnerContractError(
+                f"prepared dataset authority differs from plan binding {dataset_id}"
+            )
+        observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
+        if observed.shape != prepared.method_input.shape or not np.array_equal(
+            observed, prepared.method_input.counts
+        ):
+            raise RunnerContractError(
+                f"prepared evaluator observations differ from method input {dataset_id}"
+            )
+        if truth_kind != "orthogonal_only" and (
+            truth is None or truth.shape != prepared.method_input.shape
+        ):
+            raise RunnerContractError(
+                f"prepared evaluator truth differs from method input {dataset_id}"
+            )
+        prepared_by_dataset[dataset_id] = prepared
+    return prepared_by_dataset
+
+
 class CheckpointStore:
     """Atomic canonical checkpoint plus immutable raw run artifacts."""
 
@@ -3268,11 +3739,125 @@ class CheckpointStore:
         }
     )
 
-    def __init__(self, output_dir: Path) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        authority_repository: Path | None = None,
+    ) -> None:
         if not isinstance(output_dir, Path):
             raise TypeError("output_dir must be a pathlib.Path")
+        if authority_repository is not None and not isinstance(
+            authority_repository, Path
+        ):
+            raise TypeError("authority_repository must be a pathlib.Path")
         self.output_dir = output_dir.absolute()
         self.checkpoint_path = self.output_dir / "checkpoint.json"
+        self.authority_repository = (
+            Path(__file__).resolve().parents[1]
+            if authority_repository is None
+            else authority_repository.resolve(strict=True)
+        )
+        self._prezero_authority_cache: dict[
+            tuple[str, str, str, str, str, str, bool, str],
+            tuple[tuple[int, int], bytes, bytes],
+        ] = {}
+
+    def _expected_prezero_authority(
+        self,
+        entry: RunPlanEntry,
+        prepared: PreparedDataset,
+        execution_authority: ExecutionAuthorityContext | None,
+        *,
+        calibration_usage: str,
+        expected_matrix_present: bool,
+    ) -> tuple[np.ndarray | None, dict[str, object] | None]:
+        """Derive and cache authority whenever realized score bytes are present."""
+
+        if (
+            not expected_matrix_present
+            or entry.method_id != "maskimpute"
+            or not entry.requires_count_score
+        ):
+            return None, None
+        if execution_authority is None:
+            raise RunnerContractError(
+                "realized MaskImpute score lacks frozen execution authority"
+            )
+        key = (
+            execution_authority.authority_sha256,
+            execution_authority.count_model_config_sha256,
+            execution_authority.count_score_manifest_sha256 or "",
+            execution_authority.retained_calibration_sha256 or "",
+            entry.dataset_id,
+            _count_score_input_sha256(prepared),
+            entry.requires_calibration,
+            calibration_usage,
+        )
+        cached = self._prezero_authority_cache.get(key)
+        if cached is None:
+            probability, policy = _derive_prezero_execution_authority(
+                prepared,
+                entry,
+                execution_authority,
+                calibration_usage=calibration_usage,
+                repository=self.authority_repository,
+            )
+            canonical_probability = np.array(
+                probability,
+                dtype="<f8",
+                copy=True,
+                order="C",
+                subok=False,
+            )
+            cached = (
+                canonical_probability.shape,
+                canonical_probability.tobytes(order="C"),
+                _canonical_bytes(policy),
+            )
+            self._prezero_authority_cache[key] = cached
+        shape, probability_bytes, policy_bytes = cached
+        detached_probability = np.frombuffer(
+            probability_bytes, dtype="<f8"
+        ).reshape(shape).copy(order="C")
+        detached_probability.setflags(write=False)
+        detached_policy = json.loads(
+            policy_bytes.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+        if not isinstance(detached_policy, dict):  # pragma: no cover - internal bytes
+            raise RunnerContractError("cached p_pre_zero policy is invalid")
+        return detached_probability, detached_policy
+
+    @staticmethod
+    def _expects_realized_prezero(
+        entry: RunPlanEntry,
+        run: Mapping[str, object],
+    ) -> bool:
+        """Derive score presence from plan and post-execution provenance."""
+
+        if entry.method_id != "maskimpute" or not entry.requires_count_score:
+            return False
+        status = run.get("status")
+        reason = run.get("reason")
+        native_provenance = any(
+            run.get(name) is not None
+            for name in (
+                "native_output_sha256",
+                "native_output_path",
+                "native_output_file_sha256",
+                "native_output_shape",
+                "native_output_dtype",
+                "native_output_scale",
+            )
+        )
+        conversion_terminal = (
+            status == "unavailable"
+            and isinstance(reason, str)
+            and _EVALUATOR_CONVERSION_REASON.fullmatch(reason) is not None
+        )
+        return status == "completed" or native_provenance or conversion_terminal
 
     def _ensure_root(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -3295,6 +3880,646 @@ class CheckpointStore:
             if os.path.lexists(component) and stat.S_ISLNK(component.lstat().st_mode):
                 raise RunnerContractError(f"{name} path contains a symlink")
         return path
+
+    @staticmethod
+    def _transaction_artifact_paths(
+        attempt: EvaluatedAttempt,
+    ) -> tuple[str, ...]:
+        base = f"runs/{attempt.run.run_id}"
+        paths = {
+            f"{base}.stdout",
+            f"{base}.stderr",
+            *(() if attempt.native_output is None else (f"{base}.native-f64",)),
+            *(
+                ()
+                if attempt.evaluator_output is None
+                else (f"{base}.log2-cp10k-f64",)
+            ),
+            *(
+                ()
+                if attempt.p_pre_zero_evidence.raw_matrix_bytes is None
+                else (f"{base}.p-pre-zero-f64.zlib",)
+            ),
+        }
+        return tuple(sorted(paths))
+
+    @staticmethod
+    def _allowed_transaction_artifact_paths(entry: RunPlanEntry) -> frozenset[str]:
+        base = f"runs/{entry.run_id}"
+        return frozenset(
+            {
+                f"{base}.stdout",
+                f"{base}.stderr",
+                f"{base}.native-f64",
+                f"{base}.log2-cp10k-f64",
+                f"{base}.p-pre-zero-f64.zlib",
+            }
+        )
+
+    @staticmethod
+    def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
+        return _stable_stat_identity(value)
+
+    @staticmethod
+    def _staging_canonical_name(
+        name: str,
+        prefixes: Mapping[str, str],
+    ) -> str | None:
+        for canonical_name, prefix in prefixes.items():
+            if not name.startswith(prefix) or not name.endswith(".tmp"):
+                continue
+            token = name[len(prefix) : -len(".tmp")]
+            if _MKSTEMP_TOKEN.fullmatch(token) is not None:
+                return canonical_name
+        return None
+
+    @staticmethod
+    def _owned_directory_entries(
+        path: Path,
+        name: str,
+        *,
+        missing_ok: bool = False,
+    ) -> tuple[Path, ...] | None:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            if missing_ok:
+                return None
+            raise RunnerContractError(f"{name} is unavailable")
+        except OSError as error:
+            raise RunnerContractError(f"{name} is unavailable") from error
+        try:
+            canonical = path.resolve(strict=True) == path.absolute()
+        except OSError as error:
+            raise RunnerContractError(f"{name} is not canonical") from error
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or not canonical
+        ):
+            raise RunnerContractError(
+                f"{name} must be an owned canonical nonsymlink directory"
+            )
+        try:
+            return tuple(sorted(path.iterdir(), key=lambda item: item.name))
+        except OSError as error:
+            raise RunnerContractError(f"{name} cannot be enumerated") from error
+
+    @staticmethod
+    def _require_owned_unique_file(path: Path, name: str) -> None:
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            raise RunnerContractError(f"{name} is unavailable") from error
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+        ):
+            raise RunnerContractError(
+                f"{name} must be an owned unique regular file"
+            )
+
+    def _remove_stale_publication_temporaries(
+        self,
+        plan: CompetitionPlan,
+    ) -> tuple[str, ...]:
+        """Remove only exact owned mkstemp files from development-owned paths."""
+
+        root_entries = self._owned_directory_entries(
+            self.output_dir,
+            "checkpoint output directory",
+            missing_ok=True,
+        )
+        if root_entries is None:
+            return ()
+        root_files = {"checkpoint.json": self.checkpoint_path}
+        root_directories = {"runs", "transactions"}
+        root_prefixes = {"checkpoint.json": ".checkpoint."}
+
+        transaction_files = {
+            f"{position:08d}.json": self.output_dir
+            / "transactions"
+            / f"{position:08d}.json"
+            for position in range(1, len(plan.entries) + 1)
+        }
+        transaction_prefixes = {
+            name: f".{name}." for name in transaction_files
+        }
+        run_files = {
+            PurePosixPath(relative).name: self.output_dir / relative
+            for entry in plan.entries
+            for relative in self._allowed_transaction_artifact_paths(entry)
+        }
+        run_prefixes = {name: f".{name}." for name in run_files}
+        temporaries: list[tuple[Path, Path, str]] = []
+
+        def classify(
+            entries: tuple[Path, ...],
+            *,
+            files: Mapping[str, Path],
+            directories: frozenset[str] = frozenset(),
+            prefixes: Mapping[str, str],
+            location: str,
+        ) -> None:
+            for entry in entries:
+                if entry.name in files or entry.name in directories:
+                    continue
+                canonical_name = self._staging_canonical_name(entry.name, prefixes)
+                if canonical_name is None:
+                    raise RunnerContractError(
+                        f"{location} contains an unexpected path: {entry.name}"
+                    )
+                temporaries.append(
+                    (
+                        entry,
+                        files[canonical_name],
+                        f"{location} staging temporary",
+                    )
+                )
+
+        classify(
+            root_entries,
+            files=root_files,
+            directories=frozenset(root_directories),
+            prefixes=root_prefixes,
+            location="checkpoint output",
+        )
+        transactions = self.output_dir / "transactions"
+        transaction_entries = self._owned_directory_entries(
+            transactions,
+            "development transaction directory",
+            missing_ok=True,
+        )
+        if transaction_entries is not None:
+            classify(
+                transaction_entries,
+                files=transaction_files,
+                prefixes=transaction_prefixes,
+                location="development transaction directory",
+            )
+        runs = self.output_dir / "runs"
+        run_entries = self._owned_directory_entries(
+            runs,
+            "development run directory",
+            missing_ok=True,
+        )
+        if run_entries is not None:
+            classify(
+                run_entries,
+                files=run_files,
+                prefixes=run_prefixes,
+                location="development run directory",
+            )
+
+        removed: list[str] = []
+        for temporary, canonical, name in sorted(
+            temporaries, key=lambda item: item[0].as_posix()
+        ):
+            _unlink_owned_staging_temporary(temporary, canonical, name)
+            removed.append(temporary.relative_to(self.output_dir).as_posix())
+
+        root_entries = self._owned_directory_entries(
+            self.output_dir,
+            "checkpoint output directory",
+        )
+        assert root_entries is not None
+        classify(
+            root_entries,
+            files=root_files,
+            directories=frozenset(root_directories),
+            prefixes={},
+            location="checkpoint output",
+        )
+        if os.path.lexists(self.checkpoint_path):
+            self._require_owned_unique_file(
+                self.checkpoint_path,
+                "development checkpoint",
+            )
+        for directory, files, name in (
+            (transactions, transaction_files, "development transaction"),
+            (runs, run_files, "development run artifact"),
+        ):
+            entries = self._owned_directory_entries(
+                directory,
+                f"{name} directory",
+                missing_ok=True,
+            )
+            if entries is None:
+                continue
+            classify(
+                entries,
+                files=files,
+                prefixes={},
+                location=f"{name} directory",
+            )
+            for entry in entries:
+                self._require_owned_unique_file(entry, name)
+        return tuple(removed)
+
+    def _read_owned_transaction_file(
+        self,
+        path: Path,
+        name: str,
+    ) -> tuple[bytes, tuple[int, ...]]:
+        descriptor = -1
+        try:
+            before = path.lstat()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or stat.S_ISLNK(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_uid != os.geteuid()
+                or before.st_size > 1024 * 1024
+            ):
+                raise RunnerContractError(
+                    f"{name} must be an owned bounded unique regular file"
+                )
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened = os.fstat(descriptor)
+            if self._stat_identity(before) != self._stat_identity(opened):
+                raise RunnerContractError(f"{name} changed while opening")
+            chunks: list[bytes] = []
+            consumed = 0
+            while True:
+                chunk = os.read(descriptor, min(1024 * 1024 + 1 - consumed, 65536))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                consumed += len(chunk)
+                if consumed > 1024 * 1024:
+                    raise RunnerContractError(f"{name} exceeds its byte bound")
+            after = os.fstat(descriptor)
+            after_path = path.lstat()
+            if self._stat_identity(opened) != self._stat_identity(
+                after
+            ) or self._stat_identity(opened) != self._stat_identity(after_path):
+                raise RunnerContractError(f"{name} changed while reading")
+            return b"".join(chunks), self._stat_identity(opened)
+        except RunnerContractError:
+            raise
+        except OSError as error:
+            raise RunnerContractError(f"{name} is unavailable") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _checkpoint_transaction_snapshot(
+        self,
+        plan: CompetitionPlan,
+    ) -> tuple[bytes | None, tuple[frozenset[str], ...]]:
+        if not os.path.lexists(self.checkpoint_path):
+            return None, ()
+        raw = self._read_checkpoint_bytes()
+        try:
+            payload = json.loads(
+                raw.decode("utf-8"),
+                parse_constant=_reject_json_constant,
+                object_pairs_hook=_unique_json_object,
+            )
+        except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+            raise RunnerContractError(
+                "checkpoint transaction prefix is invalid"
+            ) from error
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != self._CHECKPOINT_KEYS
+            or raw != _canonical_bytes(payload) + b"\n"
+            or payload.get("schema_version") != 1
+            or payload.get("plan_sha256") != plan.plan_sha256
+            or payload.get("input_hashes") != dict(plan.input_hashes)
+            or payload.get("planned_run_count") != len(plan.entries)
+        ):
+            raise RunnerContractError(
+                "checkpoint transaction prefix differs from its plan"
+            )
+        checksum_body = {
+            key: nested
+            for key, nested in payload.items()
+            if key != "checkpoint_sha256"
+        }
+        if payload.get("checkpoint_sha256") != canonical_sha256(checksum_body):
+            raise RunnerContractError(
+                "checkpoint transaction prefix checksum differs"
+            )
+        records = payload.get("records")
+        if not isinstance(records, list) or len(records) > len(plan.entries):
+            raise RunnerContractError(
+                "checkpoint transaction records are not a plan prefix"
+            )
+        expected_status = (
+            "completed" if len(records) == len(plan.entries) else "running"
+        )
+        if payload.get("status") != expected_status:
+            raise RunnerContractError(
+                "checkpoint transaction status contradicts its prefix"
+            )
+        references: list[frozenset[str]] = []
+        for record, entry in zip(records, plan.entries, strict=False):
+            if not isinstance(record, Mapping) or set(record) != {
+                "run",
+                "metrics",
+                "p_pre_zero_evidence",
+            }:
+                raise RunnerContractError(
+                    "checkpoint transaction record has wrong schema"
+                )
+            run = record.get("run")
+            evidence = record.get("p_pre_zero_evidence")
+            storage = (
+                evidence.get("storage")
+                if isinstance(evidence, Mapping)
+                else None
+            )
+            if (
+                not isinstance(run, Mapping)
+                or run.get("run_id") != entry.run_id
+                or not isinstance(storage, Mapping)
+            ):
+                raise RunnerContractError(
+                    "checkpoint transaction record differs from its plan"
+                )
+            observed: set[str] = set()
+            for prefix in ("stdout", "stderr", "native_output", "evaluator_output"):
+                relative = run.get(f"{prefix}_path")
+                if relative is not None:
+                    if not isinstance(relative, str):
+                        raise RunnerContractError(
+                            "checkpoint transaction artifact path is invalid"
+                        )
+                    observed.add(relative)
+            score_relative = storage.get("path")
+            if score_relative is not None:
+                if not isinstance(score_relative, str):
+                    raise RunnerContractError(
+                        "checkpoint transaction score path is invalid"
+                    )
+                observed.add(score_relative)
+            allowed = self._allowed_transaction_artifact_paths(entry)
+            required = {
+                f"runs/{entry.run_id}.stdout",
+                f"runs/{entry.run_id}.stderr",
+            }
+            if not required.issubset(observed) or not observed.issubset(allowed):
+                raise RunnerContractError(
+                    "checkpoint transaction artifact paths differ from their run"
+                )
+            references.append(frozenset(observed))
+        return raw, tuple(references)
+
+    def _assert_checkpoint_transaction_snapshot(
+        self,
+        snapshot: bytes | None,
+    ) -> None:
+        if snapshot is None:
+            if os.path.lexists(self.checkpoint_path):
+                raise RunnerContractError(
+                    "checkpoint prefix appeared during transaction recovery"
+                )
+            return
+        if not os.path.lexists(self.checkpoint_path):
+            raise RunnerContractError(
+                "checkpoint prefix disappeared during transaction recovery"
+            )
+        if self._read_checkpoint_bytes() != snapshot:
+            raise RunnerContractError(
+                "checkpoint prefix changed during transaction recovery"
+            )
+
+    def _unlink_closed_transaction_file(
+        self,
+        path: Path,
+        name: str,
+        *,
+        checkpoint_snapshot: bytes | None,
+        expected_identity: tuple[int, ...] | None = None,
+        missing_ok: bool = False,
+    ) -> bool:
+        descriptor = -1
+        try:
+            try:
+                before = path.lstat()
+            except FileNotFoundError:
+                if missing_ok:
+                    return False
+                raise
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or stat.S_ISLNK(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_uid != os.geteuid()
+                or (
+                    expected_identity is not None
+                    and self._stat_identity(before) != expected_identity
+                )
+            ):
+                raise RunnerContractError(
+                    f"{name} is not an owned unique closed file"
+                )
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened = os.fstat(descriptor)
+            if self._stat_identity(before) != self._stat_identity(opened):
+                raise RunnerContractError(f"{name} changed while opening")
+            self._assert_checkpoint_transaction_snapshot(checkpoint_snapshot)
+            after_path = path.lstat()
+            if self._stat_identity(opened) != self._stat_identity(after_path):
+                raise RunnerContractError(f"{name} changed before removal")
+            path.unlink()
+            if os.fstat(descriptor).st_nlink != 0 or os.path.lexists(path):
+                raise RunnerContractError(f"{name} survived removal")
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            return True
+        except RunnerContractError:
+            raise
+        except OSError as error:
+            raise RunnerContractError(f"{name} could not be removed safely") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _recover_interrupted_transactions(
+        self,
+        plan: CompetitionPlan,
+    ) -> tuple[int, ...]:
+        """Close committed intents and roll back only uncommitted artifacts."""
+
+        self._remove_stale_publication_temporaries(plan)
+        transactions = self.output_dir / "transactions"
+        if not os.path.lexists(transactions):
+            return ()
+        try:
+            metadata = transactions.lstat()
+            names = tuple(sorted(path.name for path in transactions.iterdir()))
+        except OSError as error:
+            raise RunnerContractError(
+                "development transaction directory cannot be enumerated"
+            ) from error
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+        ):
+            raise RunnerContractError("development transaction directory is invalid")
+        checkpoint_snapshot, committed = self._checkpoint_transaction_snapshot(plan)
+        committed_all = frozenset().union(*committed)
+        recovered: list[int] = []
+        for name in names:
+            if _DEVELOPMENT_TRANSACTION_FILE.fullmatch(name) is None:
+                raise RunnerContractError("development transaction name is invalid")
+            position = int(name.removesuffix(".json")) - 1
+            if position < 0 or position >= len(plan.entries):
+                raise RunnerContractError("development transaction position is invalid")
+            entry = plan.entries[position]
+            intent_path = transactions / name
+            raw, identity = self._read_owned_transaction_file(
+                intent_path,
+                "development transaction intent",
+            )
+            try:
+                intent = json.loads(
+                    raw.decode("utf-8"),
+                    parse_constant=_reject_json_constant,
+                    object_pairs_hook=_unique_json_object,
+                )
+            except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+                raise RunnerContractError(
+                    "development transaction intent is invalid"
+                ) from error
+            body = (
+                {
+                    key: nested
+                    for key, nested in intent.items()
+                    if key != "intent_sha256"
+                }
+                if isinstance(intent, Mapping)
+                else {}
+            )
+            artifact_paths = (
+                intent.get("artifact_paths")
+                if isinstance(intent, Mapping)
+                else None
+            )
+            allowed = self._allowed_transaction_artifact_paths(entry)
+            required = {
+                f"runs/{entry.run_id}.stdout",
+                f"runs/{entry.run_id}.stderr",
+            }
+            if (
+                not isinstance(intent, dict)
+                or set(intent)
+                != {
+                    "schema_version",
+                    "plan_sha256",
+                    "position",
+                    "ordinal",
+                    "run_id",
+                    "artifact_paths",
+                    "intent_sha256",
+                }
+                or intent.get("schema_version") != 1
+                or intent.get("plan_sha256") != plan.plan_sha256
+                or intent.get("position") != position
+                or intent.get("ordinal") != entry.ordinal
+                or intent.get("run_id") != entry.run_id
+                or not isinstance(artifact_paths, list)
+                or not all(isinstance(item, str) for item in artifact_paths)
+                or artifact_paths != sorted(artifact_paths)
+                or len(set(artifact_paths)) != len(artifact_paths)
+                or not required.issubset(set(artifact_paths))
+                or not set(artifact_paths).issubset(allowed)
+                or intent.get("intent_sha256") != canonical_sha256(body)
+                or raw != _canonical_bytes(intent) + b"\n"
+            ):
+                raise RunnerContractError("development transaction intent is invalid")
+            if position > len(committed):
+                raise RunnerContractError(
+                    "development transaction is beyond the checkpoint prefix"
+                )
+            if position < len(committed):
+                if set(artifact_paths) != set(committed[position]):
+                    raise RunnerContractError(
+                        "committed development transaction differs from its record"
+                    )
+            else:
+                if set(artifact_paths) & committed_all:
+                    raise RunnerContractError(
+                        "interrupted development artifacts are checkpoint-referenced"
+                    )
+                for relative in artifact_paths:
+                    path = self._safe_artifact_path(
+                        relative,
+                        "interrupted development artifact",
+                    )
+                    self._unlink_closed_transaction_file(
+                        path,
+                        "interrupted development artifact",
+                        checkpoint_snapshot=checkpoint_snapshot,
+                        missing_ok=True,
+                    )
+            self._unlink_closed_transaction_file(
+                intent_path,
+                "development transaction intent",
+                checkpoint_snapshot=checkpoint_snapshot,
+                expected_identity=identity,
+            )
+            recovered.append(entry.ordinal)
+        try:
+            transactions.rmdir()
+        except OSError as error:
+            raise RunnerContractError(
+                "development transaction directory did not become empty"
+            ) from error
+        directory = os.open(self.output_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        runs = self.output_dir / "runs"
+        try:
+            runs.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        return tuple(recovered)
+
+    def _publish_transaction_intent(
+        self,
+        plan: CompetitionPlan,
+        position: int,
+        entry: RunPlanEntry,
+        attempt: EvaluatedAttempt,
+    ) -> Path:
+        body: dict[str, object] = {
+            "schema_version": 1,
+            "plan_sha256": plan.plan_sha256,
+            "position": position,
+            "ordinal": entry.ordinal,
+            "run_id": entry.run_id,
+            "artifact_paths": list(self._transaction_artifact_paths(attempt)),
+        }
+        intent = {**body, "intent_sha256": canonical_sha256(body)}
+        relative, _digest = self._publish_immutable(
+            f"transactions/{position + 1:08d}.json",
+            _canonical_bytes(intent) + b"\n",
+        )
+        return self.output_dir / relative
 
     def _publish_immutable(self, relative: str, data: bytes) -> tuple[str, str]:
         self._ensure_root()
@@ -3431,7 +4656,10 @@ class CheckpointStore:
         plan: CompetitionPlan,
         records: Sequence[Mapping[str, object]],
         budget: DevelopmentBudget,
+        *,
+        prepared_datasets: Mapping[str, PreparedDataset],
     ) -> CheckpointReport:
+        _validate_prepared_dataset_authority(plan, prepared_datasets)
         record_values = tuple(dict(record) for record in records)
         status = "completed" if len(record_values) == len(plan.entries) else "running"
         body: dict[str, object] = {
@@ -3448,7 +4676,7 @@ class CheckpointStore:
         }
         body["checkpoint_sha256"] = canonical_sha256(body)
         self._publish_checkpoint(body)
-        return self.load(plan)
+        return self.load(plan, prepared_datasets=prepared_datasets)
 
     def append(
         self,
@@ -3456,10 +4684,62 @@ class CheckpointStore:
         report: CheckpointReport | None,
         attempt: EvaluatedAttempt,
         budget: DevelopmentBudget,
+        *,
+        prepared_datasets: Mapping[str, PreparedDataset],
     ) -> CheckpointReport:
+        prepared_by_dataset = _validate_prepared_dataset_authority(
+            plan, prepared_datasets
+        )
+        self._recover_interrupted_transactions(plan)
         records = [] if report is None else list(report.records)
+        if len(records) >= len(plan.entries):
+            raise RunnerContractError("checkpoint already contains its full plan")
+        entry = plan.entries[len(records)]
+        prepared = prepared_by_dataset[entry.dataset_id]
+        with tempfile.TemporaryDirectory(
+            prefix="maskimpute-checkpoint-stage-"
+        ) as staging_name:
+            staging = CheckpointStore(
+                Path(staging_name),
+                authority_repository=self.authority_repository,
+            )
+            staged_record = json.loads(
+                _canonical_bytes(staging._stored_attempt(attempt)).decode("utf-8"),
+                parse_constant=_reject_json_constant,
+                object_pairs_hook=_unique_json_object,
+            )
+            staging._validate_stored_record(
+                staged_record,
+                entry,
+                prepared=prepared,
+                expected_dataset_qc_policy_sha256=plan.input_hashes.get(
+                    "dataset_qc_policy_sha256"
+                ),
+                expected_score_config_sha256=plan.input_hashes.get(
+                    "count_model_config_sha256"
+                ),
+                expected_calibration_file_sha256=plan.input_hashes.get(
+                    "retained_calibration_sha256"
+                ),
+                execution_authority=plan.execution_context,
+                calibration_usage="development_holdout",
+            )
+            self._prezero_authority_cache.update(
+                staging._prezero_authority_cache
+            )
+        self._publish_transaction_intent(
+            plan,
+            len(records),
+            entry,
+            attempt,
+        )
         records.append(self._stored_attempt(attempt))
-        return self.write(plan, records, budget)
+        return self.write(
+            plan,
+            records,
+            budget,
+            prepared_datasets=prepared_datasets,
+        )
 
     def _verify_artifact(self, relative: object, digest: object, name: str) -> Path:
         expected = _require_sha256(digest, f"{name} file checksum")
@@ -3620,7 +4900,12 @@ class CheckpointStore:
         value: object,
         entry: RunPlanEntry,
         *,
-        final_calibration_artifact_sha256: str | None = None,
+        prepared: PreparedDataset,
+        expected_dataset_qc_policy_sha256: str | None,
+        expected_score_config_sha256: str | None,
+        expected_calibration_file_sha256: str | None,
+        execution_authority: ExecutionAuthorityContext | None = None,
+        calibration_usage: str = "development_holdout",
     ) -> dict[str, object]:
         if not isinstance(value, dict) or set(value) != {
             "run",
@@ -3653,6 +4938,26 @@ class CheckpointStore:
                 )
         if run.get("status") not in _OUTCOME_STATUSES:
             raise RunnerContractError("checkpoint run status is invalid")
+        authoritative_method_input_sha256 = method_input_sha256(
+            prepared.method_input
+        )
+        for name, expected in (
+            ("method_input_sha256", authoritative_method_input_sha256),
+            ("dataset_qc_policy_sha256", expected_dataset_qc_policy_sha256),
+            ("excluded_cell_count", prepared.audit.excluded_cell_count),
+            ("excluded_cell_ids_sha256", prepared.audit.excluded_cell_ids_sha256),
+            ("retained_cell_count", prepared.audit.retained_cell_count),
+            ("retained_cell_ids_sha256", prepared.audit.retained_cell_ids_sha256),
+            ("retained_gene_count", prepared.method_input.shape[1]),
+            (
+                "observed_zero_count",
+                int((prepared.method_input.counts == 0.0).sum()),
+            ),
+        ):
+            if run.get(name) != expected:
+                raise RunnerContractError(
+                    f"checkpoint run {name} differs from prepared-data authority"
+                )
         _require_nonnegative_number(run.get("runtime_seconds"), "checkpoint runtime")
         for name in (
             "retained_cell_count",
@@ -3684,14 +4989,14 @@ class CheckpointStore:
             if (
                 entry.requires_calibration
                 and run.get("status") == "completed"
-                and final_calibration_artifact_sha256 is None
+                and expected_calibration_file_sha256 is None
             ):
                 raise RunnerContractError(
                     "calibrated completed run lacks its LODO receipt"
                 )
-            if final_calibration_artifact_sha256 is not None:
+            if expected_calibration_file_sha256 is not None:
                 _require_sha256(
-                    final_calibration_artifact_sha256,
+                    expected_calibration_file_sha256,
                     "checkpoint final calibration artifact",
                 )
         else:
@@ -3710,6 +5015,13 @@ class CheckpointStore:
                     raise RunnerContractError(f"checkpoint {name} is invalid")
                 for digest in values:
                     _require_sha256(digest, f"checkpoint {name}")
+            if (
+                expected_calibration_file_sha256 is not None
+                and calibration_artifact != expected_calibration_file_sha256
+            ):
+                raise RunnerContractError(
+                    "checkpoint calibration artifact differs from execution authority"
+                )
         for stream in ("stdout", "stderr"):
             path = self._verify_artifact(
                 run.get(f"{stream}_path"),
@@ -3773,14 +5085,18 @@ class CheckpointStore:
             "model_seed": entry.model_seed,
             "configuration_id": entry.configuration_id,
             "configuration_sha256": entry.configuration_sha256,
-            "method_input_sha256": run.get("method_input_sha256"),
-            "retained_cell_ids_sha256": run.get("retained_cell_ids_sha256"),
+            "method_input_sha256": authoritative_method_input_sha256,
+            "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
         }
-        expected_calibration = (
-            final_calibration_artifact_sha256
-            if final_calibration_artifact_sha256 is not None
-            else run.get("calibration_artifact_sha256")
+        expected_matrix_present = self._expects_realized_prezero(entry, run)
+        expected_probability, expected_policy = self._expected_prezero_authority(
+            entry,
+            prepared,
+            execution_authority,
+            calibration_usage=calibration_usage,
+            expected_matrix_present=expected_matrix_present,
         )
+        observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
         try:
             validate_stored_prezero_evidence(
                 evidence_value,
@@ -3796,10 +5112,18 @@ class CheckpointStore:
                 ),
                 requires_count_score=entry.requires_count_score,
                 requires_calibration=entry.requires_calibration,
-                expected_calibration_artifact_sha256=(
-                    None if expected_calibration is None else str(expected_calibration)
+                expected_calibration_file_sha256=(
+                    expected_calibration_file_sha256
                 ),
                 compressed=compressed_p_pre_zero,
+                observed=observed,
+                truth=truth,
+                truth_kind=truth_kind,
+                expected_score_input_sha256=_count_score_input_sha256(prepared),
+                expected_score_config_sha256=expected_score_config_sha256,
+                expected_matrix_present=expected_matrix_present,
+                expected_probability=expected_probability,
+                expected_policy=expected_policy,
             )
         except PreZeroEvidenceError as error:
             raise RunnerContractError(str(error)) from error
@@ -3824,9 +5148,18 @@ class CheckpointStore:
                     )
         return value
 
-    def load(self, plan: CompetitionPlan) -> CheckpointReport:
+    def load(
+        self,
+        plan: CompetitionPlan,
+        *,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> CheckpointReport:
         if not isinstance(plan, CompetitionPlan):
             raise TypeError("plan must be a CompetitionPlan")
+        self._recover_interrupted_transactions(plan)
+        prepared_by_dataset = _validate_prepared_dataset_authority(
+            plan, prepared_datasets
+        )
         expected_source_sha256 = _require_sha256(
             plan.input_hashes.get("implementation_source_sha256"),
             "plan implementation source checksum",
@@ -3876,7 +5209,22 @@ class CheckpointStore:
         ):
             raise RunnerContractError("checkpoint records are not a plan prefix")
         records = tuple(
-            self._validate_stored_record(value, entry)
+            self._validate_stored_record(
+                value,
+                entry,
+                prepared=prepared_by_dataset[entry.dataset_id],
+                expected_dataset_qc_policy_sha256=plan.input_hashes.get(
+                    "dataset_qc_policy_sha256"
+                ),
+                expected_score_config_sha256=plan.input_hashes.get(
+                    "count_model_config_sha256"
+                ),
+                expected_calibration_file_sha256=plan.input_hashes.get(
+                    "retained_calibration_sha256"
+                ),
+                execution_authority=plan.execution_context,
+                calibration_usage="development_holdout",
+            )
             for value, entry in zip(records_value, plan.entries, strict=False)
         )
         expected_status = (
@@ -3932,7 +5280,7 @@ def execute_competition_plan(
         raise TypeError("checkpoint_store must be a CheckpointStore")
     _require_sha256(plan.plan_sha256, "competition plan checksum")
     report = (
-        checkpoint_store.load(plan)
+        checkpoint_store.load(plan, prepared_datasets=prepared_datasets)
         if checkpoint_store.checkpoint_path.exists()
         else None
     )
@@ -4082,9 +5430,20 @@ def execute_competition_plan(
             outcome,
             dataset_qc_policy_sha256=qc_policy_sha256,
         )
-        report = checkpoint_store.append(plan, report, evaluated, budget)
+        report = checkpoint_store.append(
+            plan,
+            report,
+            evaluated,
+            budget,
+            prepared_datasets=prepared_datasets,
+        )
     if report is None:
-        report = checkpoint_store.write(plan, (), budget)
+        report = checkpoint_store.write(
+            plan,
+            (),
+            budget,
+            prepared_datasets=prepared_datasets,
+        )
     return report
 
 

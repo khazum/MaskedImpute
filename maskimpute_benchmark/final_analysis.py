@@ -96,7 +96,8 @@ _SCORE_POLICY_FIELDS = frozenset(
         "score_artifact_sha256",
         "score_input_sha256",
         "score_config_sha256",
-        "calibration_artifact_sha256",
+        "calibration_file_sha256",
+        "calibration_payload_sha256",
         "calibration_algorithm",
         "calibration_scope",
         "calibration_equivalence_reason",
@@ -856,7 +857,7 @@ def _normalize_score_evidence(
             )
             if (
                 method != "maskimpute"
-                or evidence_status != "completed"
+                or evidence_status not in {"completed", "unavailable"}
                 or not isinstance(shape, list)
                 or len(shape) != 2
                 or any(type(item) is not int or item <= 0 for item in shape)
@@ -871,7 +872,7 @@ def _normalize_score_evidence(
                     f"record {record_index} p_pre_zero matrix receipt is invalid"
                 )
             if (
-                policy.get("schema_version") != 1
+                policy.get("schema_version") != 2
                 or policy.get("probability_semantics")
                 != "pre_capture_count_is_zero_given_observed_counts"
                 or policy.get("evaluation_domain") != "observed_zero_entries_only"
@@ -883,11 +884,19 @@ def _normalize_score_evidence(
                 "score_artifact_sha256",
                 "score_input_sha256",
                 "score_config_sha256",
-                "calibration_artifact_sha256",
+                "calibration_file_sha256",
+                "calibration_payload_sha256",
             ):
                 _sha256(
                     policy.get(field),
                     f"record {record_index} p_pre_zero policy {field}",
+                )
+            if (
+                policy.get("calibration_file_sha256")
+                == policy.get("calibration_payload_sha256")
+            ):
+                raise FinalAnalysisContractError(
+                    f"record {record_index} p_pre_zero calibration digest domains coincide"
                 )
             for field in (
                 "score_source",

@@ -2037,7 +2037,9 @@ def test_execution_reuses_one_truth_free_input_and_checkpoints_full_denominator(
     assert all(record["run"]["status"] == "unavailable" for record in report.records)
     checkpoint_bytes = store.checkpoint_path.read_bytes()
     assert checkpoint_bytes.endswith(b"\n")
-    loaded = store.load(plan)
+    loaded = store.load(
+        plan, prepared_datasets={prepared.binding.dataset_id: prepared}
+    )
     assert loaded == report
     for record in loaded.records:
         stdout = store.output_dir / record["run"]["stdout_path"]
@@ -2062,7 +2064,9 @@ def test_resume_requires_exact_plan_and_continues_only_after_valid_prefix(
             interrupting,
             store,
         )
-    partial = store.load(plan)
+    partial = store.load(
+        plan, prepared_datasets={prepared.binding.dataset_id: prepared}
+    )
     assert partial.status == "running"
     assert len(partial.records) == 1
 
@@ -2080,7 +2084,9 @@ def test_resume_requires_exact_plan_and_continues_only_after_valid_prefix(
 
     changed = replace(plan, plan_sha256="d" * 64)
     with pytest.raises(RunnerContractError, match="plan checksum"):
-        store.load(changed)
+        store.load(
+            changed, prepared_datasets={prepared.binding.dataset_id: prepared}
+        )
 
 
 def test_checkpoint_resume_rejects_changed_implementation_bytes(
@@ -2116,7 +2122,9 @@ def test_checkpoint_resume_rejects_changed_implementation_bytes(
     changed = source_root / "maskimpute/a.py"
     changed.write_bytes(changed.read_bytes() + b"# changed after checkpoint\n")
     with pytest.raises(RunnerContractError, match="implementation source"):
-        store.load(plan)
+        store.load(
+            plan, prepared_datasets={prepared.binding.dataset_id: prepared}
+        )
 
 
 def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
@@ -2146,12 +2154,17 @@ def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
     assert run["evaluator_scale"] == "log2_cp10k_plus_1"
     output = store.output_dir / run["evaluator_output_path"]
     assert output.stat().st_size == prepared.method_input.counts.size * 8
-    assert store.load(plan) == report
+    assert (
+        store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
+        == report
+    )
 
     stdout = store.output_dir / run["stdout_path"]
     stdout.write_bytes(b"tampered")
     with pytest.raises(RunnerContractError, match="stdout.*checksum"):
-        store.load(plan)
+        store.load(
+            plan, prepared_datasets={prepared.binding.dataset_id: prepared}
+        )
 
 
 def test_checkpoint_loader_rejects_symlink_replacement(tmp_path: Path) -> None:
@@ -2171,7 +2184,9 @@ def test_checkpoint_loader_rejects_symlink_replacement(tmp_path: Path) -> None:
     store.checkpoint_path.symlink_to(target)
 
     with pytest.raises(RunnerContractError, match="checkpoint.*regular file|symlink"):
-        store.load(plan)
+        store.load(
+            plan, prepared_datasets={prepared.binding.dataset_id: prepared}
+        )
 
 
 def test_implementation_source_digest_is_sorted_raw_and_symlink_safe(

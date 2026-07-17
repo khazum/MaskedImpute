@@ -42,7 +42,8 @@ _POLICY_FIELDS = {
     "score_artifact_sha256",
     "score_input_sha256",
     "score_config_sha256",
-    "calibration_artifact_sha256",
+    "calibration_file_sha256",
+    "calibration_payload_sha256",
     "calibration_algorithm",
     "calibration_scope",
     "calibration_equivalence_reason",
@@ -52,7 +53,8 @@ _POLICY_SOURCE_FIELDS = {
     "score_artifact_sha256": "score_artifact_sha256",
     "score_input_sha256": "score_input_sha256",
     "score_config_sha256": "score_config_sha256",
-    "calibration_artifact_sha256": "calibration_artifact_sha256",
+    "calibration_file_sha256": "calibration_file_sha256",
+    "calibration_payload_sha256": "calibration_payload_sha256",
     "retained_calibrator": "calibration_algorithm",
     "calibration_scope": "calibration_scope",
     "equivalence_reason": "calibration_equivalence_reason",
@@ -124,14 +126,17 @@ def _require_sha256(value: object, name: str) -> str:
     return value
 
 
-def _policy_from_execution(execution: object) -> dict[str, object]:
-    policy_source = getattr(execution, "realized_p_pre_zero_policy", None)
+def policy_from_score_diagnostics(
+    policy_source: object,
+) -> dict[str, object]:
+    """Build the canonical persisted policy from verified score diagnostics."""
+
     if not isinstance(policy_source, Mapping):
         raise PreZeroEvidenceError(
             "completed MaskImpute execution lacks realized score policy evidence"
         )
     policy: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "probability_semantics": "pre_capture_count_is_zero_given_observed_counts",
         "evaluation_domain": "observed_zero_entries_only",
     }
@@ -148,6 +153,12 @@ def _policy_from_execution(execution: object) -> dict[str, object]:
         else:
             policy[destination_name] = value
     return policy
+
+
+def _policy_from_execution(execution: object) -> dict[str, object]:
+    return policy_from_score_diagnostics(
+        getattr(execution, "realized_p_pre_zero_policy", None)
+    )
 
 
 def _probability_matrix(value: object, shape: tuple[int, int]) -> np.ndarray:
@@ -593,10 +604,61 @@ def validate_stored_prezero_evidence(
     expected_shape: tuple[int, int],
     requires_count_score: bool,
     requires_calibration: bool,
-    expected_calibration_artifact_sha256: str | None,
+    expected_calibration_file_sha256: str | None,
     compressed: bytes | None,
+    observed: np.ndarray,
+    truth: np.ndarray | None,
+    truth_kind: str,
+    expected_score_input_sha256: str | None,
+    expected_score_config_sha256: str | None,
+    expected_matrix_present: bool,
+    expected_probability: np.ndarray | None = None,
+    expected_policy: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Validate one persisted evidence record and its bounded matrix bytes."""
+
+    try:
+        observed_array = np.array(
+            observed, dtype="<f8", copy=True, order="C", subok=False
+        )
+        truth_array = (
+            None
+            if truth is None
+            else np.array(truth, dtype="<f8", copy=True, order="C", subok=False)
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise PreZeroEvidenceError(
+            "authoritative p_pre_zero score targets are invalid"
+        ) from error
+    if (
+        observed_array.shape != expected_shape
+        or observed_array.ndim != 2
+        or not np.isfinite(observed_array).all()
+        or bool((observed_array < 0.0).any())
+        or int((observed_array == 0.0).sum()) != observed_zero_count
+    ):
+        raise PreZeroEvidenceError(
+            "authoritative p_pre_zero observed targets differ from the run"
+        )
+    if truth_kind not in {
+        "exact_pre_capture",
+        "exact_continuous",
+        "proxy_high_depth",
+        "orthogonal_only",
+    }:
+        raise PreZeroEvidenceError("authoritative p_pre_zero truth kind is invalid")
+    if truth_kind == "orthogonal_only":
+        if truth_array is not None:
+            raise PreZeroEvidenceError(
+                "orthogonal p_pre_zero authority cannot expose evaluator truth"
+            )
+    elif (
+        truth_array is None
+        or truth_array.shape != expected_shape
+        or not np.isfinite(truth_array).all()
+        or bool((truth_array < 0.0).any())
+    ):
+        raise PreZeroEvidenceError("authoritative p_pre_zero truth targets are invalid")
 
     if not isinstance(value, dict) or set(value) != {
         "schema_version",
@@ -634,14 +696,11 @@ def validate_stored_prezero_evidence(
         raise PreZeroEvidenceError(
             "p_pre_zero evidence status or reason differs from its run"
         )
-    truth_kind = value.get("truth_kind")
-    if truth_kind not in {
-        "exact_pre_capture",
-        "exact_continuous",
-        "proxy_high_depth",
-        "orthogonal_only",
-    }:
-        raise PreZeroEvidenceError("p_pre_zero evidence truth kind is invalid")
+    stored_truth_kind = value.get("truth_kind")
+    if stored_truth_kind != truth_kind:
+        raise PreZeroEvidenceError(
+            "p_pre_zero evidence truth kind differs from evaluator authority"
+        )
     body = {
         key: nested
         for key, nested in value.items()
@@ -663,11 +722,22 @@ def validate_stored_prezero_evidence(
         raise PreZeroEvidenceError("p_pre_zero matrix receipt is malformed")
     if not isinstance(storage, Mapping) or set(storage) != _STORAGE_FIELDS:
         raise PreZeroEvidenceError("p_pre_zero storage receipt is malformed")
+    if type(expected_matrix_present) is not bool:
+        raise TypeError("expected_matrix_present must be a bool")
     matrix_present = matrix.get("shape") is not None
+    if matrix_present != expected_matrix_present:
+        raise PreZeroEvidenceError(
+            "p_pre_zero matrix presence differs from execution provenance"
+        )
+    probability: np.ndarray | None = None
     if matrix_present:
         if method_id != "maskimpute" or not requires_count_score:
             raise PreZeroEvidenceError(
                 "p_pre_zero matrix is not authorized for this configuration"
+            )
+        if expected_probability is None or expected_policy is None:
+            raise PreZeroEvidenceError(
+                "p_pre_zero matrix lacks exact execution authority"
             )
         if matrix.get("shape") != list(expected_shape) or matrix.get("dtype") != "<f8":
             raise PreZeroEvidenceError("p_pre_zero matrix shape or dtype differs")
@@ -681,7 +751,7 @@ def validate_stored_prezero_evidence(
         if policy_sha256 != canonical_sha256(policy_value):
             raise PreZeroEvidenceError("p_pre_zero policy checksum differs")
         if (
-            policy.get("schema_version") != 1
+            policy.get("schema_version") != 2
             or policy.get("probability_semantics")
             != "pre_capture_count_is_zero_given_observed_counts"
             or policy.get("evaluation_domain") != "observed_zero_entries_only"
@@ -692,9 +762,34 @@ def validate_stored_prezero_evidence(
             "score_artifact_sha256",
             "score_input_sha256",
             "score_config_sha256",
-            "calibration_artifact_sha256",
+            "calibration_file_sha256",
+            "calibration_payload_sha256",
         ):
             _require_sha256(policy.get(name), f"p_pre_zero policy {name}")
+        expected_score_input = _require_sha256(
+            expected_score_input_sha256,
+            "authoritative p_pre_zero score input",
+        )
+        expected_score_config = _require_sha256(
+            expected_score_config_sha256,
+            "authoritative p_pre_zero score configuration",
+        )
+        expected_calibration = _require_sha256(
+            expected_calibration_file_sha256,
+            "authoritative p_pre_zero calibration file",
+        )
+        if policy.get("score_input_sha256") != expected_score_input:
+            raise PreZeroEvidenceError(
+                "p_pre_zero score input differs from execution authority"
+            )
+        if policy.get("score_config_sha256") != expected_score_config:
+            raise PreZeroEvidenceError(
+                "p_pre_zero score configuration differs from execution authority"
+            )
+        if policy.get("calibration_file_sha256") != expected_calibration:
+            raise PreZeroEvidenceError(
+                "p_pre_zero calibration policy differs from execution authority"
+            )
         for name in (
             "calibration_algorithm",
             "calibration_scope",
@@ -704,17 +799,12 @@ def validate_stored_prezero_evidence(
                 raise PreZeroEvidenceError(
                     f"p_pre_zero policy {name} must be a nonempty string"
                 )
-        if requires_calibration and policy.get("score_source") != "retained_calibrator":
+        expected_score_source = (
+            "retained_calibrator" if requires_calibration else "direct"
+        )
+        if policy.get("score_source") != expected_score_source:
             raise PreZeroEvidenceError(
-                "calibrated p_pre_zero policy does not use the retained calibrator"
-            )
-        if (
-            expected_calibration_artifact_sha256 is not None
-            and policy.get("calibration_artifact_sha256")
-            != expected_calibration_artifact_sha256
-        ):
-            raise PreZeroEvidenceError(
-                "p_pre_zero calibration policy differs from execution authority"
+                "p_pre_zero score source differs from execution authority"
             )
         if (
             storage.get("encoding") != PREZERO_STORAGE_ENCODING
@@ -746,6 +836,17 @@ def validate_stored_prezero_evidence(
         ):
             raise PreZeroEvidenceError(
                 "stored p_pre_zero matrix contains invalid probabilities"
+            )
+        expected_probability_array = _probability_matrix(
+            expected_probability, expected_shape
+        )
+        if not np.array_equal(probability, expected_probability_array):
+            raise PreZeroEvidenceError(
+                "stored p_pre_zero matrix differs from execution authority"
+            )
+        if _canonical_bytes(policy) != _canonical_bytes(dict(expected_policy)):
+            raise PreZeroEvidenceError(
+                "p_pre_zero score policy differs from execution authority"
             )
         semantic = hashlib.sha256()
         semantic.update(b"maskimpute-realized-p-pre-zero-v1\0")
@@ -912,6 +1013,28 @@ def validate_stored_prezero_evidence(
         raise PreZeroEvidenceError(
             "p_pre_zero truth strata do not partition their declared truth"
         )
+    unavailable_status = (
+        None if evidence_status == "completed" else str(evidence_status)
+    )
+    unavailable_reason = (
+        None if unavailable_status is None else str(evidence_reason)
+    )
+    expected_overall, expected_strata = _score_report(
+        probability,
+        observed_array,
+        truth_array,
+        truth_kind=truth_kind,
+        unavailable_status=unavailable_status,
+        unavailable_reason=unavailable_reason,
+    )
+    if _canonical_bytes(overall) != _canonical_bytes(expected_overall):
+        raise PreZeroEvidenceError(
+            "p_pre_zero overall report differs from evaluator authority"
+        )
+    if _canonical_bytes(strata) != _canonical_bytes(expected_strata):
+        raise PreZeroEvidenceError(
+            "p_pre_zero stratified report differs from evaluator authority"
+        )
     return _json_copy(value)
 
 
@@ -1041,6 +1164,7 @@ __all__ = [
     "PreZeroEvidenceError",
     "encode_prezero_evidence",
     "evaluate_prezero_evidence",
+    "policy_from_score_diagnostics",
     "validate_stored_prezero_evidence",
     "zlib_compress_bound",
 ]

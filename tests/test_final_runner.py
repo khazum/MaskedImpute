@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 
 from maskimpute_benchmark.methods.registry import MethodRegistry, load_method_registry
@@ -390,7 +391,8 @@ def test_final_plan_rejects_unbound_matched_bulk_applicability() -> None:
         )
 
 
-def _unavailable_prepared(plan_entry):
+def _unavailable_prepared(plan_entry, *, count_model_ready: bool = False):
+    import anndata as ad
     import numpy as np
 
     from maskimpute_benchmark.methods.base import MethodInput
@@ -399,12 +401,20 @@ def _unavailable_prepared(plan_entry):
         PreparedDataset,
     )
 
-    counts = np.array([[1.0, 0.0], [0.0, 2.0]], dtype="<f8")
+    counts = (
+        np.array(
+            [[0.0, 0.0, 2.0, 0.0], [0.0, 3.0, 0.0, 0.0]],
+            dtype="<f8",
+        )
+        if count_model_ready
+        else np.array([[1.0, 0.0], [0.0, 2.0]], dtype="<f8")
+    )
+    var_ids = tuple(f"gene-{index}" for index in range(1, counts.shape[1] + 1))
     method_input = MethodInput(
         source_dataset_sha256=plan_entry.run.source_dataset_sha256,
         obs_ids=("cell-1", "cell-2"),
-        var_ids=("gene-1", "gene-2"),
-        shape=(2, 2),
+        var_ids=var_ids,
+        shape=counts.shape,
         obs_covariates=(),
         var_covariates=(),
         _count_bytes=counts.tobytes(order="C"),
@@ -430,26 +440,39 @@ def _unavailable_prepared(plan_entry):
             else value.dataset_sha256 == plan_entry.run.source_dataset_sha256
         )
     )
+    evaluator_dataset = ad.AnnData(X=counts.copy())
+    evaluator_dataset.obs_names = list(method_input.obs_ids)
+    evaluator_dataset.var_names = list(method_input.var_ids)
+    evaluator_dataset.layers["truth"] = counts.copy()
+    evaluator_dataset.uns["truth_kind"] = "exact_pre_capture"
+    evaluator_dataset.uns["primary_truth_layer"] = "truth"
     prepared = PreparedDataset(
         binding=binding,
         audit=audit,
         method_input=method_input,
-        evaluator_dataset=None,
+        evaluator_dataset=evaluator_dataset,
     )
     return prepared
 
 
-def _unavailable_attempt(plan_entry):
+def _unavailable_attempt(plan_entry, *, prepared=None):
     from maskimpute_benchmark.runner import AdapterOutcome, evaluate_adapter_outcome
 
     return evaluate_adapter_outcome(
         plan_entry.run,
-        _unavailable_prepared(plan_entry),
+        _unavailable_prepared(plan_entry) if prepared is None else prepared,
         AdapterOutcome.unavailable(plan_entry.reason or "test_unavailable"),
     )
 
 
-def _completed_attempt(plan_entry):
+def _completed_attempt(
+    plan_entry,
+    *,
+    probability=None,
+    score_diagnostics: dict[str, object] | None = None,
+    prepared=None,
+    output_converter=None,
+):
     from dataclasses import replace
 
     import anndata as ad
@@ -461,7 +484,7 @@ def _completed_attempt(plan_entry):
     from maskimpute_benchmark.methods.maskimpute import MaskImputeAdapterExecution
     from maskimpute_benchmark.runner import AdapterOutcome, evaluate_adapter_outcome
 
-    prepared = _unavailable_prepared(plan_entry)
+    prepared = _unavailable_prepared(plan_entry) if prepared is None else prepared
     evaluator_dataset = ad.AnnData(prepared.method_input.counts)
     evaluator_dataset.obs_names = list(prepared.method_input.obs_ids)
     evaluator_dataset.var_names = list(prepared.method_input.var_ids)
@@ -482,26 +505,34 @@ def _completed_attempt(plan_entry):
         var_ids=prepared.method_input.var_ids,
     )
     if plan_entry.run.method_id == "maskimpute":
-        probability = np.where(prepared.method_input.counts == 0, 0.5, 0.0)
+        from maskimpute.count_model import _counts_sha256
+
+        if probability is None:
+            probability = np.where(prepared.method_input.counts == 0, 0.5, 0.0)
+        if score_diagnostics is None:
+            score_diagnostics = {
+                "source": "retained_calibrator",
+                "score_artifact_sha256": "a" * 64,
+                "score_input_sha256": _counts_sha256(
+                    prepared.method_input.counts
+                ),
+                "score_config_sha256": _authority().count_model_config_sha256,
+                "calibration_file_sha256": "b" * 64,
+                "calibration_payload_sha256": "c" * 64,
+                "retained_calibrator": "identity",
+                "calibration_scope": (
+                    "retained_all_development_for_final_inference"
+                ),
+                "equivalence_reason": (
+                    "retained_identity_calibrator_equals_direct_score"
+                ),
+            }
         result = ImputationResult(
             selective_counts=prepared.method_input.counts,
             denoised_counts=prepared.method_input.counts,
             p_pre_zero=probability,
             latent=np.ones((prepared.method_input.shape[0], 1)),
-            diagnostics={
-                "score": {
-                    "source": "retained_calibrator",
-                    "score_artifact_sha256": "a" * 64,
-                    "score_input_sha256": "b" * 64,
-                    "score_config_sha256": "c" * 64,
-                    "calibration_artifact_sha256": "b" * 64,
-                    "retained_calibrator": "identity",
-                    "calibration_scope": "retained_all_development_for_final_inference",
-                    "equivalence_reason": (
-                        "retained_identity_calibrator_equals_direct_score"
-                    ),
-                }
-            },
+            diagnostics={"score": score_diagnostics},
         )
         selected_execution = MaskImputeAdapterExecution(
             snapshot=snapshot,
@@ -522,7 +553,15 @@ def _completed_attempt(plan_entry):
         peak_rss_bytes=1,
         peak_gpu_bytes=1,
     )
-    return evaluate_adapter_outcome(plan_entry.run, prepared, outcome)
+    arguments = {}
+    if output_converter is not None:
+        arguments["output_converter"] = output_converter
+    return evaluate_adapter_outcome(
+        plan_entry.run,
+        prepared,
+        outcome,
+        **arguments,
+    )
 
 
 def _authority():
@@ -547,10 +586,188 @@ def _authority():
     )
 
 
+def _write_real_final_score_authority(repository: Path, prepared):
+    from maskimpute import PreZeroCountModelConfig
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+        fit_development_calibration,
+        save_calibration_artifact,
+    )
+    from maskimpute_benchmark.runner import ExecutionAuthorityContext
+
+    ablation_path = repository / "study/ablations.json"
+    ablation_path.parent.mkdir(parents=True, exist_ok=True)
+    ablation_path.write_bytes(Path("study/ablations.json").read_bytes())
+    records = []
+    for index, (draw, view) in enumerate(
+        (
+            ("draw-01", "moderate"),
+            ("draw-01", "severe"),
+            ("draw-02", "moderate"),
+            ("draw-02", "severe"),
+        ),
+        start=1,
+    ):
+        dataset_sha = hashlib.sha256(f"{draw}:{view}".encode()).hexdigest()
+        records.append(
+            CalibrationRecord(
+                p_pre_zero=(0.1, 0.25, 0.7, 0.9),
+                target=(0, 0, 1, 1),
+                mechanism="symsim",
+                biological_id=draw,
+                manifest_sha256=f"{index:x}" * 64,
+                truth_kind="exact_pre_capture",
+                namespace="dev",
+                data_role="development",
+                technical_view=view,
+                dataset_id=f"dataset-{dataset_sha[:24]}",
+                dataset_sha256=dataset_sha,
+                protocol_sha256=DEVELOPMENT_PROTOCOL_SHA256,
+            )
+        )
+    calibration = fit_development_calibration(records)
+    calibration_path = repository / "authority/calibration.json"
+    calibration_path.parent.mkdir(parents=True, exist_ok=True)
+    save_calibration_artifact(calibration_path, calibration)
+    count_config = PreZeroCountModelConfig(n_folds=2, link_max_iter=25)
+    count_payload = asdict(count_config)
+    score_body = {
+        "schema_version": 1,
+        "artifact_type": "maskimpute_final_count_score_authority",
+        "status": "ready",
+        "scope": "truth_free_final_inference",
+        "frozen_method_sha256": "1" * 64,
+        "execution_claim_sha256": "2" * 64,
+        "execution_environment_sha256": "3" * 64,
+        "dataset_manifest_sha256": prepared.binding.manifest_sha256,
+        "selection_contract_file_sha256": "4" * 64,
+        "count_model_config": count_payload,
+        "count_model_config_sha256": canonical_sha256(count_payload),
+    }
+    score_payload = {
+        **score_body,
+        "payload_sha256": canonical_sha256(score_body),
+    }
+    score_path = repository / "authority/count_score_authority.json"
+    score_path.write_text(
+        json.dumps(
+            score_payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    base = {"latent_dim": 2}
+    context = ExecutionAuthorityContext(
+        authority_sha256="9" * 64,
+        base_configuration_json=json.dumps(
+            base, separators=(",", ":"), sort_keys=True
+        ),
+        base_configuration_sha256=canonical_sha256(base),
+        count_model_config_json=json.dumps(
+            count_payload, separators=(",", ":"), sort_keys=True
+        ),
+        count_model_config_sha256=canonical_sha256(count_payload),
+        count_score_manifest_path="authority/count_score_authority.json",
+        count_score_manifest_sha256=hashlib.sha256(score_path.read_bytes()).hexdigest(),
+        retained_calibration_path="authority/calibration.json",
+        retained_calibration_sha256=hashlib.sha256(
+            calibration_path.read_bytes()
+        ).hexdigest(),
+    )
+    return context, calibration
+
+
+def _diagnostics_from_policy(policy: dict[str, object]) -> dict[str, object]:
+    return {
+        "source": policy["score_source"],
+        "score_artifact_sha256": policy["score_artifact_sha256"],
+        "score_input_sha256": policy["score_input_sha256"],
+        "score_config_sha256": policy["score_config_sha256"],
+        "calibration_file_sha256": policy["calibration_file_sha256"],
+        "calibration_payload_sha256": policy["calibration_payload_sha256"],
+        "retained_calibrator": policy["calibration_algorithm"],
+        "calibration_scope": policy["calibration_scope"],
+        "equivalence_reason": policy["calibration_equivalence_reason"],
+    }
+
+
+def _real_final_execution_inputs(repository: Path, entry, plan, registry):
+    from maskimpute_benchmark.runner import (
+        ExecutionRequest,
+        _derive_prezero_execution_authority,
+    )
+
+    prepared = _unavailable_prepared(entry, count_model_ready=True)
+    context, _calibration = _write_real_final_score_authority(repository, prepared)
+    probability, policy = _derive_prezero_execution_authority(
+        prepared,
+        entry.run,
+        context,
+        calibration_usage="retained_all_development",
+        repository=repository,
+    )
+    attempt = _completed_attempt(
+        entry,
+        probability=probability,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+    )
+    configuration = next(
+        value for value in plan.configurations if value.method_id == "maskimpute"
+    )
+    request = ExecutionRequest.create(
+        registry.by_id("maskimpute"),
+        prepared.method_input,
+        model_seed=entry.run.model_seed,
+        configuration=configuration,
+        authority=context,
+        mechanism=entry.run.mechanism,
+        biological_id=entry.run.biological_id,
+        technical_view=entry.run.technical_view,
+        dataset_id=entry.run.dataset_id,
+        timeout_seconds=5,
+        calibration_usage="retained_all_development",
+    )
+    return prepared, context, attempt, request
+
+
+def _prepared_for_plan(plan):
+    prepared = {}
+    for entry in plan.entries:
+        prepared.setdefault(
+            entry.run.dataset_id,
+            _unavailable_prepared(entry),
+        )
+    return prepared
+
+
+def _final_store(
+    output: Path,
+    plan,
+    *,
+    prepared=None,
+    authority=None,
+    authority_repository: Path | None = None,
+):
+    from maskimpute_benchmark.final_runner import FinalResultStore
+
+    return FinalResultStore(
+        output,
+        plan,
+        _prepared_for_plan(plan) if prepared is None else prepared,
+        _authority() if authority is None else authority,
+        authority_repository=authority_repository,
+    )
+
+
 def test_final_result_store_is_immutable_resumable_and_manifest_complete(
     tmp_path: Path,
 ) -> None:
-    from maskimpute_benchmark.final_runner import FinalResultStore
 
     registry = _registry()
     plan = build_plan = __import__(
@@ -564,10 +781,10 @@ def test_final_result_store_is_immutable_resumable_and_manifest_complete(
         execution_authority_sha256="9" * 64,
     )
     del build_plan
-    store = FinalResultStore(tmp_path / "execution", plan)
+    store = _final_store(tmp_path / "execution", plan)
 
     first = store.append(plan.entries[0], _unavailable_attempt(plan.entries[0]))
-    resumed = FinalResultStore(tmp_path / "execution", plan)
+    resumed = _final_store(tmp_path / "execution", plan)
 
     assert resumed.load_records() == (first,)
     with pytest.raises(Exception, match="complete"):
@@ -587,7 +804,7 @@ def test_final_result_store_is_immutable_resumable_and_manifest_complete(
         ),
     )
     tiny_root = tmp_path / "tiny"
-    tiny = FinalResultStore(tiny_root, tiny_plan)
+    tiny = _final_store(tiny_root, tiny_plan)
     tiny.append(tiny_plan.entries[0], _unavailable_attempt(tiny_plan.entries[0]))
     manifest = tiny.finalize()
 
@@ -598,7 +815,6 @@ def test_final_result_store_is_immutable_resumable_and_manifest_complete(
 
 def test_final_result_store_rejects_tampered_record_or_log(tmp_path: Path) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         FinalRunnerContractError,
         build_final_execution_plan,
     )
@@ -619,13 +835,13 @@ def test_final_result_store_rejects_tampered_record_or_log(tmp_path: Path) -> No
         configurations=full.configurations,
         plan_sha256="a" * 64,
     )
-    store = FinalResultStore(tmp_path / "execution", plan)
+    store = _final_store(tmp_path / "execution", plan)
     record = store.append(plan.entries[0], _unavailable_attempt(plan.entries[0]))
     stdout = tmp_path / "execution" / record["run"]["stdout_path"]
     stdout.write_bytes(b"tampered")
 
     with pytest.raises(FinalRunnerContractError, match="record|artifact"):
-        FinalResultStore(tmp_path / "execution", plan).load_records()
+        _final_store(tmp_path / "execution", plan).load_records()
 
 
 def test_final_unique_file_reader_enforces_a_pre_read_size_bound(
@@ -647,7 +863,6 @@ def test_final_result_store_rejects_a_broken_record_directory_symlink(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         FinalRunnerContractError,
         build_final_execution_plan,
     )
@@ -666,17 +881,15 @@ def test_final_result_store_rejects_a_broken_record_directory_symlink(
     (output / "records").symlink_to(tmp_path / "missing")
 
     with pytest.raises(FinalRunnerContractError, match="record directory"):
-        FinalResultStore(output, plan).load_records()
+        _final_store(output, plan).load_records()
 
 
 def test_final_result_store_binds_successful_final_calibration_request(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         build_final_execution_plan,
     )
-    from maskimpute_benchmark.runner import ExecutionRequest
 
     registry = _registry()
     full = build_final_execution_plan(
@@ -695,27 +908,26 @@ def test_final_result_store_binds_successful_final_calibration_request(
         configurations=full.configurations,
         plan_sha256="c" * 64,
     )
-    configuration = next(
-        value for value in plan.configurations if value.method_id == "maskimpute"
+    prepared, authority, attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
     )
-    prepared = _unavailable_prepared(entry)
-    request = ExecutionRequest.create(
-        registry.by_id("maskimpute"),
-        prepared.method_input,
-        model_seed=entry.run.model_seed,
-        configuration=configuration,
-        authority=_authority(),
-        mechanism=entry.run.mechanism,
-        biological_id=entry.run.biological_id,
-        technical_view=entry.run.technical_view,
-        dataset_id=entry.run.dataset_id,
-        timeout_seconds=5,
-        calibration_usage="retained_all_development",
+    prepared_datasets = _prepared_for_plan(plan)
+    prepared_datasets[entry.run.dataset_id] = prepared
+    store = _final_store(
+        tmp_path / "execution",
+        plan,
+        prepared=prepared_datasets,
+        authority=authority,
+        authority_repository=tmp_path,
     )
-    store = FinalResultStore(tmp_path / "execution", plan)
-    store.append(full.entries[0], _unavailable_attempt(full.entries[0]))
+    store.append(
+        full.entries[0],
+        _unavailable_attempt(full.entries[0], prepared=prepared),
+    )
 
-    attempt = _completed_attempt(entry)
     record = store.append(
         entry,
         attempt,
@@ -725,13 +937,13 @@ def test_final_result_store_binds_successful_final_calibration_request(
     assert record["execution_request"] == {
         "calibration_usage": "retained_all_development",
         "configuration_sha256": entry.run.configuration_sha256,
-        "count_score_manifest_sha256": "a" * 64,
+        "count_score_manifest_sha256": authority.count_score_manifest_sha256,
         "dataset_id": entry.run.dataset_id,
         "execution_authority_sha256": "9" * 64,
         "method_input_sha256": request.method_input_sha256,
         "model_seed": entry.run.model_seed,
         "request_sha256": request.request_sha256,
-        "retained_calibration_sha256": "b" * 64,
+        "retained_calibration_sha256": authority.retained_calibration_sha256,
     }
     run = record["run"]
     assert run["native_output_path"] is None
@@ -758,7 +970,16 @@ def test_final_result_store_binds_successful_final_calibration_request(
         score_storage["uncompressed_sha256"]
         == hashlib.sha256(expected_score).hexdigest()
     )
-    assert FinalResultStore(tmp_path / "execution", plan).load_records()[-1] == record
+    assert (
+        _final_store(
+            tmp_path / "execution",
+            plan,
+            prepared=prepared_datasets,
+            authority=authority,
+            authority_repository=tmp_path,
+        ).load_records()[-1]
+        == record
+    )
 
     oversized = dict(run)
     oversized["evaluator_output_shape"] = [2701, 1200]
@@ -785,7 +1006,13 @@ def test_final_result_store_binds_successful_final_calibration_request(
         encoding="utf-8",
     )
     with pytest.raises(Exception, match="record|p_pre_zero|compressed"):
-        FinalResultStore(tmp_path / "execution", plan).load_records()
+        _final_store(
+            tmp_path / "execution",
+            plan,
+            prepared=prepared_datasets,
+            authority=authority,
+            authority_repository=tmp_path,
+        ).load_records()
     score_path.write_bytes(score_compressed)
     record_path.write_text(
         json.dumps(record, allow_nan=False, separators=(",", ":"), sort_keys=True)
@@ -796,14 +1023,596 @@ def test_final_result_store_binds_successful_final_calibration_request(
     compressed_path = tmp_path / "execution" / str(run["evaluator_output_path"])
     compressed_path.write_bytes(compressed + b"tamper")
     with pytest.raises(Exception, match="record|artifact|compressed"):
-        FinalResultStore(tmp_path / "execution", plan).load_records()
+        _final_store(
+            tmp_path / "execution",
+            plan,
+            prepared=prepared_datasets,
+            authority=authority,
+            authority_repository=tmp_path,
+        ).load_records()
+
+
+def test_final_result_store_rejects_rehashed_prezero_metric_drift(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    source_entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    entry = replace(source_entry, run=replace(source_entry.run, ordinal=1))
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    prepared, authority, attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
+    )
+    output = tmp_path / "execution"
+    store = _final_store(
+        output,
+        plan,
+        prepared={prepared.binding.dataset_id: prepared},
+        authority=authority,
+        authority_repository=tmp_path,
+    )
+    store.append(entry, attempt, execution_request=request)
+    record_path = output / "records/00000001.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    evidence = record["p_pre_zero_evidence"]
+    evidence["overall"]["metrics"]["brier"]["value"] = 0.123456
+    body = {
+        key: value
+        for key, value in evidence.items()
+        if key not in {"evidence_sha256", "storage"}
+    }
+    evidence["evidence_sha256"] = canonical_sha256(body)
+    record_path.write_text(
+        json.dumps(record, allow_nan=False, separators=(",", ":"), sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FinalRunnerContractError, match="report differs"):
+        _final_store(
+            output,
+            plan,
+            prepared={prepared.binding.dataset_id: prepared},
+            authority=authority,
+            authority_repository=tmp_path,
+        ).load_records()
+
+
+def test_final_result_store_refits_once_and_rejects_coordinated_score_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+    import zlib
+
+    import maskimpute
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.prezero_evidence import _score_report
+    from maskimpute_benchmark.runner import (
+        ExecutionRequest,
+        _derive_prezero_execution_authority,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    source_entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    entry = replace(source_entry, run=replace(source_entry.run, ordinal=1))
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    prepared = _unavailable_prepared(entry, count_model_ready=True)
+    context, _calibration = _write_real_final_score_authority(tmp_path, prepared)
+    probability, policy = _derive_prezero_execution_authority(
+        prepared,
+        entry.run,
+        context,
+        calibration_usage="retained_all_development",
+        repository=tmp_path,
+    )
+    attempt = _completed_attempt(
+        entry,
+        probability=probability,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+    )
+    configuration = next(
+        value for value in plan.configurations if value.method_id == "maskimpute"
+    )
+    request = ExecutionRequest.create(
+        registry.by_id("maskimpute"),
+        prepared.method_input,
+        model_seed=entry.run.model_seed,
+        configuration=configuration,
+        authority=context,
+        mechanism=entry.run.mechanism,
+        biological_id=entry.run.biological_id,
+        technical_view=entry.run.technical_view,
+        dataset_id=entry.run.dataset_id,
+        timeout_seconds=5,
+        calibration_usage="retained_all_development",
+    )
+    refit_calls = 0
+    original_fit = maskimpute.fit_p_pre_zero_count_model
+
+    def counted_fit(*args, **kwargs):
+        nonlocal refit_calls
+        refit_calls += 1
+        return original_fit(*args, **kwargs)
+
+    monkeypatch.setattr(maskimpute, "fit_p_pre_zero_count_model", counted_fit)
+    output = tmp_path / "execution"
+    store = _final_store(
+        output,
+        plan,
+        prepared={prepared.binding.dataset_id: prepared},
+        authority=context,
+        authority_repository=tmp_path,
+    )
+    record = store.append(entry, attempt, execution_request=request)
+    assert refit_calls == 1
+    assert store.load_records() == (record,)
+    assert refit_calls == 1
+    second_seed = replace(
+        entry.run,
+        run_id=f"{entry.run.run_id}-seed-43",
+        model_seed=43,
+    )
+    cached_probability, cached_policy = store._artifacts._expected_prezero_authority(
+        second_seed,
+        prepared,
+        context,
+        calibration_usage="retained_all_development",
+        expected_matrix_present=True,
+    )
+    np.testing.assert_array_equal(cached_probability, probability)
+    assert cached_policy == policy
+    assert refit_calls == 1
+
+    evidence = record["p_pre_zero_evidence"]
+    replacement = np.where(
+        prepared.method_input.counts == 0.0,
+        0.125,
+        0.0,
+    ).astype("<f8")
+    raw = replacement.tobytes(order="C")
+    compressed = zlib.compress(raw, level=6)
+    score_path = output / evidence["storage"]["path"]
+    score_path.write_bytes(compressed)
+    evidence["storage"].update(
+        {
+            "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
+            "compressed_nbytes": len(compressed),
+            "uncompressed_sha256": hashlib.sha256(raw).hexdigest(),
+            "uncompressed_nbytes": len(raw),
+        }
+    )
+    evidence["matrix"]["content_sha256"] = hashlib.sha256(raw).hexdigest()
+    evidence["overall"], evidence["strata"] = _score_report(
+        replacement,
+        np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+        np.asarray(prepared.evaluator_dataset.layers["truth"], dtype=np.float64),
+        truth_kind="exact_pre_capture",
+    )
+    semantic = hashlib.sha256()
+    semantic.update(b"maskimpute-realized-p-pre-zero-v1\0")
+    semantic.update(
+        json.dumps(
+            {
+                "identity": evidence["identity"],
+                "shape": evidence["matrix"]["shape"],
+                "dtype": evidence["matrix"]["dtype"],
+                "policy_sha256": evidence["policy_sha256"],
+            },
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    semantic.update(raw)
+    evidence["matrix"]["semantic_sha256"] = semantic.hexdigest()
+    evidence_body = {
+        name: value
+        for name, value in evidence.items()
+        if name not in {"evidence_sha256", "storage"}
+    }
+    evidence["evidence_sha256"] = canonical_sha256(evidence_body)
+    record_path = output / "records/00000001.json"
+    record_path.write_text(
+        json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FinalRunnerContractError, match="matrix differs"):
+        store.load_records()
+    assert refit_calls == 1
+
+
+def test_final_append_validates_before_publishing_and_allows_retry(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    source_entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    entry = replace(source_entry, run=replace(source_entry.run, ordinal=1))
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    prepared, context, valid_attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
+    )
+    policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
+    assert isinstance(policy, dict)
+    invalid_probability = np.where(
+        prepared.method_input.counts == 0.0,
+        0.125,
+        0.0,
+    ).astype("<f8")
+    invalid_attempt = _completed_attempt(
+        entry,
+        probability=invalid_probability,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+    )
+    output = tmp_path / "execution"
+    store = _final_store(
+        output,
+        plan,
+        prepared={prepared.binding.dataset_id: prepared},
+        authority=context,
+        authority_repository=tmp_path,
+    )
+
+    with pytest.raises(FinalRunnerContractError, match="publish final"):
+        store.append(entry, invalid_attempt, execution_request=request)
+    assert not output.exists()
+
+    record = store.append(entry, valid_attempt, execution_request=request)
+    assert record["run"]["status"] == "completed"
+    assert store.load_records() == (record,)
+
+
+@pytest.mark.parametrize("tamper", ("matrix", "policy", "report"))
+def test_final_conversion_terminal_score_remains_exactly_authorized(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    from dataclasses import replace
+    import zlib
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.prezero_evidence import _score_report
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    source_entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    entry = replace(source_entry, run=replace(source_entry.run, ordinal=1))
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    prepared, context, valid_attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
+    )
+    policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
+    assert isinstance(policy, dict)
+
+    def reject_conversion(_method_input, _execution):
+        raise ValueError("deliberate evaluator conversion rejection")
+
+    conversion_attempt = _completed_attempt(
+        entry,
+        probability=valid_attempt.p_pre_zero_evidence.matrix,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+        output_converter=reject_conversion,
+    )
+    assert conversion_attempt.run.status == "unavailable"
+    output = tmp_path / "execution"
+    store = _final_store(
+        output,
+        plan,
+        prepared={prepared.binding.dataset_id: prepared},
+        authority=context,
+        authority_repository=tmp_path,
+    )
+    record = store.append(entry, conversion_attempt, execution_request=request)
+    assert record["run"]["status"] == "unavailable"
+    assert record["p_pre_zero_evidence"]["status"] == "unavailable"
+
+    evidence = record["p_pre_zero_evidence"]
+    score_path = output / evidence["storage"]["path"]
+    raw = zlib.decompress(score_path.read_bytes())
+    if tamper == "matrix":
+        replacement = np.where(
+            prepared.method_input.counts == 0.0,
+            0.125,
+            0.0,
+        ).astype("<f8")
+        raw = replacement.tobytes(order="C")
+        compressed = zlib.compress(raw, level=6)
+        score_path.write_bytes(compressed)
+        evidence["storage"].update(
+            {
+                "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
+                "compressed_nbytes": len(compressed),
+                "uncompressed_sha256": hashlib.sha256(raw).hexdigest(),
+                "uncompressed_nbytes": len(raw),
+            }
+        )
+        evidence["matrix"]["content_sha256"] = hashlib.sha256(raw).hexdigest()
+        evidence["overall"], evidence["strata"] = _score_report(
+            replacement,
+            np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+            np.asarray(
+                prepared.evaluator_dataset.layers["truth"], dtype=np.float64
+            ),
+            truth_kind="exact_pre_capture",
+            unavailable_status="unavailable",
+            unavailable_reason=evidence["reason"],
+        )
+    elif tamper == "policy":
+        evidence["policy"]["calibration_scope"] = "forged_scope"
+        evidence["policy_sha256"] = canonical_sha256(evidence["policy"])
+    elif tamper == "report":
+        evidence["overall"]["metrics"]["brier"]["reason"] = "forged_reason"
+    else:  # pragma: no cover - parametrization is fixed above
+        raise AssertionError(tamper)
+    semantic = hashlib.sha256()
+    semantic.update(b"maskimpute-realized-p-pre-zero-v1\0")
+    semantic.update(
+        json.dumps(
+            {
+                "identity": evidence["identity"],
+                "shape": evidence["matrix"]["shape"],
+                "dtype": evidence["matrix"]["dtype"],
+                "policy_sha256": evidence["policy_sha256"],
+            },
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    semantic.update(raw)
+    evidence["matrix"]["semantic_sha256"] = semantic.hexdigest()
+    evidence_body = {
+        name: value
+        for name, value in evidence.items()
+        if name not in {"evidence_sha256", "storage"}
+    }
+    evidence["evidence_sha256"] = canonical_sha256(evidence_body)
+    record_path = output / "records/00000001.json"
+    record_path.write_text(
+        json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        FinalRunnerContractError,
+        match="p_pre_zero|matrix|policy|report",
+    ):
+        store.load_records()
+
+
+def test_final_conversion_terminal_score_cannot_be_coordinately_removed(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.prezero_evidence import _score_report
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    source_entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    entry = replace(source_entry, run=replace(source_entry.run, ordinal=1))
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    prepared, context, valid_attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
+    )
+    policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
+    assert isinstance(policy, dict)
+
+    def reject_conversion(_method_input, _execution):
+        raise ValueError("deliberate evaluator conversion rejection")
+
+    conversion_attempt = _completed_attempt(
+        entry,
+        probability=valid_attempt.p_pre_zero_evidence.matrix,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+        output_converter=reject_conversion,
+    )
+    output = tmp_path / "execution"
+    store = _final_store(
+        output,
+        plan,
+        prepared={prepared.binding.dataset_id: prepared},
+        authority=context,
+        authority_repository=tmp_path,
+    )
+    record = store.append(entry, conversion_attempt, execution_request=request)
+    evidence = record["p_pre_zero_evidence"]
+    (output / evidence["storage"]["path"]).unlink()
+    evidence["matrix"] = {
+        "shape": None,
+        "dtype": None,
+        "content_sha256": None,
+        "semantic_sha256": None,
+    }
+    evidence["policy"] = None
+    evidence["policy_sha256"] = None
+    evidence["storage"] = {
+        "encoding": None,
+        "compression_level": None,
+        "path": None,
+        "compressed_sha256": None,
+        "compressed_nbytes": None,
+        "uncompressed_sha256": None,
+        "uncompressed_nbytes": None,
+    }
+    evidence["overall"], evidence["strata"] = _score_report(
+        None,
+        np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+        np.asarray(prepared.evaluator_dataset.layers["truth"], dtype=np.float64),
+        truth_kind="exact_pre_capture",
+        unavailable_status="unavailable",
+        unavailable_reason=evidence["reason"],
+    )
+    body = {
+        name: value
+        for name, value in evidence.items()
+        if name not in {"evidence_sha256", "storage"}
+    }
+    evidence["evidence_sha256"] = canonical_sha256(body)
+    record_path = output / "records/00000001.json"
+    record_path.write_text(
+        json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        FinalRunnerContractError,
+        match="p_pre_zero|matrix|authority",
+    ):
+        _final_store(
+            output,
+            plan,
+            prepared={prepared.binding.dataset_id: prepared},
+            authority=context,
+            authority_repository=tmp_path,
+        ).load_records()
 
 
 def test_final_result_store_append_does_not_rehash_the_whole_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         build_final_execution_plan,
     )
 
@@ -823,7 +1632,7 @@ def test_final_result_store_append_does_not_rehash_the_whole_prefix(
         configurations=full.configurations,
         plan_sha256="d" * 64,
     )
-    store = FinalResultStore(tmp_path / "execution", plan)
+    store = _final_store(tmp_path / "execution", plan)
     original = store._read_record
     reads: list[str] = []
 
@@ -842,7 +1651,6 @@ def test_execute_final_plan_uses_final_calibration_request_and_resumes(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         build_final_execution_plan,
         execute_final_plan,
     )
@@ -873,7 +1681,12 @@ def test_execute_final_plan_uses_final_calibration_request_and_resumes(
         requests.append(request)
         return AdapterOutcome.unavailable("adapter_unavailable")
 
-    store = FinalResultStore(tmp_path / "execution", plan)
+    store = _final_store(
+        tmp_path / "execution",
+        plan,
+        prepared=prepared,
+        authority=authority,
+    )
     manifest = execute_final_plan(
         plan,
         registry,
@@ -896,7 +1709,12 @@ def test_execute_final_plan_uses_final_calibration_request_and_resumes(
         prepared,
         authority,
         executor,
-        FinalResultStore(tmp_path / "execution", plan),
+        _final_store(
+            tmp_path / "execution",
+            plan,
+            prepared=prepared,
+            authority=authority,
+        ),
         on_record_published=lambda: publications.append("unexpected"),
     )
     assert resumed == manifest
@@ -907,7 +1725,6 @@ def test_execute_final_plan_leaves_infrastructure_failure_retryable(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         FinalRunnerContractError,
         build_final_execution_plan,
         execute_final_plan,
@@ -940,10 +1757,10 @@ def test_execute_final_plan_leaves_infrastructure_failure_retryable(
             prepared,
             _authority(),
             lambda _request: AdapterOutcome.infrastructure_error("worker_spawn_failed"),
-            FinalResultStore(root, plan),
+            _final_store(root, plan, prepared=prepared),
             on_record_published=lambda: None,
         )
-    assert FinalResultStore(root, plan).load_records() == ()
+    assert _final_store(root, plan, prepared=prepared).load_records() == ()
 
     manifest = execute_final_plan(
         plan,
@@ -951,7 +1768,7 @@ def test_execute_final_plan_leaves_infrastructure_failure_retryable(
         prepared,
         _authority(),
         lambda _request: AdapterOutcome.unavailable("algorithm_unavailable"),
-        FinalResultStore(root, plan),
+        _final_store(root, plan, prepared=prepared),
         on_record_published=lambda: None,
     )
     assert manifest["recorded_run_count"] == 1
@@ -961,7 +1778,6 @@ def test_execute_final_plan_journals_once_after_the_complete_manifest(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         build_final_execution_plan,
         execute_final_plan,
     )
@@ -994,7 +1810,7 @@ def test_execute_final_plan_journals_once_after_the_complete_manifest(
         prepared,
         _authority(),
         lambda _request: AdapterOutcome.unavailable("adapter_unavailable"),
-        FinalResultStore(tmp_path / "execution", plan),
+        _final_store(tmp_path / "execution", plan, prepared=prepared),
         on_record_published=lambda: publications.append("published"),
     )
 
@@ -1006,7 +1822,6 @@ def test_final_evaluation_retains_reason_coded_algorithmic_unavailability(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         build_final_execution_plan,
         validate_final_execution_for_evaluation,
     )
@@ -1027,7 +1842,7 @@ def test_final_evaluation_retains_reason_coded_algorithmic_unavailability(
         configurations=full.configurations,
         plan_sha256="f" * 64,
     )
-    store = FinalResultStore(tmp_path / "execution", plan)
+    store = _final_store(tmp_path / "execution", plan)
     store.append(plan.entries[0], _unavailable_attempt(plan.entries[0]))
 
     validation = validate_final_execution_for_evaluation(plan, store.load_records())
@@ -1042,7 +1857,6 @@ def test_final_evaluation_retains_each_unfavorable_algorithmic_status(
     tmp_path: Path, status: str
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         build_final_execution_plan,
         validate_final_execution_for_evaluation,
     )
@@ -1067,7 +1881,7 @@ def test_final_evaluation_retains_each_unfavorable_algorithmic_status(
     entry = plan.entries[0]
     outcome = getattr(AdapterOutcome, status)(f"algorithmic_{status}")
     attempt = evaluate_adapter_outcome(entry.run, _unavailable_prepared(entry), outcome)
-    store = FinalResultStore(tmp_path / status / "execution", plan)
+    store = _final_store(tmp_path / status / "execution", plan)
     store.append(entry, attempt)
 
     validation = validate_final_execution_for_evaluation(plan, store.load_records())
@@ -1081,7 +1895,6 @@ def test_final_evaluation_blocks_infrastructure_incompleteness(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         FinalRunnerContractError,
         build_final_execution_plan,
         validate_final_execution_for_evaluation,
@@ -1113,7 +1926,7 @@ def test_final_evaluation_blocks_infrastructure_incompleteness(
         _unavailable_prepared(entry),
         AdapterOutcome.infrastructure_error("worker_spawn_failed"),
     )
-    store = FinalResultStore(tmp_path / "execution", plan)
+    store = _final_store(tmp_path / "execution", plan)
     store.append(entry, attempt)
 
     with pytest.raises(FinalRunnerContractError, match="infrastructure|authority"):
@@ -1503,7 +2316,7 @@ def test_owned_result_manifest_is_derived_from_final_record_references(
     )
     round_dir = tmp_path / "round-001"
     output = round_dir / "results/final/execution"
-    store = final_runner.FinalResultStore(output, plan)
+    store = _final_store(output, plan)
     store.append(plan.entries[0], _unavailable_attempt(plan.entries[0]))
     store.finalize()
 
@@ -1525,7 +2338,7 @@ def test_stale_result_temporary_recovery_repairs_interrupted_hardlink(
     round_dir = tmp_path / "round-001"
     runs = round_dir / "results/final/execution/runs"
     runs.mkdir(parents=True)
-    temporary = runs / ".run.stdout.0123456789.tmp"
+    temporary = runs / ".run.stdout.01234567.tmp"
     published = runs / "run.stdout"
     temporary.write_bytes(b"stable artifact")
     published.hardlink_to(temporary)
@@ -1534,18 +2347,41 @@ def test_stale_result_temporary_recovery_repairs_interrupted_hardlink(
 
     removed = _remove_stale_result_temporaries(round_dir)
 
-    assert removed == ("results/final/execution/runs/.run.stdout.0123456789.tmp",)
+    assert removed == ("results/final/execution/runs/.run.stdout.01234567.tmp",)
     assert not temporary.exists()
     assert published.read_bytes() == b"stable artifact"
     assert published.stat().st_nlink == 1
     assert untouched.read_bytes() == b"keep"
 
 
+def test_stale_result_temporary_recovery_rejects_unrelated_hardlink(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        _remove_stale_result_temporaries,
+    )
+
+    round_dir = tmp_path / "round-001"
+    runs = round_dir / "results/final/execution/runs"
+    runs.mkdir(parents=True)
+    temporary = runs / ".run.stdout.01234567.tmp"
+    external = tmp_path / "external-hardlink"
+    external.write_bytes(b"must survive")
+    temporary.hardlink_to(external)
+
+    with pytest.raises(FinalRunnerContractError, match="temporary|hardlink|sibling"):
+        _remove_stale_result_temporaries(round_dir)
+
+    assert temporary.exists()
+    assert external.read_bytes() == b"must survive"
+    assert external.stat().st_nlink == 2
+
+
 def test_interrupted_final_attempt_transaction_removes_orphan_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         _recover_interrupted_final_transactions,
         build_final_execution_plan,
     )
@@ -1568,12 +2404,14 @@ def test_interrupted_final_attempt_transaction_removes_orphan_artifacts(
     )
     round_dir = tmp_path / "round-001"
     output = round_dir / "results/final/execution"
-    store = FinalResultStore(output, plan)
+    store = _final_store(output, plan)
     original = store._stored_final_attempt
 
-    def interrupt_after_artifacts(attempt):
-        original(attempt)
-        raise RuntimeError("interrupted after artifacts")
+    def interrupt_after_artifacts(attempt, *, artifacts=None):
+        stored = original(attempt, artifacts=artifacts)
+        if artifacts is None:
+            raise RuntimeError("interrupted after artifacts")
+        return stored
 
     monkeypatch.setattr(store, "_stored_final_attempt", interrupt_after_artifacts)
     with pytest.raises(RuntimeError, match="interrupted"):
@@ -1587,14 +2425,13 @@ def test_interrupted_final_attempt_transaction_removes_orphan_artifacts(
     assert recovered == (1,)
     assert not (output / "transactions").exists()
     assert not (output / "runs").exists()
-    assert FinalResultStore(output, plan).load_records() == ()
+    assert _final_store(output, plan).load_records() == ()
 
 
 def test_interrupted_maskimpute_transaction_removes_realized_score_artifact(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
-        FinalResultStore,
         _recover_interrupted_final_transactions,
         build_final_execution_plan,
     )
@@ -1611,7 +2448,7 @@ def test_interrupted_maskimpute_transaction_removes_realized_score_artifact(
     entry = next(item for item in plan.entries if item.run.method_id == "maskimpute")
     round_dir = tmp_path / "round-001"
     output = round_dir / "results/final/execution"
-    store = FinalResultStore(output, plan)
+    store = _final_store(output, plan)
     attempt = _completed_attempt(entry)
 
     intent_path = store._publish_transaction_intent(entry, attempt)
@@ -1640,7 +2477,7 @@ def test_stale_result_temporary_recovery_rejects_symlink(tmp_path: Path) -> None
     results.mkdir(parents=True)
     target = tmp_path / "outside"
     target.write_bytes(b"outside")
-    (results / ".artifact.0123456789.tmp").symlink_to(target)
+    (results / ".artifact.01234567.tmp").symlink_to(target)
 
     with pytest.raises(FinalRunnerContractError, match="temporary.*regular"):
         _remove_stale_result_temporaries(round_dir)
