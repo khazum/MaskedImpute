@@ -184,3 +184,131 @@ def test_trajectory_adapter_requires_genuine_values_and_evaluator_known_root() -
             trajectory_root_cell_id="cell-2",
             trajectory_source_id="genuine-linear-fixture",
         )
+
+
+def _marker_de_fixture():
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluator_targets_from_dataset,
+    )
+
+    cell_ids = ("cell-6", "cell-2", "cell-5", "cell-1", "cell-4", "cell-3")
+    gene_ids = ("gene-4", "gene-2", "gene-1", "gene-3")
+    groups = ("pop-1", "pop-1", "pop-1", "pop-2", "pop-2", "pop-2")
+    values = np.asarray(
+        [
+            [0, 8, 10, 0],
+            [0, 8, 10, 0],
+            [0, 8, 10, 0],
+            [8, 0, 0, 10],
+            [8, 0, 0, 10],
+            [8, 0, 0, 10],
+        ],
+        dtype=float,
+    )
+    dataset = ad.AnnData(
+        X=np.zeros_like(values, dtype=np.int64),
+        obs=pd.DataFrame(
+            {"mechanism": ["symsim"] * 6, "group": groups}, index=cell_ids
+        ),
+        var=pd.DataFrame(
+            {
+                "marker_group_1": [False, True, False, False],
+                "marker_group_2": [True, False, False, False],
+            },
+            index=gene_ids,
+        ),
+    )
+    return (
+        MethodOutput(values=values, cell_ids=cell_ids, gene_ids=gene_ids),
+        evaluator_targets_from_dataset(dataset),
+    )
+
+
+def test_marker_rank_and_positive_de_are_hand_calculated_with_one_global_bh_family() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        evaluate_marker_and_de_endpoints,
+    )
+
+    output, targets = _marker_de_fixture()
+    records = {
+        record.endpoint: record
+        for record in evaluate_marker_and_de_endpoints(output, targets)
+    }
+
+    assert records["marker_rank_loss"].value == pytest.approx(1.0 / 3.0)
+    assert records["positive_de_marker_recall"].value == 1.0
+    assert records["positive_de_false_discovery_rate"].value == 0.5
+    for endpoint in (
+        "positive_de_marker_recall",
+        "positive_de_false_discovery_rate",
+    ):
+        record = records[endpoint]
+        assert record.family_id == "one_vs_rest_all_groups_all_genes"
+        assert record.family_size == 8
+        assert record.alpha == 0.05
+        assert record.independent_unit == "biological_draw"
+        assert record.independent_n == 1
+    assert records["positive_de_marker_recall"].descriptive_n == 2
+    assert records["positive_de_marker_recall"].descriptive_unit == "truth_markers"
+    assert records["positive_de_false_discovery_rate"].descriptive_n == 4
+    assert records["positive_de_false_discovery_rate"].descriptive_unit == "discoveries"
+
+
+def test_marker_and_de_endpoints_are_invariant_to_method_row_and_gene_order() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluate_marker_and_de_endpoints,
+    )
+
+    output, targets = _marker_de_fixture()
+    baseline = evaluate_marker_and_de_endpoints(output, targets)
+    rows = np.asarray([3, 0, 5, 2, 1, 4])
+    columns = np.asarray([2, 0, 3, 1])
+    permuted = MethodOutput(
+        values=output.values[rows][:, columns],
+        cell_ids=tuple(output.cell_ids[index] for index in rows),
+        gene_ids=tuple(output.gene_ids[index] for index in columns),
+    )
+
+    repeated = evaluate_marker_and_de_endpoints(permuted, targets)
+
+    assert [record.endpoint for record in repeated] == [
+        record.endpoint for record in baseline
+    ]
+    for first, second in zip(baseline, repeated, strict=True):
+        assert second.status == first.status
+        assert second.reason == first.reason
+        assert second.value == pytest.approx(first.value)
+
+
+def test_marker_and_de_emit_complete_reasons_when_marker_truth_is_unavailable() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluate_marker_and_de_endpoints,
+        evaluator_targets_from_dataset,
+    )
+
+    dataset = _simulator_dataset(
+        "semisynthetic", ("alpha", "alpha", "beta", "beta"), {}
+    )
+    output = MethodOutput(
+        values=np.asarray(dataset.X, dtype=float),
+        cell_ids=tuple(dataset.obs_names),
+        gene_ids=tuple(dataset.var_names),
+    )
+    records = evaluate_marker_and_de_endpoints(
+        output, evaluator_targets_from_dataset(dataset)
+    )
+
+    assert [record.endpoint for record in records] == [
+        "marker_rank_loss",
+        "positive_de_marker_recall",
+        "positive_de_false_discovery_rate",
+    ]
+    assert all(record.value is None for record in records)
+    assert all(record.status == "unavailable" for record in records)
+    assert {
+        record.reason for record in records
+    } == {"group_specific_marker_truth_unavailable"}
+    assert all(record.independent_n == 1 for record in records)
