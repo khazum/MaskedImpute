@@ -127,6 +127,109 @@ _FINAL_MANIFEST_FIELDS = frozenset(
         "manifest_sha256",
     }
 )
+_RAW_RUN_FIELDS = frozenset(
+    {
+        "run_id",
+        "method_id",
+        "dataset_id",
+        "source_dataset_sha256",
+        "mechanism",
+        "biological_id",
+        "technical_view",
+        "model_seed",
+        "configuration_id",
+        "configuration_sha256",
+        "configuration_kind",
+        "requires_count_score",
+        "requires_calibration",
+        "method_input_sha256",
+        "dataset_qc_policy_sha256",
+        "excluded_cell_count",
+        "excluded_cell_ids_sha256",
+        "retained_cell_count",
+        "retained_cell_ids_sha256",
+        "status",
+        "reason",
+        "runtime_seconds",
+        "peak_rss_bytes",
+        "peak_gpu_bytes",
+        "rss_measurement",
+        "gpu_measurement",
+        "calibration_artifact_sha256",
+        "calibration_context_sha256",
+        "calibration_training_manifest_sha256s",
+        "calibration_held_out_manifest_sha256s",
+        "calibration_fold_calibrator_sha256",
+        "stdout_sha256",
+        "stderr_sha256",
+        "native_output_sha256",
+        "evaluator_output_sha256",
+    }
+)
+_STORED_OUTPUT_FIELDS = frozenset(
+    {
+        "stdout_path",
+        "stdout_file_sha256",
+        "stderr_path",
+        "stderr_file_sha256",
+        "native_output_path",
+        "native_output_file_sha256",
+        "native_output_shape",
+        "native_output_dtype",
+        "native_output_scale",
+        "evaluator_output_path",
+        "evaluator_output_file_sha256",
+        "evaluator_output_shape",
+        "evaluator_output_dtype",
+        "evaluator_scale",
+    }
+)
+_DEVELOPMENT_RUN_FIELDS = _RAW_RUN_FIELDS | _STORED_OUTPUT_FIELDS
+_FINAL_RUN_FIELDS = _DEVELOPMENT_RUN_FIELDS | frozenset(
+    {
+        "native_output_retention",
+        "evaluator_output_encoding",
+        "evaluator_output_uncompressed_nbytes",
+        "evaluator_output_uncompressed_sha256",
+    }
+)
+_METRIC_FIELDS = frozenset(
+    {
+        "mechanism",
+        "biological_id",
+        "technical_view",
+        "dataset_id",
+        "method",
+        "model_seed",
+        "configuration_id",
+        "configuration_sha256",
+        "metric",
+        "value",
+        "n",
+        "status",
+        "reason",
+    }
+)
+_FINAL_EXECUTION_REQUEST_FIELDS = frozenset(
+    {
+        "calibration_usage",
+        "configuration_sha256",
+        "count_score_manifest_sha256",
+        "dataset_id",
+        "execution_authority_sha256",
+        "method_input_sha256",
+        "model_seed",
+        "request_sha256",
+        "retained_calibration_sha256",
+    }
+)
+_FINAL_STORAGE_POLICY = MappingProxyType(
+    {
+        "evaluator_output_encoding": _FINAL_OUTPUT_ENCODING,
+        "evaluator_output_compression_level": 6,
+        "native_output_retention": "omitted_redundant_final_output",
+    }
+)
 
 
 class DownstreamEvidenceError(ValueError):
@@ -860,6 +963,54 @@ class _SourceRecord:
     payload: Mapping[str, object]
 
 
+def _validate_source_record_schema(
+    record: Mapping[str, object], *, source_kind: str
+) -> None:
+    expected_record_fields = (
+        {"run", "metrics"}
+        if source_kind == "development"
+        else {"run", "metrics", "execution_request"}
+    )
+    if set(record) != expected_record_fields:
+        raise DownstreamEvidenceError(f"{source_kind} source record schema differs")
+    run = record.get("run")
+    expected_run_fields = (
+        _DEVELOPMENT_RUN_FIELDS
+        if source_kind == "development"
+        else _FINAL_RUN_FIELDS
+    )
+    if not isinstance(run, Mapping) or set(run) != expected_run_fields:
+        raise DownstreamEvidenceError("source run schema differs")
+    metrics = record.get("metrics")
+    if not isinstance(metrics, list) or any(
+        not isinstance(metric, Mapping) or set(metric) != _METRIC_FIELDS
+        for metric in metrics
+    ):
+        raise DownstreamEvidenceError("source metric schema differs")
+    if source_kind == "final":
+        request = record.get("execution_request")
+        if request is not None and (
+            not isinstance(request, Mapping)
+            or set(request) != _FINAL_EXECUTION_REQUEST_FIELDS
+        ):
+            raise DownstreamEvidenceError(
+                "final execution request schema differs"
+            )
+        native_retention = run.get("native_output_retention")
+        expected_native_retention = (
+            "omitted_redundant_final_output"
+            if run.get("native_output_sha256") is not None
+            else "not_available"
+        )
+        if native_retention != expected_native_retention or any(
+            run.get(f"native_output_{suffix}") is not None
+            for suffix in ("path", "file_sha256", "shape", "dtype")
+        ):
+            raise DownstreamEvidenceError(
+                "final native output storage policy differs"
+            )
+
+
 def _development_source(
     root: Path,
 ) -> tuple[str, str, str, tuple[_SourceRecord, ...]]:
@@ -883,12 +1034,9 @@ def _development_source(
         raise DownstreamEvidenceError("development checkpoint is incomplete")
     result: list[_SourceRecord] = []
     for index, record in enumerate(records, start=1):
-        if not isinstance(record, dict) or set(record) != {
-            "run",
-            "metrics",
-            "p_pre_zero_evidence",
-        }:
+        if not isinstance(record, dict):
             raise DownstreamEvidenceError("development source record is malformed")
+        _validate_source_record_schema(record, source_kind="development")
         result.append(
             _SourceRecord(
                 ordinal=index,
@@ -920,8 +1068,14 @@ def _final_source(root: Path) -> tuple[str, str, str, tuple[_SourceRecord, ...]]
         or payload.get("planned_run_count") != len(references)
         or payload.get("recorded_run_count") != len(references)
         or not isinstance(storage, Mapping)
-        or storage.get("evaluator_output_encoding") != _FINAL_OUTPUT_ENCODING
+        or dict(storage) != dict(_FINAL_STORAGE_POLICY)
     ):
+        if isinstance(storage, Mapping) and dict(storage) != dict(
+            _FINAL_STORAGE_POLICY
+        ):
+            raise DownstreamEvidenceError(
+                "final artifact storage policy differs"
+            )
         raise DownstreamEvidenceError("final execution manifest is incomplete")
     result: list[_SourceRecord] = []
     for expected_ordinal, reference in enumerate(references, start=1):
@@ -939,13 +1093,7 @@ def _final_source(root: Path) -> tuple[str, str, str, tuple[_SourceRecord, ...]]
         record, _record_raw, record_file_sha = _strict_json(
             record_path, "final execution record"
         )
-        if set(record) != {
-            "run",
-            "metrics",
-            "p_pre_zero_evidence",
-            "execution_request",
-        }:
-            raise DownstreamEvidenceError("final source record schema differs")
+        _validate_source_record_schema(record, source_kind="final")
         if record_file_sha != _digest(reference.get("sha256"), "final record checksum"):
             raise DownstreamEvidenceError("final record raw checksum differs")
         run = record.get("run")
@@ -1024,9 +1172,6 @@ def _validated_plan_entry(
     )
     if retained_cell_ids_sha256 != _cell_id_sha256(binding.retained_cell_ids):
         raise DownstreamEvidenceError("run retained cell identity differs")
-    if run.get("retained_gene_count") != len(binding.gene_ids):
-        raise DownstreamEvidenceError("run retained gene count differs")
-
     configuration_id = _text(run.get("configuration_id"), "configuration_id")
     configuration_sha256 = _digest(
         run.get("configuration_sha256"), "configuration checksum"
@@ -1097,7 +1242,10 @@ def _validated_plan_entry(
             encoding = _text(
                 run.get("evaluator_output_encoding"), "evaluator output encoding"
             )
-            if encoding != _FINAL_OUTPUT_ENCODING:
+            if (
+                encoding != _FINAL_OUTPUT_ENCODING
+                or not output_path.endswith(".log2-cp10k-f64.zlib")
+            ):
                 raise DownstreamEvidenceError("final evaluator output encoding differs")
             uncompressed_nbytes = run.get("evaluator_output_uncompressed_nbytes")
             if (

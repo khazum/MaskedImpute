@@ -149,7 +149,6 @@ def _run(
     method_id: str,
     dataset_sha256: str,
     cell_ids: tuple[str, ...],
-    gene_count: int,
     status: str,
     reason: str | None,
 ) -> dict[str, object]:
@@ -167,13 +166,39 @@ def _run(
         "configuration_id": configuration.configuration_id,
         "configuration_sha256": configuration.configuration_sha256,
         "configuration_kind": configuration.kind,
+        "requires_count_score": False,
+        "requires_calibration": False,
         "method_input_sha256": "3" * 64,
+        "dataset_qc_policy_sha256": "4" * 64,
+        "excluded_cell_count": 0,
+        "excluded_cell_ids_sha256": "5" * 64,
         "retained_cell_count": len(cell_ids),
         "retained_cell_ids_sha256": _cell_id_sha256(cell_ids),
-        "retained_gene_count": gene_count,
         "status": status,
         "reason": reason,
+        "runtime_seconds": 1.0,
+        "peak_rss_bytes": 1,
+        "peak_gpu_bytes": 0,
+        "rss_measurement": "test_measurement",
+        "gpu_measurement": "not_measured",
+        "calibration_artifact_sha256": None,
+        "calibration_context_sha256": None,
+        "calibration_training_manifest_sha256s": [],
+        "calibration_held_out_manifest_sha256s": [],
+        "calibration_fold_calibrator_sha256": None,
+        "stdout_sha256": "6" * 64,
+        "stderr_sha256": "7" * 64,
+        "native_output_sha256": None,
         "evaluator_output_sha256": None,
+        "stdout_path": f"runs/{run_id}.stdout",
+        "stdout_file_sha256": "8" * 64,
+        "stderr_path": f"runs/{run_id}.stderr",
+        "stderr_file_sha256": "9" * 64,
+        "native_output_path": None,
+        "native_output_file_sha256": None,
+        "native_output_shape": None,
+        "native_output_dtype": None,
+        "native_output_scale": None,
         "evaluator_output_path": None,
         "evaluator_output_file_sha256": None,
         "evaluator_output_shape": None,
@@ -187,7 +212,7 @@ def _development_source(tmp_path: Path):
     from maskimpute_benchmark.schema import benchmark_dataset_sha256
 
     dataset_path = tmp_path / "dataset.h5ad"
-    dataset, cells, genes = _dataset(dataset_path)
+    dataset, cells, _genes = _dataset(dataset_path)
     dataset_sha = benchmark_dataset_sha256(dataset)
     source = tmp_path / "development"
     source.mkdir()
@@ -201,7 +226,6 @@ def _development_source(tmp_path: Path):
         method_id="maskimpute",
         dataset_sha256=dataset_sha,
         cell_ids=cells,
-        gene_count=len(genes),
         status="completed",
         reason=None,
     )
@@ -220,13 +244,12 @@ def _development_source(tmp_path: Path):
         method_id="magic",
         dataset_sha256=dataset_sha,
         cell_ids=cells,
-        gene_count=len(genes),
         status="failed",
         reason="adapter_nonzero_exit",
     )
     records = [
-        {"run": completed, "metrics": [], "p_pre_zero_evidence": {}},
-        {"run": failed, "metrics": [], "p_pre_zero_evidence": {}},
+        {"run": completed, "metrics": []},
+        {"run": failed, "metrics": []},
     ]
     body = {
         "schema_version": 1,
@@ -505,6 +528,7 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
         build_downstream_evidence_plan,
         load_downstream_evidence_manifest,
         run_downstream_evidence,
@@ -513,7 +537,7 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
     from maskimpute_benchmark.schema import benchmark_dataset_sha256
 
     dataset_path = tmp_path / "dataset.h5ad"
-    dataset, cells, genes = _dataset(dataset_path)
+    dataset, cells, _genes = _dataset(dataset_path)
     dataset_sha = benchmark_dataset_sha256(dataset)
     source = tmp_path / "final"
     output = np.asarray(_common_output(dataset), dtype="<f8", order="C")
@@ -527,7 +551,6 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
         method_id="maskimpute",
         dataset_sha256=dataset_sha,
         cell_ids=cells,
-        gene_count=len(genes),
         status="completed",
         reason=None,
     )
@@ -541,13 +564,13 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
             "evaluator_output_encoding": "zlib_raw_f64_v1",
             "evaluator_output_uncompressed_nbytes": len(raw),
             "evaluator_output_uncompressed_sha256": hashlib.sha256(raw).hexdigest(),
+            "native_output_retention": "not_available",
         }
     )
     run["evaluator_output_sha256"] = _evaluator_output_sha256(run, raw)
     record = {
         "run": run,
         "metrics": [],
-        "p_pre_zero_evidence": {},
         "execution_request": None,
     }
     record_path = source / "records" / "00000001.json"
@@ -571,8 +594,6 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
             "evaluator_output_encoding": "zlib_raw_f64_v1",
             "evaluator_output_compression_level": 6,
             "native_output_retention": "omitted_redundant_final_output",
-            "p_pre_zero_encoding": "zlib_raw_f64_v1",
-            "p_pre_zero_compression_level": 6,
         },
     }
     manifest = {
@@ -595,6 +616,22 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
     assert len(loaded.records) == 1
     assert len(loaded.records[0]["endpoints"]) == 8
     assert loaded.records[0]["source_kind"] == "final"
+
+    manifest["artifact_storage"]["evaluator_output_compression_level"] = 9
+    changed_body = {
+        key: value for key, value in manifest.items() if key != "manifest_sha256"
+    }
+    manifest["manifest_sha256"] = canonical_sha256(changed_body)
+    _write_canonical(source / "execution_manifest.json", manifest)
+    with pytest.raises(
+        DownstreamEvidenceError, match="final artifact storage policy differs"
+    ):
+        build_downstream_evidence_plan(
+            source,
+            source_kind="final",
+            datasets=(_dataset_binding(dataset_path, cells),),
+            configurations=_test_configuration_authority(),
+        )
 
 
 def test_complete_manifest_revalidates_bound_source_and_dataset_bytes(
@@ -741,6 +778,34 @@ def test_plan_rejects_source_configuration_and_artifact_authority_mismatch(
             source_kind="development",
             datasets=(_dataset_binding(dataset_path, cells),),
             configurations=(candidate, magic),
+        )
+
+
+def test_plan_rejects_rehashed_source_run_with_unknown_schema_field(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    checkpoint_path = source / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["records"][0]["run"]["unknown_field"] = "forged"
+    body = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = canonical_sha256(body)
+    _write_canonical(checkpoint_path, checkpoint)
+
+    with pytest.raises(DownstreamEvidenceError, match="source run schema differs"):
+        build_downstream_evidence_plan(
+            source,
+            source_kind="development",
+            datasets=(_dataset_binding(dataset_path, cells),),
+            configurations=_test_configuration_authority(),
         )
 
 
