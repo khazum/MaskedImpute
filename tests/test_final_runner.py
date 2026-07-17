@@ -257,6 +257,62 @@ def test_final_plan_rejects_runtime_or_method_receipt_tampering() -> None:
         )
 
 
+def test_final_plan_rejects_inconsistent_historical_disposition() -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    receipt = _receipt(registry)
+    row = next(
+        value for value in receipt["method_denominator"] if value["id"] == "scimpute"
+    )
+    row["integration_status"] = "implemented"
+    unsigned = {key: value for key, value in receipt.items() if key != "payload_sha256"}
+    receipt["payload_sha256"] = canonical_sha256(unsigned)
+
+    with pytest.raises(FinalRunnerContractError, match="historical.*status"):
+        build_final_execution_plan(
+            receipt,
+            registry,
+            _bindings(),
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            execution_authority_sha256="9" * 64,
+        )
+
+
+def test_final_plan_rejects_unbound_matched_bulk_applicability() -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    receipt = _receipt(registry)
+    row = next(
+        value for value in receipt["method_denominator"] if value["id"] == "magic"
+    )
+    row["final_applicability"] = {
+        "rule": "matched_bulk_reference_present",
+        "non_run_reason": "matched_bulk_reference_absent",
+        "required_reference": {"kind": "truth_matrix"},
+    }
+    unsigned = {key: value for key, value in receipt.items() if key != "payload_sha256"}
+    receipt["payload_sha256"] = canonical_sha256(unsigned)
+
+    with pytest.raises(FinalRunnerContractError, match="matched-bulk.*binding"):
+        build_final_execution_plan(
+            receipt,
+            registry,
+            _bindings(),
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            execution_authority_sha256="9" * 64,
+        )
+
+
 def _unavailable_prepared(plan_entry):
     import numpy as np
 
@@ -287,8 +343,18 @@ def _unavailable_prepared(plan_entry):
         excluded_cell_ids=(),
         retained_cell_ids=method_input.obs_ids,
     )
+    dataset_id = getattr(plan_entry.run, "dataset_id", None)
+    binding = next(
+        value
+        for value in _bindings()
+        if (
+            value.dataset_id == dataset_id
+            if dataset_id is not None
+            else value.dataset_sha256 == plan_entry.run.source_dataset_sha256
+        )
+    )
     prepared = PreparedDataset(
-        binding=_bindings()[0],
+        binding=binding,
         audit=audit,
         method_input=method_input,
         evaluator_dataset=None,
@@ -303,6 +369,67 @@ def _unavailable_attempt(plan_entry):
         plan_entry.run,
         _unavailable_prepared(plan_entry),
         AdapterOutcome.unavailable(plan_entry.reason or "test_unavailable"),
+    )
+
+
+def _completed_attempt(plan_entry):
+    from dataclasses import replace
+
+    import anndata as ad
+
+    from maskimpute_benchmark.methods import run_observed, snapshot_method_output
+    from maskimpute_benchmark.runner import AdapterOutcome, evaluate_adapter_outcome
+
+    prepared = _unavailable_prepared(plan_entry)
+    evaluator_dataset = ad.AnnData(prepared.method_input.counts)
+    evaluator_dataset.obs_names = list(prepared.method_input.obs_ids)
+    evaluator_dataset.var_names = list(prepared.method_input.var_ids)
+    evaluator_dataset.layers["truth"] = prepared.method_input.counts
+    evaluator_dataset.uns["truth_kind"] = "exact_pre_capture"
+    evaluator_dataset.uns["primary_truth_layer"] = "truth"
+    prepared = replace(prepared, evaluator_dataset=evaluator_dataset)
+    observed = load_method_registry(METHODS).by_id("observed")
+    execution = run_observed(observed, prepared.method_input)
+    selected_spec = load_method_registry(METHODS).by_id(plan_entry.run.method_id)
+    snapshot = snapshot_method_output(
+        selected_spec,
+        prepared.method_input,
+        prepared.method_input.counts,
+        source_dataset_sha256=prepared.method_input.source_dataset_sha256,
+        output_scale=selected_spec.output_scale,
+        obs_ids=prepared.method_input.obs_ids,
+        var_ids=prepared.method_input.var_ids,
+    )
+    outcome = AdapterOutcome.completed(
+        replace(execution, snapshot=snapshot),
+        runtime_seconds=1,
+        peak_rss_bytes=1,
+        peak_gpu_bytes=1,
+    )
+    return evaluate_adapter_outcome(plan_entry.run, prepared, outcome)
+
+
+def _authority():
+    from maskimpute_benchmark.runner import ExecutionAuthorityContext
+
+    base = {"latent_dim": 2}
+    count = {"n_folds": 2}
+    return ExecutionAuthorityContext(
+        authority_sha256="9" * 64,
+        base_configuration_json=json.dumps(
+            base, separators=(",", ":"), sort_keys=True
+        ),
+        base_configuration_sha256=canonical_sha256(base),
+        count_model_config_json=json.dumps(
+            count, separators=(",", ":"), sort_keys=True
+        ),
+        count_model_config_sha256=canonical_sha256(count),
+        count_score_manifest_path="artifacts/study/round-001/results/score.json",
+        count_score_manifest_sha256="a" * 64,
+        retained_calibration_path=(
+            "artifacts/study/round-001/results/calibration.json"
+        ),
+        retained_calibration_sha256="b" * 64,
     )
 
 
@@ -387,6 +514,113 @@ def test_final_result_store_rejects_tampered_record_or_log(tmp_path: Path) -> No
         FinalResultStore(tmp_path / "execution", plan).load_records()
 
 
+def test_final_result_store_binds_successful_final_calibration_request(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.runner import ExecutionRequest
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0], entry),
+        configurations=full.configurations,
+        plan_sha256="c" * 64,
+    )
+    configuration = next(
+        value for value in plan.configurations if value.method_id == "maskimpute"
+    )
+    prepared = _unavailable_prepared(entry)
+    request = ExecutionRequest.create(
+        registry.by_id("maskimpute"),
+        prepared.method_input,
+        model_seed=entry.run.model_seed,
+        configuration=configuration,
+        authority=_authority(),
+        mechanism=entry.run.mechanism,
+        biological_id=entry.run.biological_id,
+        technical_view=entry.run.technical_view,
+        dataset_id=entry.run.dataset_id,
+        timeout_seconds=5,
+        calibration_usage="retained_all_development",
+    )
+    store = FinalResultStore(tmp_path / "execution", plan)
+    store.append(full.entries[0], _unavailable_attempt(full.entries[0]))
+
+    record = store.append(
+        entry,
+        _completed_attempt(entry),
+        execution_request=request,
+    )
+
+    assert record["execution_request"] == {
+        "calibration_usage": "retained_all_development",
+        "configuration_sha256": entry.run.configuration_sha256,
+        "count_score_manifest_sha256": "a" * 64,
+        "dataset_id": entry.run.dataset_id,
+        "execution_authority_sha256": "9" * 64,
+        "method_input_sha256": request.method_input_sha256,
+        "model_seed": entry.run.model_seed,
+        "request_sha256": request.request_sha256,
+        "retained_calibration_sha256": "b" * 64,
+    }
+    assert FinalResultStore(tmp_path / "execution", plan).load_records()[-1] == record
+
+
+def test_final_result_store_append_does_not_rehash_the_whole_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=full.entries[:3],
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    store = FinalResultStore(tmp_path / "execution", plan)
+    original = store._read_record
+    reads: list[str] = []
+
+    def counted(path, entry):
+        reads.append(path.name)
+        return original(path, entry)
+
+    monkeypatch.setattr(store, "_read_record", counted)
+    for entry in plan.entries:
+        store.append(entry, _unavailable_attempt(entry))
+
+    assert reads == ["00000001.json", "00000002.json", "00000003.json"]
+
+
 def test_execute_final_plan_uses_final_calibration_request_and_resumes(
     tmp_path: Path,
 ) -> None:
@@ -416,25 +650,7 @@ def test_execute_final_plan_uses_final_calibration_request_and_resumes(
         configurations=full.configurations,
         plan_sha256="a" * 64,
     )
-    base = {"latent_dim": 2}
-    count = {"n_folds": 2}
-    authority = ExecutionAuthorityContext(
-        authority_sha256="9" * 64,
-        base_configuration_json=(
-            __import__("json").dumps(base, separators=(",", ":"), sort_keys=True)
-        ),
-        base_configuration_sha256=canonical_sha256(base),
-        count_model_config_json=(
-            __import__("json").dumps(count, separators=(",", ":"), sort_keys=True)
-        ),
-        count_model_config_sha256=canonical_sha256(count),
-        count_score_manifest_path="artifacts/study/round-001/results/score.json",
-        count_score_manifest_sha256="a" * 64,
-        retained_calibration_path=(
-            "artifacts/study/round-001/results/calibration.json"
-        ),
-        retained_calibration_sha256="b" * 64,
-    )
+    authority = _authority()
     prepared = {plan.entries[0].run.dataset_id: _unavailable_prepared(plan.entries[0])}
     requests = []
     publications = []
@@ -471,6 +687,140 @@ def test_execute_final_plan_uses_final_calibration_request_and_resumes(
     )
     assert resumed == manifest
     assert len(requests) == 1
+
+
+def test_execute_final_plan_batches_incremental_journal_publications(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        build_final_execution_plan,
+        execute_final_plan,
+    )
+    from maskimpute_benchmark.runner import AdapterOutcome
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=full.entries[:33],
+        configurations=full.configurations,
+        plan_sha256="e" * 64,
+    )
+    prepared = {
+        entry.run.dataset_id: _unavailable_prepared(entry)
+        for entry in plan.entries
+    }
+    publications: list[str] = []
+
+    manifest = execute_final_plan(
+        plan,
+        registry,
+        prepared,
+        _authority(),
+        lambda _request: AdapterOutcome.unavailable("adapter_unavailable"),
+        FinalResultStore(tmp_path / "execution", plan),
+        on_record_published=lambda: publications.append("published"),
+    )
+
+    assert manifest["status"] == "completed"
+    assert len(publications) == 3
+
+
+def test_final_evaluation_rejects_an_unavailable_executable_method(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        FinalRunnerContractError,
+        build_final_execution_plan,
+        validate_final_execution_for_evaluation,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256="f" * 64,
+    )
+    store = FinalResultStore(tmp_path / "execution", plan)
+    store.append(plan.entries[0], _unavailable_attempt(plan.entries[0]))
+
+    with pytest.raises(FinalRunnerContractError, match="executable.*completed"):
+        validate_final_execution_for_evaluation(plan, store.load_records())
+
+
+def test_final_evaluation_accepts_completed_execution_and_exact_nonrun() -> None:
+    from maskimpute_benchmark.final_runner import (
+        build_final_execution_plan,
+        validate_final_execution_for_evaluation,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    execute = full.entries[0]
+    nonrun = next(value for value in full.entries if value.action == "not_applicable")
+    completed = json.loads(
+        json.dumps(
+            {
+                "run": asdict(_completed_attempt(execute).run),
+                "metrics": [
+                    metric.to_dict() for metric in _completed_attempt(execute).metrics
+                ],
+                "execution_request": None,
+            }
+        )
+    )
+    unavailable = json.loads(
+        json.dumps(
+            {
+                "run": asdict(_unavailable_attempt(nonrun).run),
+                "metrics": [
+                    metric.to_dict() for metric in _unavailable_attempt(nonrun).metrics
+                ],
+                "execution_request": None,
+            }
+        )
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(execute, nonrun),
+        configurations=full.configurations,
+        plan_sha256="0" * 64,
+    )
+
+    validation = validate_final_execution_for_evaluation(
+        plan, (completed, unavailable)
+    )
+
+    assert validation["executed_completed_count"] == 1
+    assert validation["not_applicable_count"] == 1
 
 
 def test_load_prepared_final_panel_revalidates_and_pairs_in_manifest_order(
@@ -673,6 +1023,85 @@ def test_final_result_file_manifest_rejects_symlinks(tmp_path: Path) -> None:
     (results / "alias.txt").symlink_to(first)
     with pytest.raises(FinalRunnerContractError, match="symlink"):
         final_result_file_manifest(round_dir)
+
+
+def test_incremental_result_publication_treats_only_exact_no_change_as_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+    from maskimpute_benchmark.study import StudyStateError
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/round-001"
+    (round_dir / "results").mkdir(parents=True)
+    monkeypatch.setattr(
+        final_runner,
+        "final_result_file_manifest",
+        lambda _round: {"result_files": []},
+    )
+
+    def unchanged(*_args, **_kwargs):
+        raise StudyStateError("incremental result manifest adds no files")
+
+    assert (
+        final_runner._record_incremental_results_if_changed(
+            repository,
+            round_dir,
+            unchanged,
+        )
+        is None
+    )
+
+    def corrupt(*_args, **_kwargs):
+        raise StudyStateError("incremental result manifest hash changed")
+
+    with pytest.raises(StudyStateError, match="hash changed"):
+        final_runner._record_incremental_results_if_changed(
+            repository,
+            round_dir,
+            corrupt,
+        )
+
+
+def test_stale_result_temporary_recovery_repairs_interrupted_hardlink(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import _remove_stale_result_temporaries
+
+    round_dir = tmp_path / "round-001"
+    runs = round_dir / "results/final/execution/runs"
+    runs.mkdir(parents=True)
+    temporary = runs / ".run.stdout.0123456789.tmp"
+    published = runs / "run.stdout"
+    temporary.write_bytes(b"stable artifact")
+    published.hardlink_to(temporary)
+    untouched = runs / ".not-a-staging-file"
+    untouched.write_bytes(b"keep")
+
+    removed = _remove_stale_result_temporaries(round_dir)
+
+    assert removed == ("results/final/execution/runs/.run.stdout.0123456789.tmp",)
+    assert not temporary.exists()
+    assert published.read_bytes() == b"stable artifact"
+    assert published.stat().st_nlink == 1
+    assert untouched.read_bytes() == b"keep"
+
+
+def test_stale_result_temporary_recovery_rejects_symlink(tmp_path: Path) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        _remove_stale_result_temporaries,
+    )
+
+    round_dir = tmp_path / "round-001"
+    results = round_dir / "results"
+    results.mkdir(parents=True)
+    target = tmp_path / "outside"
+    target.write_bytes(b"outside")
+    (results / ".artifact.0123456789.tmp").symlink_to(target)
+
+    with pytest.raises(FinalRunnerContractError, match="temporary.*regular"):
+        _remove_stale_result_temporaries(round_dir)
 
 
 def test_frozen_final_round_public_api_accepts_no_scientific_overrides() -> None:

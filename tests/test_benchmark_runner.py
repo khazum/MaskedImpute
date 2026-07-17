@@ -830,9 +830,7 @@ def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environmen
     unavailable = dispatcher(missing_request)
     assert unavailable.status == "unavailable"
     assert unavailable.reason == "environment_executable_unavailable:magic"
-    assert environments.executable_for("scvi") == (
-        repository / "artifacts/envs/scvi-py312/bin/python"
-    ).absolute()
+    assert environments.executable_for("scvi") is None
 
 
 def test_execution_environment_registry_binds_exact_runtime_lock(
@@ -1417,6 +1415,51 @@ def test_frozen_final_in_tree_preserves_selected_direct_score_variant(
     assert observed is not None
     assert captured["variant_id"] == "direct-score"
     assert captured["calibration_usage"] == "retained_all_development"
+
+
+def test_frozen_final_in_tree_calls_an_execution_path_that_accepts_final_usage() -> None:
+    import inspect
+
+    from maskimpute_benchmark.methods.maskimpute import _run_in_tree
+
+    assert "calibration_usage" in inspect.signature(_run_in_tree).parameters
+
+
+def test_spawned_repository_executor_close_releases_monitor_and_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Monitor:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def assert_unchanged(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    monitor = Monitor()
+    environments = ExecutionEnvironmentRegistry.fixed(tmp_path)
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "change_monitor",
+        lambda _self: monitor,
+    )
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "full_revalidate",
+        lambda _self: None,
+    )
+    executor = SpawnedRepositoryExecutor(
+        RepositoryAdapterDispatcher(tmp_path, environments)
+    )
+
+    executor.close()
+    executor.close()
+
+    assert monitor.close_count == 1
+    with pytest.raises(RunnerContractError, match="closed"):
+        executor(None)  # type: ignore[arg-type]
 
 
 def test_qc_excludes_only_zero_library_cells_before_one_shared_method_input() -> None:

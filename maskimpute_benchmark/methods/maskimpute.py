@@ -119,6 +119,7 @@ def _run_in_tree(
     device: str | torch.device,
     development_mechanism: str,
     development_biological_id: str,
+    calibration_usage: str = "development_holdout",
     decoder: str = "scaled_gaussian",
     decoder_config: object | None = None,
 ) -> MaskImputeAdapterExecution:
@@ -195,6 +196,7 @@ def _run_in_tree(
         cell_ids=method_input.obs_ids,
         development_mechanism=development_mechanism,
         development_biological_id=development_biological_id,
+        calibration_usage=calibration_usage,
         decoder=decoder,
         decoder_config=decoder_config,
     )

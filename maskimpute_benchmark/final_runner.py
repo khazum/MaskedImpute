@@ -42,7 +42,9 @@ from .runner import (
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
+_STAGING_FILE = re.compile(r"\..+\.[A-Za-z0-9_-]{6,}\.tmp\Z")
 _FINAL_DRAWS = tuple(f"draw-{draw:02d}" for draw in range(1, 6))
+_FINAL_JOURNAL_BATCH_SIZE = 32
 
 
 class FinalRunnerContractError(ValueError):
@@ -697,6 +699,92 @@ def final_result_file_manifest(round_dir: Path) -> dict[str, object]:
     return {"result_files": files}
 
 
+def _remove_stale_result_temporaries(round_dir: Path) -> tuple[str, ...]:
+    """Remove only implementation-defined staging names left by interruption."""
+
+    if not isinstance(round_dir, Path):
+        raise TypeError("round_dir must be a pathlib.Path")
+    try:
+        destination = round_dir.resolve(strict=True)
+        results = destination / "results"
+        if (
+            destination != round_dir.absolute()
+            or results.resolve(strict=True) != results.absolute()
+        ):
+            raise FinalRunnerContractError(
+                "final result temporary path contains a symlink"
+            )
+        entries = sorted(results.rglob("*"))
+    except FinalRunnerContractError:
+        raise
+    except OSError as error:
+        raise FinalRunnerContractError(
+            "final result temporaries cannot be enumerated"
+        ) from error
+    removed: list[str] = []
+    for path in entries:
+        if _STAGING_FILE.fullmatch(path.name) is None:
+            continue
+        try:
+            metadata = path.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_uid != os.geteuid()
+                or metadata.st_nlink not in {1, 2}
+                or path.parent.resolve(strict=True) != path.parent.absolute()
+            ):
+                raise FinalRunnerContractError(
+                    "stale final result temporary is not an owned regular file"
+                )
+            relative = path.relative_to(destination).as_posix()
+            path.unlink()
+            directory = os.open(
+                path.parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            if os.path.lexists(path):
+                raise FinalRunnerContractError(
+                    "stale final result temporary survived removal"
+                )
+            removed.append(relative)
+        except FinalRunnerContractError:
+            raise
+        except OSError as error:
+            raise FinalRunnerContractError(
+                "stale final result temporary could not be removed"
+            ) from error
+    return tuple(removed)
+
+
+def _record_incremental_results_if_changed(
+    repository: Path,
+    round_dir: Path,
+    recorder: Callable[..., object],
+) -> object | None:
+    """Reconcile a cumulative result tree while treating exact no-change as resume."""
+
+    from .study import StudyStateError
+
+    if not isinstance(repository, Path) or not isinstance(round_dir, Path):
+        raise TypeError("repository and round_dir must be pathlib.Path values")
+    if not callable(recorder):
+        raise TypeError("recorder must be callable")
+    manifest = final_result_file_manifest(round_dir)
+    try:
+        return recorder(round_dir, manifest, repo=repository)
+    except StudyStateError as error:
+        if str(error) == "incremental result manifest adds no files":
+            return None
+        raise
+
+
 class FinalResultStore:
     """Append-only per-attempt artifacts plus one immutable completion manifest."""
 
@@ -708,6 +796,7 @@ class FinalResultStore:
         self.output_dir = output_dir.absolute()
         self.plan = plan
         self._artifacts = CheckpointStore(self.output_dir)
+        self._records_cache: tuple[dict[str, object], ...] | None = None
 
     @property
     def manifest_path(self) -> Path:
@@ -715,6 +804,75 @@ class FinalResultStore:
 
     def _record_path(self, ordinal: int) -> Path:
         return self.output_dir / "records" / f"{ordinal:08d}.json"
+
+    def _validate_execution_request_receipt(
+        self,
+        value: object,
+        plan_entry: FinalPlanEntry,
+        run: Mapping[str, object],
+    ) -> Mapping[str, object] | None:
+        if value is None:
+            if plan_entry.action == "not_applicable":
+                return None
+            if run.get("status") == "completed" and plan_entry.run.requires_calibration:
+                raise FinalRunnerContractError(
+                    "completed final calibration lacks its execution request receipt"
+                )
+            return None
+        if not isinstance(value, Mapping) or set(value) != {
+            "calibration_usage",
+            "configuration_sha256",
+            "count_score_manifest_sha256",
+            "dataset_id",
+            "execution_authority_sha256",
+            "method_input_sha256",
+            "model_seed",
+            "request_sha256",
+            "retained_calibration_sha256",
+        }:
+            raise FinalRunnerContractError(
+                "final execution request receipt has an invalid schema"
+            )
+        if plan_entry.action != "execute":
+            raise FinalRunnerContractError(
+                "non-run final entry has an execution request receipt"
+            )
+        for name in (
+            "configuration_sha256",
+            "execution_authority_sha256",
+            "method_input_sha256",
+            "request_sha256",
+        ):
+            _sha256(value.get(name), f"final execution request {name}")
+        for name in (
+            "count_score_manifest_sha256",
+            "retained_calibration_sha256",
+        ):
+            nested = value.get(name)
+            if nested is not None:
+                _sha256(nested, f"final execution request {name}")
+        if (
+            value.get("calibration_usage") != "retained_all_development"
+            or value.get("configuration_sha256")
+            != plan_entry.run.configuration_sha256
+            or value.get("dataset_id") != plan_entry.run.dataset_id
+            or value.get("execution_authority_sha256")
+            != self.plan.input_hashes.get("execution_authority_sha256")
+            or value.get("method_input_sha256") != run.get("method_input_sha256")
+            or value.get("model_seed") != plan_entry.run.model_seed
+            or (
+                plan_entry.run.requires_count_score
+                and value.get("count_score_manifest_sha256") is None
+            )
+            or (
+                plan_entry.run.requires_calibration
+                and value.get("retained_calibration_sha256") is None
+            )
+        ):
+            raise FinalRunnerContractError(
+                "final execution request receipt differs from its plan"
+            )
+        return value
 
     def _read_record(self, path: Path, plan_entry: FinalPlanEntry) -> dict[str, object]:
         raw = _read_unique_file(path, "final execution record")
@@ -724,23 +882,41 @@ class FinalResultStore:
             raise FinalRunnerContractError(
                 "final execution record is invalid"
             ) from error
-        if not isinstance(value, dict) or raw != _canonical_bytes(value) + b"\n":
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"run", "metrics", "execution_request"}
+            or raw != _canonical_bytes(value) + b"\n"
+        ):
             raise FinalRunnerContractError("final execution record is not canonical")
         try:
-            validated = self._artifacts._validate_stored_record(value, plan_entry.run)
+            run = value.get("run")
+            if not isinstance(run, Mapping):
+                raise FinalRunnerContractError("final execution run is invalid")
+            receipt = self._validate_execution_request_receipt(
+                value.get("execution_request"), plan_entry, run
+            )
+            self._artifacts._validate_stored_record(
+                {"run": value["run"], "metrics": value["metrics"]},
+                plan_entry.run,
+                final_calibration_artifact_sha256=(
+                    None
+                    if receipt is None
+                    else receipt.get("retained_calibration_sha256")
+                ),
+            )
         except (RunnerContractError, OSError, ValueError) as error:
             raise FinalRunnerContractError(
                 "final execution record or artifact is invalid"
             ) from error
-        return dict(validated)
+        return value
 
-    def load_records(self) -> tuple[dict[str, object], ...]:
+    def _record_names(self) -> tuple[str, ...]:
         records_dir = self.output_dir / "records"
         if not records_dir.exists():
             return ()
         try:
             metadata = records_dir.lstat()
-            names = sorted(path.name for path in records_dir.iterdir())
+            names = tuple(sorted(path.name for path in records_dir.iterdir()))
         except OSError as error:
             raise FinalRunnerContractError(
                 "final record directory is unavailable"
@@ -748,15 +924,34 @@ class FinalResultStore:
         if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise FinalRunnerContractError("final record directory is invalid")
         expected_names = [f"{ordinal:08d}.json" for ordinal in range(1, len(names) + 1)]
-        if names != expected_names or len(names) > len(self.plan.entries):
+        if list(names) != expected_names or len(names) > len(self.plan.entries):
             raise FinalRunnerContractError("final execution records are not a prefix")
+        return names
+
+    def load_records(self) -> tuple[dict[str, object], ...]:
+        records_dir = self.output_dir / "records"
+        names = self._record_names()
         return tuple(
             self._read_record(records_dir / name, self.plan.entries[index])
             for index, name in enumerate(names)
         )
 
+    def _cached_records(self) -> tuple[dict[str, object], ...]:
+        if self._records_cache is None:
+            self._records_cache = self.load_records()
+        names = self._record_names()
+        if len(names) != len(self._records_cache):
+            raise FinalRunnerContractError(
+                "final execution record prefix changed during this process"
+            )
+        return self._records_cache
+
     def append(
-        self, plan_entry: FinalPlanEntry, attempt: EvaluatedAttempt
+        self,
+        plan_entry: FinalPlanEntry,
+        attempt: EvaluatedAttempt,
+        *,
+        execution_request: ExecutionRequest | None = None,
     ) -> dict[str, object]:
         if not isinstance(plan_entry, FinalPlanEntry):
             raise TypeError("plan_entry must be a FinalPlanEntry")
@@ -764,7 +959,7 @@ class FinalResultStore:
             raise TypeError("attempt must be an EvaluatedAttempt")
         if self.manifest_path.exists():
             raise FinalRunnerContractError("final execution is already complete")
-        records = self.load_records()
+        records = self._cached_records()
         next_index = len(records)
         if (
             next_index >= len(self.plan.entries)
@@ -775,13 +970,75 @@ class FinalResultStore:
             )
         if attempt.run.run_id != plan_entry.run.run_id:
             raise FinalRunnerContractError("final attempt differs from its plan entry")
+        request_receipt: dict[str, object] | None = None
+        if execution_request is not None:
+            if not isinstance(execution_request, ExecutionRequest):
+                raise TypeError("execution_request must be an ExecutionRequest")
+            execution_request.validate_integrity()
+            if (
+                plan_entry.action != "execute"
+                or execution_request.method_spec.id != plan_entry.run.method_id
+                or execution_request.method_input_sha256
+                != attempt.run.method_input_sha256
+                or execution_request.model_seed != plan_entry.run.model_seed
+                or execution_request.dataset_id != plan_entry.run.dataset_id
+                or execution_request.mechanism != plan_entry.run.mechanism
+                or execution_request.biological_id != plan_entry.run.biological_id
+                or execution_request.technical_view
+                != plan_entry.run.technical_view
+                or execution_request.configuration_id
+                != plan_entry.run.configuration_id
+                or execution_request.configuration_sha256
+                != plan_entry.run.configuration_sha256
+                or execution_request.execution_authority_sha256
+                != self.plan.input_hashes.get("execution_authority_sha256")
+                or execution_request.calibration_usage
+                != "retained_all_development"
+                or execution_request.calibration_context is not None
+            ):
+                raise FinalRunnerContractError(
+                    "final execution request differs from its plan entry"
+                )
+            request_receipt = {
+                "calibration_usage": execution_request.calibration_usage,
+                "configuration_sha256": execution_request.configuration_sha256,
+                "count_score_manifest_sha256": (
+                    execution_request.count_score_manifest_sha256
+                ),
+                "dataset_id": execution_request.dataset_id,
+                "execution_authority_sha256": (
+                    execution_request.execution_authority_sha256
+                ),
+                "method_input_sha256": execution_request.method_input_sha256,
+                "model_seed": execution_request.model_seed,
+                "request_sha256": execution_request.request_sha256,
+                "retained_calibration_sha256": (
+                    execution_request.retained_calibration_sha256
+                ),
+            }
         try:
-            stored = json.loads(
+            base_stored = json.loads(
                 _canonical_bytes(self._artifacts._stored_attempt(attempt)).decode(
                     "utf-8"
                 )
             )
-            self._artifacts._validate_stored_record(stored, plan_entry.run)
+            stored = {
+                "run": base_stored["run"],
+                "metrics": base_stored["metrics"],
+                "execution_request": request_receipt,
+            }
+            self._validate_execution_request_receipt(
+                request_receipt, plan_entry, stored["run"]
+            )
+            self._artifacts._validate_stored_record(
+                base_stored,
+                plan_entry.run,
+                final_calibration_artifact_sha256=(
+                    None
+                    if request_receipt is None
+                    else request_receipt["retained_calibration_sha256"]
+                ),
+            )
             self._artifacts._publish_immutable(
                 f"records/{plan_entry.run.ordinal:08d}.json",
                 _canonical_bytes(stored) + b"\n",
@@ -790,15 +1047,20 @@ class FinalResultStore:
             raise FinalRunnerContractError(
                 "cannot publish final execution record"
             ) from error
-        observed = self.load_records()
-        if len(observed) != next_index + 1:
+        names = self._record_names()
+        if len(names) != next_index + 1:
             raise FinalRunnerContractError("final execution record publication failed")
-        return observed[-1]
+        observed = self._read_record(
+            self.output_dir / "records" / names[-1], plan_entry
+        )
+        self._records_cache = (*records, observed)
+        return observed
 
     def finalize(self) -> dict[str, object]:
         if self.manifest_path.exists():
             raise FinalRunnerContractError("final execution is already complete")
         records = self.load_records()
+        self._records_cache = records
         if len(records) != len(self.plan.entries):
             raise FinalRunnerContractError("final execution records are incomplete")
         references = []
@@ -1028,14 +1290,22 @@ def build_final_execution_plan(
         for spec in registry.methods:
             row = frozen_by_id[spec.id]
             applicability = row.get("final_applicability")
-            if not isinstance(applicability, Mapping):
+            if (
+                not isinstance(applicability, Mapping)
+                or set(applicability)
+                != {"rule", "non_run_reason", "required_reference"}
+            ):
                 raise FinalRunnerContractError(
                     f"method {spec.id} final applicability is invalid"
                 )
             rule = applicability.get("rule")
             integration_status = row.get("integration_status")
             if rule == "all_final_datasets":
-                if integration_status != "implemented":
+                if (
+                    integration_status != "implemented"
+                    or applicability.get("non_run_reason") is not None
+                    or applicability.get("required_reference") is not None
+                ):
                     raise FinalRunnerContractError(
                         f"method {spec.id} executable disposition is not implemented"
                     )
@@ -1052,6 +1322,37 @@ def build_final_execution_plan(
                         f"method {spec.id} lacks a final non-run reason"
                     )
                 reason = raw_reason
+                if rule == "never":
+                    if applicability.get("required_reference") is not None:
+                        raise FinalRunnerContractError(
+                            f"method {spec.id} non-run reference binding is invalid"
+                        )
+                    if reason == "historical_method_not_rerun":
+                        if integration_status != "historical":
+                            raise FinalRunnerContractError(
+                                f"method {spec.id} historical integration status differs"
+                            )
+                    elif integration_status != "unavailable":
+                        raise FinalRunnerContractError(
+                            f"method {spec.id} unavailable integration status differs"
+                        )
+                else:
+                    required_reference = applicability.get("required_reference")
+                    if required_reference != {
+                        "kind": "prespecified_matched_bulk_expression",
+                        "binding": "final_dataset_manifest_external_reference",
+                        "evaluator_truth_as_reference": "forbidden",
+                    }:
+                        raise FinalRunnerContractError(
+                            f"method {spec.id} matched-bulk reference binding is invalid"
+                        )
+                    if (
+                        integration_status != "implemented"
+                        or reason != "matched_bulk_reference_absent"
+                    ):
+                        raise FinalRunnerContractError(
+                            f"method {spec.id} matched-bulk disposition is invalid"
+                        )
                 seeds = (None,)
             else:
                 raise FinalRunnerContractError(
@@ -1185,11 +1486,81 @@ def execute_final_plan(
             prepared,
             outcome,
         )
-        store.append(plan_entry, attempt)
-        on_record_published()
+        store.append(
+            plan_entry,
+            attempt,
+            execution_request=(
+                None if plan_entry.action == "not_applicable" else request
+            ),
+        )
+        recorded_count = len(store._cached_records())
+        if (
+            recorded_count % _FINAL_JOURNAL_BATCH_SIZE == 0
+            or recorded_count == len(plan.entries)
+        ):
+            on_record_published()
     manifest = store.finalize()
     on_record_published()
     return manifest
+
+
+def validate_final_execution_for_evaluation(
+    plan: FinalExecutionPlan,
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Require every executable denominator row to have completed successfully."""
+
+    if not isinstance(plan, FinalExecutionPlan):
+        raise TypeError("plan must be a FinalExecutionPlan")
+    values = tuple(records)
+    if len(values) != len(plan.entries):
+        raise FinalRunnerContractError(
+            "final execution record denominator is incomplete"
+        )
+    executed = 0
+    nonruns = 0
+    record_sha256s: list[str] = []
+    for plan_entry, record in zip(plan.entries, values, strict=True):
+        if not isinstance(record, Mapping) or not isinstance(record.get("run"), Mapping):
+            raise FinalRunnerContractError("final execution record is invalid")
+        run = record["run"]
+        if (
+            run.get("run_id") != plan_entry.run.run_id
+            or run.get("method_id") != plan_entry.run.method_id
+            or run.get("dataset_id") != plan_entry.run.dataset_id
+            or run.get("model_seed") != plan_entry.run.model_seed
+            or run.get("configuration_sha256")
+            != plan_entry.run.configuration_sha256
+        ):
+            raise FinalRunnerContractError(
+                "final execution record differs from its evaluation plan"
+            )
+        if plan_entry.action == "execute":
+            if run.get("status") != "completed" or run.get("reason") is not None:
+                raise FinalRunnerContractError(
+                    "every executable final method must be completed before evaluation"
+                )
+            executed += 1
+        else:
+            if (
+                run.get("status") != "unavailable"
+                or run.get("reason") != plan_entry.reason
+            ):
+                raise FinalRunnerContractError(
+                    "final non-run record differs from its frozen applicability reason"
+                )
+            nonruns += 1
+        record_sha256s.append(canonical_sha256(record))
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "status": "eligible_for_final_evaluation",
+        "final_plan_sha256": plan.plan_sha256,
+        "planned_run_count": len(plan.entries),
+        "executed_completed_count": executed,
+        "not_applicable_count": nonruns,
+        "record_payload_sha256s": record_sha256s,
+    }
+    return {**body, "validation_sha256": canonical_sha256(body)}
 
 
 def run_frozen_final_round(
@@ -1216,6 +1587,12 @@ def run_frozen_final_round(
         ) from error
     claim_path = destination / "execution_claim.json"
     if os.path.lexists(claim_path):
+        _remove_stale_result_temporaries(destination)
+        _record_incremental_results_if_changed(
+            selected_repository,
+            destination,
+            record_incremental_results,
+        )
         try:
             load_final_manifest_claim(selected_repository, destination)
         except Exception as error:
@@ -1281,11 +1658,12 @@ def run_frozen_final_round(
         execution_environment_sha256=environments.registry_sha256,
         dataset_manifest_sha256=bindings[0].manifest_sha256,
     )
+    executor: SpawnedRepositoryExecutor | None = None
     try:
-        record_incremental_results(
+        _record_incremental_results_if_changed(
+            selected_repository,
             destination,
-            final_result_file_manifest(destination),
-            repo=selected_repository,
+            record_incremental_results,
         )
         plan = build_final_execution_plan(
             frozen_method,
@@ -1303,25 +1681,26 @@ def run_frozen_final_round(
         )
 
         def publish_results() -> object:
-            return record_incremental_results(
+            return _record_incremental_results_if_changed(
+                selected_repository,
                 destination,
-                final_result_file_manifest(destination),
-                repo=selected_repository,
+                record_incremental_results,
             )
 
+        executor = SpawnedRepositoryExecutor(dispatcher)
         execution_manifest = execute_final_plan(
             plan,
             registry,
             prepared,
             authority,
-            SpawnedRepositoryExecutor(dispatcher),
+            executor,
             store,
             on_record_published=publish_results,
         )
-        cumulative = final_result_file_manifest(destination)
-        record_incremental_results(
-            destination, cumulative, repo=selected_repository
+        evaluation_validation = validate_final_execution_for_evaluation(
+            plan, store.load_records()
         )
+        cumulative = final_result_file_manifest(destination)
         evaluation_manifest: dict[str, object] = {
             "schema_version": 1,
             "status": "completed",
@@ -1335,6 +1714,7 @@ def run_frozen_final_round(
             "final_execution_payload_sha256": execution_manifest[
                 "manifest_sha256"
             ],
+            "execution_validation": evaluation_validation,
             "result_files": cumulative["result_files"],
         }
         evaluation_receipt = record_final_evaluation(
@@ -1343,9 +1723,8 @@ def run_frozen_final_round(
             repo=selected_repository,
         )
     finally:
-        close = getattr(environments, "close", None)
-        if callable(close):
-            close()
+        if executor is not None:
+            executor.close()
     return {
         "execution_manifest": execution_manifest,
         "evaluation_receipt": evaluation_receipt,
@@ -1362,5 +1741,6 @@ __all__ = [
     "load_prepared_final_panel",
     "materialize_final_execution_authority",
     "run_frozen_final_round",
+    "validate_final_execution_for_evaluation",
     "validate_final_manifest_payload",
 ]

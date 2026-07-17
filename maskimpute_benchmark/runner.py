@@ -3322,6 +3322,8 @@ class CheckpointStore:
         self,
         value: object,
         entry: RunPlanEntry,
+        *,
+        final_calibration_artifact_sha256: str | None = None,
     ) -> dict[str, object]:
         if not isinstance(value, dict) or set(value) != {"run", "metrics"}:
             raise RunnerContractError("checkpoint record has wrong schema")
@@ -3357,9 +3359,18 @@ class CheckpointStore:
                 or run.get("calibration_held_out_manifest_sha256s") != []
             ):
                 raise RunnerContractError("checkpoint calibration receipt is partial")
-            if entry.requires_calibration and run.get("status") == "completed":
+            if (
+                entry.requires_calibration
+                and run.get("status") == "completed"
+                and final_calibration_artifact_sha256 is None
+            ):
                 raise RunnerContractError(
                     "calibrated completed run lacks its LODO receipt"
+                )
+            if final_calibration_artifact_sha256 is not None:
+                _require_sha256(
+                    final_calibration_artifact_sha256,
+                    "checkpoint final calibration artifact",
                 )
         else:
             for name in (
@@ -4500,6 +4511,9 @@ class SpawnedRepositoryExecutor:
     _resource_sampler: ResourceSampler = dataclass_field(
         init=False, repr=False, compare=False
     )
+    _closed: bool = dataclass_field(
+        init=False, repr=False, compare=False, default=False
+    )
 
     def __post_init__(self) -> None:
         monitor = self.dispatcher.environments.change_monitor()
@@ -4541,6 +4555,8 @@ class SpawnedRepositoryExecutor:
         )
 
     def __call__(self, request: ExecutionRequest) -> AdapterOutcome:
+        if self._closed:
+            raise RunnerContractError("spawned repository executor is closed")
         method_id = request.method_spec.id
         self.dispatcher.environments.revalidate_control_state_for(method_id)
         try:
@@ -4561,6 +4577,22 @@ class SpawnedRepositoryExecutor:
             except RuntimeEnvironmentError as error:
                 raise RunnerContractError(str(error)) from error
             self.dispatcher.environments.revalidate_control_state_for(method_id)
+
+    def close(self) -> None:
+        """Release the long-lived runtime-change monitor exactly once."""
+
+        if self._closed:
+            return
+        self._runtime_monitor.close()
+        object.__setattr__(self, "_closed", True)
+
+    def __enter__(self) -> SpawnedRepositoryExecutor:
+        if self._closed:
+            raise RunnerContractError("spawned repository executor is closed")
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
 
 def load_prepared_development_panel(
