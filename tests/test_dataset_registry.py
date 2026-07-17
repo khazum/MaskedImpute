@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import runpy
+import shutil
 import subprocess
+from types import SimpleNamespace
 
 import anndata as ad
 import numpy as np
@@ -693,6 +696,242 @@ def test_evaluated_final_status_revalidates_path_free_runtime_and_source_authori
             execution_claim=execution_claim,
             seed_manifest=seed_manifest,
         )
+
+
+def test_final_downstream_builder_loads_real_evaluated_forty_dataset_panel(
+    panel_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.methods as methods
+    import maskimpute_benchmark.publication_freeze as publication_freeze
+
+    round_dir = _prepare_final_round(panel_repo)
+    assert_final_runnable(panel_repo, round_dir)
+    adapter_calls: list[tuple[tuple[SimulationRequest, ...], object]] = []
+    _install_fake_adapters(monkeypatch, _fake_adapter_factory(adapter_calls))
+    runtime_paths = _fake_final_runtime_paths(panel_repo, tmp_path, monkeypatch)
+    status = generate_dataset_panel(
+        repo=panel_repo,
+        namespace="final",
+        round_dir=round_dir,
+        **runtime_paths,
+    )
+    assert status["completed_count"] == 40
+    assert len(adapter_calls) == 20
+
+    freeze = study_module._validate_freeze(round_dir, panel_repo)
+    materialization, _seed_manifest = study_module._validate_seed_manifest(
+        round_dir,
+        freeze,
+    )
+    execution_claim = study_module._validate_execution_claim_record(
+        round_dir,
+        freeze,
+        materialization,
+    )
+    journal = study_module._validate_result_journal(
+        panel_repo,
+        round_dir,
+        freeze,
+        materialization,
+        execution_claim,
+    )
+    cumulative = journal["cumulative_result_files"]
+    assert isinstance(cumulative, list)
+    record_final_evaluation(
+        round_dir,
+        {"result_files": cumulative},
+        repo=panel_repo,
+    )
+    for path in runtime_paths.values():
+        shutil.rmtree(path)
+
+    def round_snapshot() -> dict[str, tuple[int, int, int, str]]:
+        return {
+            path.relative_to(round_dir).as_posix(): (
+                path.stat().st_mode,
+                path.stat().st_size,
+                path.stat().st_mtime_ns,
+                file_sha256(path),
+            )
+            for path in round_dir.rglob("*")
+            if path.is_file()
+        }
+
+    before = round_snapshot()
+    evaluated_binding = object()
+    frozen_method = object()
+    registry = SimpleNamespace(methods=(SimpleNamespace(id="observed"),))
+    configuration = object()
+    bound_datasets = (object(),)
+    source_plan = object()
+    final_plan = object()
+    observed: dict[str, object] = {}
+    loader_calls: list[tuple[Path, Path, dict[str, object]]] = []
+    actual_loader = final_runner.load_prepared_final_panel
+    actual_manifest_validator = final_runner.validate_final_manifest_payload
+
+    # This fixture keeps H5ADs tiny; adapt only the parser's fixed publication
+    # dimensions, then restore the genuine status identity for byte/QC replay.
+    def validate_tiny_final_manifest(
+        payload: object,
+    ) -> tuple[object, ...]:
+        assert isinstance(payload, dict)
+        tiny_rows = payload["rows"]
+        assert isinstance(tiny_rows, list)
+        publication_sized = json.loads(json.dumps(payload))
+        publication_rows = publication_sized["rows"]
+        assert isinstance(publication_rows, list)
+        for row in publication_rows:
+            row["cells"] = 2700
+            row["genes"] = 1200
+        publication_sized["manifest_sha256"] = canonical_sha256(
+            {
+                key: value
+                for key, value in publication_sized.items()
+                if key != "manifest_sha256"
+            }
+        )
+        bindings = actual_manifest_validator(publication_sized)
+        return tuple(
+            replace(
+                binding,
+                cells=int(row["cells"]),
+                genes=int(row["genes"]),
+                manifest_sha256=str(payload["manifest_sha256"]),
+            )
+            for binding, row in zip(bindings, tiny_rows, strict=True)
+        )
+
+    monkeypatch.setattr(
+        final_runner,
+        "validate_final_manifest_payload",
+        validate_tiny_final_manifest,
+    )
+
+    monkeypatch.setattr(
+        downstream,
+        "__file__",
+        str(panel_repo / "maskimpute_benchmark/downstream_evidence.py"),
+    )
+    monkeypatch.setattr(
+        downstream,
+        "_read_verified_evaluated_round_binding",
+        lambda repository, selected_round: (
+            evaluated_binding
+            if (repository, selected_round)
+            == (panel_repo.resolve(), round_dir.resolve())
+            else pytest.fail("downstream builder selected a different evaluated round")
+        ),
+    )
+    monkeypatch.setattr(
+        publication_freeze,
+        "validate_frozen_method",
+        lambda repository: frozen_method
+        if repository == panel_repo.resolve()
+        else pytest.fail("downstream builder selected a different frozen method"),
+    )
+    monkeypatch.setattr(
+        methods,
+        "load_method_registry",
+        lambda path: registry
+        if path == panel_repo.resolve() / "study/methods.json"
+        else pytest.fail("downstream builder selected a different method registry"),
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_configuration_for_method",
+        lambda method_id, _spec, selected_frozen: configuration
+        if method_id == "observed" and selected_frozen is frozen_method
+        else pytest.fail("downstream builder changed configuration authority"),
+    )
+
+    def load_panel(
+        repository: Path,
+        selected_round: Path,
+        **kwargs: object,
+    ):
+        loader_calls.append((repository, selected_round, dict(kwargs)))
+        return actual_loader(repository, selected_round, **kwargs)
+
+    monkeypatch.setattr(final_runner, "load_prepared_final_panel", load_panel)
+
+    def bind_panel(
+        bindings: object,
+        prepared: object,
+        *,
+        dataset_root: Path,
+    ) -> tuple[object, ...]:
+        observed["bindings"] = bindings
+        observed["prepared"] = prepared
+        observed["dataset_root"] = dataset_root
+        return bound_datasets
+
+    monkeypatch.setattr(downstream, "bind_prepared_evaluator_panel", bind_panel)
+    execution_inputs = {
+        "execution_claim_sha256": "1" * 64,
+        "execution_environment_sha256": "2" * 64,
+        "execution_authority_sha256": "3" * 64,
+    }
+    monkeypatch.setattr(
+        downstream,
+        "_strict_json",
+        lambda path, _name: (
+            ({"input_hashes": execution_inputs}, b"{}\n", "4" * 64)
+            if path
+            == round_dir.resolve() / "results/final/execution/execution_manifest.json"
+            else pytest.fail("downstream builder read a different execution manifest")
+        ),
+    )
+
+    def rebuild_plan(
+        selected_frozen: object,
+        selected_registry: object,
+        bindings: object,
+        **kwargs: object,
+    ) -> object:
+        observed["source_plan_inputs"] = kwargs
+        assert selected_frozen is frozen_method
+        assert selected_registry is registry
+        assert bindings is observed["bindings"]
+        return source_plan
+
+    monkeypatch.setattr(final_runner, "build_final_execution_plan", rebuild_plan)
+
+    def finish_plan(source_root: Path, **kwargs: object) -> object:
+        observed["source_root"] = source_root
+        observed["downstream_inputs"] = kwargs
+        return final_plan
+
+    monkeypatch.setattr(downstream, "build_downstream_evidence_plan", finish_plan)
+
+    result = downstream.build_final_downstream_evidence_plan(panel_repo, round_dir)
+
+    bindings = observed["bindings"]
+    prepared = observed["prepared"]
+    assert result is final_plan
+    assert len(bindings) == 40
+    assert len(prepared) == 40
+    assert tuple(prepared) == tuple(binding.dataset_id for binding in bindings)
+    assert loader_calls == [
+        (panel_repo.resolve(), round_dir.resolve(), {"allow_evaluated": True})
+    ]
+    assert observed["dataset_root"] == round_dir.resolve() / "results"
+    assert observed["source_root"] == (round_dir.resolve() / "results/final/execution")
+    downstream_inputs = observed["downstream_inputs"]
+    assert downstream_inputs["datasets"] is bound_datasets
+    assert downstream_inputs["configurations"] == (configuration,)
+    assert downstream_inputs["evaluated_round_binding"] is evaluated_binding
+    assert downstream_inputs["source_plan"] is source_plan
+    assert observed["source_plan_inputs"] == {
+        "execution_claim_sha256": "1" * 64,
+        "execution_environment_sha256": "2" * 64,
+        "execution_authority_sha256": "3" * 64,
+    }
+    assert round_snapshot() == before
 
 
 def test_final_generation_requires_explicit_runtime_asset_paths(

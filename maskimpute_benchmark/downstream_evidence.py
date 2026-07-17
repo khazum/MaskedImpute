@@ -18,6 +18,7 @@ import zlib
 
 import anndata as ad
 import numpy as np
+from scipy import sparse
 
 from .downstream_evaluation import (
     DOWNSTREAM_ENDPOINT_NAMES,
@@ -25,6 +26,7 @@ from .downstream_evaluation import (
     EvaluatorTargets,
     MethodOutput,
     evaluate_downstream_endpoints,
+    evaluate_trajectory_endpoint,
     evaluator_targets_from_dataset,
     terminal_downstream_endpoints,
 )
@@ -35,6 +37,7 @@ from .schema import benchmark_dataset_sha256, validate_benchmark_dataset
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _FINAL_OUTPUT_ENCODING = "zlib_raw_f64_v1"
+_TRAJECTORY_ENDPOINT_NAMES = ("trajectory_pseudotime_rank_loss",)
 _ENDPOINT_VALUE_RANGES = MappingProxyType(
     {
         "marker_rank_loss": (0.0, 1.0),
@@ -87,7 +90,14 @@ _TERMINAL_PROCEDURES = frozenset(
     }
 )
 _SOURCE_KINDS = frozenset({"development", "final"})
-_EVIDENCE_SCOPES = frozenset({"all", "selection_primary", "supplementary_nonselection"})
+_EVIDENCE_SCOPES = frozenset(
+    {
+        "all",
+        "selection_primary",
+        "supplementary_nonselection",
+        "supplementary_trajectory",
+    }
+)
 _RUN_STATUSES = frozenset(
     {
         "completed",
@@ -128,6 +138,9 @@ _FINAL_MANIFEST_FIELDS = frozenset(
         "manifest_sha256",
     }
 )
+_TRAJECTORY_MANIFEST_FIELDS = _FINAL_MANIFEST_FIELDS | frozenset(
+    {"scope", "plan_entries", "configurations", "model_seed_policy"}
+)
 _EVALUATION_RECEIPT_FIELDS = frozenset(
     {
         "schema_version",
@@ -166,8 +179,81 @@ _FINAL_RESULT_MANIFEST_FIELDS = frozenset(
         "execution_validation",
         "storage_preflight",
         "scaling_evidence",
+        "trajectory_evidence",
         "result_files",
     }
+)
+_TRAJECTORY_EVIDENCE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "scope",
+        "plan",
+        "dataset",
+        "execution_authority",
+        "execution_manifest",
+        "execution_validation",
+        "result_files",
+        "evidence_sha256",
+    }
+)
+_TRAJECTORY_PLAN_FIELDS = frozenset(
+    {
+        "schema_version",
+        "scope",
+        "input_hashes",
+        "entries",
+        "configurations",
+        "model_seed_policy",
+        "plan_sha256",
+    }
+)
+_TRAJECTORY_PLAN_INPUT_FIELDS = frozenset(
+    {
+        "frozen_method_sha256",
+        "method_registry_sha256",
+        "runtime_lock_sha256",
+        "primary_final_plan_sha256",
+        "trajectory_authority_file_sha256",
+        "trajectory_authority_sha256",
+        "trajectory_binding_sha256",
+        "trajectory_dataset_sha256",
+        "trajectory_dataset_file_sha256",
+        "trajectory_dataset_receipt_sha256",
+        "trajectory_dataset_receipt_file_sha256",
+        "trajectory_method_input_sha256",
+        "trajectory_retained_cell_ids_sha256",
+        "dataset_qc_policy_sha256",
+        "execution_claim_sha256",
+        "execution_environment_sha256",
+        "execution_authority_sha256",
+    }
+)
+_TRAJECTORY_DATASET_EVIDENCE_FIELDS = frozenset(
+    {
+        "binding",
+        "dataset_path",
+        "dataset_file_sha256",
+        "dataset_sha256",
+        "receipt_path",
+        "receipt_file_sha256",
+        "receipt_payload_sha256",
+    }
+)
+_TRAJECTORY_AUTHORITY_EVIDENCE_FIELDS = frozenset(
+    {
+        "authority_path",
+        "authority_file_sha256",
+        "authority_sha256",
+        "count_score_authority_path",
+        "count_score_authority_file_sha256",
+        "retained_calibration_path",
+        "retained_calibration_file_sha256",
+        "files",
+    }
+)
+_TRAJECTORY_MANIFEST_EVIDENCE_FIELDS = frozenset(
+    {"path", "file_sha256", "payload_sha256"}
 )
 _SCALING_EVIDENCE_FIELDS = frozenset(
     {
@@ -208,6 +294,21 @@ _FINAL_EXECUTION_VALIDATION_FIELDS = frozenset(
         "schema_version",
         "status",
         "final_plan_sha256",
+        "planned_run_count",
+        "executed_completed_count",
+        "executed_algorithmic_failure_count",
+        "executed_status_counts",
+        "not_applicable_count",
+        "record_payload_sha256s",
+        "validation_sha256",
+    }
+)
+_TRAJECTORY_EXECUTION_VALIDATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "scope",
+        "trajectory_plan_sha256",
         "planned_run_count",
         "executed_completed_count",
         "executed_algorithmic_failure_count",
@@ -1101,6 +1202,30 @@ class EvaluatedRoundBinding:
     scaling_checkpoint_history_count: int
     scaling_result_files_sha256: str
     scaling_result_file_count: int
+    trajectory_evidence_sha256: str
+    trajectory_plan_sha256: str
+    trajectory_execution_claim_sha256: str
+    trajectory_execution_environment_sha256: str
+    trajectory_dataset_id: str
+    trajectory_dataset_sha256: str
+    trajectory_dataset_file_sha256: str
+    trajectory_dataset_receipt_file_sha256: str
+    trajectory_dataset_receipt_payload_sha256: str
+    trajectory_source_id: str
+    trajectory_root_cell_id: str
+    trajectory_registered_authority_sha256: str
+    trajectory_registered_binding_sha256: str
+    trajectory_authority_sha256: str
+    trajectory_authority_file_sha256: str
+    trajectory_execution_manifest_path: str
+    trajectory_execution_manifest_file_sha256: str
+    trajectory_execution_manifest_payload_sha256: str
+    trajectory_execution_validation_sha256: str
+    trajectory_record_payload_sha256s_sha256: str
+    trajectory_status_counts_sha256: str
+    trajectory_planned_run_count: int
+    trajectory_result_files_sha256: str
+    trajectory_result_file_count: int
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1136,6 +1261,52 @@ class EvaluatedRoundBinding:
             "scaling_checkpoint_history_count": (self.scaling_checkpoint_history_count),
             "scaling_result_files_sha256": self.scaling_result_files_sha256,
             "scaling_result_file_count": self.scaling_result_file_count,
+            "trajectory_evidence_sha256": self.trajectory_evidence_sha256,
+            "trajectory_plan_sha256": self.trajectory_plan_sha256,
+            "trajectory_execution_claim_sha256": (
+                self.trajectory_execution_claim_sha256
+            ),
+            "trajectory_execution_environment_sha256": (
+                self.trajectory_execution_environment_sha256
+            ),
+            "trajectory_dataset_id": self.trajectory_dataset_id,
+            "trajectory_dataset_sha256": self.trajectory_dataset_sha256,
+            "trajectory_dataset_file_sha256": self.trajectory_dataset_file_sha256,
+            "trajectory_dataset_receipt_file_sha256": (
+                self.trajectory_dataset_receipt_file_sha256
+            ),
+            "trajectory_dataset_receipt_payload_sha256": (
+                self.trajectory_dataset_receipt_payload_sha256
+            ),
+            "trajectory_source_id": self.trajectory_source_id,
+            "trajectory_root_cell_id": self.trajectory_root_cell_id,
+            "trajectory_registered_authority_sha256": (
+                self.trajectory_registered_authority_sha256
+            ),
+            "trajectory_registered_binding_sha256": (
+                self.trajectory_registered_binding_sha256
+            ),
+            "trajectory_authority_sha256": self.trajectory_authority_sha256,
+            "trajectory_authority_file_sha256": (self.trajectory_authority_file_sha256),
+            "trajectory_execution_manifest_path": (
+                self.trajectory_execution_manifest_path
+            ),
+            "trajectory_execution_manifest_file_sha256": (
+                self.trajectory_execution_manifest_file_sha256
+            ),
+            "trajectory_execution_manifest_payload_sha256": (
+                self.trajectory_execution_manifest_payload_sha256
+            ),
+            "trajectory_execution_validation_sha256": (
+                self.trajectory_execution_validation_sha256
+            ),
+            "trajectory_record_payload_sha256s_sha256": (
+                self.trajectory_record_payload_sha256s_sha256
+            ),
+            "trajectory_status_counts_sha256": (self.trajectory_status_counts_sha256),
+            "trajectory_planned_run_count": self.trajectory_planned_run_count,
+            "trajectory_result_files_sha256": self.trajectory_result_files_sha256,
+            "trajectory_result_file_count": self.trajectory_result_file_count,
         }
 
     @property
@@ -1167,6 +1338,30 @@ _EVALUATED_ROUND_BINDING_FIELDS = frozenset(
         "scaling_checkpoint_history_count",
         "scaling_result_files_sha256",
         "scaling_result_file_count",
+        "trajectory_evidence_sha256",
+        "trajectory_plan_sha256",
+        "trajectory_execution_claim_sha256",
+        "trajectory_execution_environment_sha256",
+        "trajectory_dataset_id",
+        "trajectory_dataset_sha256",
+        "trajectory_dataset_file_sha256",
+        "trajectory_dataset_receipt_file_sha256",
+        "trajectory_dataset_receipt_payload_sha256",
+        "trajectory_source_id",
+        "trajectory_root_cell_id",
+        "trajectory_registered_authority_sha256",
+        "trajectory_registered_binding_sha256",
+        "trajectory_authority_sha256",
+        "trajectory_authority_file_sha256",
+        "trajectory_execution_manifest_path",
+        "trajectory_execution_manifest_file_sha256",
+        "trajectory_execution_manifest_payload_sha256",
+        "trajectory_execution_validation_sha256",
+        "trajectory_record_payload_sha256s_sha256",
+        "trajectory_status_counts_sha256",
+        "trajectory_planned_run_count",
+        "trajectory_result_files_sha256",
+        "trajectory_result_file_count",
     }
 )
 
@@ -1658,6 +1853,405 @@ def _validated_scaling_binding_fields(
     }
 
 
+def _trajectory_result_file_rows(
+    value: object,
+    name: str,
+    *,
+    trajectory_only: bool,
+) -> tuple[dict[str, str], ...]:
+    """Return one exact, ordered trajectory inventory without aliases."""
+
+    if not isinstance(value, list):
+        raise DownstreamEvidenceError(f"{name} must be an array")
+    rows: list[dict[str, str]] = []
+    observed: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {"path", "sha256"}:
+            raise DownstreamEvidenceError(f"{name} row schema differs")
+        path = _text(item.get("path"), f"{name} path")
+        relative = PurePosixPath(path)
+        if (
+            relative.is_absolute()
+            or path != relative.as_posix()
+            or ".." in relative.parts
+            or not relative.parts
+        ):
+            raise DownstreamEvidenceError(f"{name} path is unsafe")
+        if trajectory_only and not path.startswith("results/trajectory/"):
+            continue
+        if not path.startswith("results/trajectory/") or path in observed:
+            raise DownstreamEvidenceError(f"{name} path set differs")
+        observed.add(path)
+        rows.append(
+            {
+                "path": path,
+                "sha256": _digest(item.get("sha256"), f"{name} file checksum"),
+            }
+        )
+    if not rows or rows != sorted(rows, key=lambda item: item["path"]):
+        raise DownstreamEvidenceError(f"{name} ordering differs")
+    return tuple(rows)
+
+
+def _validated_trajectory_binding_fields(
+    repository_root: Path,
+    round_root: Path,
+    result_manifest: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate and read-only replay the receipt's trajectory evidence."""
+
+    evidence_value = result_manifest.get("trajectory_evidence")
+    if (
+        not isinstance(evidence_value, Mapping)
+        or set(evidence_value) != _TRAJECTORY_EVIDENCE_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory evidence schema differs")
+    evidence = dict(evidence_value)
+    evidence_sha256 = _digest(
+        evidence.get("evidence_sha256"), "evaluated trajectory evidence checksum"
+    )
+    evidence_body = {
+        key: value for key, value in evidence.items() if key != "evidence_sha256"
+    }
+    if (
+        evidence.get("schema_version") != 1
+        or evidence.get("status") != "completed"
+        or evidence.get("scope") != "supplementary_trajectory"
+        or canonical_sha256(evidence_body) != evidence_sha256
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory evidence binding differs")
+
+    plan_value = evidence.get("plan")
+    if (
+        not isinstance(plan_value, Mapping)
+        or set(plan_value) != _TRAJECTORY_PLAN_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory plan schema differs")
+    plan = dict(plan_value)
+    plan_sha256 = _digest(plan.get("plan_sha256"), "evaluated trajectory plan checksum")
+    plan_body = {key: value for key, value in plan.items() if key != "plan_sha256"}
+    input_hashes = plan.get("input_hashes")
+    entries = plan.get("entries")
+    configurations = plan.get("configurations")
+    from .runner import DEVELOPMENT_MODEL_SEEDS
+
+    if (
+        plan.get("schema_version") != 1
+        or plan.get("scope") != "supplementary_trajectory"
+        or not isinstance(input_hashes, Mapping)
+        or set(input_hashes) != _TRAJECTORY_PLAN_INPUT_FIELDS
+        or any(
+            not isinstance(value, str) or _SHA256.fullmatch(value) is None
+            for value in input_hashes.values()
+        )
+        or not isinstance(entries, list)
+        or not entries
+        or not isinstance(configurations, list)
+        or not configurations
+        or plan.get("model_seed_policy") != list(DEVELOPMENT_MODEL_SEEDS)
+        or canonical_sha256(plan_body) != plan_sha256
+        or input_hashes.get("primary_final_plan_sha256")
+        != result_manifest.get("final_plan_sha256")
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory plan binding differs")
+
+    dataset_value = evidence.get("dataset")
+    if (
+        not isinstance(dataset_value, Mapping)
+        or set(dataset_value) != _TRAJECTORY_DATASET_EVIDENCE_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory dataset schema differs")
+    dataset = dict(dataset_value)
+    binding_value = dataset.get("binding")
+    try:
+        from .trajectory_dataset import RegisteredTrajectoryBinding
+
+        if not isinstance(binding_value, Mapping):
+            raise TypeError("binding is not a mapping")
+        binding = RegisteredTrajectoryBinding(**dict(binding_value))
+    except (TypeError, ValueError) as error:
+        raise DownstreamEvidenceError(
+            "evaluated trajectory dataset binding differs"
+        ) from error
+    dataset_file_sha256 = _digest(
+        dataset.get("dataset_file_sha256"),
+        "evaluated trajectory dataset file checksum",
+    )
+    dataset_sha256 = _digest(
+        dataset.get("dataset_sha256"), "evaluated trajectory dataset checksum"
+    )
+    receipt_file_sha256 = _digest(
+        dataset.get("receipt_file_sha256"),
+        "evaluated trajectory dataset receipt file checksum",
+    )
+    receipt_payload_sha256 = _digest(
+        dataset.get("receipt_payload_sha256"),
+        "evaluated trajectory dataset receipt payload checksum",
+    )
+    if (
+        dataset.get("dataset_path") != binding.dataset_file_path
+        or dataset.get("receipt_path")
+        != "results/trajectory/dataset/dataset_receipt.json"
+        or dataset_file_sha256 != binding.dataset_file_sha256
+        or dataset_sha256 != binding.dataset_sha256
+        or input_hashes.get("trajectory_authority_file_sha256")
+        != binding.authority_file_sha256
+        or input_hashes.get("trajectory_authority_sha256") != binding.authority_sha256
+        or input_hashes.get("trajectory_binding_sha256")
+        != binding.registered_binding_sha256
+        or input_hashes.get("trajectory_dataset_sha256") != dataset_sha256
+        or input_hashes.get("trajectory_dataset_file_sha256") != dataset_file_sha256
+        or input_hashes.get("trajectory_dataset_receipt_sha256")
+        != receipt_payload_sha256
+        or input_hashes.get("trajectory_dataset_receipt_file_sha256")
+        != receipt_file_sha256
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory dataset binding differs")
+
+    authority_value = evidence.get("execution_authority")
+    if (
+        not isinstance(authority_value, Mapping)
+        or set(authority_value) != _TRAJECTORY_AUTHORITY_EVIDENCE_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory authority schema differs")
+    authority = dict(authority_value)
+    authority_file_sha256 = _digest(
+        authority.get("authority_file_sha256"),
+        "evaluated trajectory authority file checksum",
+    )
+    authority_sha256 = _digest(
+        authority.get("authority_sha256"),
+        "evaluated trajectory authority checksum",
+    )
+    authority_root = round_root / "results/trajectory/execution_authority"
+    try:
+        expected_count_score_path = (
+            (authority_root / "count_score_authority.json")
+            .relative_to(repository_root)
+            .as_posix()
+        )
+        expected_calibration_path = (
+            (authority_root / "retained_calibration.json")
+            .relative_to(repository_root)
+            .as_posix()
+        )
+    except ValueError as error:
+        raise DownstreamEvidenceError(
+            "evaluated trajectory authority path escapes its repository"
+        ) from error
+    if (
+        authority.get("authority_path")
+        != "results/trajectory/execution_authority/authority.json"
+        or authority.get("count_score_authority_path") != expected_count_score_path
+        or authority.get("retained_calibration_path") != expected_calibration_path
+        or input_hashes.get("execution_authority_sha256") != authority_sha256
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory authority binding differs")
+    count_score_authority_file_sha256 = _digest(
+        authority.get("count_score_authority_file_sha256"),
+        "evaluated trajectory count-score authority file checksum",
+    )
+    retained_calibration_file_sha256 = _digest(
+        authority.get("retained_calibration_file_sha256"),
+        "evaluated trajectory retained calibration file checksum",
+    )
+
+    manifest_value = evidence.get("execution_manifest")
+    if (
+        not isinstance(manifest_value, Mapping)
+        or set(manifest_value) != _TRAJECTORY_MANIFEST_EVIDENCE_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory manifest schema differs")
+    manifest = dict(manifest_value)
+    manifest_path = _text(
+        manifest.get("path"), "evaluated trajectory execution manifest path"
+    )
+    manifest_file_sha256 = _digest(
+        manifest.get("file_sha256"),
+        "evaluated trajectory execution manifest file checksum",
+    )
+    manifest_payload_sha256 = _digest(
+        manifest.get("payload_sha256"),
+        "evaluated trajectory execution manifest payload checksum",
+    )
+    if manifest_path != "results/trajectory/execution/execution_manifest.json":
+        raise DownstreamEvidenceError("evaluated trajectory manifest path differs")
+
+    validation_value = evidence.get("execution_validation")
+    if (
+        not isinstance(validation_value, Mapping)
+        or set(validation_value) != _TRAJECTORY_EXECUTION_VALIDATION_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory validation schema differs")
+    validation = dict(validation_value)
+    validation_sha256 = _digest(
+        validation.get("validation_sha256"),
+        "evaluated trajectory validation checksum",
+    )
+    validation_body = {
+        key: value for key, value in validation.items() if key != "validation_sha256"
+    }
+    planned = validation.get("planned_run_count")
+    completed = validation.get("executed_completed_count")
+    algorithmic_failures = validation.get("executed_algorithmic_failure_count")
+    not_applicable = validation.get("not_applicable_count")
+    status_counts = validation.get("executed_status_counts")
+    record_payload_sha256s = validation.get("record_payload_sha256s")
+    terminal_statuses = frozenset(
+        {"completed", "failed", "timeout", "resource_exceeded", "unavailable"}
+    )
+    if (
+        validation.get("schema_version") != 1
+        or validation.get("status")
+        != "eligible_for_final_evaluation_complete_terminal_denominator"
+        or validation.get("scope") != "supplementary_trajectory"
+        or validation.get("trajectory_plan_sha256") != plan_sha256
+        or canonical_sha256(validation_body) != validation_sha256
+        or any(
+            isinstance(value, bool) or type(value) is not int or value < 0
+            for value in (planned, completed, algorithmic_failures, not_applicable)
+        )
+        or not isinstance(status_counts, Mapping)
+        or any(
+            status not in terminal_statuses
+            or isinstance(count, bool)
+            or type(count) is not int
+            or count < 0
+            for status, count in status_counts.items()
+        )
+        or not isinstance(record_payload_sha256s, list)
+        or any(
+            not isinstance(value, str) or _SHA256.fullmatch(value) is None
+            for value in record_payload_sha256s
+        )
+    ):
+        raise DownstreamEvidenceError("evaluated trajectory validation differs")
+    assert isinstance(planned, int)
+    assert isinstance(completed, int)
+    assert isinstance(algorithmic_failures, int)
+    assert isinstance(not_applicable, int)
+    assert isinstance(status_counts, Mapping)
+    assert isinstance(record_payload_sha256s, list)
+    if (
+        planned != len(entries)
+        or planned != len(record_payload_sha256s)
+        or sum(int(count) for count in status_counts.values()) + not_applicable
+        != planned
+        or int(status_counts.get("completed", 0)) != completed
+        or sum(
+            int(status_counts.get(status, 0))
+            for status in terminal_statuses - {"completed"}
+        )
+        != algorithmic_failures
+    ):
+        raise DownstreamEvidenceError(
+            "evaluated trajectory validation denominator differs"
+        )
+
+    evidence_rows = _trajectory_result_file_rows(
+        evidence.get("result_files"),
+        "evaluated trajectory result inventory",
+        trajectory_only=False,
+    )
+    cumulative_rows = _trajectory_result_file_rows(
+        result_manifest.get("result_files"),
+        "evaluated cumulative trajectory result inventory",
+        trajectory_only=True,
+    )
+    evidence_lookup = {row["path"]: row["sha256"] for row in evidence_rows}
+    authority_rows = _trajectory_result_file_rows(
+        authority.get("files"),
+        "evaluated trajectory authority inventory",
+        trajectory_only=False,
+    )
+    if (
+        evidence_rows != cumulative_rows
+        or tuple(
+            row
+            for row in evidence_rows
+            if row["path"].startswith("results/trajectory/execution_authority/")
+        )
+        != authority_rows
+        or evidence_lookup.get(binding.dataset_file_path) != dataset_file_sha256
+        or evidence_lookup.get("results/trajectory/dataset/dataset_receipt.json")
+        != receipt_file_sha256
+        or evidence_lookup.get(str(authority["authority_path"]))
+        != authority_file_sha256
+        or evidence_lookup.get(
+            "results/trajectory/execution_authority/count_score_authority.json"
+        )
+        != count_score_authority_file_sha256
+        or evidence_lookup.get(
+            "results/trajectory/execution_authority/retained_calibration.json"
+        )
+        != retained_calibration_file_sha256
+        or evidence_lookup.get(manifest_path) != manifest_file_sha256
+    ):
+        raise DownstreamEvidenceError(
+            "evaluated trajectory result inventory differs from cumulative receipt"
+        )
+
+    try:
+        from .final_runner import (
+            FinalRunnerContractError,
+            _rederive_trajectory_evidence_before_receipt,
+        )
+
+        replayed = _rederive_trajectory_evidence_before_receipt(
+            repository_root,
+            round_root,
+            evidence,
+            result_manifest.get("result_files"),
+            primary_final_plan_sha256=str(result_manifest["final_plan_sha256"]),
+        )
+    except (FinalRunnerContractError, TypeError, ValueError) as error:
+        raise DownstreamEvidenceError(
+            "evaluated trajectory publication replay failed"
+        ) from error
+    if replayed != evidence:
+        raise DownstreamEvidenceError(
+            "evaluated trajectory publication replay differs from receipt"
+        )
+
+    return {
+        "trajectory_evidence_sha256": evidence_sha256,
+        "trajectory_plan_sha256": plan_sha256,
+        "trajectory_execution_claim_sha256": str(
+            input_hashes["execution_claim_sha256"]
+        ),
+        "trajectory_execution_environment_sha256": str(
+            input_hashes["execution_environment_sha256"]
+        ),
+        "trajectory_dataset_id": binding.dataset_id,
+        "trajectory_dataset_sha256": dataset_sha256,
+        "trajectory_dataset_file_sha256": dataset_file_sha256,
+        "trajectory_dataset_receipt_file_sha256": receipt_file_sha256,
+        "trajectory_dataset_receipt_payload_sha256": receipt_payload_sha256,
+        "trajectory_source_id": binding.source_id,
+        "trajectory_root_cell_id": binding.root_cell_id,
+        "trajectory_registered_authority_sha256": binding.authority_sha256,
+        "trajectory_registered_binding_sha256": (binding.registered_binding_sha256),
+        "trajectory_authority_sha256": authority_sha256,
+        "trajectory_authority_file_sha256": authority_file_sha256,
+        "trajectory_execution_manifest_path": manifest_path,
+        "trajectory_execution_manifest_file_sha256": manifest_file_sha256,
+        "trajectory_execution_manifest_payload_sha256": manifest_payload_sha256,
+        "trajectory_execution_validation_sha256": validation_sha256,
+        "trajectory_record_payload_sha256s_sha256": canonical_sha256(
+            record_payload_sha256s
+        ),
+        "trajectory_status_counts_sha256": canonical_sha256(
+            {
+                "executed_status_counts": dict(status_counts),
+                "not_applicable_count": not_applicable,
+            }
+        ),
+        "trajectory_planned_run_count": planned,
+        "trajectory_result_files_sha256": canonical_sha256(evidence_rows),
+        "trajectory_result_file_count": len(evidence_rows),
+    }
+
+
 def _read_verified_evaluated_round_binding(
     repository: str | Path,
     round_directory: str | Path,
@@ -1880,13 +2474,18 @@ def _read_verified_evaluated_round_binding(
         round_root,
         result_manifest,
     )
+    trajectory_binding_fields = _validated_trajectory_binding_fields(
+        repository_root,
+        round_root,
+        result_manifest,
+    )
     receipt_after, _receipt_raw_after, receipt_file_sha256_after = _strict_json(
         receipt_path,
-        "evaluated final receipt after scaling replay",
+        "evaluated final receipt after publication replay",
     )
     if receipt_after != receipt or receipt_file_sha256_after != receipt_file_sha256:
         raise DownstreamEvidenceError(
-            "evaluated final receipt changed during scaling replay"
+            "evaluated final receipt changed during publication replay"
         )
     return EvaluatedRoundBinding(
         repository_root=str(repository_root),
@@ -1922,6 +2521,72 @@ def _read_verified_evaluated_round_binding(
         ),
         scaling_result_file_count=int(
             scaling_binding_fields["scaling_result_file_count"]
+        ),
+        trajectory_evidence_sha256=str(
+            trajectory_binding_fields["trajectory_evidence_sha256"]
+        ),
+        trajectory_plan_sha256=str(trajectory_binding_fields["trajectory_plan_sha256"]),
+        trajectory_execution_claim_sha256=str(
+            trajectory_binding_fields["trajectory_execution_claim_sha256"]
+        ),
+        trajectory_execution_environment_sha256=str(
+            trajectory_binding_fields["trajectory_execution_environment_sha256"]
+        ),
+        trajectory_dataset_id=str(trajectory_binding_fields["trajectory_dataset_id"]),
+        trajectory_dataset_sha256=str(
+            trajectory_binding_fields["trajectory_dataset_sha256"]
+        ),
+        trajectory_dataset_file_sha256=str(
+            trajectory_binding_fields["trajectory_dataset_file_sha256"]
+        ),
+        trajectory_dataset_receipt_file_sha256=str(
+            trajectory_binding_fields["trajectory_dataset_receipt_file_sha256"]
+        ),
+        trajectory_dataset_receipt_payload_sha256=str(
+            trajectory_binding_fields["trajectory_dataset_receipt_payload_sha256"]
+        ),
+        trajectory_source_id=str(trajectory_binding_fields["trajectory_source_id"]),
+        trajectory_root_cell_id=str(
+            trajectory_binding_fields["trajectory_root_cell_id"]
+        ),
+        trajectory_registered_authority_sha256=str(
+            trajectory_binding_fields["trajectory_registered_authority_sha256"]
+        ),
+        trajectory_registered_binding_sha256=str(
+            trajectory_binding_fields["trajectory_registered_binding_sha256"]
+        ),
+        trajectory_authority_sha256=str(
+            trajectory_binding_fields["trajectory_authority_sha256"]
+        ),
+        trajectory_authority_file_sha256=str(
+            trajectory_binding_fields["trajectory_authority_file_sha256"]
+        ),
+        trajectory_execution_manifest_path=str(
+            trajectory_binding_fields["trajectory_execution_manifest_path"]
+        ),
+        trajectory_execution_manifest_file_sha256=str(
+            trajectory_binding_fields["trajectory_execution_manifest_file_sha256"]
+        ),
+        trajectory_execution_manifest_payload_sha256=str(
+            trajectory_binding_fields["trajectory_execution_manifest_payload_sha256"]
+        ),
+        trajectory_execution_validation_sha256=str(
+            trajectory_binding_fields["trajectory_execution_validation_sha256"]
+        ),
+        trajectory_record_payload_sha256s_sha256=str(
+            trajectory_binding_fields["trajectory_record_payload_sha256s_sha256"]
+        ),
+        trajectory_status_counts_sha256=str(
+            trajectory_binding_fields["trajectory_status_counts_sha256"]
+        ),
+        trajectory_planned_run_count=int(
+            trajectory_binding_fields["trajectory_planned_run_count"]
+        ),
+        trajectory_result_files_sha256=str(
+            trajectory_binding_fields["trajectory_result_files_sha256"]
+        ),
+        trajectory_result_file_count=int(
+            trajectory_binding_fields["trajectory_result_file_count"]
         ),
     )
 
@@ -2024,6 +2689,96 @@ def _evaluated_round_binding_from_payload(
             "scaling result inventory checksum",
         ),
         scaling_result_file_count=value.get("scaling_result_file_count"),
+        trajectory_evidence_sha256=_digest(
+            value.get("trajectory_evidence_sha256"),
+            "trajectory evidence checksum",
+        ),
+        trajectory_plan_sha256=_digest(
+            value.get("trajectory_plan_sha256"),
+            "trajectory plan checksum",
+        ),
+        trajectory_execution_claim_sha256=_digest(
+            value.get("trajectory_execution_claim_sha256"),
+            "trajectory execution claim checksum",
+        ),
+        trajectory_execution_environment_sha256=_digest(
+            value.get("trajectory_execution_environment_sha256"),
+            "trajectory execution environment checksum",
+        ),
+        trajectory_dataset_id=_text(
+            value.get("trajectory_dataset_id"),
+            "trajectory dataset ID",
+        ),
+        trajectory_dataset_sha256=_digest(
+            value.get("trajectory_dataset_sha256"),
+            "trajectory dataset checksum",
+        ),
+        trajectory_dataset_file_sha256=_digest(
+            value.get("trajectory_dataset_file_sha256"),
+            "trajectory dataset file checksum",
+        ),
+        trajectory_dataset_receipt_file_sha256=_digest(
+            value.get("trajectory_dataset_receipt_file_sha256"),
+            "trajectory dataset receipt file checksum",
+        ),
+        trajectory_dataset_receipt_payload_sha256=_digest(
+            value.get("trajectory_dataset_receipt_payload_sha256"),
+            "trajectory dataset receipt payload checksum",
+        ),
+        trajectory_source_id=_text(
+            value.get("trajectory_source_id"),
+            "trajectory source ID",
+        ),
+        trajectory_root_cell_id=_text(
+            value.get("trajectory_root_cell_id"),
+            "trajectory root cell ID",
+        ),
+        trajectory_registered_authority_sha256=_digest(
+            value.get("trajectory_registered_authority_sha256"),
+            "trajectory registered authority checksum",
+        ),
+        trajectory_registered_binding_sha256=_digest(
+            value.get("trajectory_registered_binding_sha256"),
+            "trajectory registered binding checksum",
+        ),
+        trajectory_authority_sha256=_digest(
+            value.get("trajectory_authority_sha256"),
+            "trajectory authority checksum",
+        ),
+        trajectory_authority_file_sha256=_digest(
+            value.get("trajectory_authority_file_sha256"),
+            "trajectory authority file checksum",
+        ),
+        trajectory_execution_manifest_path=_text(
+            value.get("trajectory_execution_manifest_path"),
+            "trajectory execution manifest path",
+        ),
+        trajectory_execution_manifest_file_sha256=_digest(
+            value.get("trajectory_execution_manifest_file_sha256"),
+            "trajectory execution manifest file checksum",
+        ),
+        trajectory_execution_manifest_payload_sha256=_digest(
+            value.get("trajectory_execution_manifest_payload_sha256"),
+            "trajectory execution manifest payload checksum",
+        ),
+        trajectory_execution_validation_sha256=_digest(
+            value.get("trajectory_execution_validation_sha256"),
+            "trajectory execution validation checksum",
+        ),
+        trajectory_record_payload_sha256s_sha256=_digest(
+            value.get("trajectory_record_payload_sha256s_sha256"),
+            "trajectory record payload inventory checksum",
+        ),
+        trajectory_status_counts_sha256=_digest(
+            value.get("trajectory_status_counts_sha256"),
+            "trajectory status counts checksum",
+        ),
+        trajectory_planned_run_count=value.get("trajectory_planned_run_count"),
+        trajectory_result_files_sha256=_digest(
+            value.get("trajectory_result_files_sha256"),
+            "trajectory result inventory checksum",
+        ),
+        trajectory_result_file_count=value.get("trajectory_result_file_count"),
     )
     if (
         binding.evaluation_receipt_path != "evaluation_receipt.json"
@@ -2035,6 +2790,12 @@ def _evaluated_round_binding_from_payload(
         or binding.scaling_checkpoint_history_count <= 0
         or type(binding.scaling_result_file_count) is not int
         or binding.scaling_result_file_count < binding.scaling_checkpoint_history_count
+        or binding.trajectory_execution_manifest_path
+        != "results/trajectory/execution/execution_manifest.json"
+        or type(binding.trajectory_planned_run_count) is not int
+        or binding.trajectory_planned_run_count <= 0
+        or type(binding.trajectory_result_file_count) is not int
+        or binding.trajectory_result_file_count < binding.trajectory_planned_run_count
     ):
         raise DownstreamEvidenceError(
             "persisted evaluated-round binding identity differs"
@@ -2232,6 +2993,7 @@ class _SourceBundle:
     source_plan_sha256: str
     source_input_hashes_sha256: str
     records: tuple[_SourceRecord, ...]
+    execution_validation: Mapping[str, object] | None = None
 
 
 def _source_input_hashes_sha256(payload: Mapping[str, object]) -> str:
@@ -2459,6 +3221,117 @@ def _final_source(root: Path) -> _SourceBundle:
         ),
         source_input_hashes_sha256=_source_input_hashes_sha256(payload),
         records=tuple(result),
+    )
+
+
+def _trajectory_source(root: Path, source_plan: object) -> _SourceBundle:
+    """Read one exact trajectory manifest against its rebuilt typed plan."""
+
+    from .final_runner import (
+        FinalRunnerContractError,
+        TrajectoryExecutionPlan,
+        trajectory_execution_plan_payload,
+        validate_trajectory_execution_for_evaluation,
+    )
+    from .runner import DEVELOPMENT_MODEL_SEEDS
+
+    if not isinstance(source_plan, TrajectoryExecutionPlan):
+        raise DownstreamEvidenceError(
+            "trajectory source requires a rebuilt TrajectoryExecutionPlan"
+        )
+    path = root / "execution_manifest.json"
+    payload, _raw, file_sha = _strict_json(path, "trajectory execution manifest")
+    if set(payload) != _TRAJECTORY_MANIFEST_FIELDS:
+        raise DownstreamEvidenceError("trajectory execution manifest schema differs")
+    checksum = _digest(payload.get("manifest_sha256"), "trajectory manifest checksum")
+    unsigned = {
+        key: value for key, value in payload.items() if key != "manifest_sha256"
+    }
+    expected_plan = trajectory_execution_plan_payload(source_plan)
+    references = payload.get("records")
+    storage = payload.get("artifact_storage")
+    if (
+        canonical_sha256(unsigned) != checksum
+        or payload.get("schema_version") != 1
+        or payload.get("status") != "completed"
+        or payload.get("scope") != "supplementary_trajectory"
+        or payload.get("plan_sha256") != source_plan.plan_sha256
+        or payload.get("input_hashes") != dict(source_plan.input_hashes)
+        or payload.get("plan_entries") != expected_plan["entries"]
+        or payload.get("configurations") != expected_plan["configurations"]
+        or payload.get("model_seed_policy") != list(DEVELOPMENT_MODEL_SEEDS)
+        or not isinstance(references, list)
+        or payload.get("planned_run_count") != len(source_plan.entries)
+        or payload.get("recorded_run_count") != len(source_plan.entries)
+        or len(references) != len(source_plan.entries)
+        or not isinstance(storage, Mapping)
+        or dict(storage) != dict(_FINAL_STORAGE_POLICY)
+    ):
+        if isinstance(storage, Mapping) and dict(storage) != dict(
+            _FINAL_STORAGE_POLICY
+        ):
+            raise DownstreamEvidenceError("trajectory artifact storage policy differs")
+        if (
+            payload.get("plan_entries") != expected_plan["entries"]
+            or payload.get("configurations") != expected_plan["configurations"]
+            or payload.get("model_seed_policy") != list(DEVELOPMENT_MODEL_SEEDS)
+        ):
+            raise DownstreamEvidenceError("trajectory execution manifest plan differs")
+        raise DownstreamEvidenceError("trajectory execution manifest is incomplete")
+
+    result: list[_SourceRecord] = []
+    record_payloads: list[Mapping[str, object]] = []
+    for expected_ordinal, reference in enumerate(references, start=1):
+        if not isinstance(reference, Mapping) or set(reference) != {
+            "ordinal",
+            "run_id",
+            "path",
+            "sha256",
+        }:
+            raise DownstreamEvidenceError("trajectory source reference is malformed")
+        if reference.get("ordinal") != expected_ordinal:
+            raise DownstreamEvidenceError("trajectory source records are not ordered")
+        record_path = _safe_relative(root, reference.get("path"), "trajectory record")
+        record, _record_raw, record_file_sha = _strict_json(
+            record_path, "trajectory execution record"
+        )
+        _validate_source_record_schema(record, source_kind="final")
+        if record_file_sha != _digest(
+            reference.get("sha256"), "trajectory record checksum"
+        ):
+            raise DownstreamEvidenceError("trajectory record raw checksum differs")
+        run = record.get("run")
+        if not isinstance(run, Mapping) or run.get("run_id") != reference.get("run_id"):
+            raise DownstreamEvidenceError("trajectory record identity differs")
+        result.append(
+            _SourceRecord(
+                ordinal=expected_ordinal,
+                path=str(reference["path"]),
+                sha256=record_file_sha,
+                payload=MappingProxyType(record),
+            )
+        )
+        record_payloads.append(record)
+    bundle = _SourceBundle(
+        manifest_path="execution_manifest.json",
+        manifest_file_sha256=file_sha,
+        manifest_payload_sha256=checksum,
+        source_plan_sha256=source_plan.plan_sha256,
+        source_input_hashes_sha256=_source_input_hashes_sha256(payload),
+        records=tuple(result),
+    )
+    _validate_independent_source_plan(source_plan, bundle)
+    try:
+        validation = validate_trajectory_execution_for_evaluation(
+            source_plan, tuple(record_payloads)
+        )
+    except (FinalRunnerContractError, TypeError, ValueError) as error:
+        raise DownstreamEvidenceError(
+            "trajectory source terminal denominator differs"
+        ) from error
+    return replace(
+        bundle,
+        execution_validation=MappingProxyType(validation),
     )
 
 
@@ -2747,7 +3620,7 @@ def _validated_plan_entry(
     )
 
 
-def build_downstream_evidence_plan(
+def _build_downstream_evidence_plan(
     source_root: str | Path,
     *,
     source_kind: str,
@@ -2764,10 +3637,15 @@ def build_downstream_evidence_plan(
         raise ValueError("source_kind must be development or final")
     if evidence_scope not in _EVIDENCE_SCOPES:
         raise ValueError("evidence_scope is invalid")
-    if source_kind != "development" and evidence_scope != "all":
+    if source_kind == "development" and evidence_scope == "supplementary_trajectory":
         raise DownstreamEvidenceError(
-            "nondevelopment source only supports the all evidence scope"
+            "development source cannot use the supplementary trajectory scope"
         )
+    if source_kind == "final" and evidence_scope not in {
+        "all",
+        "supplementary_trajectory",
+    }:
+        raise DownstreamEvidenceError("final source evidence scope is invalid")
     if source_kind == "final" and evaluated_round_binding is None:
         raise DownstreamEvidenceError("final evaluated-round binding is required")
     root = _existing_directory(source_root, "source root")
@@ -2780,8 +3658,10 @@ def build_downstream_evidence_plan(
             raise DownstreamEvidenceError(
                 "development source cannot carry an evaluated-round binding"
             )
-        expected_source_root = (
-            Path(evaluated_round_binding.round_root) / "results/final/execution"
+        expected_source_root = Path(evaluated_round_binding.round_root) / (
+            "results/trajectory/execution"
+            if evidence_scope == "supplementary_trajectory"
+            else "results/final/execution"
         )
         if root != expected_source_root:
             raise DownstreamEvidenceError(
@@ -2796,6 +3676,27 @@ def build_downstream_evidence_plan(
     dataset_lookup = {value.dataset_id: value for value in dataset_values}
     if len(dataset_lookup) != len(dataset_values):
         raise DownstreamEvidenceError("dataset bindings contain duplicate IDs")
+    if evidence_scope == "supplementary_trajectory":
+        from .trajectory_dataset import REGISTERED_TRAJECTORY_DATASET_ID
+
+        assert evaluated_round_binding is not None
+        expected_dataset_path = (
+            Path(evaluated_round_binding.round_root)
+            / "results/trajectory/dataset/evaluator.h5ad"
+        )
+        if (
+            len(dataset_values) != 1
+            or dataset_values[0].dataset_id != REGISTERED_TRAJECTORY_DATASET_ID
+            or Path(dataset_values[0].path) != expected_dataset_path
+            or dataset_values[0].mechanism != "synthetic_trajectory"
+            or dataset_values[0].trajectory_root_cell_id is None
+            or dataset_values[0].trajectory_source_id is None
+            or dataset_values[0].trajectory_authority_sha256 is None
+            or dataset_values[0].trajectory_binding_sha256 is None
+        ):
+            raise DownstreamEvidenceError(
+                "supplementary trajectory dataset authority differs"
+            )
     for value in dataset_values:
         _read_bound_dataset(value)
     configuration_values = tuple(configurations)
@@ -2824,11 +3725,49 @@ def build_downstream_evidence_plan(
         )
     for value in configuration_values:
         _method_artifact_sha256(value)
-    source_bundle = (
-        _development_source(root)
-        if source_kind == "development"
-        else _final_source(root)
-    )
+    if source_kind == "development":
+        source_bundle = _development_source(root)
+    elif evidence_scope == "supplementary_trajectory":
+        source_bundle = _trajectory_source(root, source_plan)
+    else:
+        source_bundle = _final_source(root)
+    if evidence_scope == "supplementary_trajectory":
+        assert evaluated_round_binding is not None
+        source_input_hashes = getattr(source_plan, "input_hashes", None)
+        source_configurations = getattr(source_plan, "configurations", None)
+        trajectory_dataset = dataset_values[0]
+        if (
+            not isinstance(source_input_hashes, Mapping)
+            or set(source_input_hashes) != _TRAJECTORY_PLAN_INPUT_FIELDS
+            or tuple(source_configurations or ()) != configuration_values
+            or source_input_hashes.get("primary_final_plan_sha256")
+            != evaluated_round_binding.final_plan_sha256
+            or source_input_hashes.get("execution_claim_sha256")
+            != evaluated_round_binding.trajectory_execution_claim_sha256
+            or source_input_hashes.get("execution_environment_sha256")
+            != evaluated_round_binding.trajectory_execution_environment_sha256
+            or source_input_hashes.get("execution_authority_sha256")
+            != evaluated_round_binding.trajectory_authority_sha256
+            or source_input_hashes.get("trajectory_authority_sha256")
+            != trajectory_dataset.trajectory_authority_sha256
+            or source_input_hashes.get("trajectory_binding_sha256")
+            != trajectory_dataset.trajectory_binding_sha256
+            or source_input_hashes.get("trajectory_dataset_sha256")
+            != trajectory_dataset.dataset_sha256
+            or source_input_hashes.get("trajectory_dataset_file_sha256")
+            != trajectory_dataset.file_sha256
+            or source_input_hashes.get("trajectory_dataset_receipt_sha256")
+            != (evaluated_round_binding.trajectory_dataset_receipt_payload_sha256)
+            or source_input_hashes.get("trajectory_dataset_receipt_file_sha256")
+            != evaluated_round_binding.trajectory_dataset_receipt_file_sha256
+            or source_input_hashes.get("trajectory_method_input_sha256")
+            != trajectory_dataset.method_input_sha256
+            or source_input_hashes.get("trajectory_retained_cell_ids_sha256")
+            != trajectory_dataset.retained_cell_ids_sha256
+            or source_input_hashes.get("dataset_qc_policy_sha256")
+            != trajectory_dataset.dataset_qc_policy_sha256
+        ):
+            raise DownstreamEvidenceError("trajectory source plan authority differs")
     if source_plan is not None:
         _validate_independent_source_plan(source_plan, source_bundle)
         source_plan_authority = "independent"
@@ -2846,14 +3785,68 @@ def build_downstream_evidence_plan(
     source_records = source_bundle.records
     if evaluated_round_binding is not None and (
         manifest_path != "execution_manifest.json"
-        or manifest_file_sha
-        != evaluated_round_binding.final_execution_manifest_file_sha256
-        or manifest_payload_sha
-        != evaluated_round_binding.final_execution_manifest_payload_sha256
+        or (
+            evidence_scope == "supplementary_trajectory"
+            and (
+                manifest_file_sha
+                != evaluated_round_binding.trajectory_execution_manifest_file_sha256
+                or manifest_payload_sha
+                != evaluated_round_binding.trajectory_execution_manifest_payload_sha256
+            )
+        )
+        or (
+            evidence_scope != "supplementary_trajectory"
+            and (
+                manifest_file_sha
+                != evaluated_round_binding.final_execution_manifest_file_sha256
+                or manifest_payload_sha
+                != evaluated_round_binding.final_execution_manifest_payload_sha256
+            )
+        )
     ):
         raise DownstreamEvidenceError(
             "final source manifest differs from evaluated-round binding"
         )
+    if evidence_scope == "supplementary_trajectory":
+        assert evaluated_round_binding is not None
+        trajectory_dataset = dataset_values[0]
+        validation = source_bundle.execution_validation
+        if not isinstance(validation, Mapping):
+            raise DownstreamEvidenceError("trajectory source validation is absent")
+        if (
+            source_bundle.source_plan_sha256
+            != evaluated_round_binding.trajectory_plan_sha256
+            or trajectory_dataset.dataset_sha256
+            != evaluated_round_binding.trajectory_dataset_sha256
+            or trajectory_dataset.dataset_id
+            != evaluated_round_binding.trajectory_dataset_id
+            or trajectory_dataset.file_sha256
+            != evaluated_round_binding.trajectory_dataset_file_sha256
+            or trajectory_dataset.trajectory_source_id
+            != evaluated_round_binding.trajectory_source_id
+            or trajectory_dataset.trajectory_root_cell_id
+            != evaluated_round_binding.trajectory_root_cell_id
+            or trajectory_dataset.trajectory_authority_sha256
+            != evaluated_round_binding.trajectory_registered_authority_sha256
+            or trajectory_dataset.trajectory_binding_sha256
+            != evaluated_round_binding.trajectory_registered_binding_sha256
+            or validation.get("validation_sha256")
+            != evaluated_round_binding.trajectory_execution_validation_sha256
+            or validation.get("planned_run_count")
+            != evaluated_round_binding.trajectory_planned_run_count
+            or canonical_sha256(validation.get("record_payload_sha256s"))
+            != evaluated_round_binding.trajectory_record_payload_sha256s_sha256
+            or canonical_sha256(
+                {
+                    "executed_status_counts": validation.get("executed_status_counts"),
+                    "not_applicable_count": validation.get("not_applicable_count"),
+                }
+            )
+            != evaluated_round_binding.trajectory_status_counts_sha256
+        ):
+            raise DownstreamEvidenceError(
+                "trajectory dataset differs from evaluated receipt"
+            )
     all_entries = tuple(
         _validated_plan_entry(
             record,
@@ -2965,6 +3958,35 @@ def build_downstream_evidence_plan(
         configurations=provisional.configurations,
         entries=provisional.entries,
         plan_sha256=canonical_sha256(provisional.body()),
+    )
+
+
+def build_downstream_evidence_plan(
+    source_root: str | Path,
+    *,
+    source_kind: str,
+    evidence_scope: str = "all",
+    datasets: Sequence[DatasetEvidenceBinding],
+    configurations: Sequence[AuthorizedConfiguration],
+    evaluated_round_binding: EvaluatedRoundBinding | None = None,
+    source_plan: object | None = None,
+    _source_plan_authority: str | None = None,
+) -> DownstreamEvidencePlan:
+    """Bind a development checkpoint or the fixed primary final denominator."""
+
+    if source_kind == "final" and evidence_scope == "supplementary_trajectory":
+        raise DownstreamEvidenceError(
+            "supplementary trajectory plans require the fixed production builder"
+        )
+    return _build_downstream_evidence_plan(
+        source_root,
+        source_kind=source_kind,
+        evidence_scope=evidence_scope,
+        datasets=datasets,
+        configurations=configurations,
+        evaluated_round_binding=evaluated_round_binding,
+        source_plan=source_plan,
+        _source_plan_authority=_source_plan_authority,
     )
 
 
@@ -3524,7 +4546,11 @@ def build_final_downstream_evidence_plan(
         _configuration_for_method(spec.id, spec, frozen_method)
         for spec in registry.methods
     )
-    runner_bindings, prepared = load_prepared_final_panel(root, round_root)
+    runner_bindings, prepared = load_prepared_final_panel(
+        root,
+        round_root,
+        allow_evaluated=True,
+    )
     datasets = bind_prepared_evaluator_panel(
         runner_bindings,
         prepared,
@@ -3559,6 +4585,123 @@ def build_final_downstream_evidence_plan(
         source_kind="final",
         datasets=datasets,
         configurations=configurations,
+        evaluated_round_binding=evaluated_round_binding,
+        source_plan=source_plan,
+    )
+
+
+def _bind_registered_trajectory_dataset(
+    round_root: Path,
+    registered: object,
+) -> DatasetEvidenceBinding:
+    """Bridge a strictly loaded registered trajectory dataset into evidence."""
+
+    from .runner import method_input_sha256
+    from .trajectory_dataset import (
+        RegisteredTrajectoryBinding,
+        TrajectoryPreparedDataset,
+    )
+
+    if not isinstance(round_root, Path):
+        raise TypeError("round_root must be a pathlib.Path")
+    if not isinstance(registered, TrajectoryPreparedDataset):
+        raise TypeError("registered must be a TrajectoryPreparedDataset")
+    binding = registered.binding
+    prepared = registered.prepared
+    audit = getattr(prepared, "audit", None)
+    method_input = getattr(prepared, "method_input", None)
+    if not isinstance(binding, RegisteredTrajectoryBinding) or audit is None:
+        raise DownstreamEvidenceError(
+            "registered trajectory prepared authority is invalid"
+        )
+    dataset_path = _safe_relative(
+        round_root,
+        binding.dataset_file_path,
+        "registered trajectory evaluator dataset",
+    )
+    try:
+        retained_cell_ids = tuple(audit.retained_cell_ids)
+        prepared_method_input_sha256 = method_input_sha256(method_input)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise DownstreamEvidenceError(
+            "registered trajectory prepared authority is invalid"
+        ) from error
+    bound = bind_evaluator_dataset(
+        dataset_path,
+        retained_cell_ids=retained_cell_ids,
+        trajectory_root_cell_id=binding.root_cell_id,
+        trajectory_source_id=binding.source_id,
+    )
+    if (
+        bound.dataset_id != binding.dataset_id
+        or bound.file_sha256 != binding.dataset_file_sha256
+        or bound.dataset_sha256 != binding.dataset_sha256
+        or bound.mechanism != binding.mechanism
+        or bound.biological_id != binding.biological_id
+        or bound.technical_view != binding.technical_view
+        or bound.method_input_sha256 != prepared_method_input_sha256
+        or bound.excluded_cell_count != audit.excluded_cell_count
+        or bound.excluded_cell_ids_sha256 != audit.excluded_cell_ids_sha256
+        or bound.retained_cell_count != audit.retained_cell_count
+        or bound.retained_cell_ids_sha256 != audit.retained_cell_ids_sha256
+        or bound.trajectory_root_cell_id != binding.root_cell_id
+        or bound.trajectory_source_id != binding.source_id
+        or bound.trajectory_authority_sha256 != binding.authority_sha256
+        or bound.trajectory_binding_sha256 != binding.registered_binding_sha256
+    ):
+        raise DownstreamEvidenceError(
+            "registered trajectory dataset differs from its prepared authority"
+        )
+    return bound
+
+
+def build_final_trajectory_downstream_evidence_plan(
+    repository: str | Path,
+    round_directory: str | Path,
+) -> DownstreamEvidencePlan:
+    """Build the fixed receipt-bound supplementary trajectory plan."""
+
+    root = _existing_directory(repository, "final repository")
+    active_repository = Path(__file__).absolute().parents[1]
+    _reject_symlink_chain(active_repository, "active repository")
+    if root != active_repository:
+        raise DownstreamEvidenceError(
+            "final trajectory downstream stage must use the active repository"
+        )
+    round_root = _existing_directory(round_directory, "final round")
+    from .final_runner import (
+        build_trajectory_execution_plan,
+        load_prepared_trajectory_dataset,
+    )
+    from .methods import load_method_registry
+    from .publication_freeze import validate_frozen_method
+
+    evaluated_round_binding = _read_verified_evaluated_round_binding(root, round_root)
+    frozen_method = validate_frozen_method(root)
+    registry = load_method_registry(root / "study/methods.json")
+    registered = load_prepared_trajectory_dataset(root, round_root)
+    dataset = _bind_registered_trajectory_dataset(round_root, registered)
+    source_plan = build_trajectory_execution_plan(
+        frozen_method,
+        registry,
+        registered,
+        execution_claim_sha256=(
+            evaluated_round_binding.trajectory_execution_claim_sha256
+        ),
+        execution_environment_sha256=(
+            evaluated_round_binding.trajectory_execution_environment_sha256
+        ),
+        execution_authority_sha256=(
+            evaluated_round_binding.trajectory_authority_sha256
+        ),
+        primary_final_plan_sha256=evaluated_round_binding.final_plan_sha256,
+    )
+    return _build_downstream_evidence_plan(
+        round_root / "results/trajectory/execution",
+        source_kind="final",
+        evidence_scope="supplementary_trajectory",
+        datasets=(dataset,),
+        configurations=source_plan.configurations,
         evaluated_round_binding=evaluated_round_binding,
         source_plan=source_plan,
     )
@@ -3708,6 +4851,16 @@ def _analysis_method(plan: DownstreamEvidencePlan, entry: DownstreamPlanEntry) -
     return entry.method_id
 
 
+def _endpoint_names(plan: DownstreamEvidencePlan) -> tuple[str, ...]:
+    """Return the closed endpoint schema for one immutable evidence scope."""
+
+    if not isinstance(plan, DownstreamEvidencePlan):
+        raise TypeError("plan must be a DownstreamEvidencePlan")
+    if plan.evidence_scope == "supplementary_trajectory":
+        return _TRAJECTORY_ENDPOINT_NAMES
+    return DOWNSTREAM_ENDPOINT_NAMES
+
+
 def _endpoint_row(
     plan: DownstreamEvidencePlan,
     entry: DownstreamPlanEntry,
@@ -3758,13 +4911,34 @@ def _evaluate_entry(
         output = _decode_output(plan, entry, binding)
         if targets is None:
             raise AssertionError("completed denominator targets were not cached")
-        endpoints = evaluate_downstream_endpoints(output, targets)
+        if plan.evidence_scope == "supplementary_trajectory":
+            try:
+                endpoints = (evaluate_trajectory_endpoint(output, targets),)
+            except (
+                np.linalg.LinAlgError,
+                sparse.linalg.ArpackError,
+                FloatingPointError,
+                OverflowError,
+            ):
+                terminal = terminal_downstream_endpoints(
+                    "numeric_evaluation_failed",
+                    procedure="terminal_expected_numeric_failure",
+                )
+                endpoints = tuple(
+                    value
+                    for value in terminal
+                    if value.endpoint in _TRAJECTORY_ENDPOINT_NAMES
+                )
+        else:
+            endpoints = evaluate_downstream_endpoints(output, targets)
     else:
-        endpoints = terminal_downstream_endpoints(
+        terminal = terminal_downstream_endpoints(
             "upstream_run_not_completed",
             procedure="terminal_upstream_run_not_completed",
         )
-    if tuple(value.endpoint for value in endpoints) != DOWNSTREAM_ENDPOINT_NAMES:
+        names = _endpoint_names(plan)
+        endpoints = tuple(value for value in terminal if value.endpoint in names)
+    if tuple(value.endpoint for value in endpoints) != _endpoint_names(plan):
         raise AssertionError("downstream evaluator did not emit its fixed schema")
     body: dict[str, object] = {
         "schema_version": 1,
@@ -3940,9 +5114,10 @@ def _validate_endpoint_rows(
     plan: DownstreamEvidencePlan,
     entry: DownstreamPlanEntry,
 ) -> None:
-    if not isinstance(rows, list) or len(rows) != len(DOWNSTREAM_ENDPOINT_NAMES):
+    endpoint_names = _endpoint_names(plan)
+    if not isinstance(rows, list) or len(rows) != len(endpoint_names):
         raise DownstreamEvidenceError("downstream record endpoint count differs")
-    for expected_endpoint, row in zip(DOWNSTREAM_ENDPOINT_NAMES, rows, strict=True):
+    for expected_endpoint, row in zip(endpoint_names, rows, strict=True):
         if not isinstance(row, dict) or set(row) != _ENDPOINT_ROW_FIELDS:
             raise DownstreamEvidenceError("downstream endpoint row schema differs")
         expected_metadata = {
@@ -4120,10 +5295,26 @@ def _revalidate_plan(plan: DownstreamEvidencePlan) -> None:
         raise TypeError("plan must be a DownstreamEvidencePlan")
     if plan.plan_sha256 != canonical_sha256(plan.body()):
         raise DownstreamEvidenceError("downstream plan checksum differs")
-    rebuilt = (
-        _rebuild_development_bundle(plan)
-        if plan.development_sources
-        else build_downstream_evidence_plan(
+    if plan.source_kind == "final":
+        binding = plan.evaluated_round_binding
+        if binding is None:
+            raise DownstreamEvidenceError("final evaluated-round binding is required")
+        if plan.evidence_scope == "all":
+            rebuilt = build_final_downstream_evidence_plan(
+                binding.repository_root,
+                binding.round_root,
+            )
+        elif plan.evidence_scope == "supplementary_trajectory":
+            rebuilt = build_final_trajectory_downstream_evidence_plan(
+                binding.repository_root,
+                binding.round_root,
+            )
+        else:
+            raise DownstreamEvidenceError("persisted final downstream scope differs")
+    elif plan.development_sources:
+        rebuilt = _rebuild_development_bundle(plan)
+    else:
+        rebuilt = build_downstream_evidence_plan(
             plan.source_root,
             source_kind=plan.source_kind,
             evidence_scope=plan.evidence_scope,
@@ -4132,7 +5323,6 @@ def _revalidate_plan(plan: DownstreamEvidencePlan) -> None:
             evaluated_round_binding=plan.evaluated_round_binding,
             _source_plan_authority=plan.source_plan_authority,
         )
-    )
     if rebuilt.to_dict() != plan.to_dict():
         raise DownstreamEvidenceError("downstream plan sources changed")
 
@@ -4182,12 +5372,50 @@ def _manifest_payload(
         "development_sources": [value.to_dict() for value in plan.development_sources],
         "planned_denominator_count": len(plan.entries),
         "recorded_denominator_count": len(records),
-        "endpoint_row_count": len(records) * len(DOWNSTREAM_ENDPOINT_NAMES),
+        "endpoint_row_count": len(records) * len(_endpoint_names(plan)),
         "records": references,
     }
     if plan_payload.get("plan_sha256") != plan.plan_sha256:
         raise DownstreamEvidenceError("persisted downstream plan differs")
     return {**body, "manifest_sha256": canonical_sha256(body)}
+
+
+def expected_final_downstream_output_directory(
+    plan: DownstreamEvidencePlan,
+) -> Path:
+    """Return the sole receipt-bound external namespace for a final plan."""
+
+    if not isinstance(plan, DownstreamEvidencePlan):
+        raise TypeError("plan must be a DownstreamEvidencePlan")
+    binding = plan.evaluated_round_binding
+    if plan.source_kind != "final" or binding is None:
+        raise DownstreamEvidenceError(
+            "final downstream plan lacks an evaluated-round receipt binding"
+        )
+    if plan.evidence_scope not in {"all", "supplementary_trajectory"}:
+        raise DownstreamEvidenceError("final downstream evidence scope differs")
+    repository_root = Path(binding.repository_root)
+    if (
+        not repository_root.is_absolute()
+        or not repository_root.name
+        or Path(binding.round_root).name != binding.round_id
+        or _SHA256.fullmatch(binding.evaluation_receipt_payload_sha256) is None
+    ):
+        raise DownstreamEvidenceError(
+            "final downstream receipt namespace binding differs"
+        )
+    base = (
+        repository_root.parent
+        / f"{repository_root.name}-final-analysis"
+        / "downstream"
+        / binding.round_id
+        / binding.evaluation_receipt_payload_sha256
+    )
+    return (
+        base / "trajectory"
+        if plan.evidence_scope == "supplementary_trajectory"
+        else base
+    )
 
 
 def _validate_downstream_output_location(
@@ -4198,6 +5426,11 @@ def _validate_downstream_output_location(
         if plan.source_kind == "final":
             raise DownstreamEvidenceError("final evaluated-round binding is required")
         return
+    expected = expected_final_downstream_output_directory(plan)
+    if output_root != expected:
+        raise DownstreamEvidenceError(
+            "final downstream output differs from its receipt-bound namespace"
+        )
     repository_root = Path(binding.repository_root)
     try:
         output_root.relative_to(repository_root)
@@ -4214,7 +5447,7 @@ def run_downstream_evidence(
     *,
     max_denominators: int | None = None,
 ) -> dict[str, object]:
-    """Resume the plan prefix and emit one immutable eight-row record per run."""
+    """Resume the plan prefix and emit its closed endpoint set for each run."""
 
     if max_denominators is not None and (
         isinstance(max_denominators, bool)
@@ -4265,7 +5498,7 @@ def run_downstream_evidence(
             "plan_sha256": plan.plan_sha256,
             "planned_denominator_count": len(plan.entries),
             "recorded_denominator_count": len(records),
-            "endpoint_row_count": len(records) * len(DOWNSTREAM_ENDPOINT_NAMES),
+            "endpoint_row_count": len(records) * len(_endpoint_names(plan)),
         }
     _revalidate_plan(plan)
     manifest = _manifest_payload(output_root, plan, records)
@@ -4390,22 +5623,44 @@ def _load_persisted_plan(
                 )
             rebuilt = _rebuild_development_bundle(skeleton)
         else:
-            rebuilt = build_downstream_evidence_plan(
-                _text(plan_payload.get("source_root"), "persisted source root"),
-                source_kind=_text(
-                    plan_payload.get("source_kind"), "persisted source kind"
-                ),
-                evidence_scope=_text(
-                    plan_payload.get("evidence_scope"), "persisted evidence scope"
-                ),
-                datasets=persisted_datasets,
-                configurations=persisted_configurations,
-                evaluated_round_binding=evaluated_round_binding,
-                _source_plan_authority=_text(
-                    plan_payload.get("source_plan_authority"),
-                    "persisted source plan authority",
-                ),
+            source_kind = _text(
+                plan_payload.get("source_kind"), "persisted source kind"
             )
+            evidence_scope = _text(
+                plan_payload.get("evidence_scope"), "persisted evidence scope"
+            )
+            if source_kind == "final":
+                if evaluated_round_binding is None:
+                    raise DownstreamEvidenceError(
+                        "persisted final evaluated-round binding is absent"
+                    )
+                if evidence_scope == "all":
+                    rebuilt = build_final_downstream_evidence_plan(
+                        evaluated_round_binding.repository_root,
+                        evaluated_round_binding.round_root,
+                    )
+                elif evidence_scope == "supplementary_trajectory":
+                    rebuilt = build_final_trajectory_downstream_evidence_plan(
+                        evaluated_round_binding.repository_root,
+                        evaluated_round_binding.round_root,
+                    )
+                else:
+                    raise DownstreamEvidenceError(
+                        "persisted final downstream scope differs"
+                    )
+            else:
+                rebuilt = build_downstream_evidence_plan(
+                    _text(plan_payload.get("source_root"), "persisted source root"),
+                    source_kind=source_kind,
+                    evidence_scope=evidence_scope,
+                    datasets=persisted_datasets,
+                    configurations=persisted_configurations,
+                    evaluated_round_binding=evaluated_round_binding,
+                    _source_plan_authority=_text(
+                        plan_payload.get("source_plan_authority"),
+                        "persisted source plan authority",
+                    ),
+                )
     except DownstreamEvidenceError:
         raise
     except (TypeError, ValueError) as error:
@@ -4414,6 +5669,7 @@ def _load_persisted_plan(
         ) from error
     if rebuilt.to_dict() != plan_payload:
         raise DownstreamEvidenceError("persisted downstream plan sources changed")
+    _validate_downstream_output_location(rebuilt, output_root)
     return rebuilt, plan_payload, plan_file_sha
 
 
@@ -4482,7 +5738,7 @@ def load_downstream_evidence_manifest(
         or type(planned) is not int
         or planned <= 0
         or manifest.get("recorded_denominator_count") != planned
-        or endpoint_rows != planned * len(DOWNSTREAM_ENDPOINT_NAMES)
+        or endpoint_rows != planned * len(_endpoint_names(rebuilt))
         or not isinstance(references, list)
         or len(references) != planned
         or plan_payload.get("planned_denominator_count") != planned
@@ -4586,7 +5842,7 @@ def validate_downstream_evidence_completeness(
     *,
     expected_denominators: Sequence[tuple[object, ...]] | None = None,
 ) -> DownstreamEvidenceManifest:
-    """Require complete eight-row evidence and, optionally, an exact denominator set."""
+    """Require complete closed-scope evidence and an optional denominator set."""
 
     manifest = load_downstream_evidence_manifest(output_directory)
     observed = tuple(downstream_denominator_key(record) for record in manifest.records)
@@ -4614,10 +5870,12 @@ __all__ = [
     "build_development_downstream_evidence_plan",
     "build_downstream_evidence_plan",
     "build_final_downstream_evidence_plan",
+    "build_final_trajectory_downstream_evidence_plan",
     "combine_development_downstream_evidence_plans",
     "development_downstream_revision_version",
     "downstream_denominator_key",
     "downstream_source_statuses",
+    "expected_final_downstream_output_directory",
     "load_downstream_evidence_manifest",
     "load_downstream_evidence_plan",
     "run_downstream_evidence",

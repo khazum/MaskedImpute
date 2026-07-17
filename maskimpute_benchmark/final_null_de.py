@@ -521,17 +521,15 @@ def _create_final_null_de_plan(
 
 
 def _expected_downstream_directory(source_plan: DownstreamEvidencePlan) -> Path:
-    evaluated = source_plan.evaluated_round_binding
-    if evaluated is None:
-        raise FinalNullDEError("evaluated final receipt binding is absent")
-    repository = Path(evaluated.repository_root)
-    return (
-        repository.parent
-        / f"{repository.name}-final-analysis"
-        / "downstream"
-        / evaluated.round_id
-        / evaluated.evaluation_receipt_payload_sha256
-    ).absolute()
+    from .downstream_evidence import (
+        DownstreamEvidenceError,
+        expected_final_downstream_output_directory,
+    )
+
+    try:
+        return expected_final_downstream_output_directory(source_plan)
+    except (DownstreamEvidenceError, TypeError, ValueError) as error:
+        raise FinalNullDEError("evaluated final receipt binding is absent") from error
 
 
 def expected_final_null_de_output_directory(plan: FinalNullDEPlan) -> Path:

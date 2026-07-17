@@ -1221,6 +1221,7 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
     import maskimpute_benchmark.final_runner as final_runner
     from maskimpute_benchmark.final_runner import (
         FinalResultStore,
@@ -1233,7 +1234,11 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
     )
     from maskimpute_benchmark.runner import AdapterOutcome
 
-    fixture = _exact_primary_trajectory_chain_inputs(tmp_path, monkeypatch)
+    fixture = _exact_primary_trajectory_chain_inputs(
+        tmp_path,
+        monkeypatch,
+        full_denominator=True,
+    )
     repository = fixture["repository"]
     round_dir = fixture["round_dir"]
     registered = fixture["registered"]
@@ -1310,6 +1315,21 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
         "materialize_prepared_trajectory_dataset",
         forbid_materialization,
     )
+    binding_fields = downstream._validated_trajectory_binding_fields(
+        repository,
+        round_dir,
+        {
+            "trajectory_evidence": evidence,
+            "result_files": cumulative,
+            "final_plan_sha256": primary_plan.plan_sha256,
+        },
+    )
+    assert len(plan.entries) == 8
+    assert len(evidence["result_files"]) == 30
+    assert binding_fields["trajectory_plan_sha256"] == plan.plan_sha256
+    assert binding_fields["trajectory_planned_run_count"] == 8
+    assert binding_fields["trajectory_result_file_count"] == 30
+    assert _read_only_tree_snapshot(repository) == before_replay
     assert (
         _rederive_trajectory_evidence_before_receipt(
             repository,
@@ -3802,6 +3822,8 @@ def test_trajectory_authority_before_journal_reconciles_and_resumes(
 def _exact_primary_trajectory_chain_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    full_denominator: bool = False,
 ) -> dict[str, object]:
     from types import SimpleNamespace
 
@@ -3810,7 +3832,7 @@ def _exact_primary_trajectory_chain_inputs(
     import maskimpute_benchmark.publication_freeze as publication_freeze
 
     repository, round_dir = _claimed_lifecycle_round(tmp_path)
-    registry = _observed_only_registry()
+    registry = _registry() if full_denominator else _observed_only_registry()
     frozen = _final_authority_receipt(repository, monkeypatch, registry)
     claim = json.loads((round_dir / "execution_claim.json").read_text(encoding="utf-8"))
     claim_sha256 = canonical_sha256(claim)

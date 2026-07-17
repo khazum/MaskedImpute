@@ -17,6 +17,8 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from maskimpute_benchmark.downstream_evidence import (  # noqa: E402
     DownstreamEvidenceError,
     build_final_downstream_evidence_plan,
+    build_final_trajectory_downstream_evidence_plan,
+    expected_final_downstream_output_directory,
     run_downstream_evidence,
 )
 
@@ -24,8 +26,8 @@ from maskimpute_benchmark.downstream_evidence import (  # noqa: E402
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run or resume the fixed eight-endpoint downstream stage over a "
-            "sealed frozen final execution."
+            "Run or resume the fixed primary and supplementary-trajectory "
+            "downstream stages over a sealed frozen final execution."
         )
     )
     parser.add_argument(
@@ -40,31 +42,6 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _external_output_directory(plan: object) -> Path:
-    binding = getattr(plan, "evaluated_round_binding", None)
-    round_id = getattr(binding, "round_id", None)
-    receipt_sha256 = getattr(
-        binding, "evaluation_receipt_payload_sha256", None
-    )
-    if (
-        not isinstance(round_id, str)
-        or not round_id
-        or not isinstance(receipt_sha256, str)
-        or len(receipt_sha256) != 64
-        or any(character not in "0123456789abcdef" for character in receipt_sha256)
-    ):
-        raise DownstreamEvidenceError(
-            "final downstream plan lacks an evaluated-round receipt binding"
-        )
-    return (
-        REPOSITORY_ROOT.parent
-        / f"{REPOSITORY_ROOT.name}-final-analysis"
-        / "downstream"
-        / round_id
-        / receipt_sha256
-    )
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     round_directory = (
@@ -73,16 +50,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         else REPOSITORY_ROOT / arguments.round_dir
     )
     try:
-        plan = build_final_downstream_evidence_plan(
+        primary_plan = build_final_downstream_evidence_plan(
             REPOSITORY_ROOT, round_directory
         )
-        output_directory = _external_output_directory(plan)
-        result = run_downstream_evidence(plan, output_directory)
+        trajectory_plan = build_final_trajectory_downstream_evidence_plan(
+            REPOSITORY_ROOT, round_directory
+        )
+        primary_output = expected_final_downstream_output_directory(primary_plan)
+        trajectory_output = expected_final_downstream_output_directory(trajectory_plan)
+        primary_result = run_downstream_evidence(primary_plan, primary_output)
+        trajectory_result = run_downstream_evidence(trajectory_plan, trajectory_output)
     except (DownstreamEvidenceError, OSError, TypeError, ValueError) as error:
         print(json.dumps({"error": str(error)}, sort_keys=True), file=sys.stderr)
         return 2
+    status = (
+        "completed"
+        if primary_result.get("status") == "completed"
+        and trajectory_result.get("status") == "completed"
+        else "running"
+    )
+    result = {
+        "schema_version": 1,
+        "status": status,
+        "primary": primary_result,
+        "trajectory": trajectory_result,
+    }
     print(json.dumps(result, allow_nan=False, sort_keys=True))
-    return 0 if result["status"] == "completed" else 1
+    return 0 if status == "completed" else 1
 
 
 if __name__ == "__main__":

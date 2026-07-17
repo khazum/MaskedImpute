@@ -125,6 +125,32 @@ def _source_plan(*, include_failed: bool = True):
         scaling_checkpoint_history_count=24,
         scaling_result_files_sha256="8" * 64,
         scaling_result_file_count=100,
+        trajectory_evidence_sha256="9" * 64,
+        trajectory_plan_sha256="a" * 64,
+        trajectory_execution_claim_sha256="b" * 64,
+        trajectory_execution_environment_sha256="c" * 64,
+        trajectory_dataset_id="trajectory-exact-latent-01",
+        trajectory_dataset_sha256="d" * 64,
+        trajectory_dataset_file_sha256="e" * 64,
+        trajectory_dataset_receipt_file_sha256="f" * 64,
+        trajectory_dataset_receipt_payload_sha256="1" * 64,
+        trajectory_source_id="registered-synthetic-trajectory-v1",
+        trajectory_root_cell_id="trajectory-cell-000001",
+        trajectory_registered_authority_sha256="2" * 64,
+        trajectory_registered_binding_sha256="3" * 64,
+        trajectory_authority_sha256="4" * 64,
+        trajectory_authority_file_sha256="5" * 64,
+        trajectory_execution_manifest_path=(
+            "results/trajectory/execution/execution_manifest.json"
+        ),
+        trajectory_execution_manifest_file_sha256="6" * 64,
+        trajectory_execution_manifest_payload_sha256="7" * 64,
+        trajectory_execution_validation_sha256="8" * 64,
+        trajectory_record_payload_sha256s_sha256="9" * 64,
+        trajectory_status_counts_sha256="a" * 64,
+        trajectory_planned_run_count=12,
+        trajectory_result_files_sha256="b" * 64,
+        trajectory_result_file_count=48,
     )
     plan = DownstreamEvidencePlan(
         source_root=str(Path(evaluated.round_root) / "results/final/execution"),
@@ -757,6 +783,9 @@ def test_production_plan_requires_exact_completed_final_downstream_bundle(
         / source_plan.evaluated_round_binding.evaluation_receipt_payload_sha256
     )
     downstream_directory.mkdir(parents=True)
+    trajectory_child = downstream_directory / "trajectory"
+    trajectory_child.mkdir()
+    (trajectory_child / "sentinel.json").write_text("{}\n", encoding="utf-8")
     manifest_path = downstream_directory / "downstream_manifest.json"
     manifest_path.write_bytes(b"validated downstream manifest\n")
     manifest = SimpleNamespace(
@@ -772,6 +801,13 @@ def test_production_plan_requires_exact_completed_final_downstream_bundle(
             if Path(selected_repository) == repository
             and Path(selected_round) == round_root
             else pytest.fail("production builder changed final source authority")
+        ),
+    )
+    monkeypatch.setattr(
+        downstream,
+        "build_final_trajectory_downstream_evidence_plan",
+        lambda *_args, **_kwargs: pytest.fail(
+            "final null-DE opened the supplementary trajectory source"
         ),
     )
     monkeypatch.setattr(
@@ -798,6 +834,8 @@ def test_production_plan_requires_exact_completed_final_downstream_bundle(
     assert plan.source_plan is source_plan
     assert plan.downstream_directory == str(downstream_directory)
     assert plan.downstream_manifest_payload_sha256 == "a" * 64
+    assert len(plan.source_plan.entries) == len(source_plan.entries)
+    assert (trajectory_child / "sentinel.json").read_text(encoding="utf-8") == "{}\n"
 
     monkeypatch.setattr(
         downstream,
