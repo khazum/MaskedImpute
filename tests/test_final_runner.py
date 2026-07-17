@@ -75,9 +75,10 @@ def _receipt(registry: MethodRegistry) -> dict[str, object]:
         "score_policy": "retained_development_calibrator",
         "hyperparameters": {"latent_dim": 24},
         "decoder_hyperparameters": {
-            "dispersion_floor": 0.0001,
-            "dispersion_ceiling": 10000.0,
             "dispersion_prior_strength": 20.0,
+            "winsor_quantile": 0.95,
+            "min_dispersion": 0.0001,
+            "max_dispersion": 100.0,
             "mean_floor": 1e-08,
         },
     }
@@ -247,6 +248,86 @@ def test_final_plan_rejects_runtime_or_method_receipt_tampering() -> None:
     receipt["payload_sha256"] = canonical_sha256(unsigned)
 
     with pytest.raises(FinalRunnerContractError, match="method.*differs"):
+        build_final_execution_plan(
+            receipt,
+            registry,
+            _bindings(),
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            execution_authority_sha256="9" * 64,
+        )
+
+
+def test_final_plan_derives_direct_score_without_calibration_requirement() -> None:
+    from maskimpute_benchmark.final_runner import build_final_execution_plan
+
+    registry = _registry()
+    receipt = _receipt(registry)
+    selected = {
+        "method_version": "v27",
+        "decoder": "scaled_gaussian",
+        "encoder_mode": "explicit_mask",
+        "output_policy": "selective",
+        "score_policy": "direct_cross_fitted_count_score",
+        "hyperparameters": {"latent_dim": 24},
+    }
+    receipt["selected_version"] = "v27"
+    receipt["selected_configuration_id"] = "v27-direct"
+    receipt["selected_configuration"] = selected
+    receipt["selected_configuration_sha256"] = canonical_sha256(selected)
+    unsigned = {
+        key: value for key, value in receipt.items() if key != "payload_sha256"
+    }
+    receipt["payload_sha256"] = canonical_sha256(unsigned)
+
+    plan = build_final_execution_plan(
+        receipt,
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+
+    configuration = next(
+        value for value in plan.configurations if value.method_id == "maskimpute"
+    )
+    assert configuration.requires_count_score is True
+    assert configuration.requires_calibration is False
+    assert {
+        entry.run.requires_calibration
+        for entry in plan.entries
+        if entry.run.method_id == "maskimpute"
+    } == {False}
+
+
+def test_final_plan_rejects_nonexecutable_v29_structure_configuration() -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    receipt = _receipt(registry)
+    selected = dict(receipt["selected_configuration"])
+    selected["method_version"] = "v29"
+    selected["structure_hyperparameters"] = {
+        "variable_gene_count": 200,
+        "neighborhood_k": 15,
+        "covariance_penalty_weight": -1.0,
+        "neighborhood_penalty_weight": 0.1,
+        "variance_floor": 1e-8,
+    }
+    receipt["selected_version"] = "v29"
+    receipt["selected_configuration_id"] = "v29-invalid"
+    receipt["selected_configuration"] = selected
+    receipt["selected_configuration_sha256"] = canonical_sha256(selected)
+    unsigned = {
+        key: value for key, value in receipt.items() if key != "payload_sha256"
+    }
+    receipt["payload_sha256"] = canonical_sha256(unsigned)
+
+    with pytest.raises(FinalRunnerContractError, match="not executable"):
         build_final_execution_plan(
             receipt,
             registry,
@@ -514,6 +595,47 @@ def test_final_result_store_rejects_tampered_record_or_log(tmp_path: Path) -> No
         FinalResultStore(tmp_path / "execution", plan).load_records()
 
 
+def test_final_unique_file_reader_enforces_a_pre_read_size_bound(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        _read_unique_file,
+    )
+
+    artifact = tmp_path / "artifact"
+    artifact.write_bytes(b"four")
+
+    with pytest.raises(FinalRunnerContractError, match="size bound"):
+        _read_unique_file(artifact, "bounded artifact", max_bytes=3)
+
+
+def test_final_result_store_rejects_a_broken_record_directory_symlink(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    plan = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    output = tmp_path / "execution"
+    output.mkdir()
+    (output / "records").symlink_to(tmp_path / "missing")
+
+    with pytest.raises(FinalRunnerContractError, match="record directory"):
+        FinalResultStore(output, plan).load_records()
+
+
 def test_final_result_store_binds_successful_final_calibration_request(
     tmp_path: Path,
 ) -> None:
@@ -562,9 +684,10 @@ def test_final_result_store_binds_successful_final_calibration_request(
     store = FinalResultStore(tmp_path / "execution", plan)
     store.append(full.entries[0], _unavailable_attempt(full.entries[0]))
 
+    attempt = _completed_attempt(entry)
     record = store.append(
         entry,
-        _completed_attempt(entry),
+        attempt,
         execution_request=request,
     )
 
@@ -579,7 +702,32 @@ def test_final_result_store_binds_successful_final_calibration_request(
         "request_sha256": request.request_sha256,
         "retained_calibration_sha256": "b" * 64,
     }
+    run = record["run"]
+    assert run["native_output_path"] is None
+    assert run["native_output_retention"] == "omitted_redundant_final_output"
+    assert run["evaluator_output_encoding"] == "zlib_raw_f64_v1"
+    import zlib
+
+    compressed = (
+        tmp_path / "execution" / str(run["evaluator_output_path"])
+    ).read_bytes()
+    expected = attempt.evaluator_output.astype("<f8").tobytes(order="C")
+    assert zlib.decompress(compressed) == expected
+    assert run["evaluator_output_uncompressed_sha256"] == hashlib.sha256(
+        expected
+    ).hexdigest()
     assert FinalResultStore(tmp_path / "execution", plan).load_records()[-1] == record
+
+    oversized = dict(run)
+    oversized["evaluator_output_shape"] = [2701, 1200]
+    oversized["evaluator_output_uncompressed_nbytes"] = 2701 * 1200 * 8
+    with pytest.raises(Exception, match="matrix bound"):
+        store._validate_final_output_storage(oversized)
+
+    compressed_path = tmp_path / "execution" / str(run["evaluator_output_path"])
+    compressed_path.write_bytes(compressed + b"tamper")
+    with pytest.raises(Exception, match="record|artifact|compressed"):
+        FinalResultStore(tmp_path / "execution", plan).load_records()
 
 
 def test_final_result_store_append_does_not_rehash_the_whole_prefix(
@@ -629,10 +777,7 @@ def test_execute_final_plan_uses_final_calibration_request_and_resumes(
         build_final_execution_plan,
         execute_final_plan,
     )
-    from maskimpute_benchmark.runner import (
-        AdapterOutcome,
-        ExecutionAuthorityContext,
-    )
+    from maskimpute_benchmark.runner import AdapterOutcome
 
     registry = _registry()
     full = build_final_execution_plan(
@@ -674,7 +819,7 @@ def test_execute_final_plan_uses_final_calibration_request_and_resumes(
     assert len(requests) == 1
     assert requests[0].calibration_usage == "retained_all_development"
     assert requests[0].calibration_context is None
-    assert publications == ["published", "published"]
+    assert publications == ["published"]
 
     resumed = execute_final_plan(
         plan,
@@ -689,7 +834,65 @@ def test_execute_final_plan_uses_final_calibration_request_and_resumes(
     assert len(requests) == 1
 
 
-def test_execute_final_plan_batches_incremental_journal_publications(
+def test_execute_final_plan_leaves_infrastructure_failure_retryable(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        FinalRunnerContractError,
+        build_final_execution_plan,
+        execute_final_plan,
+    )
+    from maskimpute_benchmark.runner import AdapterOutcome
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256="4" * 64,
+    )
+    prepared = {
+        plan.entries[0].run.dataset_id: _unavailable_prepared(plan.entries[0])
+    }
+    root = tmp_path / "execution"
+
+    with pytest.raises(FinalRunnerContractError, match="retryable infrastructure"):
+        execute_final_plan(
+            plan,
+            registry,
+            prepared,
+            _authority(),
+            lambda _request: AdapterOutcome.infrastructure_error(
+                "worker_spawn_failed"
+            ),
+            FinalResultStore(root, plan),
+            on_record_published=lambda: None,
+        )
+    assert FinalResultStore(root, plan).load_records() == ()
+
+    manifest = execute_final_plan(
+        plan,
+        registry,
+        prepared,
+        _authority(),
+        lambda _request: AdapterOutcome.unavailable("algorithm_unavailable"),
+        FinalResultStore(root, plan),
+        on_record_published=lambda: None,
+    )
+    assert manifest["recorded_run_count"] == 1
+
+
+def test_execute_final_plan_journals_once_after_the_complete_manifest(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
@@ -732,15 +935,14 @@ def test_execute_final_plan_batches_incremental_journal_publications(
     )
 
     assert manifest["status"] == "completed"
-    assert len(publications) == 3
+    assert publications == ["published"]
 
 
-def test_final_evaluation_rejects_an_unavailable_executable_method(
+def test_final_evaluation_retains_reason_coded_algorithmic_unavailability(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
         FinalResultStore,
-        FinalRunnerContractError,
         build_final_execution_plan,
         validate_final_execution_for_evaluation,
     )
@@ -764,7 +966,99 @@ def test_final_evaluation_rejects_an_unavailable_executable_method(
     store = FinalResultStore(tmp_path / "execution", plan)
     store.append(plan.entries[0], _unavailable_attempt(plan.entries[0]))
 
-    with pytest.raises(FinalRunnerContractError, match="executable.*completed"):
+    validation = validate_final_execution_for_evaluation(
+        plan, store.load_records()
+    )
+
+    assert validation["executed_completed_count"] == 0
+    assert validation["executed_algorithmic_failure_count"] == 1
+    assert validation["executed_status_counts"] == {"unavailable": 1}
+
+
+@pytest.mark.parametrize("status", ["failed", "timeout", "resource_exceeded"])
+def test_final_evaluation_retains_each_unfavorable_algorithmic_status(
+    tmp_path: Path, status: str
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        build_final_execution_plan,
+        validate_final_execution_for_evaluation,
+    )
+    from maskimpute_benchmark.runner import AdapterOutcome, evaluate_adapter_outcome
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256="2" * 64,
+    )
+    entry = plan.entries[0]
+    outcome = getattr(AdapterOutcome, status)(f"algorithmic_{status}")
+    attempt = evaluate_adapter_outcome(
+        entry.run, _unavailable_prepared(entry), outcome
+    )
+    store = FinalResultStore(tmp_path / status / "execution", plan)
+    store.append(entry, attempt)
+
+    validation = validate_final_execution_for_evaluation(
+        plan, store.load_records()
+    )
+
+    assert validation["planned_run_count"] == 1
+    assert validation["executed_algorithmic_failure_count"] == 1
+    assert validation["executed_status_counts"] == {status: 1}
+
+
+def test_final_evaluation_blocks_infrastructure_incompleteness(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        FinalRunnerContractError,
+        build_final_execution_plan,
+        validate_final_execution_for_evaluation,
+    )
+    from maskimpute_benchmark.runner import (
+        AdapterOutcome,
+        evaluate_adapter_outcome,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256="1" * 64,
+    )
+    entry = plan.entries[0]
+    attempt = evaluate_adapter_outcome(
+        entry.run,
+        _unavailable_prepared(entry),
+        AdapterOutcome.infrastructure_error("worker_spawn_failed"),
+    )
+    store = FinalResultStore(tmp_path / "execution", plan)
+    store.append(entry, attempt)
+
+    with pytest.raises(FinalRunnerContractError, match="infrastructure|authority"):
         validate_final_execution_for_evaluation(plan, store.load_records())
 
 
@@ -970,6 +1264,38 @@ def test_materialize_final_execution_authority_is_frozen_and_resumable(
     unsigned = {key: value for key, value in frozen.items() if key != "payload_sha256"}
     frozen["payload_sha256"] = canonical_sha256(unsigned)
 
+    correct_calibration_sha256 = frozen["selected_calibrator"][
+        "artifact_file_sha256"
+    ]
+    frozen["selected_calibrator"]["artifact_file_sha256"] = "0" * 64
+    unsigned = {
+        key: value for key, value in frozen.items() if key != "payload_sha256"
+    }
+    frozen["payload_sha256"] = canonical_sha256(unsigned)
+    calibration_path = (
+        round_dir
+        / "results/final/execution_authority/retained_calibration.json"
+    )
+
+    with pytest.raises(Exception, match="calibration.*differ"):
+        materialize_final_execution_authority(
+            repository,
+            round_dir,
+            frozen,
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            dataset_manifest_sha256="1" * 64,
+        )
+    assert not calibration_path.exists()
+
+    frozen["selected_calibrator"][
+        "artifact_file_sha256"
+    ] = correct_calibration_sha256
+    unsigned = {
+        key: value for key, value in frozen.items() if key != "payload_sha256"
+    }
+    frozen["payload_sha256"] = canonical_sha256(unsigned)
+
     context = materialize_final_execution_authority(
         repository,
         round_dir,
@@ -1063,6 +1389,67 @@ def test_incremental_result_publication_treats_only_exact_no_change_as_resume(
         )
 
 
+def test_incremental_reconciliation_rejects_unowned_result_files(
+    tmp_path: Path,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/round-001"
+    results = round_dir / "results/final/execution"
+    results.mkdir(parents=True)
+    (results / "unexpected.txt").write_text("not runner-owned\n", encoding="utf-8")
+    called = False
+
+    def recorder(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return {}
+
+    with pytest.raises(final_runner.FinalRunnerContractError, match="unowned"):
+        final_runner._record_incremental_results_if_changed(
+            repository, round_dir, recorder
+        )
+    assert called is False
+
+
+def test_owned_result_manifest_is_derived_from_final_record_references(
+    tmp_path: Path,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+
+    registry = _registry()
+    full = final_runner.build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256="3" * 64,
+    )
+    round_dir = tmp_path / "round-001"
+    output = round_dir / "results/final/execution"
+    store = final_runner.FinalResultStore(output, plan)
+    store.append(plan.entries[0], _unavailable_attempt(plan.entries[0]))
+    store.finalize()
+
+    manifest = final_runner._owned_final_result_file_manifest(round_dir)
+
+    assert {item["path"] for item in manifest["result_files"]} == {
+        "results/final/execution/execution_manifest.json",
+        "results/final/execution/records/00000001.json",
+        f"results/final/execution/runs/{plan.entries[0].run.run_id}.stderr",
+        f"results/final/execution/runs/{plan.entries[0].run.run_id}.stdout",
+    }
+
+
 def test_stale_result_temporary_recovery_repairs_interrupted_hardlink(
     tmp_path: Path,
 ) -> None:
@@ -1087,6 +1474,55 @@ def test_stale_result_temporary_recovery_repairs_interrupted_hardlink(
     assert untouched.read_bytes() == b"keep"
 
 
+def test_interrupted_final_attempt_transaction_removes_orphan_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        _recover_interrupted_final_transactions,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256="5" * 64,
+    )
+    round_dir = tmp_path / "round-001"
+    output = round_dir / "results/final/execution"
+    store = FinalResultStore(output, plan)
+    original = store._stored_final_attempt
+
+    def interrupt_after_artifacts(attempt):
+        original(attempt)
+        raise RuntimeError("interrupted after artifacts")
+
+    monkeypatch.setattr(store, "_stored_final_attempt", interrupt_after_artifacts)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        store.append(plan.entries[0], _completed_attempt(plan.entries[0]))
+
+    assert any((output / "runs").iterdir())
+    assert any((output / "transactions").iterdir())
+
+    recovered = _recover_interrupted_final_transactions(round_dir)
+
+    assert recovered == (1,)
+    assert not (output / "transactions").exists()
+    assert not (output / "runs").exists()
+    assert FinalResultStore(output, plan).load_records() == ()
+
+
 def test_stale_result_temporary_recovery_rejects_symlink(tmp_path: Path) -> None:
     from maskimpute_benchmark.final_runner import (
         FinalRunnerContractError,
@@ -1094,7 +1530,7 @@ def test_stale_result_temporary_recovery_rejects_symlink(tmp_path: Path) -> None
     )
 
     round_dir = tmp_path / "round-001"
-    results = round_dir / "results"
+    results = round_dir / "results/final/execution"
     results.mkdir(parents=True)
     target = tmp_path / "outside"
     target.write_bytes(b"outside")
@@ -1111,6 +1547,62 @@ def test_frozen_final_round_public_api_accepts_no_scientific_overrides() -> None
         "repository",
         "round_dir",
     )
+
+
+def test_final_runtime_registry_must_match_the_frozen_lock(tmp_path: Path) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        _validate_final_runtime_lock,
+    )
+    from maskimpute_benchmark.runner import ExecutionEnvironmentRegistry
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    environments = ExecutionEnvironmentRegistry.fixed(repository)
+
+    with pytest.raises(FinalRunnerContractError, match="runtime lock differs"):
+        _validate_final_runtime_lock(
+            {"runtime_lock_sha256": "5" * 64}, environments
+        )
+
+
+def test_final_storage_preflight_reserves_one_compressed_common_matrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+
+    registry = _registry()
+    full = final_runner.build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256="a" * 64,
+    )
+    monkeypatch.setattr(
+        final_runner.shutil,
+        "disk_usage",
+        lambda _path: type("Usage", (), {"free": 10**15})(),
+    )
+    receipt = final_runner._validate_final_storage_capacity(plan, tmp_path)
+    assert receipt["per_execution_compressed_bound_bytes"] == 25_927_923
+
+    monkeypatch.setattr(
+        final_runner.shutil,
+        "disk_usage",
+        lambda _path: type("Usage", (), {"free": 1})(),
+    )
+
+    with pytest.raises(final_runner.FinalRunnerContractError, match="free storage"):
+        final_runner._validate_final_storage_capacity(plan, tmp_path)
 
 
 def test_frozen_final_cli_exposes_only_round_locator() -> None:

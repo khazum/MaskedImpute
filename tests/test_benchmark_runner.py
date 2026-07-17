@@ -1417,6 +1417,42 @@ def test_frozen_final_in_tree_preserves_selected_direct_score_variant(
     assert captured["calibration_usage"] == "retained_all_development"
 
 
+def test_frozen_final_in_tree_threads_selected_v29_structure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.methods.maskimpute as adapter
+
+    registry = load_method_registry(Path("study/methods.json"))
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(adapter, "_run_in_tree", fake_run)
+    decoder = object()
+    structure = object()
+    adapter.run_frozen_final_in_tree(
+        registry.by_id("maskimpute"),
+        object(),
+        variant_id="maskimpute-reference",
+        calibration_artifact=object(),
+        seed=42,
+        config=object(),
+        count_model_config=object(),
+        device="cpu",
+        mechanism="symsim",
+        biological_id="draw-03",
+        decoder="negative_binomial",
+        decoder_config=decoder,
+        structure_config=structure,
+    )
+
+    assert captured["decoder_config"] is decoder
+    assert captured["structure_config"] is structure
+    assert captured["calibration_usage"] == "retained_all_development"
+
+
 def test_frozen_final_in_tree_calls_an_execution_path_that_accepts_final_usage() -> None:
     import inspect
 
@@ -1460,6 +1496,45 @@ def test_spawned_repository_executor_close_releases_monitor_and_is_idempotent(
     assert monitor.close_count == 1
     with pytest.raises(RunnerContractError, match="closed"):
         executor(None)  # type: ignore[arg-type]
+
+
+def test_spawned_repository_executor_closes_monitor_if_initialization_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.runner as runner
+
+    class Monitor:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def assert_unchanged(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    monitor = Monitor()
+    environments = ExecutionEnvironmentRegistry.fixed(tmp_path)
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "change_monitor",
+        lambda _self: monitor,
+    )
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "full_revalidate",
+        lambda _self: None,
+    )
+
+    def fail_sampler(*_args, **_kwargs):
+        raise RuntimeError("sampler failed")
+
+    monkeypatch.setattr(runner, "LinuxProcessTreeResourceSampler", fail_sampler)
+    dispatcher = RepositoryAdapterDispatcher(tmp_path.resolve(), environments)
+
+    with pytest.raises(RuntimeError, match="sampler failed"):
+        runner.SpawnedRepositoryExecutor(dispatcher)
+    assert monitor.close_count == 1
 
 
 def test_qc_excludes_only_zero_library_cells_before_one_shared_method_input() -> None:
