@@ -665,6 +665,68 @@ def test_complete_manifest_revalidates_bound_source_and_dataset_bytes(
         load_downstream_evidence_manifest(destination)
 
 
+def test_completed_manifest_missing_prefix_fails_without_repairing_files(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+        run_downstream_evidence,
+    )
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    plan = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(_dataset_binding(dataset_path, cells),),
+        configurations=_test_configuration_authority(),
+    )
+    destination = tmp_path / "downstream"
+    run_downstream_evidence(plan, destination)
+    plan_path = destination / "plan.json"
+    missing_record = destination / "records/00000002.json"
+    plan_path.unlink()
+    missing_record.unlink()
+
+    with pytest.raises(DownstreamEvidenceError):
+        run_downstream_evidence(plan, destination)
+    assert not plan_path.exists()
+    assert not missing_record.exists()
+
+
+def test_loader_rejects_rehashed_downstream_manifest_schema_extension(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+        load_downstream_evidence_manifest,
+        run_downstream_evidence,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    plan = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(_dataset_binding(dataset_path, cells),),
+        configurations=_test_configuration_authority(),
+    )
+    destination = tmp_path / "downstream"
+    run_downstream_evidence(plan, destination)
+    path = destination / "downstream_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["unknown_field"] = "forged"
+    body = {
+        key: value for key, value in manifest.items() if key != "manifest_sha256"
+    }
+    manifest["manifest_sha256"] = canonical_sha256(body)
+    _write_canonical(path, manifest)
+
+    with pytest.raises(DownstreamEvidenceError, match="manifest schema differs"):
+        load_downstream_evidence_manifest(destination)
+
+
 def test_complete_manifest_rejects_self_consistent_sealed_source_drift(
     tmp_path: Path,
 ) -> None:

@@ -230,6 +230,23 @@ _FINAL_STORAGE_POLICY = MappingProxyType(
         "native_output_retention": "omitted_redundant_final_output",
     }
 )
+_DOWNSTREAM_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "plan_sha256",
+        "plan_file_sha256",
+        "source_kind",
+        "evaluator_source_sha256",
+        "source_manifest_file_sha256",
+        "source_manifest_payload_sha256",
+        "planned_denominator_count",
+        "recorded_denominator_count",
+        "endpoint_row_count",
+        "records",
+        "manifest_sha256",
+    }
+)
 
 
 class DownstreamEvidenceError(ValueError):
@@ -2124,15 +2141,18 @@ def run_downstream_evidence(
     _revalidate_plan(plan)
     output_root = Path(output_directory).absolute()
     _ensure_directory(output_root, "downstream output directory")
+    manifest_path = output_root / "downstream_manifest.json"
+    if os.path.lexists(manifest_path):
+        persisted_plan = load_downstream_evidence_plan(output_root)
+        if persisted_plan.to_dict() != plan.to_dict():
+            raise DownstreamEvidenceError(
+                "completed downstream plan differs from requested plan"
+            )
+        completed = load_downstream_evidence_manifest(output_root)
+        return dict(completed.payload)
     plan_raw = _canonical_bytes(plan.to_dict()) + b"\n"
     _publish_immutable(output_root / "plan.json", plan_raw, "downstream plan")
     records = list(_load_record_prefix(output_root, plan))
-    if os.path.lexists(output_root / "downstream_manifest.json") and len(
-        records
-    ) != len(plan.entries):
-        raise DownstreamEvidenceError(
-            "downstream manifest exists before its denominator is complete"
-        )
     remaining = len(plan.entries) - len(records)
     count = remaining if max_denominators is None else min(remaining, max_denominators)
     bindings = {value.dataset_id: value for value in plan.datasets}
@@ -2164,7 +2184,7 @@ def run_downstream_evidence(
         }
     manifest = _manifest_payload(output_root, plan, records)
     _publish_immutable(
-        output_root / "downstream_manifest.json",
+        manifest_path,
         _canonical_bytes(manifest) + b"\n",
         "downstream manifest",
     )
@@ -2250,6 +2270,8 @@ def load_downstream_evidence_manifest(
     manifest, _manifest_raw, _manifest_file_sha = _strict_json(
         output_root / "downstream_manifest.json", "downstream manifest"
     )
+    if set(manifest) != _DOWNSTREAM_MANIFEST_FIELDS:
+        raise DownstreamEvidenceError("downstream manifest schema differs")
     manifest_sha = _digest(
         manifest.get("manifest_sha256"), "downstream manifest checksum"
     )
