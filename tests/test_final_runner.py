@@ -2338,7 +2338,7 @@ def test_stale_result_temporary_recovery_repairs_interrupted_hardlink(
     round_dir = tmp_path / "round-001"
     runs = round_dir / "results/final/execution/runs"
     runs.mkdir(parents=True)
-    temporary = runs / ".run.stdout.0123456789.tmp"
+    temporary = runs / ".run.stdout.01234567.tmp"
     published = runs / "run.stdout"
     temporary.write_bytes(b"stable artifact")
     published.hardlink_to(temporary)
@@ -2347,11 +2347,35 @@ def test_stale_result_temporary_recovery_repairs_interrupted_hardlink(
 
     removed = _remove_stale_result_temporaries(round_dir)
 
-    assert removed == ("results/final/execution/runs/.run.stdout.0123456789.tmp",)
+    assert removed == ("results/final/execution/runs/.run.stdout.01234567.tmp",)
     assert not temporary.exists()
     assert published.read_bytes() == b"stable artifact"
     assert published.stat().st_nlink == 1
     assert untouched.read_bytes() == b"keep"
+
+
+def test_stale_result_temporary_recovery_rejects_unrelated_hardlink(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        _remove_stale_result_temporaries,
+    )
+
+    round_dir = tmp_path / "round-001"
+    runs = round_dir / "results/final/execution/runs"
+    runs.mkdir(parents=True)
+    temporary = runs / ".run.stdout.01234567.tmp"
+    external = tmp_path / "external-hardlink"
+    external.write_bytes(b"must survive")
+    temporary.hardlink_to(external)
+
+    with pytest.raises(FinalRunnerContractError, match="temporary|hardlink|sibling"):
+        _remove_stale_result_temporaries(round_dir)
+
+    assert temporary.exists()
+    assert external.read_bytes() == b"must survive"
+    assert external.stat().st_nlink == 2
 
 
 def test_interrupted_final_attempt_transaction_removes_orphan_artifacts(
@@ -2453,7 +2477,7 @@ def test_stale_result_temporary_recovery_rejects_symlink(tmp_path: Path) -> None
     results.mkdir(parents=True)
     target = tmp_path / "outside"
     target.write_bytes(b"outside")
-    (results / ".artifact.0123456789.tmp").symlink_to(target)
+    (results / ".artifact.01234567.tmp").symlink_to(target)
 
     with pytest.raises(FinalRunnerContractError, match="temporary.*regular"):
         _remove_stale_result_temporaries(round_dir)

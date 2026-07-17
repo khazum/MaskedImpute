@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 import hashlib
 import json
+import os
 from pathlib import Path
 import zlib
 
@@ -432,6 +433,131 @@ def _rewrite_checkpoint(store: CheckpointStore, mutate) -> dict[str, object]:
         encoding="utf-8",
     )
     return payload
+
+
+def _leave_staging_temporary(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    canonical_path: Path,
+    temporary_prefix: str,
+    phase: str,
+    publish,
+) -> Path:
+    """Model process death around mkstemp/link without actually killing pytest."""
+
+    original_unlink = Path.unlink
+    original_link = os.link
+    observed: list[Path] = []
+
+    def preserve_temporary(path: Path, *args, **kwargs):
+        if (
+            path.parent == canonical_path.parent
+            and path.name.startswith(temporary_prefix)
+            and path.name.endswith(".tmp")
+        ):
+            observed.append(path)
+            return None
+        return original_unlink(path, *args, **kwargs)
+
+    def interrupt_before_link(source, destination, *args, **kwargs):
+        if Path(destination) == canonical_path:
+            raise RuntimeError("simulated crash before immutable link")
+        return original_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", preserve_temporary)
+    if phase == "pre_link":
+        monkeypatch.setattr(os, "link", interrupt_before_link)
+        with pytest.raises(RuntimeError, match="before immutable link"):
+            publish()
+        monkeypatch.setattr(os, "link", original_link)
+    elif phase == "post_link":
+        publish()
+    else:  # pragma: no cover - parametrization is fixed below
+        raise AssertionError(phase)
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    assert len(observed) == 1
+    temporary = observed[0]
+    assert temporary.is_file()
+    if phase == "pre_link":
+        assert not canonical_path.exists()
+        assert temporary.stat().st_nlink == 1
+    else:
+        assert canonical_path.is_file()
+        assert temporary.stat().st_ino == canonical_path.stat().st_ino
+        assert temporary.stat().st_nlink == 2
+    return temporary
+
+
+def _development_artifact_payload(
+    attempt,
+    artifact_suffix: str,
+) -> tuple[str, bytes]:
+    from maskimpute_benchmark.prezero_evidence import encode_prezero_evidence
+
+    base = f"runs/{attempt.run.run_id}"
+    if artifact_suffix == ".stdout":
+        return f"{base}.stdout", attempt.stdout
+    if artifact_suffix == ".stderr":
+        return f"{base}.stderr", attempt.stderr
+    if artifact_suffix == ".native-f64":
+        assert attempt.native_output is not None
+        return (
+            f"{base}.native-f64",
+            np.asarray(attempt.native_output, dtype="<f8").tobytes(order="C"),
+        )
+    if artifact_suffix == ".log2-cp10k-f64":
+        assert attempt.evaluator_output is not None
+        return (
+            f"{base}.log2-cp10k-f64",
+            np.asarray(attempt.evaluator_output, dtype="<f8").tobytes(order="C"),
+        )
+    if artifact_suffix == ".p-pre-zero-f64.zlib":
+        _record, compressed = encode_prezero_evidence(attempt.p_pre_zero_evidence)
+        assert compressed is not None
+        return f"{base}.p-pre-zero-f64.zlib", compressed
+    raise AssertionError(artifact_suffix)  # pragma: no cover - fixed parametrization
+
+
+def _scientifically_equivalent_retry(attempt):
+    retry_stdout = b"scientifically equivalent retry stdout\n"
+    retry_stderr = b"scientifically equivalent retry stderr\n"
+    return replace(
+        attempt,
+        run=replace(
+            attempt.run,
+            stdout_sha256=hashlib.sha256(retry_stdout).hexdigest(),
+            stderr_sha256=hashlib.sha256(retry_stderr).hexdigest(),
+        ),
+        stdout=retry_stdout,
+        stderr=retry_stderr,
+    )
+
+
+def _assert_clean_development_retry(
+    store: CheckpointStore,
+    report,
+    retry,
+) -> None:
+    assert report.status == "completed"
+    assert not (store.output_dir / "transactions").exists()
+    record = report.records[0]
+    run = record["run"]
+    assert (store.output_dir / run["stdout_path"]).read_bytes() == retry.stdout
+    assert (store.output_dir / run["stderr_path"]).read_bytes() == retry.stderr
+    expected_files = {
+        "checkpoint.json",
+        run["stdout_path"],
+        run["stderr_path"],
+        run["native_output_path"],
+        run["evaluator_output_path"],
+        record["p_pre_zero_evidence"]["storage"]["path"],
+    }
+    observed_files = {
+        path.relative_to(store.output_dir).as_posix()
+        for path in store.output_dir.rglob("*")
+        if path.is_file()
+    }
+    assert observed_files == expected_files
 
 
 def _rebind_score_payload(
@@ -1086,6 +1212,136 @@ def test_development_append_validates_before_publishing_and_allows_retry(
     assert len(report.records) == 1
 
 
+@pytest.mark.parametrize("phase", ("pre_link", "post_link"))
+def test_development_restart_cleans_interrupted_intent_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    prepared = _prepared()
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
+    canonical = store.output_dir / "transactions/00000001.json"
+    temporary = _leave_staging_temporary(
+        monkeypatch,
+        canonical_path=canonical,
+        temporary_prefix=".00000001.json.",
+        phase=phase,
+        publish=lambda: store._publish_transaction_intent(
+            plan,
+            0,
+            plan.entries[0],
+            attempt,
+        ),
+    )
+
+    restarted = CheckpointStore(store.output_dir, authority_repository=tmp_path)
+    retry = _scientifically_equivalent_retry(attempt)
+    report = restarted.append(
+        plan,
+        None,
+        retry,
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
+    )
+
+    assert not temporary.exists()
+    _assert_clean_development_retry(restarted, report, retry)
+
+
+@pytest.mark.parametrize("phase", ("pre_link", "post_link"))
+@pytest.mark.parametrize(
+    "artifact_suffix",
+    (
+        ".stdout",
+        ".stderr",
+        ".native-f64",
+        ".log2-cp10k-f64",
+        ".p-pre-zero-f64.zlib",
+    ),
+)
+def test_development_restart_cleans_interrupted_run_artifact_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    artifact_suffix: str,
+) -> None:
+    prepared = _prepared()
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
+    store._publish_transaction_intent(plan, 0, plan.entries[0], attempt)
+    relative, data = _development_artifact_payload(attempt, artifact_suffix)
+    canonical = store.output_dir / relative
+    temporary = _leave_staging_temporary(
+        monkeypatch,
+        canonical_path=canonical,
+        temporary_prefix=f".{canonical.name}.",
+        phase=phase,
+        publish=lambda: store._publish_immutable(relative, data),
+    )
+
+    restarted = CheckpointStore(store.output_dir, authority_repository=tmp_path)
+    retry = _scientifically_equivalent_retry(attempt)
+    report = restarted.append(
+        plan,
+        None,
+        retry,
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
+    )
+
+    assert not temporary.exists()
+    _assert_clean_development_retry(restarted, report, retry)
+
+
+def test_development_restart_cleans_interrupted_checkpoint_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared()
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
+    original_replace = os.replace
+    original_unlink = Path.unlink
+    observed: list[Path] = []
+
+    def interrupt_before_replace(source, destination, *args, **kwargs):
+        if Path(destination) == store.checkpoint_path:
+            raise RuntimeError("simulated crash before checkpoint replace")
+        return original_replace(source, destination, *args, **kwargs)
+
+    def preserve_checkpoint_temporary(path: Path, *args, **kwargs):
+        if (
+            path.parent == store.output_dir
+            and path.name.startswith(".checkpoint.")
+            and path.name.endswith(".tmp")
+        ):
+            observed.append(path)
+            return None
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", interrupt_before_replace)
+    monkeypatch.setattr(Path, "unlink", preserve_checkpoint_temporary)
+    with pytest.raises(RuntimeError, match="before checkpoint replace"):
+        store._publish_checkpoint({"interrupted": True})
+    monkeypatch.setattr(os, "replace", original_replace)
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    assert len(observed) == 1
+    temporary = observed[0]
+    assert temporary.is_file()
+    assert temporary.stat().st_nlink == 1
+
+    restarted = CheckpointStore(store.output_dir, authority_repository=tmp_path)
+    retry = _scientifically_equivalent_retry(attempt)
+    report = restarted.append(
+        plan,
+        None,
+        retry,
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
+    )
+
+    assert not temporary.exists()
+    _assert_clean_development_retry(restarted, report, retry)
+
+
 @pytest.mark.parametrize(
     "artifact_suffix",
     (
@@ -1127,18 +1383,7 @@ def test_development_restart_recovers_every_interrupted_artifact_boundary(
     assert not store.checkpoint_path.exists()
     assert (store.output_dir / "transactions/00000001.json").is_file()
 
-    retry_stdout = b"scientifically equivalent retry stdout\n"
-    retry_stderr = b"scientifically equivalent retry stderr\n"
-    retry = replace(
-        attempt,
-        run=replace(
-            attempt.run,
-            stdout_sha256=hashlib.sha256(retry_stdout).hexdigest(),
-            stderr_sha256=hashlib.sha256(retry_stderr).hexdigest(),
-        ),
-        stdout=retry_stdout,
-        stderr=retry_stderr,
-    )
+    retry = _scientifically_equivalent_retry(attempt)
     restarted = CheckpointStore(
         store.output_dir,
         authority_repository=tmp_path,
@@ -1151,26 +1396,7 @@ def test_development_restart_recovers_every_interrupted_artifact_boundary(
         prepared_datasets=prepared_datasets,
     )
 
-    assert report.status == "completed"
-    assert not (store.output_dir / "transactions").exists()
-    record = report.records[0]
-    run = record["run"]
-    assert (store.output_dir / run["stdout_path"]).read_bytes() == retry_stdout
-    assert (store.output_dir / run["stderr_path"]).read_bytes() == retry_stderr
-    expected_files = {
-        "checkpoint.json",
-        run["stdout_path"],
-        run["stderr_path"],
-        run["native_output_path"],
-        run["evaluator_output_path"],
-        record["p_pre_zero_evidence"]["storage"]["path"],
-    }
-    observed_files = {
-        path.relative_to(store.output_dir).as_posix()
-        for path in store.output_dir.rglob("*")
-        if path.is_file()
-    }
-    assert observed_files == expected_files
+    _assert_clean_development_retry(restarted, report, retry)
 
 
 def test_development_restart_retains_committed_artifacts_and_closes_intent(
@@ -1263,6 +1489,100 @@ def test_development_recovery_refuses_nonunique_or_linked_artifact(
 
     assert external.exists()
     assert (store.output_dir / "transactions/00000001.json").is_file()
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        ".checkpoint.abcdefgh.tmp",
+        "transactions/.00000001.json.abcdefgh.tmp",
+        "runs/.run-maskimpute-symsim.stdout.abcdefgh.tmp",
+    ),
+)
+def test_development_staging_recovery_rejects_unrelated_hardlink(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    prepared = _prepared()
+    plan = _plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    temporary = store.output_dir / relative
+    temporary.parent.mkdir(parents=True, exist_ok=True)
+    external = tmp_path / "external-hardlink"
+    external.write_bytes(b"must survive")
+    temporary.hardlink_to(external)
+
+    with pytest.raises(RunnerContractError, match="staging|hardlink|sibling"):
+        store._recover_interrupted_transactions(plan)
+
+    assert temporary.exists()
+    assert external.read_bytes() == b"must survive"
+    assert external.stat().st_nlink == 2
+
+
+def test_development_staging_recovery_rejects_symlink(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    plan = _plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    runs = store.output_dir / "runs"
+    runs.mkdir(parents=True)
+    canonical = runs / f"{plan.entries[0].run_id}.stdout"
+    temporary = runs / f".{canonical.name}.abcdefgh.tmp"
+    external = tmp_path / "external-symlink"
+    external.write_bytes(b"must survive")
+    temporary.symlink_to(external)
+
+    with pytest.raises(RunnerContractError, match="staging|regular|symlink"):
+        store._recover_interrupted_transactions(plan)
+
+    assert temporary.is_symlink()
+    assert external.read_bytes() == b"must survive"
+
+
+@pytest.mark.parametrize(
+    ("relative", "payload"),
+    (
+        ("unexpected", b"unexpected root file"),
+        ("runs/unexpected", b"unexpected run file"),
+        ("runs/.malformed.short.tmp", b"malformed staging file"),
+        ("transactions/.00000001.json.short.tmp", b"malformed intent staging"),
+    ),
+)
+def test_development_staging_recovery_rejects_unexpected_files(
+    tmp_path: Path,
+    relative: str,
+    payload: bytes,
+) -> None:
+    prepared = _prepared()
+    plan = _plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    unexpected = store.output_dir / relative
+    unexpected.parent.mkdir(parents=True, exist_ok=True)
+    unexpected.write_bytes(payload)
+
+    with pytest.raises(RunnerContractError, match="unexpected|transaction name"):
+        store._recover_interrupted_transactions(plan)
+
+    assert unexpected.read_bytes() == payload
+
+
+def test_development_staging_recovery_rejects_symlinked_owned_directory(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    plan = _plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    store.output_dir.mkdir()
+    external = tmp_path / "external-runs"
+    external.mkdir()
+    (store.output_dir / "runs").symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(RunnerContractError, match="directory|symlink|canonical"):
+        store._recover_interrupted_transactions(plan)
+
+    assert (store.output_dir / "runs").is_symlink()
 
 
 @pytest.mark.parametrize("tamper", ("matrix", "policy", "report"))

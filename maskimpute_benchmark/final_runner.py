@@ -45,6 +45,7 @@ from .runner import (
     RunPlanEntry,
     SpawnedRepositoryExecutor,
     _prezero_evaluator_targets,
+    _unlink_owned_staging_temporary,
     enforce_calibration_fold_receipt,
     evaluate_adapter_outcome,
     prepare_dataset_pair_for_execution,
@@ -53,7 +54,9 @@ from .runner import (
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
-_STAGING_FILE = re.compile(r"\..+\.[A-Za-z0-9_-]{6,}\.tmp\Z")
+_STAGING_FILE = re.compile(
+    r"\.(?P<canonical>.+)\.(?P<token>[a-z0-9_]{8})\.tmp\Z"
+)
 _TRANSACTION_FILE = re.compile(r"[0-9]{8}\.json\Z")
 _FINAL_RUN_ID = re.compile(r"final-[a-z0-9-]+\Z")
 _FINAL_DRAWS = tuple(f"draw-{draw:02d}" for draw in range(1, 6))
@@ -1036,7 +1039,8 @@ def _remove_stale_result_temporaries(round_dir: Path) -> tuple[str, ...]:
         ) from error
     removed: list[str] = []
     for path in entries:
-        if _STAGING_FILE.fullmatch(path.name) is None:
+        match = _STAGING_FILE.fullmatch(path.name)
+        if match is None:
             continue
         try:
             result_relative = path.relative_to(results)
@@ -1050,36 +1054,17 @@ def _remove_stale_result_temporaries(round_dir: Path) -> tuple[str, ...]:
         }:
             continue
         try:
-            metadata = path.lstat()
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or stat.S_ISLNK(metadata.st_mode)
-                or metadata.st_uid != os.geteuid()
-                or metadata.st_nlink not in {1, 2}
-                or path.parent.resolve(strict=True) != path.parent.absolute()
-            ):
-                raise FinalRunnerContractError(
-                    "stale final result temporary is not an owned regular file"
-                )
             relative = path.relative_to(destination).as_posix()
-            path.unlink()
-            directory = os.open(
-                path.parent,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_CLOEXEC", 0),
+            _unlink_owned_staging_temporary(
+                path,
+                path.with_name(match.group("canonical")),
+                "stale final result temporary",
             )
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-            if os.path.lexists(path):
-                raise FinalRunnerContractError(
-                    "stale final result temporary survived removal"
-                )
             removed.append(relative)
         except FinalRunnerContractError:
             raise
+        except RunnerContractError as error:
+            raise FinalRunnerContractError(str(error)) from error
         except OSError as error:
             raise FinalRunnerContractError(
                 "stale final result temporary could not be removed"

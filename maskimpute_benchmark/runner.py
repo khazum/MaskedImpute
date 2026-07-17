@@ -98,6 +98,7 @@ _EVALUATOR_CONVERSION_REASON = re.compile(
     r"evaluator_conversion_[a-z][a-z0-9_]*_detail_[0-9a-f]{64}\Z"
 )
 _DEVELOPMENT_TRANSACTION_FILE = re.compile(r"[0-9]{8}\.json\Z")
+_MKSTEMP_TOKEN = re.compile(r"[a-z0-9_]{8}\Z")
 _OUTCOME_STATUSES = frozenset(
     {
         "completed",
@@ -114,6 +115,113 @@ _OUTCOME_STATUSES = frozenset(
 
 class RunnerContractError(RuntimeError):
     """Raised when runner authority, planning, or execution fails closed."""
+
+
+def _stable_stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _unlink_owned_staging_temporary(
+    path: Path,
+    expected_canonical: Path,
+    name: str,
+) -> None:
+    """Remove one exact mkstemp sibling without following or blessing aliases."""
+
+    descriptor = -1
+    try:
+        parent = path.parent
+        if (
+            expected_canonical.parent != parent
+            or parent.resolve(strict=True) != parent.absolute()
+        ):
+            raise RunnerContractError(f"{name} parent is not canonical")
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink not in {1, 2}
+        ):
+            raise RunnerContractError(
+                f"{name} must be an owned regular file with one expected sibling"
+            )
+        sibling_identity: tuple[int, ...] | None = None
+        if before.st_nlink == 2:
+            try:
+                sibling = expected_canonical.lstat()
+            except OSError as error:
+                raise RunnerContractError(
+                    f"{name} hardlink lacks its exact canonical sibling"
+                ) from error
+            sibling_identity = _stable_stat_identity(sibling)
+            if (
+                not stat.S_ISREG(sibling.st_mode)
+                or stat.S_ISLNK(sibling.st_mode)
+                or sibling.st_uid != os.geteuid()
+                or sibling_identity != _stable_stat_identity(before)
+            ):
+                raise RunnerContractError(
+                    f"{name} hardlink differs from its exact canonical sibling"
+                )
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(descriptor)
+        if _stable_stat_identity(before) != _stable_stat_identity(opened):
+            raise RunnerContractError(f"{name} changed while opening")
+        if sibling_identity is not None:
+            if _stable_stat_identity(expected_canonical.lstat()) != sibling_identity:
+                raise RunnerContractError(f"{name} canonical sibling changed")
+        if _stable_stat_identity(path.lstat()) != _stable_stat_identity(opened):
+            raise RunnerContractError(f"{name} changed before removal")
+        path.unlink()
+        after = os.fstat(descriptor)
+        expected_links = before.st_nlink - 1
+        if after.st_nlink != expected_links or os.path.lexists(path):
+            raise RunnerContractError(f"{name} survived safe removal")
+        if sibling_identity is not None:
+            sibling_after = expected_canonical.lstat()
+            if (
+                (sibling_after.st_dev, sibling_after.st_ino)
+                != (before.st_dev, before.st_ino)
+                or sibling_after.st_nlink != 1
+                or sibling_after.st_uid != os.geteuid()
+                or not stat.S_ISREG(sibling_after.st_mode)
+                or stat.S_ISLNK(sibling_after.st_mode)
+            ):
+                raise RunnerContractError(
+                    f"{name} canonical sibling changed during removal"
+                )
+        directory = os.open(
+            parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except RunnerContractError:
+        raise
+    except OSError as error:
+        raise RunnerContractError(f"{name} could not be removed safely") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3810,16 +3918,206 @@ class CheckpointStore:
 
     @staticmethod
     def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
-        return (
-            value.st_dev,
-            value.st_ino,
-            value.st_mode,
-            value.st_nlink,
-            value.st_uid,
-            value.st_size,
-            value.st_mtime_ns,
-            value.st_ctime_ns,
+        return _stable_stat_identity(value)
+
+    @staticmethod
+    def _staging_canonical_name(
+        name: str,
+        prefixes: Mapping[str, str],
+    ) -> str | None:
+        for canonical_name, prefix in prefixes.items():
+            if not name.startswith(prefix) or not name.endswith(".tmp"):
+                continue
+            token = name[len(prefix) : -len(".tmp")]
+            if _MKSTEMP_TOKEN.fullmatch(token) is not None:
+                return canonical_name
+        return None
+
+    @staticmethod
+    def _owned_directory_entries(
+        path: Path,
+        name: str,
+        *,
+        missing_ok: bool = False,
+    ) -> tuple[Path, ...] | None:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            if missing_ok:
+                return None
+            raise RunnerContractError(f"{name} is unavailable")
+        except OSError as error:
+            raise RunnerContractError(f"{name} is unavailable") from error
+        try:
+            canonical = path.resolve(strict=True) == path.absolute()
+        except OSError as error:
+            raise RunnerContractError(f"{name} is not canonical") from error
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or not canonical
+        ):
+            raise RunnerContractError(
+                f"{name} must be an owned canonical nonsymlink directory"
+            )
+        try:
+            return tuple(sorted(path.iterdir(), key=lambda item: item.name))
+        except OSError as error:
+            raise RunnerContractError(f"{name} cannot be enumerated") from error
+
+    @staticmethod
+    def _require_owned_unique_file(path: Path, name: str) -> None:
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            raise RunnerContractError(f"{name} is unavailable") from error
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or metadata.st_nlink != 1
+        ):
+            raise RunnerContractError(
+                f"{name} must be an owned unique regular file"
+            )
+
+    def _remove_stale_publication_temporaries(
+        self,
+        plan: CompetitionPlan,
+    ) -> tuple[str, ...]:
+        """Remove only exact owned mkstemp files from development-owned paths."""
+
+        root_entries = self._owned_directory_entries(
+            self.output_dir,
+            "checkpoint output directory",
+            missing_ok=True,
         )
+        if root_entries is None:
+            return ()
+        root_files = {"checkpoint.json": self.checkpoint_path}
+        root_directories = {"runs", "transactions"}
+        root_prefixes = {"checkpoint.json": ".checkpoint."}
+
+        transaction_files = {
+            f"{position:08d}.json": self.output_dir
+            / "transactions"
+            / f"{position:08d}.json"
+            for position in range(1, len(plan.entries) + 1)
+        }
+        transaction_prefixes = {
+            name: f".{name}." for name in transaction_files
+        }
+        run_files = {
+            PurePosixPath(relative).name: self.output_dir / relative
+            for entry in plan.entries
+            for relative in self._allowed_transaction_artifact_paths(entry)
+        }
+        run_prefixes = {name: f".{name}." for name in run_files}
+        temporaries: list[tuple[Path, Path, str]] = []
+
+        def classify(
+            entries: tuple[Path, ...],
+            *,
+            files: Mapping[str, Path],
+            directories: frozenset[str] = frozenset(),
+            prefixes: Mapping[str, str],
+            location: str,
+        ) -> None:
+            for entry in entries:
+                if entry.name in files or entry.name in directories:
+                    continue
+                canonical_name = self._staging_canonical_name(entry.name, prefixes)
+                if canonical_name is None:
+                    raise RunnerContractError(
+                        f"{location} contains an unexpected path: {entry.name}"
+                    )
+                temporaries.append(
+                    (
+                        entry,
+                        files[canonical_name],
+                        f"{location} staging temporary",
+                    )
+                )
+
+        classify(
+            root_entries,
+            files=root_files,
+            directories=frozenset(root_directories),
+            prefixes=root_prefixes,
+            location="checkpoint output",
+        )
+        transactions = self.output_dir / "transactions"
+        transaction_entries = self._owned_directory_entries(
+            transactions,
+            "development transaction directory",
+            missing_ok=True,
+        )
+        if transaction_entries is not None:
+            classify(
+                transaction_entries,
+                files=transaction_files,
+                prefixes=transaction_prefixes,
+                location="development transaction directory",
+            )
+        runs = self.output_dir / "runs"
+        run_entries = self._owned_directory_entries(
+            runs,
+            "development run directory",
+            missing_ok=True,
+        )
+        if run_entries is not None:
+            classify(
+                run_entries,
+                files=run_files,
+                prefixes=run_prefixes,
+                location="development run directory",
+            )
+
+        removed: list[str] = []
+        for temporary, canonical, name in sorted(
+            temporaries, key=lambda item: item[0].as_posix()
+        ):
+            _unlink_owned_staging_temporary(temporary, canonical, name)
+            removed.append(temporary.relative_to(self.output_dir).as_posix())
+
+        root_entries = self._owned_directory_entries(
+            self.output_dir,
+            "checkpoint output directory",
+        )
+        assert root_entries is not None
+        classify(
+            root_entries,
+            files=root_files,
+            directories=frozenset(root_directories),
+            prefixes={},
+            location="checkpoint output",
+        )
+        if os.path.lexists(self.checkpoint_path):
+            self._require_owned_unique_file(
+                self.checkpoint_path,
+                "development checkpoint",
+            )
+        for directory, files, name in (
+            (transactions, transaction_files, "development transaction"),
+            (runs, run_files, "development run artifact"),
+        ):
+            entries = self._owned_directory_entries(
+                directory,
+                f"{name} directory",
+                missing_ok=True,
+            )
+            if entries is None:
+                continue
+            classify(
+                entries,
+                files=files,
+                prefixes={},
+                location=f"{name} directory",
+            )
+            for entry in entries:
+                self._require_owned_unique_file(entry, name)
+        return tuple(removed)
 
     def _read_owned_transaction_file(
         self,
@@ -4061,6 +4359,7 @@ class CheckpointStore:
     ) -> tuple[int, ...]:
         """Close committed intents and roll back only uncommitted artifacts."""
 
+        self._remove_stale_publication_temporaries(plan)
         transactions = self.output_dir / "transactions"
         if not os.path.lexists(transactions):
             return ()
