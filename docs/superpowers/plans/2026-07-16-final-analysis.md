@@ -16,6 +16,10 @@
 - Use biological draws, never cells or genes, as inference units.
 - Bootstrap policy is fixed at 10,000 replicates and seed 20,260,712.
 - Pareto directions must come from frozen protocol/contract authority.
+- Never import reconstruction direction constants from live code; bind frozen
+  gate declarations to the immutable method-commit selection source.
+- Require the exact score-aware final record schema and keep realized
+  `p_pre_zero` metrics in a separate descriptive family.
 
 ---
 
@@ -87,7 +91,15 @@
   compute domination only over complete biological-draw medians for explicitly
   lower-is-better reconstruction metrics.
 
-- [ ] **Step 12: Run the complete pure-analysis tests**
+- [ ] **Step 12: Add the separate realized-score family**
+
+  Validate the exact `p_pre_zero_evidence` schema and summarize overall,
+  library-size-quartile, and truth-expression-bin metrics at biological-draw
+  level.  Declare AUROC/AUPRC higher, Brier/log-loss/ECE lower, and calibration
+  intercept/slope descriptive; do not add score endpoints to reconstruction
+  Holm or Pareto families.
+
+- [ ] **Step 13: Run the complete pure-analysis tests**
 
   Run `python -m pytest -q -p no:cacheprovider tests/test_final_analysis.py` and expect all tests to pass.
 
@@ -118,7 +130,9 @@
   securely read canonical JSON with `O_NOFOLLOW`; validate the exact evaluation
   and execution schemas, containment, raw hashes, canonical payload hashes,
   ordered record identities, and receipt validation counts; recheck evidence
-  hashes after analysis to detect concurrent mutation.
+  hashes after analysis to detect concurrent mutation.  Bind every compressed
+  realized-score artifact to its record receipt and evaluated result allowlist,
+  and validate the exact storage-preflight receipt.
 
 - [ ] **Step 4: Run loader tests and verify GREEN**
 
@@ -186,4 +200,3 @@
 - [ ] **Step 5: Commit**
 
   Stage only the five planned files and commit with `feat: generate frozen final publication analysis`.
-
