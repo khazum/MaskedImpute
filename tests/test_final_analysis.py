@@ -953,6 +953,45 @@ def test_pareto_retains_unavailable_methods_without_calling_them_dominated() -> 
     }
 
 
+def test_pareto_requires_the_full_terminal_draw_and_view_denominator() -> None:
+    records = _paired_panel()
+    for record in records:
+        run = record["run"]
+        if run["method_id"] != "maskimpute" or run["biological_id"] == "draw-01":
+            continue
+        run["status"] = "failed"
+        run["reason"] = "algorithm_failure"
+        for metric in record["metrics"]:
+            metric["value"] = None
+            metric["n"] = 0
+            metric["status"] = "failed"
+            metric["reason"] = "algorithm_failure"
+
+    report = _analysis(records)
+
+    candidate_summary = _matching(
+        report["descriptive_summaries"], method="maskimpute", metric="mse"
+    )
+    assert candidate_summary["status"] == "ok"
+    assert candidate_summary["n_biological_draws"] == 1
+    assert candidate_summary["n_dataset_views"] == 2
+    candidate_pareto = _matching(report["pareto"]["methods"], method="maskimpute")
+    assert candidate_pareto == {
+        "dominated_by": [],
+        "method": "maskimpute",
+        "missing_metrics": ["mse", "corr_err"],
+        "non_dominated": None,
+        "reason": "incomplete_core_metric_denominator",
+        "status": "unavailable",
+    }
+    assert report["pareto"]["status"] == "unavailable"
+    assert report["pareto"]["complete_method_count"] == 1
+    assert report["pareto"]["reason"] == (
+        "fewer_than_two_methods_have_complete_core_metrics"
+    )
+    assert report["denominator"]["run_terminal_status_counts"]["failed"] == 26
+
+
 def test_nonerror_primary_endpoint_is_not_assumed_to_be_lower_better() -> None:
     records = _paired_panel()
     for record in records:

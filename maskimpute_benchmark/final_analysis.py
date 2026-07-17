@@ -1579,13 +1579,57 @@ def _pareto_report(
     summary_by_key = {
         (row.get("method"), row.get("metric")): row for row in summaries
     }
+    evidence_by_key: dict[tuple[str, str], list[_NormalizedMetric]] = {}
+    expected_views_by_metric: dict[str, set[tuple[str, str, str, str]]] = {}
+    expected_draws_by_metric: dict[str, set[tuple[str, str]]] = {}
+    for row in evidence.rows:
+        if row.metric not in core:
+            continue
+        evidence_by_key.setdefault((row.method, row.metric), []).append(row)
+        expected_views_by_metric.setdefault(row.metric, set()).add(
+            (
+                row.mechanism,
+                row.biological_id,
+                row.technical_view,
+                row.dataset_id,
+            )
+        )
+        expected_draws_by_metric.setdefault(row.metric, set()).add(
+            (row.mechanism, row.biological_id)
+        )
+
+    def complete_metric_denominator(method: str, metric: str) -> bool:
+        rows = evidence_by_key.get((method, metric), [])
+        summary = summary_by_key[(method, metric)]
+        observed_views = {
+            (
+                row.mechanism,
+                row.biological_id,
+                row.technical_view,
+                row.dataset_id,
+            )
+            for row in rows
+        }
+        observed_draws = {
+            (row.mechanism, row.biological_id) for row in rows
+        }
+        return bool(rows) and (
+            all(row.status == "ok" for row in rows)
+            and observed_views == expected_views_by_metric[metric]
+            and observed_draws == expected_draws_by_metric[metric]
+            and summary.get("status") == "ok"
+            and summary.get("n_raw_metric_rows") == len(rows)
+            and summary.get("n_dataset_views") == len(observed_views)
+            and summary.get("n_biological_draws") == len(observed_draws)
+        )
+
     complete_values: dict[str, tuple[float, ...]] = {}
     method_rows: list[dict[str, object]] = []
     for method in evidence.methods:
         missing = [
             metric
             for metric in core
-            if summary_by_key[(method, metric)].get("status") != "ok"
+            if not complete_metric_denominator(method, metric)
         ]
         if missing:
             method_rows.append(

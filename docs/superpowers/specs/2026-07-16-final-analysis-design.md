@@ -73,8 +73,10 @@ The canonical report contains:
    declared metric family.
 6. Seed, biological-draw, and technical-view variance components with their
    identifiable denominators and explicit reasons for unavailable components.
-7. Pareto non-domination across authority-declared lower-is-better core metrics,
-   or a structured unavailable reason.
+7. Pareto non-domination across authority-declared lower-is-better core metrics
+   only for methods with every planned raw row and every expected dataset-view
+   and biological draw present and successful; otherwise a structured
+   unavailable reason.
 8. `p_pre_zero` score summaries overall, by library-size quartile, and by truth
    expression bin, with biological-draw median/IQR, entry denominators, status
    and reason counts, and explicit unavailability of pairwise inference when
