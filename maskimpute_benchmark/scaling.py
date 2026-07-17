@@ -15,6 +15,7 @@ import sys
 import tempfile
 from types import MappingProxyType
 from typing import Any, Literal
+import zlib
 
 import numpy as np
 
@@ -36,6 +37,7 @@ from .runner import (
     enforce_calibration_fold_receipt,
     implementation_source_sha256,
     load_runner_authority,
+    method_input_sha256,
     prepare_dataset_for_execution,
 )
 from .simulators import SimulationArtifact, SimulationRequest, run_symsim_pair
@@ -45,7 +47,10 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _CELL_COUNTS = (10_000, 25_000, 50_000, 100_000)
 _METHOD_IDS = ("observed", "maskimpute", "dca", "scvi", "magic")
 _ARTIFACT_POLICY = {
-    "evaluator_output_retention": "metrics_only_after_hashing",
+    "evaluator_output_retention": "bounded_zlib_raw_f64_v1_with_metric_replay",
+    "native_method_output_retention": (
+        "bounded_zlib_raw_f64_v1_with_conversion_replay"
+    ),
     "generated_dataset_retention": "moderate_h5ad",
     "paired_control_retention": "discard_after_semantic_and_file_hashing",
     "native_simulator_output_retention": "discard_after_manifest_hashing",
@@ -66,6 +71,46 @@ _CONTRACT_KEYS = {
     "artifact_policy",
 }
 _MAX_LOG_BYTES = 64 * 1024 * 1024
+_EVALUATOR_OUTPUT_ENCODING = "zlib_raw_f64_v1"
+_EVALUATOR_OUTPUT_COMPRESSION_LEVEL = 6
+_EVALUATOR_OUTPUT_RETENTION = "compressed_zlib_raw_f64_v1"
+_EVALUATOR_OUTPUT_SCALE = "log2_cp10k_plus_1"
+_MAX_EVALUATOR_OUTPUT_BYTES = max(_CELL_COUNTS) * 500 * 8
+_NATIVE_OUTPUT_ENCODING = "zlib_raw_f64_v1"
+_NATIVE_OUTPUT_RETENTION = "compressed_zlib_raw_f64_v1"
+_MAX_NATIVE_OUTPUT_BYTES = _MAX_EVALUATOR_OUTPUT_BYTES
+_EXECUTOR_RECEIPT_KEYS = {
+    "schema_version",
+    "run_id",
+    "method_id",
+    "dataset_id",
+    "source_dataset_sha256",
+    "model_seed",
+    "configuration_sha256",
+    "method_input_sha256",
+    "retained_cell_ids_sha256",
+    "status",
+    "reason",
+    "runtime_seconds",
+    "peak_rss_bytes",
+    "peak_gpu_bytes",
+    "rss_measurement",
+    "gpu_measurement",
+    "stdout_sha256",
+    "stdout_size_bytes",
+    "stderr_sha256",
+    "stderr_size_bytes",
+    "native_snapshot",
+    "receipt_sha256",
+}
+_NATIVE_SNAPSHOT_KEYS = {
+    "method_id",
+    "source_dataset_sha256",
+    "output_scale",
+    "shape",
+    "matrix_sha256",
+}
+_UNLOADED = object()
 _CHECKPOINT_KEYS = {
     "schema_version",
     "plan_sha256",
@@ -116,6 +161,14 @@ _DATASET_RECEIPT_KEYS = {
     "native_retention",
     "receipt_sha256",
 }
+_GENERATOR_RECEIPT_FIELDS = (
+    "dataset_sha256",
+    "truth_sha256",
+    "severe_dataset_sha256",
+    "moderate_native_manifest_sha256",
+    "severe_native_manifest_sha256",
+    "native_files_sha256",
+)
 
 
 class ScalingContractError(ValueError):
@@ -133,6 +186,7 @@ class ScalingEvaluatedAttempt:
     native_output: np.ndarray | None
     native_output_scale: str | None
     evaluator_output: np.ndarray | None
+    executor_receipt: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +235,12 @@ class ScalingPlanEntry:
     requires_count_score: bool
     requires_calibration: bool
     accuracy_enabled: bool
+    native_output_scale: str
+    timeout_seconds: int
+    max_rss_bytes: int
+    max_gpu_bytes: int
+    rss_measurement: str
+    gpu_measurement: str
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -252,6 +312,18 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _zlib_compress_bound(uncompressed_nbytes: int) -> int:
+    """Return zlib's documented single-call upper bound."""
+
+    return (
+        uncompressed_nbytes
+        + (uncompressed_nbytes >> 12)
+        + (uncompressed_nbytes >> 14)
+        + (uncompressed_nbytes >> 25)
+        + 13
+    )
+
+
 def _canonical_bytes(value: object) -> bytes:
     try:
         return json.dumps(
@@ -274,6 +346,43 @@ def _safe_relative_path(value: object, name: str) -> Path:
     return path
 
 
+def _reject_symlink_components(root: Path, path: Path, name: str) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as error:
+        raise ScalingContractError(f"{name} escaped the output root") from error
+    current = root
+    for part in relative.parts:
+        current /= part
+        if not os.path.lexists(current):
+            continue
+        try:
+            metadata = current.lstat()
+        except OSError as error:
+            raise ScalingContractError(f"{name} cannot be inspected") from error
+        if stat.S_ISLNK(metadata.st_mode):
+            raise ScalingContractError(f"{name} contains a symlink component")
+
+
+def _ensure_directory(root: Path, relative: Path, name: str) -> Path:
+    current = root
+    for part in relative.parts:
+        current /= part
+        if os.path.lexists(current):
+            metadata = current.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise ScalingContractError(f"{name} is not a canonical directory")
+            continue
+        try:
+            current.mkdir(mode=0o755)
+        except OSError as error:
+            raise ScalingContractError(f"{name} cannot be created") from error
+        metadata = current.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ScalingContractError(f"{name} is not a canonical directory")
+    return current
+
+
 def _atomic_replace(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -293,40 +402,6 @@ def _atomic_replace(path: Path, raw: bytes) -> None:
             os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _publish_immutable(path: Path, raw: bytes) -> str:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        if path.read_bytes() != raw:
-            raise ScalingContractError(
-                f"refusing to replace scaling artifact {path.name}"
-            )
-        return hashlib.sha256(raw).hexdigest()
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            if path.read_bytes() != raw:
-                raise ScalingContractError(
-                    f"conflicting scaling artifact appeared at {path.name}"
-                )
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return hashlib.sha256(raw).hexdigest()
 
 
 def load_scaling_contract(path: Path) -> ScalingContract:
@@ -662,6 +737,16 @@ def build_scaling_plan(
                     requires_count_score=configuration.requires_count_score,
                     requires_calibration=configuration.requires_calibration,
                     accuracy_enabled=cells in contract.accuracy_cell_counts,
+                    native_output_scale=spec.output_scale,
+                    timeout_seconds=spec.resources.timeout_seconds,
+                    max_rss_bytes=int(spec.resources.max_rss_gib * 1024**3),
+                    max_gpu_bytes=int(spec.resources.max_gpu_gib * 1024**3),
+                    rss_measurement="linux_proc_process_tree_rss",
+                    gpu_measurement=(
+                        "nvidia_smi_process_tree_used_memory"
+                        if spec.resources.gpu_required
+                        else "not_applicable_cpu_only_method"
+                    ),
                 )
             )
     body = {
@@ -679,10 +764,129 @@ def build_scaling_plan(
     )
 
 
+def _canonical_executor_receipt(unsigned: Mapping[str, object]) -> bytes:
+    payload = dict(unsigned)
+    payload["receipt_sha256"] = canonical_sha256(payload)
+    return _canonical_bytes(payload) + b"\n"
+
+
+def _executor_receipt_bytes(
+    entry: ScalingPlanEntry,
+    run_entry: RunPlanEntry,
+    prepared: PreparedDataset,
+    outcome: AdapterOutcome,
+) -> bytes:
+    """Seal the exact parent-side executor outcome before evaluator conversion."""
+
+    snapshot = None if outcome.execution is None else outcome.execution.snapshot
+    native_snapshot: dict[str, object] | None = None
+    if snapshot is not None:
+        native_snapshot = {
+            "method_id": snapshot.method_id,
+            "source_dataset_sha256": snapshot.source_dataset_sha256,
+            "output_scale": snapshot.output_scale,
+            "shape": list(snapshot.shape),
+            "matrix_sha256": snapshot.matrix_sha256,
+        }
+    unsigned: dict[str, object] = {
+        "schema_version": 1,
+        "run_id": entry.run_id,
+        "method_id": entry.method_id,
+        "dataset_id": run_entry.dataset_id,
+        "source_dataset_sha256": run_entry.source_dataset_sha256,
+        "model_seed": entry.model_seed,
+        "configuration_sha256": entry.configuration_sha256,
+        "method_input_sha256": method_input_sha256(prepared.method_input),
+        "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
+        "status": outcome.status,
+        "reason": outcome.reason,
+        "runtime_seconds": outcome.runtime_seconds,
+        "peak_rss_bytes": outcome.peak_rss_bytes,
+        "peak_gpu_bytes": outcome.peak_gpu_bytes,
+        "rss_measurement": outcome.rss_measurement,
+        "gpu_measurement": outcome.gpu_measurement,
+        "stdout_sha256": hashlib.sha256(outcome.stdout).hexdigest(),
+        "stdout_size_bytes": len(outcome.stdout),
+        "stderr_sha256": hashlib.sha256(outcome.stderr).hexdigest(),
+        "stderr_size_bytes": len(outcome.stderr),
+        "native_snapshot": native_snapshot,
+    }
+    return _canonical_executor_receipt(unsigned)
+
+
+def _executor_receipt_from_attempt(attempt: ScalingEvaluatedAttempt) -> bytes:
+    """Build an equivalent receipt for direct contract fixtures."""
+
+    run = attempt.run
+    native_snapshot: dict[str, object] | None = None
+    if run.native_output_sha256 is not None:
+        if attempt.native_output is None or attempt.native_output_scale is None:
+            raise ScalingContractError(
+                "scaling native output bytes are missing from the attempt"
+            )
+        native = np.asarray(attempt.native_output)
+        native_snapshot = {
+            "method_id": run.method_id,
+            "source_dataset_sha256": run.source_dataset_sha256,
+            "output_scale": attempt.native_output_scale,
+            "shape": list(native.shape),
+            "matrix_sha256": run.native_output_sha256,
+        }
+    unsigned: dict[str, object] = {
+        "schema_version": 1,
+        "run_id": run.run_id,
+        "method_id": run.method_id,
+        "dataset_id": run.dataset_id,
+        "source_dataset_sha256": run.source_dataset_sha256,
+        "model_seed": run.model_seed,
+        "configuration_sha256": run.configuration_sha256,
+        "method_input_sha256": run.method_input_sha256,
+        "retained_cell_ids_sha256": run.retained_cell_ids_sha256,
+        "status": run.status,
+        "reason": run.reason,
+        "runtime_seconds": run.runtime_seconds,
+        "peak_rss_bytes": run.peak_rss_bytes,
+        "peak_gpu_bytes": run.peak_gpu_bytes,
+        "rss_measurement": run.rss_measurement,
+        "gpu_measurement": run.gpu_measurement,
+        "stdout_sha256": hashlib.sha256(attempt.stdout).hexdigest(),
+        "stdout_size_bytes": len(attempt.stdout),
+        "stderr_sha256": hashlib.sha256(attempt.stderr).hexdigest(),
+        "stderr_size_bytes": len(attempt.stderr),
+        "native_snapshot": native_snapshot,
+    }
+    return _canonical_executor_receipt(unsigned)
+
+
+def _parse_executor_receipt(raw: bytes) -> Mapping[str, object]:
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_reject_constant,
+            object_pairs_hook=_unique_object,
+        )
+    except ScalingContractError:
+        raise
+    except (UnicodeError, json.JSONDecodeError) as error:
+        raise ScalingContractError("scaling executor receipt is invalid") from error
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != _EXECUTOR_RECEIPT_KEYS
+        or raw != _canonical_bytes(payload) + b"\n"
+    ):
+        raise ScalingContractError("scaling executor receipt fields are not closed")
+    unsigned = {
+        key: value for key, value in payload.items() if key != "receipt_sha256"
+    }
+    if payload.get("receipt_sha256") != canonical_sha256(unsigned):
+        raise ScalingContractError("scaling executor receipt checksum mismatch")
+    return MappingProxyType(payload)
+
+
 def scaling_attempt_record(
     attempt: ScalingEvaluatedAttempt, *, cells: int, accuracy_enabled: bool
 ) -> dict[str, object]:
-    """Retain complete metrics/resources/logs while dropping both dense matrices."""
+    """Carry native/evaluator bytes and executor authority to bounded storage."""
 
     if not isinstance(attempt, ScalingEvaluatedAttempt):
         raise TypeError("attempt must be a ScalingEvaluatedAttempt")
@@ -698,12 +902,12 @@ def scaling_attempt_record(
             "native_output_retention": (
                 "not_available"
                 if attempt.run.native_output_sha256 is None
-                else "hash_only"
+                else _NATIVE_OUTPUT_RETENTION
             ),
             "evaluator_output_retention": (
                 "not_available"
                 if attempt.run.evaluator_output_sha256 is None
-                else "hash_only"
+                else _EVALUATOR_OUTPUT_RETENTION
             ),
         }
     )
@@ -712,13 +916,26 @@ def scaling_attempt_record(
         "metrics": [metric.to_dict() for metric in attempt.metrics],
         "stdout": attempt.stdout,
         "stderr": attempt.stderr,
+        "native_output": attempt.native_output,
+        "evaluator_output": attempt.evaluator_output,
+        "executor_receipt": (
+            _executor_receipt_from_attempt(attempt)
+            if attempt.executor_receipt is None
+            else attempt.executor_receipt
+        ),
     }
 
 
 class ScalingResultStore:
-    """Canonical checkpoint with exact logs and no persisted dense method outputs."""
+    """Canonical checkpoint with replayable compressed method outputs."""
 
-    def __init__(self, output_dir: Path, plan: ScalingPlan) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        plan: ScalingPlan,
+        *,
+        simulator: Any | None = None,
+    ) -> None:
         if not isinstance(output_dir, Path):
             raise TypeError("output_dir must be a pathlib.Path")
         if not isinstance(plan, ScalingPlan):
@@ -744,6 +961,9 @@ class ScalingResultStore:
             raise ScalingContractError("scaling output root is not canonical")
         self.output_dir = resolved
         self.plan = plan
+        self._simulator = run_symsim_pair if simulator is None else simulator
+        if not callable(self._simulator):
+            raise TypeError("simulator must be callable")
         repository = Path(__file__).resolve().parents[1]
         contract_path = repository / "study/scaling_panel.json"
         protocol_path = repository / "study/protocol.json"
@@ -762,27 +982,104 @@ class ScalingResultStore:
             int, tuple[str, str, PreparedDataset]
         ] = {}
         self._metric_authorities: dict[int, dict[str, object]] = {}
+        self._snapshot: ScalingCheckpoint | None | object = _UNLOADED
+        self._checkpoint_file_sha256: str | None | object = _UNLOADED
 
     @property
     def checkpoint_path(self) -> Path:
         return self.output_dir / "checkpoint.json"
 
-    def _artifact_path(self, value: object, name: str) -> Path:
+    def _checkpoint_raw(self) -> bytes | None:
+        path = self.checkpoint_path
+        _reject_symlink_components(self.output_dir, path, "scaling checkpoint")
+        if not os.path.lexists(path):
+            return None
+        try:
+            metadata = path.lstat()
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_size > 32 * 1024 * 1024
+            ):
+                raise ScalingContractError("scaling checkpoint file is invalid")
+            return path.read_bytes()
+        except ScalingContractError:
+            raise
+        except OSError as error:
+            raise ScalingContractError("scaling checkpoint cannot be read") from error
+
+    def _require_checkpoint_unchanged(self) -> None:
+        if self._checkpoint_file_sha256 is _UNLOADED:
+            raise ScalingContractError("scaling checkpoint cache is not initialized")
+        raw = self._checkpoint_raw()
+        observed = None if raw is None else hashlib.sha256(raw).hexdigest()
+        if observed != self._checkpoint_file_sha256:
+            raise ScalingContractError(
+                "scaling checkpoint changed after the cached validation"
+            )
+
+    @staticmethod
+    def _detached_checkpoint(
+        checkpoint: ScalingCheckpoint | None,
+    ) -> ScalingCheckpoint | None:
+        if checkpoint is None:
+            return None
+        datasets = tuple(
+            json.loads(_canonical_bytes(dict(value)).decode("utf-8"))
+            for value in checkpoint.datasets
+        )
+        records = tuple(
+            json.loads(_canonical_bytes(dict(value)).decode("utf-8"))
+            for value in checkpoint.records
+        )
+        return ScalingCheckpoint(
+            schema_version=checkpoint.schema_version,
+            plan_sha256=checkpoint.plan_sha256,
+            input_hashes=MappingProxyType(dict(checkpoint.input_hashes)),
+            planned_run_count=checkpoint.planned_run_count,
+            status=checkpoint.status,
+            datasets=datasets,
+            records=records,
+            checkpoint_sha256=checkpoint.checkpoint_sha256,
+        )
+
+    def _artifact_path(
+        self,
+        value: object,
+        name: str,
+        *,
+        artifact_directory: Path | None = None,
+    ) -> Path:
         relative = _safe_relative_path(value, name)
         path = (self.output_dir / relative).absolute()
         try:
             path.relative_to(self.output_dir)
         except ValueError as error:
             raise ScalingContractError(f"{name} escaped the output root") from error
-        return path
+        _reject_symlink_components(self.output_dir, path, name)
+        if artifact_directory is None:
+            return path
+        selected = artifact_directory / relative.name
+        _reject_symlink_components(self.output_dir, selected, name)
+        return selected
 
     def _verify_artifact(
-        self, relative: object, digest: object, nbytes: object, name: str
-    ) -> None:
+        self,
+        relative: object,
+        digest: object,
+        nbytes: object,
+        name: str,
+        *,
+        max_bytes: int = _MAX_LOG_BYTES,
+        artifact_directory: Path | None = None,
+    ) -> Path:
         expected = _sha256(digest, f"{name} checksum")
-        if type(nbytes) is not int or nbytes < 0 or nbytes > _MAX_LOG_BYTES:
+        if type(nbytes) is not int or nbytes < 0 or nbytes > max_bytes:
             raise ScalingContractError(f"{name} byte count is invalid")
-        path = self._artifact_path(relative, name)
+        path = self._artifact_path(
+            relative, name, artifact_directory=artifact_directory
+        )
         try:
             metadata = path.lstat()
         except OSError as error:
@@ -795,9 +1092,50 @@ class ScalingResultStore:
             or _file_sha256(path) != expected
         ):
             raise ScalingContractError(f"{name} integrity check failed")
+        return path
+
+    def _verify_generator_authority(
+        self, receipt: Mapping[str, object], cells: int
+    ) -> None:
+        """Regenerate one exact SymSim pair and compare independent identities."""
+
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix=f"maskimpute-scaling-authority-{cells}-"
+            ) as temporary_name:
+                authority_root = Path(temporary_name).resolve()
+                protocol = scaling_protocol(self.base_protocol, self.contract, cells)
+                requests = scaling_requests(
+                    self.contract, protocol, authority_root / "generated"
+                )
+                artifacts = self._simulator(requests, protocol)
+                expected, _moderate = _dataset_receipt_from_artifacts(
+                    self.contract,
+                    protocol,
+                    authority_root,
+                    artifacts,
+                )
+                if any(
+                    receipt.get(name) != expected.get(name)
+                    for name in _GENERATOR_RECEIPT_FIELDS
+                ):
+                    raise ScalingContractError(
+                        "retained scaling dataset differs from deterministic SymSim "
+                        "generator authority"
+                    )
+        except ScalingContractError:
+            raise
+        except Exception as error:
+            raise ScalingContractError(
+                "deterministic SymSim generator authority could not be reproduced"
+            ) from error
 
     def _validate_dataset_receipt(
-        self, value: object, expected_cells: int
+        self,
+        value: object,
+        expected_cells: int,
+        *,
+        verify_generator: bool,
     ) -> Mapping[str, object]:
         if not isinstance(value, dict):
             raise ScalingContractError("scaling dataset receipt must be an object")
@@ -875,6 +1213,8 @@ class ScalingResultStore:
             or _file_sha256(output_path) != value["moderate_output_file_sha256"]
         ):
             raise ScalingContractError("moderate scaling dataset integrity failed")
+        if verify_generator:
+            self._verify_generator_authority(value, expected_cells)
         receipt_sha = str(value["receipt_sha256"])
         file_sha = str(value["moderate_output_file_sha256"])
         cached = self._prepared_datasets.get(expected_cells)
@@ -933,11 +1273,341 @@ class ScalingResultStore:
             }
         return MappingProxyType(dict(value))
 
+    def _load_executor_receipt(
+        self,
+        run: Mapping[str, object],
+        entry: ScalingPlanEntry,
+        prepared: PreparedDataset,
+        *,
+        artifact_directory: Path | None,
+    ) -> Mapping[str, object]:
+        expected_path = f"runs/{entry.run_id}/run.executor-receipt.json"
+        if run.get("executor_receipt_path") != expected_path:
+            raise ScalingContractError("scaling executor receipt path differs")
+        path = self._verify_artifact(
+            run.get("executor_receipt_path"),
+            run.get("executor_receipt_file_sha256"),
+            run.get("executor_receipt_size_bytes"),
+            "scaling executor receipt",
+            max_bytes=2 * 1024 * 1024,
+            artifact_directory=artifact_directory,
+        )
+        receipt = _parse_executor_receipt(path.read_bytes())
+        expected = {
+            "schema_version": 1,
+            "run_id": entry.run_id,
+            "method_id": entry.method_id,
+            "dataset_id": prepared.binding.dataset_id,
+            "source_dataset_sha256": prepared.binding.dataset_sha256,
+            "model_seed": entry.model_seed,
+            "configuration_sha256": entry.configuration_sha256,
+            "method_input_sha256": method_input_sha256(prepared.method_input),
+            "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
+        }
+        if any(receipt.get(name) != value for name, value in expected.items()):
+            raise ScalingContractError("scaling executor receipt identity differs")
+        if run.get("executor_receipt_sha256") != receipt.get("receipt_sha256"):
+            raise ScalingContractError("scaling executor receipt binding differs")
+        status = receipt.get("status")
+        reason = receipt.get("reason")
+        if (
+            status not in {
+                "completed",
+                "unavailable",
+                "failed",
+                "timeout",
+                "resource_exceeded",
+                "infrastructure_error",
+                "blocked_authority",
+                "budget_exhausted",
+            }
+            or (status == "completed" and reason is not None)
+            or (
+                status != "completed"
+                and (not isinstance(reason, str) or not reason)
+            )
+            or isinstance(receipt.get("runtime_seconds"), bool)
+            or not isinstance(receipt.get("runtime_seconds"), (int, float))
+            or not np.isfinite(float(receipt["runtime_seconds"]))
+            or float(receipt["runtime_seconds"]) < 0.0
+            or any(
+                isinstance(receipt.get(name), bool)
+                or type(receipt.get(name)) is not int
+                or receipt[name] < 0
+                for name in (
+                    "peak_rss_bytes",
+                    "peak_gpu_bytes",
+                    "stdout_size_bytes",
+                    "stderr_size_bytes",
+                )
+            )
+        ):
+            raise ScalingContractError("scaling executor receipt values are invalid")
+        for name in ("stdout_sha256", "stderr_sha256"):
+            _sha256(receipt.get(name), f"scaling executor {name}")
+        native = receipt.get("native_snapshot")
+        if status == "completed":
+            if not isinstance(native, dict) or set(native) != _NATIVE_SNAPSHOT_KEYS:
+                raise ScalingContractError(
+                    "completed scaling executor receipt lacks a native snapshot"
+                )
+        elif native is not None:
+            raise ScalingContractError(
+                "noncompleted scaling executor receipt has a native snapshot"
+            )
+        return receipt
+
+    def _decode_native_output(
+        self,
+        run: Mapping[str, object],
+        entry: ScalingPlanEntry,
+        prepared: PreparedDataset,
+        receipt: Mapping[str, object],
+        *,
+        artifact_directory: Path | None,
+    ) -> tuple[np.ndarray, bytes] | None:
+        storage_fields = (
+            "native_output_path",
+            "native_output_file_sha256",
+            "native_output_shape",
+            "native_output_dtype",
+            "native_output_scale",
+            "native_output_encoding",
+            "native_output_compressed_nbytes",
+            "native_output_uncompressed_nbytes",
+            "native_output_uncompressed_sha256",
+        )
+        native_receipt = receipt.get("native_snapshot")
+        if receipt.get("status") != "completed":
+            if (
+                run.get("native_output_sha256") is not None
+                or run.get("native_output_retention") != "not_available"
+                or any(run.get(name) is not None for name in storage_fields)
+            ):
+                raise ScalingContractError(
+                    "noncompleted scaling executor retains native output evidence"
+                )
+            return None
+        assert isinstance(native_receipt, Mapping)
+        expected_shape = prepared.method_input.shape
+        expected_nbytes = int(np.prod(expected_shape, dtype=np.int64)) * 8
+        if (
+            run.get("native_output_retention") != _NATIVE_OUTPUT_RETENTION
+            or run.get("native_output_path")
+            != f"runs/{entry.run_id}/run.native-f64.zlib"
+            or run.get("native_output_shape") != list(expected_shape)
+            or run.get("native_output_dtype") != "<f8"
+            or run.get("native_output_scale") != entry.native_output_scale
+            or run.get("native_output_encoding") != _NATIVE_OUTPUT_ENCODING
+            or run.get("native_output_uncompressed_nbytes") != expected_nbytes
+            or expected_nbytes > _MAX_NATIVE_OUTPUT_BYTES
+            or native_receipt.get("method_id") != entry.method_id
+            or native_receipt.get("source_dataset_sha256")
+            != prepared.binding.dataset_sha256
+            or native_receipt.get("output_scale") != entry.native_output_scale
+            or native_receipt.get("shape") != list(expected_shape)
+        ):
+            raise ScalingContractError("scaling native output identity differs")
+        raw_sha256 = _sha256(
+            run.get("native_output_uncompressed_sha256"),
+            "scaling native uncompressed output",
+        )
+        compressed_nbytes = run.get("native_output_compressed_nbytes")
+        maximum_compressed = _zlib_compress_bound(expected_nbytes)
+        if (
+            type(compressed_nbytes) is not int
+            or not 0 < compressed_nbytes <= maximum_compressed
+        ):
+            raise ScalingContractError(
+                "scaling native compressed byte count is invalid"
+            )
+        path = self._verify_artifact(
+            run.get("native_output_path"),
+            run.get("native_output_file_sha256"),
+            compressed_nbytes,
+            "scaling native output",
+            max_bytes=maximum_compressed,
+            artifact_directory=artifact_directory,
+        )
+        raw = self._decompress_matrix_bytes(
+            path, expected_nbytes, raw_sha256, "native"
+        )
+        output = np.frombuffer(raw, dtype="<f8").reshape(expected_shape)
+        if not np.isfinite(output).all() or bool((output < 0).any()):
+            raise ScalingContractError("scaling native output values are invalid")
+        from .methods import _output_digest
+
+        identity = _output_digest(
+            method_id=entry.method_id,
+            source_dataset_sha256=prepared.binding.dataset_sha256,
+            output_scale=entry.native_output_scale,
+            obs_ids=prepared.audit.retained_cell_ids,
+            var_ids=prepared.method_input.var_ids,
+            shape=expected_shape,
+            matrix_bytes=raw,
+        )
+        if (
+            run.get("native_output_sha256") != identity
+            or native_receipt.get("matrix_sha256") != identity
+        ):
+            raise ScalingContractError("scaling native snapshot hash differs")
+        return output, raw
+
+    @staticmethod
+    def _decompress_matrix_bytes(
+        path: Path, expected_nbytes: int, expected_sha256: str, name: str
+    ) -> bytes:
+        try:
+            compressed = path.read_bytes()
+            decompressor = zlib.decompressobj()
+            raw = decompressor.decompress(compressed, expected_nbytes + 1)
+            raw += decompressor.flush(max(1, expected_nbytes + 1 - len(raw)))
+        except (OSError, zlib.error) as error:
+            raise ScalingContractError(
+                f"scaling {name} output cannot be decompressed"
+            ) from error
+        if (
+            len(raw) != expected_nbytes
+            or not decompressor.eof
+            or decompressor.unconsumed_tail
+            or decompressor.unused_data
+            or hashlib.sha256(raw).hexdigest() != expected_sha256
+        ):
+            raise ScalingContractError(
+                f"scaling {name} output differs from its receipt"
+            )
+        return raw
+
+    def _decode_evaluator_output(
+        self,
+        run: Mapping[str, object],
+        entry: ScalingPlanEntry,
+        prepared: PreparedDataset,
+        *,
+        artifact_directory: Path | None,
+    ) -> np.ndarray | None:
+        storage_fields = (
+            "evaluator_output_path",
+            "evaluator_output_file_sha256",
+            "evaluator_output_shape",
+            "evaluator_output_dtype",
+            "evaluator_output_scale",
+            "evaluator_output_encoding",
+            "evaluator_output_compressed_nbytes",
+            "evaluator_output_uncompressed_nbytes",
+            "evaluator_output_uncompressed_sha256",
+        )
+        if run.get("status") != "completed":
+            if (
+                run.get("evaluator_output_sha256") is not None
+                or run.get("evaluator_output_retention") != "not_available"
+                or any(run.get(name) is not None for name in storage_fields)
+            ):
+                raise ScalingContractError(
+                    "noncompleted scaling run retains evaluator output evidence"
+                )
+            return None
+        shape = run.get("evaluator_output_shape")
+        expected_shape = prepared.method_input.shape
+        expected_nbytes = int(np.prod(expected_shape, dtype=np.int64)) * 8
+        if (
+            run.get("evaluator_output_retention") != _EVALUATOR_OUTPUT_RETENTION
+            or run.get("evaluator_output_path")
+            != f"runs/{entry.run_id}/run.log2-cp10k-f64.zlib"
+            or shape != list(expected_shape)
+            or run.get("evaluator_output_dtype") != "<f8"
+            or run.get("evaluator_output_scale") != _EVALUATOR_OUTPUT_SCALE
+            or run.get("evaluator_output_encoding") != _EVALUATOR_OUTPUT_ENCODING
+            or run.get("evaluator_output_uncompressed_nbytes") != expected_nbytes
+            or expected_nbytes > _MAX_EVALUATOR_OUTPUT_BYTES
+        ):
+            raise ScalingContractError("scaling evaluator output identity differs")
+        raw_sha256 = _sha256(
+            run.get("evaluator_output_uncompressed_sha256"),
+            "scaling evaluator uncompressed output",
+        )
+        compressed_nbytes = run.get("evaluator_output_compressed_nbytes")
+        maximum_compressed = _zlib_compress_bound(expected_nbytes)
+        if (
+            type(compressed_nbytes) is not int
+            or not 0 < compressed_nbytes <= maximum_compressed
+        ):
+            raise ScalingContractError(
+                "scaling evaluator compressed byte count is invalid"
+            )
+        path = self._verify_artifact(
+            run.get("evaluator_output_path"),
+            run.get("evaluator_output_file_sha256"),
+            compressed_nbytes,
+            "scaling evaluator output",
+            max_bytes=maximum_compressed,
+            artifact_directory=artifact_directory,
+        )
+        raw = self._decompress_matrix_bytes(
+            path, expected_nbytes, raw_sha256, "evaluator"
+        )
+        output = np.frombuffer(raw, dtype="<f8").reshape(expected_shape).copy()
+        if not np.isfinite(output).all() or bool((output < 0).any()):
+            raise ScalingContractError("scaling evaluator output values are invalid")
+        from .runner import _evaluator_output_sha256
+
+        expected_identity = _evaluator_output_sha256(
+            _run_plan_entry(entry, prepared.binding), prepared, output
+        )
+        if run.get("evaluator_output_sha256") != expected_identity:
+            raise ScalingContractError("scaling evaluator output hash identity differs")
+        return output
+
+    def _validate_run_directory_closed(
+        self,
+        run: Mapping[str, object],
+        entry: ScalingPlanEntry,
+        *,
+        artifact_directory: Path | None,
+    ) -> None:
+        directory = (
+            self.output_dir / "runs" / entry.run_id
+            if artifact_directory is None
+            else artifact_directory
+        )
+        _reject_symlink_components(
+            self.output_dir, directory, "scaling run directory"
+        )
+        try:
+            metadata = directory.lstat()
+            entries = tuple(directory.iterdir())
+        except OSError as error:
+            raise ScalingContractError(
+                "scaling run directory cannot be inspected"
+            ) from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ScalingContractError("scaling run directory is invalid")
+        expected = {
+            Path(str(run[name])).name
+            for name in (
+                "stdout_path",
+                "stderr_path",
+                "executor_receipt_path",
+                "native_output_path",
+                "evaluator_output_path",
+            )
+            if run.get(name) is not None
+        }
+        if {child.name for child in entries} != expected or any(
+            stat.S_ISLNK(child.lstat().st_mode)
+            or not stat.S_ISREG(child.lstat().st_mode)
+            or child.lstat().st_nlink != 1
+            for child in entries
+        ):
+            raise ScalingContractError("scaling run directory fields are not closed")
+
     def _validate_record(
         self,
         value: object,
         entry: ScalingPlanEntry,
         dataset_receipt: Mapping[str, object],
+        *,
+        artifact_directory: Path | None = None,
     ) -> Mapping[str, object]:
         if not isinstance(value, dict) or set(value) != {
             "run",
@@ -965,6 +1635,28 @@ class ScalingResultStore:
             "stderr_path",
             "stderr_file_sha256",
             "stderr_size_bytes",
+            "executor_receipt_path",
+            "executor_receipt_file_sha256",
+            "executor_receipt_size_bytes",
+            "executor_receipt_sha256",
+            "native_output_path",
+            "native_output_file_sha256",
+            "native_output_shape",
+            "native_output_dtype",
+            "native_output_scale",
+            "native_output_encoding",
+            "native_output_compressed_nbytes",
+            "native_output_uncompressed_nbytes",
+            "native_output_uncompressed_sha256",
+            "evaluator_output_path",
+            "evaluator_output_file_sha256",
+            "evaluator_output_shape",
+            "evaluator_output_dtype",
+            "evaluator_output_scale",
+            "evaluator_output_encoding",
+            "evaluator_output_compressed_nbytes",
+            "evaluator_output_uncompressed_nbytes",
+            "evaluator_output_uncompressed_sha256",
         }
         metric_fields = {field.name for field in fields(LongFormMetric)}
         if set(run) != expected_run_fields or any(
@@ -1026,8 +1718,15 @@ class ScalingResultStore:
             raise ScalingContractError(
                 "stored scaling record dataset identity differs"
             )
+        executor_receipt = self._load_executor_receipt(
+            run,
+            entry,
+            prepared,
+            artifact_directory=artifact_directory,
+        )
+        status = run.get("status")
         if (
-            run.get("status") not in _OUTCOME_STATUSES
+            status not in _OUTCOME_STATUSES
             or isinstance(run.get("runtime_seconds"), bool)
             or not isinstance(run.get("runtime_seconds"), (int, float))
             or not np.isfinite(float(run["runtime_seconds"]))
@@ -1038,22 +1737,92 @@ class ScalingResultStore:
                 or run[name] < 0
                 for name in ("peak_rss_bytes", "peak_gpu_bytes")
             )
-            or any(
-                not isinstance(run.get(name), str) or not run[name]
-                for name in ("rss_measurement", "gpu_measurement")
-            )
         ):
             raise ScalingContractError(
                 "stored scaling status, runtime, or resource evidence is invalid"
             )
-        if run["status"] == "completed":
-            if run.get("reason") is not None:
+        runtime = float(run["runtime_seconds"])
+        peak_rss = int(run["peak_rss_bytes"])
+        peak_gpu = int(run["peak_gpu_bytes"])
+        for name in (
+            "runtime_seconds",
+            "peak_rss_bytes",
+            "peak_gpu_bytes",
+            "rss_measurement",
+            "gpu_measurement",
+            "stdout_sha256",
+            "stderr_sha256",
+        ):
+            if run.get(name) != executor_receipt.get(name):
                 raise ScalingContractError(
-                    "completed scaling run cannot have a terminal reason"
+                    "stored scaling run differs from its executor receipt"
                 )
-        elif not isinstance(run.get("reason"), str) or not run["reason"]:
+        if (
+            run.get("stdout_size_bytes")
+            != executor_receipt.get("stdout_size_bytes")
+            or run.get("stderr_size_bytes")
+            != executor_receipt.get("stderr_size_bytes")
+        ):
+            raise ScalingContractError(
+                "stored scaling logs differ from their executor receipt"
+            )
+        telemetry_unavailable = (
+            status == "infrastructure_error"
+            and run.get("reason") == "resource_telemetry_unavailable"
+        )
+        rss_provenance_valid = run.get("rss_measurement") == entry.rss_measurement or (
+            telemetry_unavailable
+            and run.get("rss_measurement") == "rss_measurement_unavailable"
+        )
+        gpu_provenance_valid = run.get("gpu_measurement") == entry.gpu_measurement or (
+            telemetry_unavailable
+            and run.get("gpu_measurement")
+            in {"gpu_measurement_unavailable", "nvidia_smi_measurement_unavailable"}
+        )
+        resource_status_valid = (
+            status == "resource_exceeded"
+            and (
+                (
+                    run.get("reason") == "peak_rss_exceeded"
+                    and peak_rss > entry.max_rss_bytes
+                )
+                or (
+                    run.get("reason") == "peak_gpu_exceeded"
+                    and peak_gpu > entry.max_gpu_bytes
+                )
+            )
+        ) or (
+            status != "resource_exceeded"
+            and peak_rss <= entry.max_rss_bytes
+            and peak_gpu <= entry.max_gpu_bytes
+        )
+        runtime_valid = (
+            runtime <= entry.timeout_seconds
+            if status != "timeout"
+            else entry.timeout_seconds <= runtime <= entry.timeout_seconds + 5.0
+        )
+        if not (
+            rss_provenance_valid
+            and gpu_provenance_valid
+            and resource_status_valid
+            and runtime_valid
+        ):
+            raise ScalingContractError(
+                "stored scaling runtime or resource measurement authority differs"
+            )
+        if run["status"] == "completed" and run.get("reason") is not None:
+            raise ScalingContractError(
+                "completed scaling run cannot have a terminal reason"
+            )
+        if run["status"] != "completed" and (
+            not isinstance(run.get("reason"), str) or not run["reason"]
+        ):
             raise ScalingContractError(
                 "noncompleted scaling run lacks its terminal reason"
+            )
+        if status == "timeout" and run.get("reason") != "timeout":
+            raise ScalingContractError(
+                "timeout scaling run has a noncanonical reason"
             )
         if (
             run.get("calibration_artifact_sha256") is not None
@@ -1076,44 +1845,127 @@ class ScalingResultStore:
         for name in ("native_output_sha256", "evaluator_output_sha256"):
             if run.get(name) is not None:
                 _sha256(run[name], f"scaling {name}")
-        if run["status"] == "completed" and (
+        if executor_receipt.get("status") == "completed" and (
             run.get("native_output_sha256") is None
-            or run.get("evaluator_output_sha256") is None
         ):
             raise ScalingContractError(
-                "completed scaling run lacks output hash evidence"
+                "completed scaling executor lacks native output hash evidence"
             )
-        if run.get("native_output_retention") not in {"hash_only", "not_available"}:
+        if run["status"] == "completed" and run.get("evaluator_output_sha256") is None:
+            raise ScalingContractError(
+                "completed scaling run lacks evaluator output hash evidence"
+            )
+        if run.get("native_output_retention") not in {
+            _NATIVE_OUTPUT_RETENTION,
+            "not_available",
+        }:
             raise ScalingContractError("native scaling output retention is invalid")
         if run.get("evaluator_output_retention") not in {
-            "hash_only",
+            _EVALUATOR_OUTPUT_RETENTION,
             "not_available",
         }:
             raise ScalingContractError("evaluator scaling output retention is invalid")
         if run["native_output_retention"] != (
             "not_available"
             if run.get("native_output_sha256") is None
-            else "hash_only"
+            else _NATIVE_OUTPUT_RETENTION
         ) or run["evaluator_output_retention"] != (
             "not_available"
             if run.get("evaluator_output_sha256") is None
-            else "hash_only"
+            else _EVALUATOR_OUTPUT_RETENTION
         ):
             raise ScalingContractError(
                 "scaling output retention differs from its hashes"
             )
-        self._verify_artifact(
+        if (
+            run.get("stdout_path") != f"runs/{entry.run_id}/run.stdout"
+            or run.get("stderr_path") != f"runs/{entry.run_id}/run.stderr"
+        ):
+            raise ScalingContractError("scaling log paths differ from the plan")
+        stdout_path = self._verify_artifact(
             run.get("stdout_path"),
             run.get("stdout_file_sha256"),
             run.get("stdout_size_bytes"),
             "scaling stdout",
+            artifact_directory=artifact_directory,
         )
-        self._verify_artifact(
+        stderr_path = self._verify_artifact(
             run.get("stderr_path"),
             run.get("stderr_file_sha256"),
             run.get("stderr_size_bytes"),
             "scaling stderr",
+            artifact_directory=artifact_directory,
         )
+        stdout = stdout_path.read_bytes()
+        stderr = stderr_path.read_bytes()
+        native_decoded = self._decode_native_output(
+            run,
+            entry,
+            prepared,
+            executor_receipt,
+            artifact_directory=artifact_directory,
+        )
+        expected_status = str(executor_receipt["status"])
+        expected_reason = executor_receipt.get("reason")
+        converted_output: np.ndarray | None = None
+        if native_decoded is not None:
+            native_output, native_raw = native_decoded
+            from .methods import (
+                AdapterExecution,
+                AdapterUnavailableError,
+                MethodOutputSnapshot,
+            )
+            from .runner import (
+                _default_output_converter,
+                _evaluator_conversion_failure_reason,
+            )
+
+            snapshot = MethodOutputSnapshot(
+                method_id=entry.method_id,
+                source_dataset_sha256=prepared.binding.dataset_sha256,
+                output_scale=entry.native_output_scale,
+                obs_ids=prepared.audit.retained_cell_ids,
+                var_ids=prepared.method_input.var_ids,
+                shape=prepared.method_input.shape,
+                matrix_sha256=str(run["native_output_sha256"]),
+                _matrix_bytes=native_raw,
+            )
+            execution = AdapterExecution(
+                snapshot=snapshot,
+                compatibility_log=(),
+                environment_receipt=(),
+                stdout=stdout,
+                stderr=stderr,
+                command=None,
+            )
+            try:
+                converted_output = np.asarray(
+                    _default_output_converter(prepared.method_input, execution),
+                    dtype=np.float64,
+                )
+                expected_status = "completed"
+                expected_reason = None
+            except (AdapterUnavailableError, TypeError, ValueError, OverflowError) as error:
+                expected_status = "unavailable"
+                expected_reason = _evaluator_conversion_failure_reason(error)
+            del native_output
+        if run.get("status") != expected_status or run.get("reason") != expected_reason:
+            raise ScalingContractError(
+                "stored scaling status differs from executor replay"
+            )
+        evaluator_output = self._decode_evaluator_output(
+            run,
+            entry,
+            prepared,
+            artifact_directory=artifact_directory,
+        )
+        if converted_output is not None and (
+            evaluator_output is None
+            or not np.array_equal(converted_output, evaluator_output)
+        ):
+            raise ScalingContractError(
+                "scaling evaluator output differs from native conversion replay"
+            )
         if (
             len(metrics) != len(_SCALING_ACCURACY_METRICS)
             or tuple(
@@ -1214,13 +2066,51 @@ class ScalingResultStore:
                 raise ScalingContractError(
                     "scaling correlation gene count differs"
                 )
+        if evaluator_output is not None:
+            from .runner import _evaluator_targets
+
+            observed, truth, truth_kind, _marker_mask = _evaluator_targets(prepared)
+            if truth_kind != "exact_pre_capture" or truth is None:
+                raise ScalingContractError(
+                    "scaling metric replay lacks exact pre-capture truth"
+                )
+            replayed = [
+                metric.to_dict()
+                for metric in _scaling_metric_rows(
+                    entry,
+                    _run_plan_entry(entry, prepared.binding),
+                    _bounded_scaling_metric_values(
+                        evaluator_output, observed, truth
+                    ),
+                )
+            ]
+            if metrics != replayed:
+                raise ScalingContractError(
+                    "stored scaling metrics differ from evaluator output replay"
+                )
+        self._validate_run_directory_closed(
+            run, entry, artifact_directory=artifact_directory
+        )
         return MappingProxyType(dict(value))
 
-    def load(self) -> ScalingCheckpoint | None:
-        if not self.checkpoint_path.exists():
+    def load(self, *, force_validate: bool = False) -> ScalingCheckpoint | None:
+        if type(force_validate) is not bool:
+            raise TypeError("force_validate must be bool")
+        if not force_validate and self._snapshot is not _UNLOADED:
+            if self._snapshot is None:
+                return None
+            assert isinstance(self._snapshot, ScalingCheckpoint)
+            return self._detached_checkpoint(self._snapshot)
+        self._snapshot = _UNLOADED
+        self._checkpoint_file_sha256 = _UNLOADED
+        self._prepared_datasets.clear()
+        self._metric_authorities.clear()
+        raw = self._checkpoint_raw()
+        if raw is None:
+            self._snapshot = None
+            self._checkpoint_file_sha256 = None
             return None
         try:
-            raw = self.checkpoint_path.read_bytes()
             payload = json.loads(
                 raw.decode("utf-8"),
                 parse_constant=_reject_constant,
@@ -1257,7 +2147,9 @@ class ScalingResultStore:
         if len(datasets) > len(expected_cells) or len(records) > len(self.plan.entries):
             raise ScalingContractError("scaling checkpoint exceeds its denominator")
         dataset_values = tuple(
-            self._validate_dataset_receipt(value, cells)
+            self._validate_dataset_receipt(
+                value, cells, verify_generator=True
+            )
             for value, cells in zip(datasets, expected_cells, strict=False)
         )
         receipts_by_cells = {
@@ -1283,7 +2175,7 @@ class ScalingResultStore:
         )
         if payload.get("status") != expected_status:
             raise ScalingContractError("scaling checkpoint status is inconsistent")
-        return ScalingCheckpoint(
+        checkpoint = ScalingCheckpoint(
             schema_version=1,
             plan_sha256=self.plan.plan_sha256,
             input_hashes=MappingProxyType(dict(self.plan.input_hashes)),
@@ -1293,12 +2185,16 @@ class ScalingResultStore:
             records=record_values,
             checkpoint_sha256=expected_digest,
         )
+        self._snapshot = checkpoint
+        self._checkpoint_file_sha256 = hashlib.sha256(raw).hexdigest()
+        return self._detached_checkpoint(checkpoint)
 
     def _write(
         self,
         datasets: Sequence[Mapping[str, object]],
         records: Sequence[Mapping[str, object]],
     ) -> ScalingCheckpoint:
+        self._require_checkpoint_unchanged()
         expected_cells = tuple(
             dict.fromkeys(entry.cells for entry in self.plan.entries)
         )
@@ -1318,11 +2214,31 @@ class ScalingResultStore:
             "records": [dict(value) for value in records],
         }
         body["checkpoint_sha256"] = canonical_sha256(body)
-        _atomic_replace(self.checkpoint_path, _canonical_bytes(body) + b"\n")
-        loaded = self.load()
-        if loaded is None:  # pragma: no cover - atomic write invariant
-            raise ScalingContractError("scaling checkpoint disappeared after writing")
-        return loaded
+        raw = _canonical_bytes(body) + b"\n"
+        _atomic_replace(self.checkpoint_path, raw)
+        isolated_datasets = tuple(
+            MappingProxyType(json.loads(_canonical_bytes(dict(value)).decode("utf-8")))
+            for value in datasets
+        )
+        isolated_records = tuple(
+            MappingProxyType(json.loads(_canonical_bytes(dict(value)).decode("utf-8")))
+            for value in records
+        )
+        checkpoint = ScalingCheckpoint(
+            schema_version=1,
+            plan_sha256=self.plan.plan_sha256,
+            input_hashes=MappingProxyType(dict(self.plan.input_hashes)),
+            planned_run_count=len(self.plan.entries),
+            status=status,
+            datasets=isolated_datasets,
+            records=isolated_records,
+            checkpoint_sha256=str(body["checkpoint_sha256"]),
+        )
+        self._snapshot = checkpoint
+        self._checkpoint_file_sha256 = hashlib.sha256(raw).hexdigest()
+        detached = self._detached_checkpoint(checkpoint)
+        assert detached is not None
+        return detached
 
     def append_dataset(self, receipt: Mapping[str, object]) -> ScalingCheckpoint:
         report = self.load()
@@ -1334,10 +2250,108 @@ class ScalingResultStore:
         if len(datasets) >= len(expected_cells):
             raise ScalingContractError("all scaling dataset receipts already exist")
         validated = self._validate_dataset_receipt(
-            dict(receipt), expected_cells[len(datasets)]
+            dict(receipt),
+            expected_cells[len(datasets)],
+            verify_generator=False,
         )
         datasets.append(validated)
         return self._write(datasets, records)
+
+    def _runs_directory(self) -> Path:
+        return _ensure_directory(self.output_dir, Path("runs"), "scaling runs root")
+
+    @staticmethod
+    def _remove_closed_run_directory(path: Path) -> None:
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            raise ScalingContractError(
+                "orphan scaling run directory cannot be inspected"
+            ) from error
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise ScalingContractError("orphan scaling run path is invalid")
+        allowed = {
+            "run.stdout",
+            "run.stderr",
+            "run.executor-receipt.json",
+            "run.native-f64.zlib",
+            "run.log2-cp10k-f64.zlib",
+        }
+        entries = tuple(path.iterdir())
+        if any(
+            child.name not in allowed
+            or stat.S_ISLNK(child.lstat().st_mode)
+            or not stat.S_ISREG(child.lstat().st_mode)
+            or child.lstat().st_nlink != 1
+            for child in entries
+        ):
+            raise ScalingContractError("orphan scaling run directory is not closed")
+        shutil.rmtree(path)
+
+    def _prepare_run_transaction(self, entry: ScalingPlanEntry) -> tuple[Path, Path]:
+        runs = self._runs_directory()
+        final = runs / entry.run_id
+        _reject_symlink_components(self.output_dir, final, "scaling run transaction")
+        if os.path.lexists(final):
+            self._remove_closed_run_directory(final)
+        prefix = f".{entry.run_id}."
+        for child in tuple(runs.iterdir()):
+            if child.name.startswith(prefix) and child.name.endswith(".tmp"):
+                self._remove_closed_run_directory(child)
+        try:
+            stage = Path(
+                tempfile.mkdtemp(prefix=prefix, suffix=".tmp", dir=runs)
+            )
+        except OSError as error:
+            raise ScalingContractError(
+                "scaling run transaction cannot be staged"
+            ) from error
+        _reject_symlink_components(self.output_dir, stage, "scaling run transaction")
+        return stage, final
+
+    @staticmethod
+    def _write_run_file(directory: Path, name: str, raw: bytes) -> None:
+        path = directory / name
+        try:
+            descriptor = os.open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+            )
+            try:
+                remaining = memoryview(raw)
+                while remaining:
+                    written = os.write(descriptor, remaining)
+                    remaining = remaining[written:]
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as error:
+            raise ScalingContractError(
+                f"scaling run artifact {name} cannot be staged"
+            ) from error
+
+    def _publish_run_transaction(self, stage: Path, final: Path) -> None:
+        try:
+            descriptor = os.open(stage, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            if os.path.lexists(final):
+                raise ScalingContractError("scaling run transaction already exists")
+            os.rename(stage, final)
+            parent = os.open(final.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
+        except ScalingContractError:
+            raise
+        except OSError as error:
+            raise ScalingContractError(
+                "scaling run transaction could not be published"
+            ) from error
 
     def append_attempt(
         self, entry: ScalingPlanEntry, record: Mapping[str, object]
@@ -1354,11 +2368,17 @@ class ScalingResultStore:
             raise ScalingContractError(
                 "scaling attempts must follow the exact plan prefix"
             )
+        self._require_checkpoint_unchanged()
         if not isinstance(record, Mapping):
             raise TypeError("record must be a mapping")
         value = dict(record)
         stdout = value.pop("stdout", None)
         stderr = value.pop("stderr", None)
+        native_output = value.pop("native_output", None)
+        evaluator_output = value.pop("evaluator_output", None)
+        executor_receipt_raw = value.pop("executor_receipt", None)
+        if set(value) != {"run", "metrics"}:
+            raise ScalingContractError("scaling attempt fields are not closed")
         if type(stdout) is not bytes or type(stderr) is not bytes:
             raise ScalingContractError("scaling logs must be exact bytes")
         if len(stdout) > _MAX_LOG_BYTES or len(stderr) > _MAX_LOG_BYTES:
@@ -1371,20 +2391,156 @@ class ScalingResultStore:
             or run.get("stderr_sha256") != hashlib.sha256(stderr).hexdigest()
         ):
             raise ScalingContractError("scaling log content hash mismatch")
+        if type(executor_receipt_raw) is not bytes:
+            raise ScalingContractError("scaling executor receipt must be exact bytes")
+        executor_receipt = _parse_executor_receipt(executor_receipt_raw)
+        native_storage: dict[str, object] = {
+            "native_output_path": None,
+            "native_output_file_sha256": None,
+            "native_output_shape": None,
+            "native_output_dtype": None,
+            "native_output_scale": None,
+            "native_output_encoding": None,
+            "native_output_compressed_nbytes": None,
+            "native_output_uncompressed_nbytes": None,
+            "native_output_uncompressed_sha256": None,
+        }
+        compressed_native: bytes | None = None
+        if native_output is not None:
+            try:
+                native = np.asarray(native_output, dtype="<f8", order="C")
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ScalingContractError("scaling native output is invalid") from error
+            expected_attempt_shape = (
+                run.get("retained_cell_count"),
+                run.get("retained_gene_count"),
+            )
+            if (
+                executor_receipt.get("status") != "completed"
+                or not all(type(item) is int and item > 0 for item in expected_attempt_shape)
+                or native.shape != expected_attempt_shape
+                or not np.isfinite(native).all()
+                or bool((native < 0).any())
+            ):
+                raise ScalingContractError("scaling native output is invalid")
+            raw_native = native.tobytes(order="C")
+            if len(raw_native) > _MAX_NATIVE_OUTPUT_BYTES:
+                raise ScalingContractError("scaling native output exceeds its bound")
+            compressed_native = zlib.compress(
+                raw_native, level=_EVALUATOR_OUTPUT_COMPRESSION_LEVEL
+            )
+            native_storage.update(
+                {
+                    "native_output_shape": list(native.shape),
+                    "native_output_dtype": "<f8",
+                    "native_output_scale": entry.native_output_scale,
+                    "native_output_encoding": _NATIVE_OUTPUT_ENCODING,
+                    "native_output_compressed_nbytes": len(compressed_native),
+                    "native_output_uncompressed_nbytes": len(raw_native),
+                    "native_output_uncompressed_sha256": hashlib.sha256(
+                        raw_native
+                    ).hexdigest(),
+                }
+            )
+        elif run.get("native_output_sha256") is not None:
+            raise ScalingContractError(
+                "scaling native output bytes are missing from the attempt"
+            )
+        evaluator_storage: dict[str, object] = {
+            "evaluator_output_path": None,
+            "evaluator_output_file_sha256": None,
+            "evaluator_output_shape": None,
+            "evaluator_output_dtype": None,
+            "evaluator_output_scale": None,
+            "evaluator_output_encoding": None,
+            "evaluator_output_compressed_nbytes": None,
+            "evaluator_output_uncompressed_nbytes": None,
+            "evaluator_output_uncompressed_sha256": None,
+        }
+        compressed_evaluator: bytes | None = None
+        if evaluator_output is not None:
+            try:
+                evaluator = np.asarray(evaluator_output, dtype="<f8", order="C")
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ScalingContractError(
+                    "scaling evaluator output is invalid"
+                ) from error
+            expected_shape = (
+                run.get("retained_cell_count"),
+                run.get("retained_gene_count"),
+            )
+            if (
+                run.get("status") != "completed"
+                or not all(type(item) is int and item > 0 for item in expected_shape)
+                or evaluator.shape != expected_shape
+                or not np.isfinite(evaluator).all()
+                or bool((evaluator < 0).any())
+            ):
+                raise ScalingContractError("scaling evaluator output is invalid")
+            raw_evaluator = evaluator.tobytes(order="C")
+            if len(raw_evaluator) > _MAX_EVALUATOR_OUTPUT_BYTES:
+                raise ScalingContractError("scaling evaluator output exceeds its bound")
+            compressed_evaluator = zlib.compress(
+                raw_evaluator, level=_EVALUATOR_OUTPUT_COMPRESSION_LEVEL
+            )
+            evaluator_storage.update(
+                {
+                    "evaluator_output_shape": list(evaluator.shape),
+                    "evaluator_output_dtype": "<f8",
+                    "evaluator_output_scale": _EVALUATOR_OUTPUT_SCALE,
+                    "evaluator_output_encoding": _EVALUATOR_OUTPUT_ENCODING,
+                    "evaluator_output_compressed_nbytes": len(compressed_evaluator),
+                    "evaluator_output_uncompressed_nbytes": len(raw_evaluator),
+                    "evaluator_output_uncompressed_sha256": hashlib.sha256(
+                        raw_evaluator
+                    ).hexdigest(),
+                }
+            )
+        elif run.get("evaluator_output_sha256") is not None:
+            raise ScalingContractError(
+                "scaling evaluator output bytes are missing from the attempt"
+            )
         base = f"runs/{entry.run_id}"
-        stdout_relative = f"{base}.stdout"
-        stderr_relative = f"{base}.stderr"
-        stdout_digest = _publish_immutable(self.output_dir / stdout_relative, stdout)
-        stderr_digest = _publish_immutable(self.output_dir / stderr_relative, stderr)
+        stdout_relative = f"{base}/run.stdout"
+        stderr_relative = f"{base}/run.stderr"
+        executor_relative = f"{base}/run.executor-receipt.json"
+        if compressed_native is not None:
+            native_relative = f"{base}/run.native-f64.zlib"
+            native_storage.update(
+                {
+                    "native_output_path": native_relative,
+                    "native_output_file_sha256": hashlib.sha256(
+                        compressed_native
+                    ).hexdigest(),
+                }
+            )
+        if compressed_evaluator is not None:
+            evaluator_relative = f"{base}/run.log2-cp10k-f64.zlib"
+            evaluator_storage.update(
+                {
+                    "evaluator_output_path": evaluator_relative,
+                    "evaluator_output_file_sha256": hashlib.sha256(
+                        compressed_evaluator
+                    ).hexdigest(),
+                }
+            )
         stored_run = dict(run)
         stored_run.update(
             {
                 "stdout_path": stdout_relative,
-                "stdout_file_sha256": stdout_digest,
+                "stdout_file_sha256": hashlib.sha256(stdout).hexdigest(),
                 "stdout_size_bytes": len(stdout),
                 "stderr_path": stderr_relative,
-                "stderr_file_sha256": stderr_digest,
+                "stderr_file_sha256": hashlib.sha256(stderr).hexdigest(),
                 "stderr_size_bytes": len(stderr),
+                "executor_receipt_path": executor_relative,
+                "executor_receipt_file_sha256": hashlib.sha256(
+                    executor_receipt_raw
+                ).hexdigest(),
+                "executor_receipt_size_bytes": len(executor_receipt_raw),
+                "executor_receipt_sha256": executor_receipt["receipt_sha256"],
+                **native_storage,
+                **evaluator_storage,
             }
         )
         unsigned = {"run": stored_run, "metrics": value.get("metrics")}
@@ -1397,9 +2553,33 @@ class ScalingResultStore:
             raise ScalingContractError(
                 "scaling attempt lacks its dataset receipt"
             )
-        self._validate_record(stored, entry, receipt)
-        records.append(stored)
-        return self._write(datasets, records)
+        stage, final = self._prepare_run_transaction(entry)
+        published = False
+        try:
+            self._write_run_file(stage, "run.stdout", stdout)
+            self._write_run_file(stage, "run.stderr", stderr)
+            self._write_run_file(
+                stage, "run.executor-receipt.json", executor_receipt_raw
+            )
+            if compressed_native is not None:
+                self._write_run_file(stage, "run.native-f64.zlib", compressed_native)
+            if compressed_evaluator is not None:
+                self._write_run_file(
+                    stage, "run.log2-cp10k-f64.zlib", compressed_evaluator
+                )
+            self._validate_record(
+                stored,
+                entry,
+                receipt,
+                artifact_directory=stage,
+            )
+            self._publish_run_transaction(stage, final)
+            published = True
+            records.append(stored)
+            return self._write(datasets, records)
+        finally:
+            if not published and stage.exists():
+                shutil.rmtree(stage)
 
 
 def _dataset_receipt_from_artifacts(
@@ -1507,6 +2687,12 @@ def _load_scaling_dataset(
     receipt: Mapping[str, object],
     authority: RunnerAuthority,
 ) -> PreparedDataset:
+    cached = store._prepared_datasets.get(int(receipt["cells"]))
+    if cached is not None and cached[:2] == (
+        receipt["receipt_sha256"],
+        receipt["moderate_output_file_sha256"],
+    ):
+        return cached[2]
     import anndata as ad
 
     path = store._artifact_path(
@@ -1821,17 +3007,41 @@ def _bounded_scaling_metric_values(
     return result
 
 
+def _scaling_metric_rows(
+    entry: ScalingPlanEntry,
+    run_entry: RunPlanEntry,
+    values: Mapping[str, tuple[float | None, int, str | None]],
+) -> tuple[LongFormMetric, ...]:
+    return tuple(
+        LongFormMetric(
+            mechanism=run_entry.mechanism,
+            biological_id=run_entry.biological_id,
+            technical_view=run_entry.technical_view,
+            dataset_id=run_entry.dataset_id,
+            method=entry.method_id,
+            model_seed=entry.model_seed,
+            configuration_id=entry.configuration_id,
+            configuration_sha256=entry.configuration_sha256,
+            metric=name,
+            value=value,
+            n=n,
+            status="completed" if value is not None else "unavailable",
+            reason=metric_reason,
+        )
+        for name, (value, n, metric_reason) in values.items()
+    )
+
+
 def _evaluate_scaling_outcome(
     entry: ScalingPlanEntry,
     run_entry: RunPlanEntry,
     prepared: PreparedDataset,
     outcome: AdapterOutcome,
 ) -> ScalingEvaluatedAttempt:
-    """Evaluate without any cell-by-cell matrix, then discard both dense outputs."""
+    """Evaluate with bounded metrics and retain both matrices for replay."""
 
     from .runner import (
         DatasetQCPolicy,
-        LongFormMetric,
         RawRunResult,
         _default_output_converter,
         _evaluator_conversion_failure_reason,
@@ -1841,10 +3051,14 @@ def _evaluate_scaling_outcome(
     )
     from .methods import AdapterUnavailableError
 
+    executor_receipt = _executor_receipt_bytes(
+        entry, run_entry, prepared, outcome
+    )
     status = outcome.status
     reason = outcome.reason
     native_output_sha256: str | None = None
     evaluator_output_sha256: str | None = None
+    evaluator_output: np.ndarray | None = None
     values: dict[str, tuple[float | None, int, str | None]]
     if outcome.status == "completed":
         assert outcome.execution is not None
@@ -1873,34 +3087,18 @@ def _evaluate_scaling_outcome(
             evaluator_output_sha256 = _evaluator_output_sha256(
                 run_entry, prepared, evaluator_output
             )
-            del evaluator_output, observed, truth
+            del observed, truth
         except ScalingContractError:
             raise
         except (AdapterUnavailableError, TypeError, ValueError, OverflowError) as error:
             status = "unavailable"
             reason = _evaluator_conversion_failure_reason(error)
+            evaluator_output = None
             values = {name: (None, 0, reason) for name in _SCALING_ACCURACY_METRICS}
     else:
         assert reason is not None
         values = {name: (None, 0, reason) for name in _SCALING_ACCURACY_METRICS}
-    metrics = tuple(
-        LongFormMetric(
-            mechanism=run_entry.mechanism,
-            biological_id=run_entry.biological_id,
-            technical_view=run_entry.technical_view,
-            dataset_id=run_entry.dataset_id,
-            method=entry.method_id,
-            model_seed=entry.model_seed,
-            configuration_id=entry.configuration_id,
-            configuration_sha256=entry.configuration_sha256,
-            metric=name,
-            value=value,
-            n=n,
-            status="completed" if value is not None else "unavailable",
-            reason=metric_reason,
-        )
-        for name, (value, n, metric_reason) in values.items()
-    )
+    metrics = _scaling_metric_rows(entry, run_entry, values)
     calibration = outcome.calibration_fold_receipt
     run = RawRunResult(
         run_id=entry.run_id,
@@ -1959,13 +3157,18 @@ def _evaluate_scaling_outcome(
         metrics=metrics,
         stdout=outcome.stdout,
         stderr=outcome.stderr,
-        native_output=None,
+        native_output=(
+            None
+            if outcome.execution is None
+            else outcome.execution.snapshot.matrix
+        ),
         native_output_scale=(
             None
             if outcome.execution is None
             else outcome.execution.snapshot.output_scale
         ),
-        evaluator_output=None,
+        evaluator_output=evaluator_output,
+        executor_receipt=executor_receipt,
     )
 
 
@@ -1982,7 +3185,9 @@ def execute_scaling_plan(
         raise TypeError("authority must be a ScalingExecutionAuthority")
     if not isinstance(output_dir, Path):
         raise TypeError("output_dir must be a pathlib.Path")
-    store = ScalingResultStore(output_dir, authority.plan)
+    store = ScalingResultStore(
+        output_dir, authority.plan, simulator=simulator
+    )
     report = store.load()
     configuration_by_method = {
         value.method_id: value for value in authority.plan.configurations
@@ -2002,7 +3207,6 @@ def execute_scaling_plan(
     )
     try:
         for size_index, cells in enumerate(expected_cells):
-            report = store.load()
             assert report is not None or size_index == 0
             records_count = 0 if report is None else len(report.records)
             size_entries = tuple(
@@ -2031,9 +3235,8 @@ def execute_scaling_plan(
             prepared = _load_scaling_dataset(store, receipt, authority.runner_authority)
             binding = prepared.binding
             for entry in size_entries:
-                current = store.load()
-                assert current is not None
-                if len(current.records) >= entry.ordinal:
+                assert report is not None
+                if len(report.records) >= entry.ordinal:
                     continue
                 spec = authority.registry.by_id(entry.method_id)
                 configuration = configuration_by_method[entry.method_id]
@@ -2067,7 +3270,7 @@ def execute_scaling_plan(
                 report = store.append_attempt(entry, record)
                 del attempt, record, outcome
             del prepared
-        final = store.load()
+        final = store.load(force_validate=True)
         if final is None or final.status != "completed":
             raise ScalingContractError(
                 "scaling execution did not complete its denominator"

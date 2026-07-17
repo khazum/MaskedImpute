@@ -45,7 +45,8 @@
     "master_seed": 902731828901227361
   },
   "artifact_policy": {
-    "evaluator_output_retention": "metrics_only_after_hashing",
+    "evaluator_output_retention": "bounded_zlib_raw_f64_v1_with_metric_replay",
+    "native_method_output_retention": "bounded_zlib_raw_f64_v1_with_conversion_replay",
     "generated_dataset_retention": "moderate_h5ad",
     "paired_control_retention": "discard_after_semantic_and_file_hashing",
     "native_simulator_output_retention": "discard_after_manifest_hashing"

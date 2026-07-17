@@ -185,6 +185,14 @@ def test_scaling_plan_closes_full_method_by_size_denominator() -> None:
     assert plan.entries[0].model_seed is None
     assert all(entry.model_seed == 42 for entry in plan.entries[1:5])
     assert all(entry.accuracy_enabled for entry in plan.entries)
+    assert plan.entries[0].native_output_scale == "raw_counts"
+    assert plan.entries[0].timeout_seconds == 21_600
+    assert plan.entries[0].max_rss_bytes == 48 * 1024**3
+    assert plan.entries[0].max_gpu_bytes == 0
+    assert plan.entries[0].rss_measurement == "linux_proc_process_tree_rss"
+    assert plan.entries[0].gpu_measurement == "not_applicable_cpu_only_method"
+    assert plan.entries[1].max_gpu_bytes == 14 * 1024**3
+    assert plan.entries[1].gpu_measurement == "nvidia_smi_process_tree_used_memory"
     assert len({entry.run_id for entry in plan.entries}) == len(plan.entries)
 
 
@@ -221,7 +229,7 @@ def test_scaling_plan_rejects_registry_default_for_candidate() -> None:
         )
 
 
-def test_scaling_record_keeps_metrics_and_hashes_but_not_dense_outputs() -> None:
+def test_scaling_record_keeps_native_and_evaluator_outputs_until_storage() -> None:
     import numpy as np
 
     from maskimpute_benchmark.runner import (
@@ -260,7 +268,7 @@ def test_scaling_record_keeps_metrics_and_hashes_but_not_dense_outputs() -> None
         runtime_seconds=1.25,
         peak_rss_bytes=1024,
         peak_gpu_bytes=0,
-        rss_measurement="linux_process_tree_peak_rss",
+        rss_measurement="linux_proc_process_tree_rss",
         gpu_measurement="not_applicable_cpu_only_method",
         calibration_artifact_sha256=None,
         calibration_context_sha256=None,
@@ -299,38 +307,33 @@ def test_scaling_record_keeps_metrics_and_hashes_but_not_dense_outputs() -> None
 
     record = scaling_attempt_record(attempt, cells=10_000, accuracy_enabled=True)
 
-    assert record["run"]["native_output_retention"] == "hash_only"
-    assert record["run"]["evaluator_output_retention"] == "hash_only"
-    assert "native_output" not in record
-    assert "evaluator_output" not in record
+    assert record["run"]["native_output_retention"] == "compressed_zlib_raw_f64_v1"
+    assert record["run"]["evaluator_output_retention"] == "compressed_zlib_raw_f64_v1"
+    np.testing.assert_array_equal(record["native_output"], np.ones((2, 2)))
+    np.testing.assert_array_equal(record["evaluator_output"], np.ones((2, 2)))
+    assert isinstance(record["executor_receipt"], bytes)
     assert "p_pre_zero_evidence" not in record
     assert record["metrics"] == [metric.to_dict()]
     assert record["stdout"] == b"out"
     assert record["stderr"] == b"err"
 
 
-def _dataset_receipt(output_dir: Path, cells: int = 10_000) -> dict[str, object]:
+def _fixture_scaling_simulator(requests, protocol):
     import anndata as ad
     import numpy as np
     import pandas as pd
     from scipy import sparse
 
-    from maskimpute_benchmark.datasets import _truth_sha256
-    from maskimpute_benchmark.protocol import canonical_sha256, load_protocol
-    from maskimpute_benchmark.scaling import (
-        _expected_scaling_dataset_authority,
-        load_scaling_contract,
-    )
+    from maskimpute_benchmark.protocol import canonical_sha256
     from maskimpute_benchmark.schema import benchmark_dataset_sha256
+    from maskimpute_benchmark.simulators import SimulationArtifact
+    from maskimpute_benchmark.simulators.base import simulation_scientific_identity
+    from maskimpute_benchmark.simulators.native import seal_native_outputs
 
-    contract = load_scaling_contract(REPOSITORY / "study/scaling_panel.json")
-    protocol = load_protocol(REPOSITORY / "study/protocol.json")
-    expected = _expected_scaling_dataset_authority(
-        contract, protocol, output_dir, cells
-    )
-    relative = str(expected["moderate_output_path"])
-    path = output_dir / relative
-    path.parent.mkdir(parents=True, exist_ok=True)
+    values = tuple(requests)
+    assert tuple(value.technical_view for value in values) == ("moderate", "severe")
+    assert all(value.cells == protocol.development.cells for value in values)
+    cells = values[0].cells
     rows = np.arange(cells, dtype=np.int32)
     observed = sparse.csr_matrix(
         (np.ones(cells, dtype=np.int64), (rows, rows % 500)),
@@ -345,62 +348,118 @@ def _dataset_receipt(output_dir: Path, cells: int = 10_000) -> dict[str, object]
         ),
         shape=(cells, 500),
     )
-    obs = pd.DataFrame(
-        {
-            "dataset_id": [expected["dataset_id"]] * cells,
-            "mechanism": ["symsim"] * cells,
-            "condition": ["moderate"] * cells,
-            "biological_id": ["draw-01"] * cells,
-            "technical_view": ["moderate"] * cells,
-            "draw": np.ones(cells, dtype=np.int64),
-            "library_size": np.ones(cells, dtype=np.int64),
-            "group": np.where(rows % 2 == 0, "group-a", "group-b"),
-        },
-        index=[f"cell-{index:05d}" for index in range(cells)],
-    )
     var = pd.DataFrame(index=[f"gene-{index:04d}" for index in range(500)])
-    dataset = ad.AnnData(X=observed, obs=obs, var=var)
-    dataset.layers["pre_capture_counts"] = truth
-    dataset.uns["truth_kind"] = "exact_pre_capture"
-    dataset.uns["primary_truth_layer"] = "pre_capture_counts"
-    dataset.uns["provenance"] = {
-        "source": "https://example.invalid/symsim-scaling-fixture",
-        "source_sha256": "9" * 64,
-        "software": "SymSim",
-        "software_version": "fixture-1",
-        "parameters": {"cells": cells, "genes": 500},
-        "seeds": dict(expected["seeds"]),
-    }
-    dataset.uns["normalization"] = {
-        "input": "raw_umi_counts",
-        "size_factor": "none",
-    }
-    dataset.uns["allowed_covariates"] = {"obs": [], "var": []}
-    dataset.write_h5ad(path)
-    unsigned: dict[str, object] = {
-        "schema_version": 1,
-        **expected,
-        "dataset_sha256": benchmark_dataset_sha256(dataset),
-        "truth_sha256": _truth_sha256(dataset),
-        "moderate_output_file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "moderate_output_size_bytes": path.stat().st_size,
-        "severe_dataset_sha256": SHA_C,
-        "severe_output_file_sha256": SHA_D,
-        "severe_output_size_bytes": 123,
-        "moderate_native_manifest_sha256": "e" * 64,
-        "severe_native_manifest_sha256": "f" * 64,
-        "native_files_sha256": "1" * 64,
-    }
-    return {**unsigned, "receipt_sha256": canonical_sha256(unsigned)}
+    native_parent = values[0].output_path.parent / "native" / "fixture"
+    native_parent.mkdir(parents=True, exist_ok=True)
+    native_file = native_parent / "native.txt"
+    native_file.write_bytes(b"deterministic-symsim-fixture\n")
+    artifacts = []
+    for request in values:
+        manifest = seal_native_outputs(
+            {"native.txt": native_file},
+            {
+                "adapter": "deterministic-symsim-test-fixture-v1",
+                "simulation_request": simulation_scientific_identity(request),
+            },
+        )
+        obs = pd.DataFrame(
+            {
+                "dataset_id": [request.dataset_id] * cells,
+                "mechanism": ["symsim"] * cells,
+                "condition": [request.technical_view] * cells,
+                "biological_id": ["draw-01"] * cells,
+                "technical_view": [request.technical_view] * cells,
+                "draw": np.ones(cells, dtype=np.int64),
+                "library_size": np.ones(cells, dtype=np.int64),
+                "group": np.where(rows % 2 == 0, "group-a", "group-b"),
+            },
+            index=[f"cell-{index:06d}" for index in range(cells)],
+        )
+        dataset = ad.AnnData(X=observed.copy(), obs=obs, var=var.copy())
+        dataset.layers["pre_capture_counts"] = truth.copy()
+        dataset.uns["truth_kind"] = "exact_pre_capture"
+        dataset.uns["primary_truth_layer"] = "pre_capture_counts"
+        dataset.uns["provenance"] = {
+            "source": "https://example.invalid/deterministic-symsim-fixture",
+            "source_sha256": canonical_sha256(
+                {"fixture": "deterministic-symsim-test-fixture-v1"}
+            ),
+            "software": "SymSim",
+            "software_version": "fixture-1",
+            "parameters": {
+                "adapter": "deterministic-symsim-test-fixture-v1",
+                "native_manifest_sha256": manifest.manifest_sha256,
+            },
+            "seeds": {
+                "biological": request.biological_seed,
+                "measurement": request.measurement_seed,
+            },
+        }
+        dataset.uns["normalization"] = {
+            "input": "raw_umi_counts",
+            "size_factor": "none",
+        }
+        dataset.uns["allowed_covariates"] = {"obs": [], "var": []}
+        request.output_path.parent.mkdir(parents=True, exist_ok=True)
+        dataset.write_h5ad(request.output_path)
+        persisted = ad.read_h5ad(request.output_path)
+        artifacts.append(
+            SimulationArtifact(
+                request,
+                persisted,
+                manifest,
+                benchmark_dataset_sha256(persisted),
+            )
+        )
+    return tuple(artifacts)
 
 
-def _first_attempt(plan, output_dir: Path, receipt):
+@pytest.fixture(autouse=True)
+def _use_deterministic_scaling_generator(monkeypatch: pytest.MonkeyPatch) -> None:
+    import maskimpute_benchmark.scaling as module
+
+    monkeypatch.setattr(module, "run_symsim_pair", _fixture_scaling_simulator)
+
+
+def _dataset_receipt(output_dir: Path, cells: int = 10_000) -> dict[str, object]:
+    from maskimpute_benchmark.protocol import load_protocol
+    from maskimpute_benchmark.scaling import (
+        _dataset_receipt_from_artifacts,
+        load_scaling_contract,
+        scaling_protocol,
+        scaling_requests,
+    )
+
+    contract = load_scaling_contract(REPOSITORY / "study/scaling_panel.json")
+    base = load_protocol(REPOSITORY / "study/protocol.json")
+    protocol = scaling_protocol(base, contract, cells)
+    requests = scaling_requests(contract, protocol, output_dir / "generated")
+    receipt, _dataset = _dataset_receipt_from_artifacts(
+        contract,
+        protocol,
+        output_dir,
+        _fixture_scaling_simulator(requests, protocol),
+    )
+    return receipt
+
+
+def _first_attempt(
+    plan,
+    output_dir: Path,
+    receipt,
+    *,
+    entry_index: int = 0,
+    stdout: bytes = b"out",
+    stderr: bytes = b"err",
+):
     import anndata as ad
+    import numpy as np
 
     from maskimpute_benchmark.runner import (
         DatasetQCPolicy,
         LongFormMetric,
         RawRunResult,
+        _evaluator_output_sha256,
         _evaluator_targets,
         method_input_sha256,
         prepare_dataset_for_execution,
@@ -409,9 +468,11 @@ def _first_attempt(plan, output_dir: Path, receipt):
         ScalingEvaluatedAttempt,
         _bounded_scaling_metric_values,
         _dataset_binding,
+        _run_plan_entry,
     )
+    from maskimpute_benchmark.methods import _output_digest
 
-    entry = plan.entries[0]
+    entry = plan.entries[entry_index]
     dataset = ad.read_h5ad(output_dir / receipt["moderate_output_path"])
     prepared = prepare_dataset_for_execution(
         dataset, _dataset_binding(receipt), DatasetQCPolicy.fixed()
@@ -419,7 +480,27 @@ def _first_attempt(plan, output_dir: Path, receipt):
     observed, truth, truth_kind, _marker = _evaluator_targets(prepared)
     assert truth_kind == "exact_pre_capture"
     assert truth is not None
-    metric_values = _bounded_scaling_metric_values(truth, observed, truth)
+    evaluator_output = np.asarray(observed, dtype=np.float64)
+    native_output = np.asarray(prepared.method_input.counts, dtype=np.float64)
+    registry, _unused_configurations = _configurations()
+    native_output_scale = registry.by_id(entry.method_id).output_scale
+    native_output_sha256 = _output_digest(
+        method_id=entry.method_id,
+        source_dataset_sha256=prepared.binding.dataset_sha256,
+        output_scale=native_output_scale,
+        obs_ids=prepared.audit.retained_cell_ids,
+        var_ids=prepared.method_input.var_ids,
+        shape=prepared.method_input.shape,
+        matrix_bytes=np.asarray(native_output, dtype="<f8", order="C").tobytes(
+            order="C"
+        ),
+    )
+    metric_values = _bounded_scaling_metric_values(
+        evaluator_output, observed, truth
+    )
+    evaluator_output_sha256 = _evaluator_output_sha256(
+        _run_plan_entry(entry, prepared.binding), prepared, evaluator_output
+    )
     run = RawRunResult(
         run_id=entry.run_id,
         method_id=entry.method_id,
@@ -447,17 +528,17 @@ def _first_attempt(plan, output_dir: Path, receipt):
         runtime_seconds=1.25,
         peak_rss_bytes=1024,
         peak_gpu_bytes=0,
-        rss_measurement="linux_process_tree_peak_rss",
-        gpu_measurement="not_applicable_cpu_only_method",
+        rss_measurement="linux_proc_process_tree_rss",
+        gpu_measurement=entry.gpu_measurement,
         calibration_artifact_sha256=None,
         calibration_context_sha256=None,
         calibration_training_manifest_sha256s=(),
         calibration_held_out_manifest_sha256s=(),
         calibration_fold_calibrator_sha256=None,
-        stdout_sha256=hashlib.sha256(b"out").hexdigest(),
-        stderr_sha256=hashlib.sha256(b"err").hexdigest(),
-        native_output_sha256=SHA_A,
-        evaluator_output_sha256=SHA_B,
+        stdout_sha256=hashlib.sha256(stdout).hexdigest(),
+        stderr_sha256=hashlib.sha256(stderr).hexdigest(),
+        native_output_sha256=native_output_sha256,
+        evaluator_output_sha256=evaluator_output_sha256,
     )
     metrics = tuple(
         LongFormMetric(
@@ -480,15 +561,15 @@ def _first_attempt(plan, output_dir: Path, receipt):
     return ScalingEvaluatedAttempt(
         run=run,
         metrics=metrics,
-        stdout=b"out",
-        stderr=b"err",
-        native_output=None,
-        native_output_scale="raw_counts",
-        evaluator_output=None,
+        stdout=stdout,
+        stderr=stderr,
+        native_output=native_output,
+        native_output_scale=native_output_scale,
+        evaluator_output=evaluator_output,
     )
 
 
-def test_scaling_store_resumes_exact_prefix_without_dense_outputs(
+def test_scaling_store_resumes_exact_prefix_with_compressed_evaluator_output(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.scaling import (
@@ -510,10 +591,12 @@ def test_scaling_store_resumes_exact_prefix_without_dense_outputs(
     assert len(report.datasets) == 1
     assert len(report.records) == 1
     run = report.records[0]["run"]
-    assert run["native_output_retention"] == "hash_only"
-    assert run["evaluator_output_retention"] == "hash_only"
+    assert run["native_output_retention"] == "compressed_zlib_raw_f64_v1"
+    assert run["evaluator_output_retention"] == "compressed_zlib_raw_f64_v1"
     assert run["stdout_path"].endswith(".stdout")
-    assert "native_output_path" not in run
+    assert run["evaluator_output_path"].endswith(".log2-cp10k-f64.zlib")
+    assert run["native_output_path"].endswith(".native-f64.zlib")
+    assert run["executor_receipt_path"].endswith(".executor-receipt.json")
     assert store.load() == report
 
 
@@ -540,7 +623,7 @@ def test_scaling_store_rejects_log_tampering(tmp_path: Path) -> None:
     stdout.write_bytes(b"tampered")
 
     with pytest.raises(ScalingContractError, match="stdout integrity"):
-        store.load()
+        ScalingResultStore(tmp_path, plan).load()
 
 
 def _rewrite_scaling_checkpoint(path: Path, mutate) -> None:
@@ -564,7 +647,10 @@ def _rewrite_scaling_checkpoint(path: Path, mutate) -> None:
 
 def test_scaling_store_rejects_rehashed_seed_authority_drift(tmp_path: Path) -> None:
     from maskimpute_benchmark.protocol import canonical_sha256
-    from maskimpute_benchmark.scaling import ScalingContractError, ScalingResultStore
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+    )
 
     plan = _plan()
     store = ScalingResultStore(tmp_path, plan)
@@ -581,7 +667,7 @@ def test_scaling_store_rejects_rehashed_seed_authority_drift(tmp_path: Path) -> 
 
     _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
     with pytest.raises(ScalingContractError, match="seed|design|authority"):
-        store.load()
+        ScalingResultStore(tmp_path, plan).load()
 
 
 def test_scaling_store_rejects_rehashed_invalid_run_and_metric_semantics(
@@ -621,7 +707,453 @@ def test_scaling_store_rejects_rehashed_invalid_run_and_metric_semantics(
 
     _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
     with pytest.raises(ScalingContractError, match="status|runtime|resource|metric"):
-        store.load()
+        ScalingResultStore(tmp_path, plan).load()
+
+
+def test_scaling_store_rejects_coordinated_h5ad_and_receipt_rehash(
+    tmp_path: Path,
+) -> None:
+    import anndata as ad
+
+    from maskimpute_benchmark.datasets import _truth_sha256
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+    )
+    from maskimpute_benchmark.schema import benchmark_dataset_sha256
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    retained = tmp_path / str(receipt["moderate_output_path"])
+    changed = ad.read_h5ad(retained)
+    original_semantic_sha256 = benchmark_dataset_sha256(changed)
+    changed.obs.loc[changed.obs.index[0], "group"] = "group-b"
+    changed.write_h5ad(retained)
+    changed_semantic_sha256 = benchmark_dataset_sha256(changed)
+    assert changed_semantic_sha256 != original_semantic_sha256
+
+    def mutate(payload: dict[str, object]) -> None:
+        dataset_receipt = payload["datasets"][0]
+        dataset_receipt["dataset_sha256"] = changed_semantic_sha256
+        dataset_receipt["truth_sha256"] = _truth_sha256(changed)
+        dataset_receipt["moderate_output_file_sha256"] = hashlib.sha256(
+            retained.read_bytes()
+        ).hexdigest()
+        dataset_receipt["moderate_output_size_bytes"] = retained.stat().st_size
+        unsigned = {
+            key: value
+            for key, value in dataset_receipt.items()
+            if key != "receipt_sha256"
+        }
+        dataset_receipt["receipt_sha256"] = canonical_sha256(unsigned)
+
+    _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
+
+    with pytest.raises(ScalingContractError, match="generator|SymSim|authority"):
+        ScalingResultStore(tmp_path, plan).load()
+
+
+@pytest.mark.parametrize(
+    ("rewrite", "expected_error"),
+    [
+        ("finite_metric", "metric.*replay|metric.*output"),
+        ("runtime_below_ceiling", "executor|receipt|resource"),
+        ("runtime_over_ceiling", "executor|receipt|runtime|resource"),
+        ("rss_over_ceiling", "executor|receipt|resource|RSS"),
+        ("gpu_over_ceiling", "executor|receipt|resource|GPU"),
+        ("measurement_provenance", "executor|receipt|measurement|resource"),
+    ],
+)
+def test_scaling_store_rejects_coordinated_finite_result_rehash(
+    tmp_path: Path,
+    rewrite: str,
+    expected_error: str,
+) -> None:
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    store.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+
+    def mutate(payload: dict[str, object]) -> None:
+        record = payload["records"][0]
+        if rewrite == "finite_metric":
+            record["metrics"][0]["value"] = 12_345.0
+        elif rewrite == "runtime_below_ceiling":
+            record["run"]["runtime_seconds"] = 2.75
+            record["run"]["peak_rss_bytes"] = 2_048
+        elif rewrite == "runtime_over_ceiling":
+            record["run"]["runtime_seconds"] = 21_601.0
+        elif rewrite == "rss_over_ceiling":
+            record["run"]["peak_rss_bytes"] = 49 * 1024**3
+        elif rewrite == "gpu_over_ceiling":
+            record["run"]["peak_gpu_bytes"] = 1
+        else:
+            assert rewrite == "measurement_provenance"
+            record["run"]["rss_measurement"] = "forged_process_tree_telemetry"
+        unsigned = {
+            key: value for key, value in record.items() if key != "record_sha256"
+        }
+        record["record_sha256"] = canonical_sha256(unsigned)
+
+    _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
+
+    with pytest.raises(ScalingContractError, match=expected_error):
+        ScalingResultStore(tmp_path, plan).load()
+
+
+def test_scaling_store_rejects_rehashed_evaluator_replacement(
+    tmp_path: Path,
+) -> None:
+    import zlib
+
+    import numpy as np
+
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.runner import _evaluator_output_sha256, _evaluator_targets
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        _bounded_scaling_metric_values,
+        _run_plan_entry,
+        _scaling_metric_rows,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    store.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+    prepared = store._prepared_datasets[10_000][2]
+    _observed, truth, truth_kind, _marker = _evaluator_targets(prepared)
+    assert truth_kind == "exact_pre_capture"
+    assert truth is not None
+    replacement = np.asarray(truth, dtype="<f8", order="C")
+    entry = plan.entries[0]
+    run_entry = _run_plan_entry(entry, prepared.binding)
+    replacement_metrics = [
+        metric.to_dict()
+        for metric in _scaling_metric_rows(
+            entry,
+            run_entry,
+            _bounded_scaling_metric_values(replacement, _observed, truth),
+        )
+    ]
+    raw = replacement.tobytes(order="C")
+    compressed = zlib.compress(raw, level=6)
+
+    def mutate(payload: dict[str, object]) -> None:
+        record = payload["records"][0]
+        run = record["run"]
+        artifact = tmp_path / run["evaluator_output_path"]
+        artifact.write_bytes(compressed)
+        run["evaluator_output_file_sha256"] = hashlib.sha256(compressed).hexdigest()
+        run["evaluator_output_compressed_nbytes"] = len(compressed)
+        run["evaluator_output_uncompressed_sha256"] = hashlib.sha256(raw).hexdigest()
+        run["evaluator_output_sha256"] = _evaluator_output_sha256(
+            run_entry, prepared, replacement
+        )
+        record["metrics"] = replacement_metrics
+        unsigned = {
+            key: value for key, value in record.items() if key != "record_sha256"
+        }
+        record["record_sha256"] = canonical_sha256(unsigned)
+
+    _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
+
+    with pytest.raises(ScalingContractError, match="native|conversion|executor"):
+        ScalingResultStore(tmp_path, plan).load()
+
+
+def test_scaling_store_preserves_dual_resource_exceedance(tmp_path: Path) -> None:
+    from maskimpute_benchmark.runner import AdapterOutcome
+    from maskimpute_benchmark.scaling import (
+        ScalingResultStore,
+        _evaluate_scaling_outcome,
+        _run_plan_entry,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    store.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+    entry = plan.entries[1]
+    prepared = store._prepared_datasets[10_000][2]
+    outcome = AdapterOutcome.resource_exceeded(
+        "peak_rss_exceeded",
+        runtime_seconds=2.0,
+        peak_rss_bytes=entry.max_rss_bytes + 1,
+        peak_gpu_bytes=entry.max_gpu_bytes + 1,
+        rss_measurement=entry.rss_measurement,
+        gpu_measurement=entry.gpu_measurement,
+    )
+    attempt = _evaluate_scaling_outcome(
+        entry, _run_plan_entry(entry, prepared.binding), prepared, outcome
+    )
+
+    report = store.append_attempt(
+        entry,
+        scaling_attempt_record(attempt, cells=10_000, accuracy_enabled=True),
+    )
+
+    assert report.records[1]["run"]["status"] == "resource_exceeded"
+    assert report.records[1]["run"]["reason"] == "peak_rss_exceeded"
+
+
+def test_scaling_store_rejects_changed_checkpoint_before_cached_append(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    store.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+
+    def mutate(payload: dict[str, object]) -> None:
+        record = payload["records"][0]
+        record["run"]["runtime_seconds"] = 3.5
+        unsigned = {
+            key: value for key, value in record.items() if key != "record_sha256"
+        }
+        record["record_sha256"] = canonical_sha256(unsigned)
+
+    _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
+
+    with pytest.raises(ScalingContractError, match="checkpoint.*changed|stale"):
+        store.append_attempt(
+            plan.entries[1],
+            scaling_attempt_record(
+                _first_attempt(plan, tmp_path, receipt, entry_index=1),
+                cells=10_000,
+                accuracy_enabled=True,
+            ),
+        )
+
+
+def test_scaling_store_does_not_persist_mutated_returned_snapshot(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.scaling import (
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    report = store.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+    report.records[0]["run"]["runtime_seconds"] = 3.5
+
+    store.append_attempt(
+        plan.entries[1],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt, entry_index=1),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+    resumed = ScalingResultStore(tmp_path, plan).load()
+    assert resumed is not None
+    assert resumed.records[0]["run"]["runtime_seconds"] == 1.25
+
+
+def test_scaling_store_validation_failure_leaves_retryable_run_path(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    invalid = scaling_attempt_record(
+        _first_attempt(plan, tmp_path, receipt, stdout=b"invalid-attempt"),
+        cells=10_000,
+        accuracy_enabled=True,
+    )
+    invalid["metrics"][0]["value"] = float(invalid["metrics"][0]["value"]) + 1.0
+
+    with pytest.raises(ScalingContractError, match="metric.*replay|metric.*output"):
+        store.append_attempt(plan.entries[0], invalid)
+    assert not (tmp_path / "runs" / plan.entries[0].run_id).exists()
+
+    report = store.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+    assert len(report.records) == 1
+
+
+def test_scaling_store_recovers_complete_orphan_run_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.scaling import ScalingResultStore, scaling_attempt_record
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    original_write = store._write
+
+    def interrupted_write(*_args, **_kwargs):
+        raise OSError("simulated checkpoint interruption")
+
+    monkeypatch.setattr(store, "_write", interrupted_write)
+    with pytest.raises(OSError, match="interruption"):
+        store.append_attempt(
+            plan.entries[0],
+            scaling_attempt_record(
+                _first_attempt(plan, tmp_path, receipt, stdout=b"first execution"),
+                cells=10_000,
+                accuracy_enabled=True,
+            ),
+        )
+    monkeypatch.setattr(store, "_write", original_write)
+
+    resumed = ScalingResultStore(tmp_path, plan)
+    report = resumed.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt, stdout=b"retried execution"),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+    assert len(report.records) == 1
+
+
+def test_scaling_store_rejects_symlinked_run_component_before_write(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (tmp_path / "runs").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ScalingContractError, match="symlink|canonical"):
+        store.append_attempt(
+            plan.entries[0],
+            scaling_attempt_record(
+                _first_attempt(plan, tmp_path, receipt),
+                cells=10_000,
+                accuracy_enabled=True,
+            ),
+        )
+    assert list(outside.iterdir()) == []
+
+
+def test_scaling_store_hashes_each_retained_h5ad_once_per_fresh_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.scaling as module
+
+    plan = _plan()
+    store = module.ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    attempt = _first_attempt(plan, tmp_path, receipt)
+    retained = (tmp_path / str(receipt["moderate_output_path"])).resolve()
+    original = module._file_sha256
+    retained_hash_passes = 0
+
+    def counted(path: Path) -> str:
+        nonlocal retained_hash_passes
+        if path.resolve() == retained:
+            retained_hash_passes += 1
+        return original(path)
+
+    monkeypatch.setattr(module, "_file_sha256", counted)
+    store.append_dataset(receipt)
+    store.append_attempt(
+        plan.entries[0],
+        module.scaling_attempt_record(
+            attempt,
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+    store.load()
+    store.load()
+    assert retained_hash_passes == 1
+
+    resumed = module.ScalingResultStore(tmp_path, plan)
+    resumed.load()
+    resumed.load()
+    assert retained_hash_passes == 2
 
 
 def test_scaling_accuracy_matches_canonical_metrics_without_cell_quadratic_work(
