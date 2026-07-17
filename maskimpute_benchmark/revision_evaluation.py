@@ -180,7 +180,9 @@ def combine_selection_rows(
     record_identities = {_record_identity(value) for value in combined_records}
     interval_identities = {_interval_identity(value) for value in combined_intervals}
     if len(record_identities) != len(combined_records):
-        raise RevisionEvaluationError("base selection records contain duplicate identity")
+        raise RevisionEvaluationError(
+            "base selection records contain duplicate identity"
+        )
     if len(interval_identities) != len(combined_intervals):
         raise RevisionEvaluationError("base intervals contain duplicate identity")
     observed_versions: list[str] = []
@@ -225,9 +227,7 @@ def _validate_stage_runner_authority(spec: RevisionSpec, authority: object) -> N
     if type(authority) is not RunnerAuthority:
         raise TypeError("authority must be an exact RunnerAuthority")
     candidates = tuple(
-        value
-        for value in authority.configurations
-        if value.method_id == "maskimpute"
+        value for value in authority.configurations if value.method_id == "maskimpute"
     )
     if len(candidates) != 1:
         raise RevisionEvaluationError(
@@ -295,9 +295,7 @@ def _reconstruction_dict(
     )
     raw_artifacts = []
     for binding in stage.reconstruction.raw_artifacts:
-        relative = str(
-            PurePosixPath(paths.reconstruction_directory) / binding.path
-        )
+        relative = str(PurePosixPath(paths.reconstruction_directory) / binding.path)
         _verify_bound_repository_file(
             repository,
             relative,
@@ -335,7 +333,9 @@ def _orthogonal_dict(
         output_path = record.get("output_path")
         output_sha = record.get("output_file_sha256")
         if not isinstance(output_path, str) or not isinstance(output_sha, str):
-            raise RevisionEvaluationError("revision orthogonal output binding is partial")
+            raise RevisionEvaluationError(
+                "revision orthogonal output binding is partial"
+            )
         relative = str(PurePosixPath(paths.orthogonal_directory) / output_path)
         _verify_bound_repository_file(
             repository,
@@ -427,7 +427,9 @@ def write_revision_selection_artifacts(
     root = repository.absolute()
     stage_values = tuple(stages)
     expected_versions = (
-        ("v28",) if through_version == "v28" else ("v28", "v29")
+        ("v28",)
+        if through_version == "v28"
+        else ("v28", "v29")
         if through_version == "v29"
         else ()
     )
@@ -472,17 +474,13 @@ def write_revision_selection_artifacts(
         base_intervals,
         revision_rows,
     )
-    revision_evidence = [
-        _stage_evidence_dict(root, stage) for stage in stage_values
-    ]
+    revision_evidence = [_stage_evidence_dict(root, stage) for stage in stage_values]
     evidence_core = {
         "schema_version": 3,
         "revision_versions": list(expected_versions),
         "dataset_manifest_sha256": dataset_manifest_sha256,
         "count_score_manifest_sha256": count_score_manifest_sha256,
-        "retained_calibration_artifact_sha256": (
-            retained_calibration_artifact_sha256
-        ),
+        "retained_calibration_artifact_sha256": (retained_calibration_artifact_sha256),
         "records": list(records),
         "orthogonal_intervals": list(intervals),
     }
@@ -568,7 +566,9 @@ def validate_revision_artifact_payloads(
             "revision selection input has missing or extra fields"
         )
     expected_versions = [stage.spec.version for stage in assembled.stages]
-    unsigned_result = {key: value for key, value in data.items() if key != "result_sha256"}
+    unsigned_result = {
+        key: value for key, value in data.items() if key != "result_sha256"
+    }
     if (
         data["schema_version"] != 3
         or type(data["schema_version"]) is not int
@@ -591,8 +591,7 @@ def validate_revision_artifact_payloads(
     )
     if (
         data["dataset_manifest_sha256"] != assembled.dataset_manifest_sha256
-        or data["count_score_manifest_sha256"]
-        != assembled.count_score_manifest_sha256
+        or data["count_score_manifest_sha256"] != assembled.count_score_manifest_sha256
         or data["retained_calibration_artifact_sha256"]
         != assembled.retained_calibration_artifact_sha256
         or data["records"] != list(records)
@@ -646,9 +645,7 @@ def validate_revision_artifact_payloads(
         "report_path": base.selection_report_path,
         "report_file_sha256": base.selection_report_file_sha256,
         "evaluation_manifest_path": assembled.base_evaluation_manifest_path,
-        "evaluation_manifest_file_sha256": (
-            assembled.base_evaluation_manifest_sha256
-        ),
+        "evaluation_manifest_file_sha256": (assembled.base_evaluation_manifest_sha256),
     }
     expected_revisions = [
         _stage_evidence_dict(root, stage) for stage in assembled.stages
@@ -658,10 +655,8 @@ def validate_revision_artifact_payloads(
         or evaluation["schema_version"] != 2
         or evaluation["artifact_type"]
         != "maskimpute_development_revision_evaluation_manifest"
-        or evaluation["selection_evidence_sha256"]
-        != canonical_sha256(evidence_core)
-        or evaluation["dataset_manifest_sha256"]
-        != assembled.dataset_manifest_sha256
+        or evaluation["selection_evidence_sha256"] != canonical_sha256(evidence_core)
+        or evaluation["dataset_manifest_sha256"] != assembled.dataset_manifest_sha256
         or evaluation["count_score_manifest"]
         != {
             "path": "artifacts/study/development/count_scores/manifest.json",
@@ -682,6 +677,84 @@ def validate_revision_artifact_payloads(
         raise RevisionEvaluationError(
             "revision evidence manifest differs from independently rebuilt evidence"
         )
+    base_evaluation, base_evaluation_raw = _strict_json(
+        root / assembled.base_evaluation_manifest_path,
+        "base development evaluation manifest",
+    )
+    base_evaluation_payload_sha = base_evaluation.get("manifest_sha256")
+    base_reconstruction = base_evaluation.get("reconstruction")
+    if (
+        hashlib.sha256(base_evaluation_raw).hexdigest()
+        != assembled.base_evaluation_manifest_sha256
+        or not isinstance(base_evaluation_payload_sha, str)
+        or not isinstance(base_reconstruction, Mapping)
+        or canonical_sha256(
+            {
+                key: value
+                for key, value in base_evaluation.items()
+                if key != "manifest_sha256"
+            }
+        )
+        != base_evaluation_payload_sha
+    ):
+        raise RevisionEvaluationError(
+            "base evaluation reconstruction binding is invalid"
+        )
+    base_checkpoint_path = base_reconstruction.get("checkpoint_path")
+    if not isinstance(base_checkpoint_path, str):
+        raise RevisionEvaluationError("base reconstruction checkpoint path is invalid")
+    base_checkpoint, base_checkpoint_raw = _strict_json(
+        root / base_checkpoint_path,
+        "base reconstruction checkpoint",
+    )
+    if (
+        hashlib.sha256(base_checkpoint_raw).hexdigest()
+        != base_reconstruction.get("checkpoint_file_sha256")
+        or base_checkpoint.get("checkpoint_sha256")
+        != base_reconstruction.get("checkpoint_sha256")
+        or base_checkpoint.get("plan_sha256") != base_reconstruction.get("plan_sha256")
+        or base_checkpoint.get("input_hashes")
+        != base_reconstruction.get("input_hashes")
+    ):
+        raise RevisionEvaluationError(
+            "base reconstruction checkpoint differs from evaluation authority"
+        )
+
+    from .development_evaluation import reconstruction_selection_method
+
+    declared = {value.id for value in assembled.authority.declarations}
+
+    def status_sha256(records: object, *, configuration_id: str | None) -> str:
+        if not isinstance(records, list) and not isinstance(records, tuple):
+            raise RevisionEvaluationError(
+                "reconstruction status denominator is invalid"
+            )
+        statuses = []
+        for stored in records:
+            if not isinstance(stored, Mapping):
+                raise RevisionEvaluationError("reconstruction status record is invalid")
+            run = stored.get("run")
+            if not isinstance(run, Mapping):
+                raise RevisionEvaluationError("reconstruction status run is invalid")
+            if configuration_id is None:
+                if reconstruction_selection_method(run, declared) is None:
+                    continue
+            elif run.get("configuration_id") != configuration_id:
+                continue
+            statuses.append(
+                {
+                    "run_id": run.get("run_id"),
+                    "status": run.get("status"),
+                    "reason": run.get("reason"),
+                }
+            )
+        if not statuses:
+            raise RevisionEvaluationError("reconstruction status denominator is empty")
+        return canonical_sha256(statuses)
+
+    base_input_hashes = base_reconstruction.get("input_hashes")
+    if not isinstance(base_input_hashes, Mapping):
+        raise RevisionEvaluationError("base reconstruction input binding is invalid")
     bindings = {
         "revision_evaluation_manifest_file_sha256": evaluation_file_sha,
         "revision_evaluation_manifest_payload_sha256": str(
@@ -690,6 +763,26 @@ def validate_revision_artifact_payloads(
         "revision_selection_evidence_sha256": str(
             evaluation["selection_evidence_sha256"]
         ),
+        "base_reconstruction_checkpoint_path": base_checkpoint_path,
+        "base_reconstruction_checkpoint_file_sha256": str(
+            base_reconstruction["checkpoint_file_sha256"]
+        ),
+        "base_reconstruction_checkpoint_payload_sha256": str(
+            base_reconstruction["checkpoint_sha256"]
+        ),
+        "base_reconstruction_plan_sha256": str(base_reconstruction["plan_sha256"]),
+        "base_reconstruction_input_hashes_sha256": canonical_sha256(
+            dict(base_input_hashes)
+        ),
+        "base_reconstruction_statuses_sha256": status_sha256(
+            base_checkpoint.get("records"), configuration_id=None
+        ),
+        "base_evaluation_manifest_path": assembled.base_evaluation_manifest_path,
+        "base_evaluation_manifest_file_sha256": (
+            assembled.base_evaluation_manifest_sha256
+        ),
+        "base_evaluation_manifest_payload_sha256": base_evaluation_payload_sha,
+        "base_evaluation_source_sha256": canonical_sha256(dict(base_reconstruction)),
     }
     for stage in assembled.stages:
         prefix = stage.spec.version
@@ -705,8 +798,34 @@ def validate_revision_artifact_payloads(
                 f"{prefix}_reconstruction_checkpoint_file_sha256": (
                     stage.reconstruction.checkpoint_file_sha256
                 ),
+                f"{prefix}_reconstruction_checkpoint_path": str(
+                    PurePosixPath(revision_stage_paths(prefix).reconstruction_directory)
+                    / stage.reconstruction.checkpoint_path
+                ),
                 f"{prefix}_reconstruction_checkpoint_payload_sha256": (
                     stage.reconstruction.checkpoint_sha256
+                ),
+                f"{prefix}_reconstruction_plan_sha256": (
+                    stage.reconstruction.plan_sha256
+                ),
+                f"{prefix}_reconstruction_input_hashes_sha256": canonical_sha256(
+                    dict(stage.reconstruction.input_hashes)
+                ),
+                f"{prefix}_reconstruction_statuses_sha256": status_sha256(
+                    stage.reconstruction.records,
+                    configuration_id=stage.spec.configuration_id,
+                ),
+                f"{prefix}_evaluation_manifest_path": str(
+                    revision_stage_paths(assembled.through_version).evaluation_manifest
+                ),
+                f"{prefix}_evaluation_manifest_file_sha256": evaluation_file_sha,
+                f"{prefix}_evaluation_manifest_payload_sha256": str(
+                    evaluation["manifest_sha256"]
+                ),
+                f"{prefix}_evaluation_source_sha256": canonical_sha256(
+                    expected_revisions[expected_versions.index(prefix)][
+                        "reconstruction"
+                    ]
                 ),
                 f"{prefix}_reconstruction_raw_artifacts_sha256": canonical_sha256(
                     expected_revisions[expected_versions.index(prefix)][
@@ -909,9 +1028,7 @@ def assemble_revision_evaluation(
         "retained_calibration_artifact_sha256": (
             base_input["retained_calibration_artifact_sha256"]
         ),
-        "score_fit_policy": (
-            "refit_cross_fitted_count_score_from_truth_free_input"
-        ),
+        "score_fit_policy": ("refit_cross_fitted_count_score_from_truth_free_input"),
     }
     stages: list[RevisionStageEvaluation] = []
     for version, spec, activation in zip(versions, specs, activations, strict=True):
@@ -1051,9 +1168,7 @@ def build_revision_selection_input(
         base_records=assembled.base_records,
         base_intervals=assembled.base_intervals,
         base_evaluation_manifest_path=assembled.base_evaluation_manifest_path,
-        base_evaluation_manifest_sha256=(
-            assembled.base_evaluation_manifest_sha256
-        ),
+        base_evaluation_manifest_sha256=(assembled.base_evaluation_manifest_sha256),
         stages=assembled.stages,
     )
 
