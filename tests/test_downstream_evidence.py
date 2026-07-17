@@ -809,6 +809,103 @@ def test_plan_rejects_rehashed_source_run_with_unknown_schema_field(
         )
 
 
+def test_development_production_wrapper_rejects_repository_symlink_ancestor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+    import maskimpute_benchmark.runner as runner
+
+    active_repository = Path(downstream.__file__).resolve().parents[1]
+    alias = tmp_path / "repository-alias"
+    alias.symlink_to(active_repository, target_is_directory=True)
+
+    def unexpected_authority_load():
+        raise AssertionError("symlink was resolved before validation")
+
+    monkeypatch.setattr(runner, "load_runner_authority", unexpected_authority_load)
+    with pytest.raises(
+        downstream.DownstreamEvidenceError,
+        match="development repository path contains a symlink",
+    ):
+        downstream.build_development_downstream_evidence_plan(alias)
+
+
+def test_final_production_wrapper_rejects_round_symlink_ancestor(
+    tmp_path: Path,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+
+    active_repository = Path(downstream.__file__).resolve().parents[1]
+    round_directory = tmp_path / "round"
+    round_directory.mkdir()
+    alias = tmp_path / "round-alias"
+    alias.symlink_to(round_directory, target_is_directory=True)
+
+    with pytest.raises(
+        downstream.DownstreamEvidenceError,
+        match="final round path contains a symlink",
+    ):
+        downstream.build_final_downstream_evidence_plan(
+            active_repository, alias
+        )
+
+
+def test_output_symlink_ancestor_is_rejected_before_directory_creation(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+        run_downstream_evidence,
+    )
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    plan = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(_dataset_binding(dataset_path, cells),),
+        configurations=_test_configuration_authority(),
+    )
+    actual_parent = tmp_path / "actual-output-parent"
+    actual_parent.mkdir()
+    alias = tmp_path / "output-parent-alias"
+    alias.symlink_to(actual_parent, target_is_directory=True)
+
+    with pytest.raises(DownstreamEvidenceError, match="path contains a symlink"):
+        run_downstream_evidence(plan, alias / "downstream")
+    assert not (actual_parent / "downstream").exists()
+
+
+def test_generic_source_and_dataset_roots_reject_symlink_ancestors(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        bind_evaluator_dataset,
+        build_downstream_evidence_plan,
+    )
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    alias = tmp_path / "root-alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(
+        DownstreamEvidenceError, match="evaluator dataset path contains a symlink"
+    ):
+        bind_evaluator_dataset(
+            alias / dataset_path.name,
+            retained_cell_ids=cells,
+        )
+    with pytest.raises(
+        DownstreamEvidenceError, match="source root path contains a symlink"
+    ):
+        build_downstream_evidence_plan(
+            alias / source.name,
+            source_kind="development",
+            datasets=(_dataset_binding(dataset_path, cells),),
+            configurations=_test_configuration_authority(),
+        )
+
+
 def test_registered_trajectory_binding_is_mandatory_and_exact(tmp_path: Path) -> None:
     from dataclasses import replace
 

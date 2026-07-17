@@ -283,6 +283,18 @@ def _reject_symlink_chain(path: Path, name: str) -> None:
             raise DownstreamEvidenceError(f"{name} path contains a symlink")
 
 
+def _existing_directory(value: str | Path, name: str) -> Path:
+    path = Path(value).absolute()
+    _reject_symlink_chain(path, name)
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise DownstreamEvidenceError(f"{name} is unavailable") from error
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise DownstreamEvidenceError(f"{name} must be a non-symlink directory")
+    return path
+
+
 def _regular_file(path: Path, name: str) -> os.stat_result:
     _reject_symlink_chain(path, name)
     try:
@@ -663,7 +675,7 @@ def bind_prepared_evaluator_panel(
         raise TypeError("dataset_bindings must be a sequence")
     if not isinstance(prepared_datasets, Mapping):
         raise TypeError("prepared_datasets must be a mapping")
-    root = Path(dataset_root).absolute()
+    root = _existing_directory(dataset_root, "evaluator dataset root")
     result: list[DatasetEvidenceBinding] = []
     seen: set[str] = set()
     for index, runner_binding in enumerate(dataset_bindings):
@@ -1338,14 +1350,7 @@ def build_downstream_evidence_plan(
 
     if source_kind not in _SOURCE_KINDS:
         raise ValueError("source_kind must be development or final")
-    root = Path(source_root).absolute()
-    _reject_symlink_chain(root, "source root")
-    try:
-        root_metadata = root.lstat()
-    except OSError as error:
-        raise DownstreamEvidenceError("source root is unavailable") from error
-    if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
-        raise DownstreamEvidenceError("source root must be a non-symlink directory")
+    root = _existing_directory(source_root, "source root")
     dataset_values = tuple(datasets)
     if not dataset_values or any(
         not isinstance(value, DatasetEvidenceBinding) for value in dataset_values
@@ -1459,14 +1464,16 @@ def build_development_downstream_evidence_plan(
 ) -> DownstreamEvidencePlan:
     """Build the production development plan from runner-prepared persisted data."""
 
-    from .methods import load_method_registry
-    from .runner import load_prepared_development_panel, load_runner_authority
-
-    root = Path(repository).resolve(strict=True)
-    if root != Path(__file__).resolve().parents[1]:
+    root = _existing_directory(repository, "development repository")
+    active_repository = Path(__file__).absolute().parents[1]
+    _reject_symlink_chain(active_repository, "active repository")
+    if root != active_repository:
         raise DownstreamEvidenceError(
             "development downstream stage must use the active repository"
         )
+    from .methods import load_method_registry
+    from .runner import load_prepared_development_panel, load_runner_authority
+
     authority = load_runner_authority()
     registry = load_method_registry(root / "study/methods.json")
     configured_method_ids = {value.method_id for value in authority.configurations}
@@ -1501,16 +1508,18 @@ def build_final_downstream_evidence_plan(
 ) -> DownstreamEvidencePlan:
     """Build the production final plan from the frozen round's persisted data."""
 
+    root = _existing_directory(repository, "final repository")
+    active_repository = Path(__file__).absolute().parents[1]
+    _reject_symlink_chain(active_repository, "active repository")
+    if root != active_repository:
+        raise DownstreamEvidenceError(
+            "final downstream stage must use the active repository"
+        )
+    round_root = _existing_directory(round_directory, "final round")
     from .final_runner import _configuration_for_method, load_prepared_final_panel
     from .methods import load_method_registry
     from .publication_freeze import validate_frozen_method
 
-    root = Path(repository).resolve(strict=True)
-    if root != Path(__file__).resolve().parents[1]:
-        raise DownstreamEvidenceError(
-            "final downstream stage must use the active repository"
-        )
-    round_root = Path(round_directory).resolve(strict=True)
     frozen_method = validate_frozen_method(root)
     registry = load_method_registry(root / "study/methods.json")
     configurations = tuple(
@@ -1770,6 +1779,7 @@ def _load_targets(binding: DatasetEvidenceBinding) -> EvaluatorTargets:
 
 
 def _ensure_directory(path: Path, name: str) -> None:
+    _reject_symlink_chain(path, name)
     try:
         path.mkdir(parents=True, exist_ok=True)
         _reject_symlink_chain(path, name)
@@ -2222,7 +2232,9 @@ def load_downstream_evidence_plan(
 ) -> DownstreamEvidencePlan:
     """Reload a persisted plan after revalidating all source and dataset bindings."""
 
-    plan, _payload, _file_sha = _load_persisted_plan(Path(output_directory).absolute())
+    output_root = Path(output_directory).absolute()
+    _reject_symlink_chain(output_root, "downstream output directory")
+    plan, _payload, _file_sha = _load_persisted_plan(output_root)
     return plan
 
 
@@ -2232,6 +2244,7 @@ def load_downstream_evidence_manifest(
     """Validate a complete downstream manifest and every referenced row file."""
 
     output_root = Path(output_directory).absolute()
+    _reject_symlink_chain(output_root, "downstream output directory")
     rebuilt, plan_payload, plan_file_sha = _load_persisted_plan(output_root)
     plan_sha = rebuilt.plan_sha256
     manifest, _manifest_raw, _manifest_file_sha = _strict_json(
