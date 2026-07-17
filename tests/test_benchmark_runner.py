@@ -1360,6 +1360,185 @@ def test_calibrated_development_completion_requires_matching_lodo_fold_receipt()
     assert accepted.calibration_fold_receipt == receipt
 
 
+def test_final_calibrated_request_uses_all_development_without_lodo_receipt() -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("maskimpute")
+    authority = _authority(maskimpute_ready=True)
+    configuration = next(
+        value
+        for value in authority.configurations
+        if value.configuration_id == "calibrated-score"
+    )
+
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=42,
+        configuration=configuration,
+        authority=authority,
+        mechanism="symsim",
+        biological_id="draw-03",
+        technical_view="moderate",
+        dataset_id="dataset-final",
+        timeout_seconds=5,
+        calibration_usage="retained_all_development",
+    )
+
+    assert request.calibration_usage == "retained_all_development"
+    assert request.calibration_context is None
+    request.validate_integrity()
+
+
+def test_frozen_final_in_tree_preserves_selected_direct_score_variant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.methods.maskimpute as adapter
+
+    registry = load_method_registry(Path("study/methods.json"))
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(adapter, "_run_in_tree", fake_run)
+    observed = adapter.run_frozen_final_in_tree(
+        registry.by_id("maskimpute"),
+        object(),
+        variant_id="direct-score",
+        calibration_artifact=object(),
+        seed=42,
+        config=object(),
+        count_model_config=object(),
+        device="cpu",
+        mechanism="symsim",
+        biological_id="draw-03",
+    )
+
+    assert observed is not None
+    assert captured["variant_id"] == "direct-score"
+    assert captured["calibration_usage"] == "retained_all_development"
+
+
+def test_frozen_final_in_tree_threads_selected_v29_structure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.methods.maskimpute as adapter
+
+    registry = load_method_registry(Path("study/methods.json"))
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(adapter, "_run_in_tree", fake_run)
+    decoder = object()
+    structure = object()
+    adapter.run_frozen_final_in_tree(
+        registry.by_id("maskimpute"),
+        object(),
+        variant_id="maskimpute-reference",
+        calibration_artifact=object(),
+        seed=42,
+        config=object(),
+        count_model_config=object(),
+        device="cpu",
+        mechanism="symsim",
+        biological_id="draw-03",
+        decoder="negative_binomial",
+        decoder_config=decoder,
+        structure_config=structure,
+    )
+
+    assert captured["decoder_config"] is decoder
+    assert captured["structure_config"] is structure
+    assert captured["calibration_usage"] == "retained_all_development"
+
+
+def test_frozen_final_in_tree_calls_an_execution_path_that_accepts_final_usage() -> None:
+    import inspect
+
+    from maskimpute_benchmark.methods.maskimpute import _run_in_tree
+
+    assert "calibration_usage" in inspect.signature(_run_in_tree).parameters
+
+
+def test_spawned_repository_executor_close_releases_monitor_and_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Monitor:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def assert_unchanged(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    monitor = Monitor()
+    environments = ExecutionEnvironmentRegistry.fixed(tmp_path)
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "change_monitor",
+        lambda _self: monitor,
+    )
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "full_revalidate",
+        lambda _self: None,
+    )
+    executor = SpawnedRepositoryExecutor(
+        RepositoryAdapterDispatcher(tmp_path, environments)
+    )
+
+    executor.close()
+    executor.close()
+
+    assert monitor.close_count == 1
+    with pytest.raises(RunnerContractError, match="closed"):
+        executor(None)  # type: ignore[arg-type]
+
+
+def test_spawned_repository_executor_closes_monitor_if_initialization_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.runner as runner
+
+    class Monitor:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        def assert_unchanged(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    monitor = Monitor()
+    environments = ExecutionEnvironmentRegistry.fixed(tmp_path)
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "change_monitor",
+        lambda _self: monitor,
+    )
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "full_revalidate",
+        lambda _self: None,
+    )
+
+    def fail_sampler(*_args, **_kwargs):
+        raise RuntimeError("sampler failed")
+
+    monkeypatch.setattr(runner, "LinuxProcessTreeResourceSampler", fail_sampler)
+    dispatcher = RepositoryAdapterDispatcher(tmp_path.resolve(), environments)
+
+    with pytest.raises(RuntimeError, match="sampler failed"):
+        runner.SpawnedRepositoryExecutor(dispatcher)
+    assert monitor.close_count == 1
+
+
 def test_qc_excludes_only_zero_library_cells_before_one_shared_method_input() -> None:
     from maskimpute_benchmark.schema import benchmark_dataset_sha256
 

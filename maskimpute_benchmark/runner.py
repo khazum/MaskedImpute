@@ -4467,18 +4467,8 @@ class SpawnedRepositoryExecutor:
         try:
             self.dispatcher.environments.full_revalidate()
             monitor.assert_unchanged()
-        except RuntimeEnvironmentError as error:
-            monitor.close()
-            raise RunnerContractError(str(error)) from error
-        except BaseException:
-            monitor.close()
-            raise
-        object.__setattr__(self, "_runtime_monitor", monitor)
-        snapshot = self.dispatcher.environments.runtime_snapshot
-        object.__setattr__(
-            self,
-            "_resource_sampler",
-            (
+            snapshot = self.dispatcher.environments.runtime_snapshot
+            resource_sampler = (
                 LinuxProcessTreeResourceSampler()
                 if snapshot is None
                 else LinuxProcessTreeResourceSampler(
@@ -4486,20 +4476,24 @@ class SpawnedRepositoryExecutor:
                     if snapshot.nvidia_smi_path is None
                     else Path(snapshot.nvidia_smi_path)
                 )
-            ),
-        )
-        object.__setattr__(
-            self,
-            "_child_dispatcher",
-            replace(
+            )
+            child_dispatcher = replace(
                 self.dispatcher,
                 environments=replace(
                     self.dispatcher.environments,
                     runtime_snapshot=None,
                 ),
                 monitor_runtime_changes=False,
-            ),
-        )
+            )
+        except RuntimeEnvironmentError as error:
+            monitor.close()
+            raise RunnerContractError(str(error)) from error
+        except BaseException:
+            monitor.close()
+            raise
+        object.__setattr__(self, "_runtime_monitor", monitor)
+        object.__setattr__(self, "_resource_sampler", resource_sampler)
+        object.__setattr__(self, "_child_dispatcher", child_dispatcher)
 
     def __call__(self, request: ExecutionRequest) -> AdapterOutcome:
         method_id = request.method_spec.id
