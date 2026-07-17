@@ -176,6 +176,8 @@ def _run(
         "excluded_cell_ids_sha256": "5" * 64,
         "retained_cell_count": len(cell_ids),
         "retained_cell_ids_sha256": _cell_id_sha256(cell_ids),
+        "retained_gene_count": 0,
+        "observed_zero_count": 0,
         "status": status,
         "reason": reason,
         "runtime_seconds": 1.0,
@@ -209,6 +211,172 @@ def _run(
     }
 
 
+def _current_prezero_evidence(run: dict[str, object]) -> dict[str, object]:
+    """Return the exact persisted score-evidence envelope used by current stores."""
+
+    identity = {
+        name: run[name]
+        for name in (
+            "run_id",
+            "method_id",
+            "dataset_id",
+            "source_dataset_sha256",
+            "mechanism",
+            "biological_id",
+            "technical_view",
+            "model_seed",
+            "configuration_id",
+            "configuration_sha256",
+            "method_input_sha256",
+            "retained_cell_ids_sha256",
+        )
+    }
+    completed_score = run["method_id"] == "maskimpute" and run["status"] == "completed"
+    status = run["status"] if run["method_id"] == "maskimpute" else "not_applicable"
+    reason = (
+        run["reason"]
+        if run["method_id"] == "maskimpute"
+        else "method_does_not_emit_p_pre_zero"
+    )
+    policy = (
+        {
+            "schema_version": 2,
+            "probability_semantics": (
+                "pre_capture_count_is_zero_given_observed_counts"
+            ),
+            "evaluation_domain": "observed_zero_entries_only",
+            "score_source": "direct",
+            "score_artifact_sha256": "a" * 64,
+            "score_input_sha256": "b" * 64,
+            "score_config_sha256": "c" * 64,
+            "calibration_file_sha256": "d" * 64,
+            "calibration_payload_sha256": "e" * 64,
+            "calibration_algorithm": "identity",
+            "calibration_scope": "retained_all_development",
+            "calibration_equivalence_reason": "direct_score_requires_no_calibration",
+        }
+        if completed_score
+        else None
+    )
+    matrix = (
+        {
+            "shape": [run["retained_cell_count"], run["retained_gene_count"]],
+            "dtype": "<f8",
+            "content_sha256": "f" * 64,
+            "semantic_sha256": "0" * 64,
+        }
+        if completed_score
+        else {
+            "shape": None,
+            "dtype": None,
+            "content_sha256": None,
+            "semantic_sha256": None,
+        }
+    )
+    metric_status = "completed" if completed_score else status
+    metrics = {
+        name: {
+            "value": 0.5 if completed_score else None,
+            "n": run["observed_zero_count"],
+            "status": metric_status,
+            "reason": None if completed_score else reason,
+        }
+        for name in (
+            "auroc",
+            "auprc",
+            "brier",
+            "log_loss",
+            "calibration_intercept",
+            "calibration_slope",
+            "ece",
+        )
+    }
+    overall = {
+        "stratum_type": "overall",
+        "label": "all_observed_zeros",
+        "lower": None,
+        "upper": None,
+        "n": run["observed_zero_count"],
+        "metrics": metrics,
+        "reliability_bins": [],
+    }
+    strata = {
+        "library_size_quartiles": [
+            {
+                **overall,
+                "stratum_type": "library_size_quartiles",
+                "label": f"Q{index}",
+                "lower": None,
+                "upper": None,
+                "n": 0,
+                "metrics": {
+                    name: {**value, "n": 0} for name, value in metrics.items()
+                },
+            }
+            for index in range(1, 5)
+        ],
+        "truth_expression_bins": [
+            {
+                **overall,
+                "stratum_type": "truth_expression_bins",
+                "label": label,
+                "lower": lower,
+                "upper": upper,
+                "n": 0,
+                "metrics": {
+                    name: {**value, "n": 0} for name, value in metrics.items()
+                },
+            }
+            for label, lower, upper in (
+                ("[0,1)", 0.0, 1.0),
+                ("[1,2)", 1.0, 2.0),
+                ("[2,4)", 2.0, 4.0),
+                ("[4,inf)", 4.0, None),
+            )
+        ],
+    }
+    body = {
+        "schema_version": 1,
+        "status": status,
+        "reason": reason,
+        "identity": identity,
+        "truth_kind": "exact_pre_capture",
+        "matrix": matrix,
+        "policy": policy,
+        "policy_sha256": None if policy is None else _sha256_payload(policy),
+        "overall": overall,
+        "strata": strata,
+    }
+    storage = (
+        {
+            "encoding": "zlib_raw_f64_v1",
+            "compression_level": 6,
+            "path": f"runs/{run['run_id']}.p_pre_zero.f64.zlib",
+            "compressed_sha256": "1" * 64,
+            "compressed_nbytes": 1,
+            "uncompressed_sha256": "f" * 64,
+            "uncompressed_nbytes": (
+                run["retained_cell_count"] * run["retained_gene_count"] * 8
+            ),
+        }
+        if completed_score
+        else {
+            "encoding": None,
+            "compression_level": None,
+            "path": None,
+            "compressed_sha256": None,
+            "compressed_nbytes": None,
+            "uncompressed_sha256": None,
+            "uncompressed_nbytes": None,
+        }
+    )
+    return {**body, "evidence_sha256": _sha256_payload(body), "storage": storage}
+
+
+def _sha256_payload(value: object) -> str:
+    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+
+
 def _development_source(tmp_path: Path):
     from maskimpute_benchmark.protocol import canonical_sha256
     from maskimpute_benchmark.schema import benchmark_dataset_sha256
@@ -216,6 +384,7 @@ def _development_source(tmp_path: Path):
     dataset_path = tmp_path / "dataset.h5ad"
     dataset, cells, _genes = _dataset(dataset_path)
     dataset_sha = benchmark_dataset_sha256(dataset)
+    dataset_authority = _dataset_binding(dataset_path, cells)
     source = tmp_path / "development"
     source.mkdir()
     output = np.asarray(_common_output(dataset), dtype="<f8", order="C")
@@ -231,6 +400,7 @@ def _development_source(tmp_path: Path):
         status="completed",
         reason=None,
     )
+    _apply_dataset_authority(completed, dataset_authority)
     completed.update(
         {
             "evaluator_output_path": "runs/run-completed.log2-cp10k-f64",
@@ -249,9 +419,18 @@ def _development_source(tmp_path: Path):
         status="failed",
         reason="adapter_nonzero_exit",
     )
+    _apply_dataset_authority(failed, dataset_authority)
     records = [
-        {"run": completed, "metrics": []},
-        {"run": failed, "metrics": []},
+        {
+            "run": completed,
+            "metrics": [],
+            "p_pre_zero_evidence": _current_prezero_evidence(completed),
+        },
+        {
+            "run": failed,
+            "metrics": [],
+            "p_pre_zero_evidence": _current_prezero_evidence(failed),
+        },
     ]
     body = {
         "schema_version": 1,
@@ -276,6 +455,35 @@ def _dataset_binding(dataset_path: Path, cells: tuple[str, ...]):
     return bind_evaluator_dataset(dataset_path, retained_cell_ids=cells)
 
 
+def _apply_dataset_authority(run: dict[str, object], binding: object) -> None:
+    for name in (
+        "mechanism",
+        "biological_id",
+        "technical_view",
+        "method_input_sha256",
+        "dataset_qc_policy_sha256",
+        "excluded_cell_count",
+        "excluded_cell_ids_sha256",
+        "retained_cell_count",
+        "retained_cell_ids_sha256",
+        "retained_gene_count",
+        "observed_zero_count",
+    ):
+        run[name] = getattr(binding, name)
+
+
+def _development_source_plan(source: Path) -> SimpleNamespace:
+    checkpoint = json.loads((source / "checkpoint.json").read_text(encoding="utf-8"))
+    return SimpleNamespace(
+        plan_sha256=checkpoint["plan_sha256"],
+        input_hashes=checkpoint["input_hashes"],
+        entries=tuple(
+            {**stored["run"], "ordinal": ordinal}
+            for ordinal, stored in enumerate(checkpoint["records"], start=1)
+        ),
+    )
+
+
 def test_prepared_runner_panel_bridge_binds_persisted_dataset_paths(
     tmp_path: Path,
 ) -> None:
@@ -284,12 +492,31 @@ def test_prepared_runner_panel_bridge_binds_persisted_dataset_paths(
     )
 
     dataset_path = tmp_path / "dataset.h5ad"
-    _dataset_object, cells, _genes = _dataset(dataset_path)
+    dataset_object, cells, _genes = _dataset(dataset_path)
+    from maskimpute_benchmark.methods import prepare_method_input
+    from maskimpute_benchmark.schema import make_inference_view
+
+    authority = _dataset_binding(dataset_path, cells)
+    method_input = prepare_method_input(make_inference_view(dataset_object))
     runner_binding = SimpleNamespace(
         dataset_id="dev-symsim-01", output_path="dataset.h5ad"
     )
     prepared = {
-        "dev-symsim-01": SimpleNamespace(audit=SimpleNamespace(retained_cell_ids=cells))
+        "dev-symsim-01": SimpleNamespace(
+            binding=SimpleNamespace(
+                mechanism=authority.mechanism,
+                biological_id=authority.biological_id,
+                technical_view=authority.technical_view,
+            ),
+            audit=SimpleNamespace(
+                retained_cell_ids=cells,
+                excluded_cell_count=authority.excluded_cell_count,
+                excluded_cell_ids_sha256=authority.excluded_cell_ids_sha256,
+                retained_cell_count=authority.retained_cell_count,
+                retained_cell_ids_sha256=authority.retained_cell_ids_sha256,
+            ),
+            method_input=method_input,
+        )
     }
 
     bindings = bind_prepared_evaluator_panel(
@@ -300,6 +527,287 @@ def test_prepared_runner_panel_bridge_binds_persisted_dataset_paths(
     assert bindings[0].dataset_id == "dev-symsim-01"
     assert bindings[0].retained_cell_ids == cells
     assert bindings[0].path == str(dataset_path.absolute())
+
+
+def test_plan_rejects_rehashed_biological_identity_outside_bound_dataset_authority(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    checkpoint_path = source / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    forged = checkpoint["records"][0]
+    forged["run"].update(
+        {
+            "mechanism": "semisynthetic",
+            "biological_id": "forged-draw",
+            "technical_view": "forged-view",
+        }
+    )
+    forged["p_pre_zero_evidence"] = _current_prezero_evidence(forged["run"])
+    body = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = canonical_sha256(body)
+    _write_canonical(checkpoint_path, checkpoint)
+
+    with pytest.raises(DownstreamEvidenceError, match="dataset authority"):
+        build_downstream_evidence_plan(
+            source,
+            source_kind="development",
+            datasets=(_dataset_binding(dataset_path, cells),),
+            configurations=_test_configuration_authority(),
+        )
+
+
+def test_current_runner_record_schema_is_accepted_without_field_aliases(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import build_downstream_evidence_plan
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    binding = _dataset_binding(dataset_path, cells)
+    checkpoint_path = source / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    for stored in checkpoint["records"]:
+        run = stored["run"]
+        run["retained_gene_count"] = binding.retained_gene_count
+        run["observed_zero_count"] = binding.observed_zero_count
+        stored["p_pre_zero_evidence"] = _current_prezero_evidence(run)
+    body = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = canonical_sha256(body)
+    _write_canonical(checkpoint_path, checkpoint)
+
+    plan = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(binding,),
+        configurations=_test_configuration_authority(),
+    )
+
+    assert len(plan.entries) == 2
+
+
+def test_source_adapter_rejects_retired_prezero_policy_field_alias(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    checkpoint_path = source / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    evidence = checkpoint["records"][0]["p_pre_zero_evidence"]
+    policy = evidence["policy"]
+    policy["calibration_artifact_sha256"] = policy.pop("calibration_file_sha256")
+    policy.pop("calibration_payload_sha256")
+    evidence["policy_sha256"] = canonical_sha256(policy)
+    evidence_body = {
+        key: value
+        for key, value in evidence.items()
+        if key not in {"evidence_sha256", "storage"}
+    }
+    evidence["evidence_sha256"] = canonical_sha256(evidence_body)
+    body = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = canonical_sha256(body)
+    _write_canonical(checkpoint_path, checkpoint)
+
+    with pytest.raises(DownstreamEvidenceError, match="score policy schema"):
+        build_downstream_evidence_plan(
+            source,
+            source_kind="development",
+            datasets=(_dataset_binding(dataset_path, cells),),
+            configurations=_test_configuration_authority(),
+        )
+
+
+def test_selection_primary_plan_rejects_seed_drift_from_bound_source_plan(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    source_plan = _development_source_plan(source)
+    checkpoint_path = source / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    forged = checkpoint["records"][0]
+    forged["run"]["model_seed"] = 999
+    forged["p_pre_zero_evidence"] = _current_prezero_evidence(forged["run"])
+    body = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = canonical_sha256(body)
+    _write_canonical(checkpoint_path, checkpoint)
+
+    with pytest.raises(DownstreamEvidenceError, match="source plan authority"):
+        build_downstream_evidence_plan(
+            source,
+            source_kind="development",
+            evidence_scope="selection_primary",
+            datasets=(_dataset_binding(dataset_path, cells),),
+            configurations=_test_configuration_authority(),
+            source_plan=source_plan,
+        )
+
+
+def test_selection_primary_scope_excludes_only_nonselection_maskimpute_ablations(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        build_downstream_evidence_plan,
+        load_downstream_evidence_manifest,
+        run_downstream_evidence,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.runner import AuthorizedConfiguration
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    checkpoint_path = source / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    ablation = AuthorizedConfiguration.create(
+        method_id="maskimpute",
+        configuration_id="no-gate",
+        kind="ablation",
+        payload={
+            "configuration_id": "no-gate",
+            "method_id": "maskimpute",
+            "variant": "downstream-supplementary-test",
+        },
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+    ablation_run = dict(checkpoint["records"][1]["run"])
+    ablation_run.update(
+        {
+            "run_id": "run-maskimpute-ablation",
+            "method_id": "maskimpute",
+            "configuration_id": ablation.configuration_id,
+            "configuration_sha256": ablation.configuration_sha256,
+            "configuration_kind": ablation.kind,
+        }
+    )
+    checkpoint["records"].append(
+        {
+            "run": ablation_run,
+            "metrics": [],
+            "p_pre_zero_evidence": _current_prezero_evidence(ablation_run),
+        }
+    )
+    checkpoint["planned_run_count"] = 3
+    body = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = canonical_sha256(body)
+    _write_canonical(checkpoint_path, checkpoint)
+    configurations = (*_test_configuration_authority(), ablation)
+
+    primary = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        evidence_scope="selection_primary",
+        datasets=(_dataset_binding(dataset_path, cells),),
+        configurations=configurations,
+        source_plan=_development_source_plan(source),
+    )
+    supplementary = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        evidence_scope="supplementary_nonselection",
+        datasets=(_dataset_binding(dataset_path, cells),),
+        configurations=configurations,
+        source_plan=_development_source_plan(source),
+    )
+
+    assert [entry.run_id for entry in primary.entries] == [
+        "run-completed",
+        "run-failed",
+    ]
+    assert [entry.run_id for entry in supplementary.entries] == [
+        "run-maskimpute-ablation"
+    ]
+    destination = tmp_path / "selection-primary-downstream"
+    manifest = run_downstream_evidence(primary, destination)
+    loaded = load_downstream_evidence_manifest(destination)
+
+    assert manifest["planned_denominator_count"] == 2
+    assert loaded.planned_denominator_count == 2
+
+
+def test_production_selection_primary_keys_exactly_match_reconstruction_bridge() -> None:
+    from maskimpute_benchmark.development_evaluation import (
+        reconstruction_selection_method,
+    )
+    from maskimpute_benchmark.methods import load_method_registry
+    from maskimpute_benchmark.runner import (
+        DEVELOPMENT_MODEL_SEEDS,
+        AuthorizedConfiguration,
+        load_runner_authority,
+    )
+
+    authority = load_runner_authority()
+    registry = load_method_registry(Path("study/methods.json"))
+    configured_method_ids = {value.method_id for value in authority.configurations}
+    configurations = tuple(authority.configurations) + tuple(
+        AuthorizedConfiguration.registry_default(spec)
+        for spec in registry.methods
+        if spec.execution_scope == "same_input_required"
+        and spec.id not in configured_method_ids
+    )
+    declared = {
+        value.configuration_id
+        for value in configurations
+        if value.kind == "candidate_search"
+    } | {
+        value.method_id
+        for value in configurations
+        if value.kind == "registry" or value.method_id == "capacity-matched-ae"
+    }
+    specification = {value.id: value for value in registry.methods}
+    all_keys: set[tuple[object, ...]] = set()
+    selection_keys: set[tuple[object, ...]] = set()
+    primary_keys: set[tuple[object, ...]] = set()
+    for dataset_index in range(16):
+        for configuration in configurations:
+            spec = specification[configuration.method_id]
+            seeds = DEVELOPMENT_MODEL_SEEDS if spec.stochastic else (None,)
+            run = {
+                "configuration_kind": configuration.kind,
+                "configuration_id": configuration.configuration_id,
+                "method_id": configuration.method_id,
+            }
+            method = reconstruction_selection_method(run, declared)
+            for seed in seeds:
+                key = (
+                    dataset_index,
+                    configuration.method_id,
+                    configuration.configuration_id,
+                    configuration.configuration_sha256,
+                    seed,
+                )
+                all_keys.add(key)
+                if method is not None:
+                    selection_keys.add(key)
+                    primary_keys.add(key)
+
+    assert primary_keys == selection_keys
+    assert len(all_keys - primary_keys) == 5 * 16 * 3 == 240
 
 
 def test_development_stage_resumes_and_preserves_exact_eight_row_denominators(
@@ -528,7 +1036,9 @@ def test_plan_binds_current_evaluator_source_digest(tmp_path: Path) -> None:
 
 def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
     from maskimpute_benchmark.downstream_evidence import (
         DownstreamEvidenceError,
         build_downstream_evidence_plan,
@@ -541,7 +1051,9 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
     dataset_path = tmp_path / "dataset.h5ad"
     dataset, cells, _genes = _dataset(dataset_path)
     dataset_sha = benchmark_dataset_sha256(dataset)
-    source = tmp_path / "final"
+    repository = tmp_path / "repository"
+    round_root = repository / "round-1"
+    source = round_root / "results/final/execution"
     output = np.asarray(_common_output(dataset), dtype="<f8", order="C")
     raw = output.tobytes(order="C")
     compressed = zlib.compress(raw, level=6)
@@ -556,6 +1068,7 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
         status="completed",
         reason=None,
     )
+    _apply_dataset_authority(run, _dataset_binding(dataset_path, cells))
     run.update(
         {
             "evaluator_output_path": "runs/final-run.log2-cp10k-f64.zlib",
@@ -573,6 +1086,7 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
     record = {
         "run": run,
         "metrics": [],
+        "p_pre_zero_evidence": _current_prezero_evidence(run),
         "execution_request": None,
     }
     record_path = source / "records" / "00000001.json"
@@ -596,21 +1110,63 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
             "evaluator_output_encoding": "zlib_raw_f64_v1",
             "evaluator_output_compression_level": 6,
             "native_output_retention": "omitted_redundant_final_output",
+            "p_pre_zero_encoding": "zlib_raw_f64_v1",
+            "p_pre_zero_compression_level": 6,
         },
     }
     manifest = {
         **manifest_body,
         "manifest_sha256": canonical_sha256(manifest_body),
     }
-    _write_canonical(source / "execution_manifest.json", manifest)
+    manifest_file_sha256 = _write_canonical(
+        source / "execution_manifest.json", manifest
+    )
 
+    with pytest.raises(
+        DownstreamEvidenceError, match="evaluated-round binding is required"
+    ):
+        build_downstream_evidence_plan(
+            source,
+            source_kind="final",
+            datasets=(_dataset_binding(dataset_path, cells),),
+            configurations=_test_configuration_authority(),
+        )
+    binding = downstream.EvaluatedRoundBinding(
+        repository_root=str(repository.absolute()),
+        round_root=str(round_root.absolute()),
+        round_id="round-1",
+        evaluation_receipt_path="evaluation_receipt.json",
+        evaluation_receipt_file_sha256="1" * 64,
+        evaluation_receipt_payload_sha256="2" * 64,
+        result_manifest_sha256="3" * 64,
+        final_plan_sha256=manifest["plan_sha256"],
+        final_execution_manifest_path=(
+            "results/final/execution/execution_manifest.json"
+        ),
+        final_execution_manifest_file_sha256=manifest_file_sha256,
+        final_execution_manifest_payload_sha256=manifest["manifest_sha256"],
+        execution_validation_sha256="4" * 64,
+        storage_preflight_sha256="5" * 64,
+    )
+    source_plan = SimpleNamespace(
+        plan_sha256=manifest["plan_sha256"],
+        input_hashes=manifest["input_hashes"],
+        entries=({**run, "ordinal": 1},),
+    )
+    monkeypatch.setattr(
+        downstream, "_validate_evaluated_round_binding", lambda _binding: None
+    )
     plan = build_downstream_evidence_plan(
         source,
         source_kind="final",
         datasets=(_dataset_binding(dataset_path, cells),),
         configurations=_test_configuration_authority(),
+        evaluated_round_binding=binding,
+        source_plan=source_plan,
     )
     destination = tmp_path / "downstream-final"
+    partial = run_downstream_evidence(plan, destination, max_denominators=0)
+    assert partial["status"] == "running"
     result = run_downstream_evidence(plan, destination)
 
     assert result["status"] == "completed"
@@ -633,6 +1189,8 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
             source_kind="final",
             datasets=(_dataset_binding(dataset_path, cells),),
             configurations=_test_configuration_authority(),
+            evaluated_round_binding=binding,
+            source_plan=source_plan,
         )
 
 
@@ -665,6 +1223,53 @@ def test_complete_manifest_revalidates_bound_source_and_dataset_bytes(
     dataset_path.write_bytes(dataset_raw + b"tamper")
     with pytest.raises(DownstreamEvidenceError, match="dataset raw file checksum"):
         load_downstream_evidence_manifest(destination)
+
+
+def test_plan_revalidation_forwards_the_evaluated_round_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    import maskimpute_benchmark.downstream_evidence as downstream
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    plan = downstream.build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(_dataset_binding(dataset_path, cells),),
+        configurations=_test_configuration_authority(),
+    )
+    binding = downstream.EvaluatedRoundBinding(
+        repository_root=str((tmp_path / "repository").absolute()),
+        round_root=str((tmp_path / "repository/round-1").absolute()),
+        round_id="round-1",
+        evaluation_receipt_path="evaluation_receipt.json",
+        evaluation_receipt_file_sha256="1" * 64,
+        evaluation_receipt_payload_sha256="2" * 64,
+        result_manifest_sha256="3" * 64,
+        final_plan_sha256="4" * 64,
+        final_execution_manifest_path=(
+            "results/final/execution/execution_manifest.json"
+        ),
+        final_execution_manifest_file_sha256="5" * 64,
+        final_execution_manifest_payload_sha256="6" * 64,
+        execution_validation_sha256="7" * 64,
+        storage_preflight_sha256="8" * 64,
+    )
+    bound = replace(plan, evaluated_round_binding=binding, plan_sha256="0" * 64)
+    bound = replace(bound, plan_sha256=canonical_sha256(bound.body()))
+    observed: dict[str, object] = {}
+
+    def rebuild(*args: object, evaluated_round_binding: object, **kwargs: object):
+        observed["binding"] = evaluated_round_binding
+        return bound
+
+    monkeypatch.setattr(downstream, "build_downstream_evidence_plan", rebuild)
+
+    downstream._revalidate_plan(bound)
+
+    assert observed["binding"] is binding
 
 
 def test_completed_manifest_missing_prefix_fails_without_repairing_files(
@@ -752,7 +1357,9 @@ def test_complete_manifest_rejects_self_consistent_sealed_source_drift(
 
     checkpoint_path = source / "checkpoint.json"
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    checkpoint["records"][0]["run"]["configuration_id"] = "forged-configuration"
+    forged = checkpoint["records"][0]
+    forged["run"]["configuration_id"] = "forged-configuration"
+    forged["p_pre_zero_evidence"] = _current_prezero_evidence(forged["run"])
     checkpoint_body = {
         key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
     }
@@ -827,9 +1434,9 @@ def test_plan_rejects_source_configuration_and_artifact_authority_mismatch(
     candidate, magic = _test_configuration_authority()
     checkpoint_path = source / "checkpoint.json"
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    checkpoint["records"][0]["run"]["configuration_sha256"] = (
-        magic.configuration_sha256
-    )
+    forged = checkpoint["records"][0]
+    forged["run"]["configuration_sha256"] = magic.configuration_sha256
+    forged["p_pre_zero_evidence"] = _current_prezero_evidence(forged["run"])
     body = {
         key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
     }
@@ -1076,6 +1683,7 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
         source_kind="development",
         datasets=(_dataset_binding(dataset_path, cells),),
         configurations=_test_configuration_authority(),
+        source_plan=_development_source_plan(source),
     )
     destination = tmp_path / "artifacts" / "downstream"
     run_downstream_evidence(plan, destination)
@@ -1107,6 +1715,19 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
     }
     payload = {**core, "result_sha256": canonical_sha256(core)}
 
+    with pytest.raises(SelectionAuthorityError, match="source status"):
+        attach_downstream_evidence_to_selection_result(
+            payload,
+            tmp_path,
+            "artifacts/downstream",
+        )
+
+    for selection_record, downstream_record in zip(
+        selection_records, evidence.records, strict=True
+    ):
+        selection_record["status"] = downstream_record["run_status"]
+    core["records"] = selection_records
+    payload = {**core, "result_sha256": canonical_sha256(core)}
     upgraded = attach_downstream_evidence_to_selection_result(
         payload,
         tmp_path,
@@ -1138,6 +1759,13 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
     changed_method[0]["method_sha256"] = "0" * 64
     with pytest.raises(SelectionAuthorityError, match="completeness"):
         validate_downstream_selection_completeness(tmp_path, changed_method, binding)
+
+    changed_checkpoint = dict(binding)
+    changed_checkpoint["source_checkpoint_file_sha256"] = "0" * 64
+    with pytest.raises(SelectionAuthorityError, match="binding differs"):
+        validate_downstream_selection_completeness(
+            tmp_path, upgraded["records"], changed_checkpoint
+        )
 
 
 def test_final_cli_uses_external_receipt_bound_archive_without_round_mutation(
@@ -1241,6 +1869,8 @@ def test_evaluated_round_binding_revalidates_exact_receipt_and_execution_manifes
             "evaluator_output_encoding": "zlib_raw_f64_v1",
             "evaluator_output_compression_level": 6,
             "native_output_retention": "omitted_redundant_final_output",
+            "p_pre_zero_encoding": "zlib_raw_f64_v1",
+            "p_pre_zero_compression_level": 6,
         },
     }
     execution_manifest = {

@@ -2587,7 +2587,11 @@ _SELECTION_FAILED_STATUS = {
 }
 
 
-def _selection_method(run: Mapping[str, object], declared: set[str]) -> str | None:
+def reconstruction_selection_method(
+    run: Mapping[str, object], declared: set[str]
+) -> str | None:
+    """Return the exact selection identity for one reconstruction source run."""
+
     configuration_id = run.get("configuration_id")
     if (
         run.get("configuration_kind") == "candidate_search"
@@ -2711,7 +2715,7 @@ def build_reconstruction_selection_records(
             raise DevelopmentEvaluationError(
                 f"checkpoint record {record_index} is malformed"
             )
-        method = _selection_method(run, declared)
+        method = reconstruction_selection_method(run, declared)
         if method is None:
             continue
         dataset_id = run.get("dataset_id")
@@ -3499,6 +3503,7 @@ __all__ = [
     "balanced_null_split",
     "build_development_selection_input",
     "build_reconstruction_selection_records",
+    "reconstruction_selection_method",
     "evaluate_null_de_fpr",
     "evaluate_cite_orthogonal_interval",
     "evaluate_real_orthogonal_intervals",
