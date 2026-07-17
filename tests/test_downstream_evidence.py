@@ -305,6 +305,7 @@ def test_development_stage_resumes_and_preserves_exact_eight_row_denominators(
     assert complete["status"] == "completed"
     assert complete["planned_denominator_count"] == 2
     assert complete["endpoint_row_count"] == 16
+    assert complete["evaluator_source_sha256"] == plan.evaluator_source_sha256
 
     manifest = load_downstream_evidence_manifest(destination)
     records = manifest.records
@@ -359,6 +360,145 @@ def test_resume_revalidates_source_artifacts_and_immutable_record_prefix(
     record_path.write_bytes(record_path.read_bytes() + b"tamper")
     with pytest.raises(DownstreamEvidenceError, match="record.*canonical"):
         run_downstream_evidence(plan, destination)
+
+
+def test_resume_rejects_rehashed_finite_endpoint_value_drift(tmp_path: Path) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+        run_downstream_evidence,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    plan = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(_dataset_binding(dataset_path, cells),),
+        configurations=_test_configuration_authority(),
+    )
+    destination = tmp_path / "downstream"
+    run_downstream_evidence(plan, destination)
+
+    record_path = destination / "records/00000001.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    endpoint = next(
+        row for row in record["endpoints"] if row["status"] == "completed"
+    )
+    endpoint["value"] = 0.375 if endpoint["value"] != 0.375 else 0.625
+    record_body = {
+        key: value for key, value in record.items() if key != "record_sha256"
+    }
+    record["record_sha256"] = canonical_sha256(record_body)
+    record_file_sha = _write_canonical(record_path, record)
+
+    manifest_path = destination / "downstream_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["records"][0]["sha256"] = record_file_sha
+    manifest["records"][0]["record_sha256"] = record["record_sha256"]
+    manifest_body = {
+        key: value for key, value in manifest.items() if key != "manifest_sha256"
+    }
+    manifest["manifest_sha256"] = canonical_sha256(manifest_body)
+    _write_canonical(manifest_path, manifest)
+
+    with pytest.raises(
+        DownstreamEvidenceError, match="endpoint re-evaluation differs"
+    ):
+        run_downstream_evidence(plan, destination)
+
+
+@pytest.mark.parametrize(
+    ("attack", "message"),
+    [
+        ("direction", "endpoint contract differs"),
+        ("independent_count", "independent unit differs"),
+        ("descriptive_unit", "endpoint contract differs"),
+        ("reason_vocabulary", "endpoint contract differs"),
+        ("procedure", "endpoint procedure differs"),
+        ("family", "endpoint family is unexpected"),
+        ("range", "endpoint value is out of range"),
+    ],
+)
+def test_resume_reconstructs_and_validates_endpoint_contract(
+    tmp_path: Path, attack: str, message: str
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+        run_downstream_evidence,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    plan = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(_dataset_binding(dataset_path, cells),),
+        configurations=_test_configuration_authority(),
+    )
+    destination = tmp_path / "downstream"
+    run_downstream_evidence(plan, destination)
+    record_path = destination / "records/00000001.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    row = record["endpoints"][0]
+    if attack == "direction":
+        row["direction"] = "higher_is_better"
+    elif attack == "independent_count":
+        row["independent_n"] = 2
+    elif attack == "descriptive_unit":
+        row["descriptive_unit"] = "cells"
+    elif attack == "reason_vocabulary":
+        row["status"] = "unavailable"
+        row["value"] = None
+        row["reason_code"] = "forged_reason"
+    elif attack == "procedure":
+        row["procedure"] = "forged_procedure"
+    elif attack == "family":
+        row["family_id"] = "forged_family"
+        row["family_size"] = 1
+        row["alpha"] = 0.05
+    elif attack == "range":
+        row["value"] = 1.5
+    else:  # pragma: no cover - closed parametrization
+        raise AssertionError(attack)
+    body = {
+        key: value for key, value in record.items() if key != "record_sha256"
+    }
+    record["record_sha256"] = canonical_sha256(body)
+    _write_canonical(record_path, record)
+
+    with pytest.raises(DownstreamEvidenceError, match=message):
+        run_downstream_evidence(plan, destination)
+
+
+def test_plan_binds_current_evaluator_source_digest(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+        run_downstream_evidence,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    plan = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(_dataset_binding(dataset_path, cells),),
+        configurations=_test_configuration_authority(),
+    )
+    assert len(plan.evaluator_source_sha256) == 64
+    provisional = replace(
+        plan,
+        evaluator_source_sha256="0" * 64,
+        plan_sha256="0" * 64,
+    )
+    forged = replace(provisional, plan_sha256=canonical_sha256(provisional.body()))
+
+    with pytest.raises(DownstreamEvidenceError, match="plan sources changed"):
+        run_downstream_evidence(forged, tmp_path / "downstream")
 
 
 def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(

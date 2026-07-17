@@ -35,6 +35,57 @@ from .schema import benchmark_dataset_sha256, validate_benchmark_dataset
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _FINAL_OUTPUT_ENCODING = "zlib_raw_f64_v1"
+_ENDPOINT_VALUE_RANGES = MappingProxyType(
+    {
+        "marker_rank_loss": (0.0, 1.0),
+        "clustering_ari_loss": (0.0, 2.0),
+        "clustering_nmi_loss": (0.0, 1.0),
+        "positive_de_marker_recall": (0.0, 1.0),
+        "positive_de_false_discovery_rate": (0.0, 1.0),
+        "heldout_gene_profile_rank_loss": (0.0, 2.0),
+        "heldout_cell_profile_rank_loss": (0.0, 2.0),
+        "trajectory_pseudotime_rank_loss": (0.0, 2.0),
+    }
+)
+_CLUSTERING_PROCEDURE_PREFIX = (
+    "log2_cp10k_plus_1_full_svd_pca_kmeans_fixed_k_grid=2:10_"
+    "minimum_davies_bouldin_seed=20260716_n_init=20"
+)
+_ENDPOINT_PROCEDURES = MappingProxyType(
+    {
+        "marker_rank_loss": frozenset(
+            {
+                "group_macro_mean_normalized_true_marker_rank_log2_cp10k_plus_1",
+            }
+        ),
+        "clustering_ari_loss": frozenset({_CLUSTERING_PROCEDURE_PREFIX}),
+        "clustering_nmi_loss": frozenset({_CLUSTERING_PROCEDURE_PREFIX}),
+        "positive_de_marker_recall": frozenset(
+            {"one_sided_welch_log2_cp10k_plus_1_global_bh"}
+        ),
+        "positive_de_false_discovery_rate": frozenset(
+            {"one_sided_welch_log2_cp10k_plus_1_global_bh"}
+        ),
+        "heldout_gene_profile_rank_loss": frozenset(
+            {"mean_profile_spearman_log2_cp10k_plus_1_independent_count_split"}
+        ),
+        "heldout_cell_profile_rank_loss": frozenset(
+            {"mean_profile_spearman_log2_cp10k_plus_1_independent_count_split"}
+        ),
+        "trajectory_pseudotime_rank_loss": frozenset(
+            {
+                "root_oriented_multiscale_diffusion_log2_cp10k_plus_1_full_svd_"
+                "blockwise_exact_knn=floor_sqrt_n_capped_15_sparse_eigsh_modes=15"
+            }
+        ),
+    }
+)
+_TERMINAL_PROCEDURES = frozenset(
+    {
+        "terminal_expected_numeric_failure",
+        "terminal_upstream_run_not_completed",
+    }
+)
 _SOURCE_KINDS = frozenset({"development", "final"})
 _RUN_STATUSES = frozenset(
     {
@@ -178,6 +229,29 @@ def _stable_file_sha256(path: Path, name: str) -> str:
         before.st_mtime_ns,
     ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
         raise DownstreamEvidenceError(f"{name} changed while being hashed")
+    return digest.hexdigest()
+
+
+def _evaluator_source_sha256() -> str:
+    """Hash every local source file that constructs or evaluates endpoint truth."""
+
+    package = Path(__file__).absolute().parent
+    digest = hashlib.sha256(b"maskimpute-downstream-evaluator-source-v1\0")
+    for filename in (
+        "downstream_evaluation.py",
+        "downstream_evidence.py",
+        "schema.py",
+    ):
+        raw, _file_sha256 = _stable_file_bytes(
+            package / filename,
+            f"downstream evaluator source {filename}",
+            max_bytes=16 * 1024 * 1024,
+        )
+        encoded = filename.encode("utf-8")
+        digest.update(struct.pack("<Q", len(encoded)))
+        digest.update(encoded)
+        digest.update(struct.pack("<Q", len(raw)))
+        digest.update(raw)
     return digest.hexdigest()
 
 
@@ -597,6 +671,7 @@ class DownstreamPlanEntry:
 class DownstreamEvidencePlan:
     source_root: str
     source_kind: str
+    evaluator_source_sha256: str
     source_manifest_path: str
     source_manifest_file_sha256: str
     source_manifest_payload_sha256: str
@@ -610,6 +685,7 @@ class DownstreamEvidencePlan:
             "schema_version": 1,
             "source_root": self.source_root,
             "source_kind": self.source_kind,
+            "evaluator_source_sha256": self.evaluator_source_sha256,
             "source_manifest_path": self.source_manifest_path,
             "source_manifest_file_sha256": self.source_manifest_file_sha256,
             "source_manifest_payload_sha256": self.source_manifest_payload_sha256,
@@ -628,6 +704,7 @@ _PLAN_FIELDS = frozenset(
         "schema_version",
         "source_root",
         "source_kind",
+        "evaluator_source_sha256",
         "source_manifest_path",
         "source_manifest_file_sha256",
         "source_manifest_payload_sha256",
@@ -1204,6 +1281,7 @@ def build_downstream_evidence_plan(
     provisional = DownstreamEvidencePlan(
         source_root=str(root),
         source_kind=source_kind,
+        evaluator_source_sha256=_evaluator_source_sha256(),
         source_manifest_path=manifest_path,
         source_manifest_file_sha256=manifest_file_sha,
         source_manifest_payload_sha256=manifest_payload_sha,
@@ -1215,6 +1293,7 @@ def build_downstream_evidence_plan(
     return DownstreamEvidencePlan(
         source_root=provisional.source_root,
         source_kind=provisional.source_kind,
+        evaluator_source_sha256=provisional.evaluator_source_sha256,
         source_manifest_path=provisional.source_manifest_path,
         source_manifest_file_sha256=provisional.source_manifest_file_sha256,
         source_manifest_payload_sha256=provisional.source_manifest_payload_sha256,
@@ -1614,6 +1693,69 @@ def _expected_record_common(
     }
 
 
+def _endpoint_record_from_row(
+    row: Mapping[str, object], entry: DownstreamPlanEntry
+) -> EndpointRecord:
+    status = row.get("status") if entry.status == "completed" else "unavailable"
+    reason = (
+        row.get("reason_code")
+        if entry.status == "completed"
+        else "upstream_run_not_completed"
+    )
+    try:
+        endpoint = EndpointRecord(
+            endpoint=row.get("endpoint"),
+            value=row.get("value"),
+            status=status,
+            reason=reason,
+            direction=row.get("direction"),
+            independent_unit=row.get("independent_unit"),
+            independent_n=row.get("independent_n"),
+            descriptive_n=row.get("descriptive_n"),
+            descriptive_unit=row.get("descriptive_unit"),
+            procedure=row.get("procedure"),
+            family_id=row.get("family_id"),
+            family_size=row.get("family_size"),
+            alpha=row.get("alpha"),
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise DownstreamEvidenceError(
+            "downstream endpoint contract differs"
+        ) from error
+    if endpoint.status == "completed":
+        lower, upper = _ENDPOINT_VALUE_RANGES[endpoint.endpoint]
+        if not lower <= float(endpoint.value) <= upper:
+            raise DownstreamEvidenceError("downstream endpoint value is out of range")
+    procedure_allowed = (
+        endpoint.procedure in _TERMINAL_PROCEDURES
+        or endpoint.procedure in _ENDPOINT_PROCEDURES[endpoint.endpoint]
+        or (
+            endpoint.endpoint
+            in {"clustering_ari_loss", "clustering_nmi_loss"}
+            and endpoint.procedure.startswith(
+                f"{_CLUSTERING_PROCEDURE_PREFIX}_selected_k="
+            )
+        )
+    )
+    if not procedure_allowed:
+        raise DownstreamEvidenceError("downstream endpoint procedure differs")
+    family = (endpoint.family_id, endpoint.family_size, endpoint.alpha)
+    if endpoint.endpoint in {
+        "positive_de_marker_recall",
+        "positive_de_false_discovery_rate",
+    }:
+        if endpoint.family_id is not None and (
+            endpoint.family_id != "one_vs_rest_all_groups_all_genes"
+            or endpoint.alpha != 0.05
+        ):
+            raise DownstreamEvidenceError(
+                "downstream endpoint family authority differs"
+            )
+    elif any(value is not None for value in family):
+        raise DownstreamEvidenceError("downstream endpoint family is unexpected")
+    return endpoint
+
+
 def _validate_endpoint_rows(
     rows: object,
     plan: DownstreamEvidencePlan,
@@ -1656,6 +1798,7 @@ def _validate_endpoint_rows(
             or not np.isfinite(float(value))
         ):
             raise DownstreamEvidenceError("downstream endpoint value is invalid")
+        _endpoint_record_from_row(row, entry)
         if entry.status == "completed":
             if row.get("status") not in {"completed", "unavailable"}:
                 raise DownstreamEvidenceError("completed downstream status differs")
@@ -1681,6 +1824,7 @@ def _load_record(
     plan: DownstreamEvidencePlan,
     entry: DownstreamPlanEntry,
     binding: DatasetEvidenceBinding,
+    targets: EvaluatorTargets | None = None,
 ) -> dict[str, object]:
     value, _raw, _file_sha = _strict_json(path, "downstream record")
     if set(value) != {*_RECORD_BODY_FIELDS, "record_sha256"}:
@@ -1692,6 +1836,13 @@ def _load_record(
     if any(value.get(key) != nested for key, nested in common.items()):
         raise DownstreamEvidenceError("downstream record identity differs")
     _validate_endpoint_rows(value.get("endpoints"), plan, entry)
+    if entry.status == "completed" and targets is None:
+        targets = _load_targets(binding)
+    expected = _evaluate_entry(plan, entry, binding, targets)
+    if _canonical_bytes(value) != _canonical_bytes(expected):
+        raise DownstreamEvidenceError(
+            "downstream endpoint re-evaluation differs"
+        )
     return value
 
 
@@ -1719,15 +1870,27 @@ def _load_record_prefix(
 ) -> tuple[dict[str, object], ...]:
     bindings = {value.dataset_id: value for value in plan.datasets}
     names = _record_names(output_root, len(plan.entries))
-    return tuple(
-        _load_record(
-            output_root / "records" / name,
-            plan,
-            plan.entries[index],
-            bindings[plan.entries[index].dataset_id],
+    targets: dict[str, EvaluatorTargets] = {}
+    records: list[dict[str, object]] = []
+    for index, name in enumerate(names):
+        entry = plan.entries[index]
+        binding = bindings[entry.dataset_id]
+        target = None
+        if entry.status == "completed":
+            target = targets.get(entry.dataset_id)
+            if target is None:
+                target = _load_targets(binding)
+                targets[entry.dataset_id] = target
+        records.append(
+            _load_record(
+                output_root / "records" / name,
+                plan,
+                entry,
+                binding,
+                target,
+            )
         )
-        for index, name in enumerate(names)
-    )
+    return tuple(records)
 
 
 def _revalidate_plan(plan: DownstreamEvidencePlan) -> None:
@@ -1773,6 +1936,7 @@ def _manifest_payload(
         "plan_sha256": plan.plan_sha256,
         "plan_file_sha256": plan_file_sha,
         "source_kind": plan.source_kind,
+        "evaluator_source_sha256": plan.evaluator_source_sha256,
         "source_manifest_file_sha256": plan.source_manifest_file_sha256,
         "source_manifest_payload_sha256": plan.source_manifest_payload_sha256,
         "planned_denominator_count": len(plan.entries),
@@ -1941,6 +2105,8 @@ def load_downstream_evidence_manifest(
         or manifest.get("plan_sha256") != plan_sha
         or manifest.get("plan_file_sha256") != plan_file_sha
         or manifest.get("source_kind") != rebuilt.source_kind
+        or manifest.get("evaluator_source_sha256")
+        != rebuilt.evaluator_source_sha256
         or manifest.get("source_manifest_file_sha256")
         != rebuilt.source_manifest_file_sha256
         or manifest.get("source_manifest_payload_sha256")
@@ -1956,6 +2122,7 @@ def load_downstream_evidence_manifest(
         raise DownstreamEvidenceError("downstream manifest completeness differs")
     records: list[Mapping[str, object]] = []
     bindings = {value.dataset_id: value for value in rebuilt.datasets}
+    targets: dict[str, EvaluatorTargets] = {}
     for ordinal, reference in enumerate(references, start=1):
         if (
             not isinstance(reference, Mapping)
@@ -1967,12 +2134,20 @@ def load_downstream_evidence_manifest(
                 "downstream manifest references are unordered"
             )
         entry = rebuilt.entries[ordinal - 1]
+        binding = bindings[entry.dataset_id]
+        target = None
+        if entry.status == "completed":
+            target = targets.get(entry.dataset_id)
+            if target is None:
+                target = _load_targets(binding)
+                targets[entry.dataset_id] = target
         path = _safe_relative(output_root, reference.get("path"), "downstream record")
         record = _load_record(
             path,
             rebuilt,
             entry,
-            bindings[entry.dataset_id],
+            binding,
+            target,
         )
         _record_raw, record_file_sha = _stable_file_bytes(path, "downstream record")
         if (
