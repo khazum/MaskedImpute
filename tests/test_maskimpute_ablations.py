@@ -58,7 +58,7 @@ def _identity_calibration_artifact():
     return artifact
 
 
-def _nonidentity_calibration_artifact():
+def _binding_identity_calibration_artifact():
     from scipy.special import expit
 
     from maskimpute.calibration import (
@@ -107,7 +107,7 @@ def _nonidentity_calibration_artifact():
             )
         )
     artifact = fit_development_calibration(records)
-    assert artifact.selected_algorithm == "isotonic"
+    assert artifact.selected_algorithm == "identity"
     return artifact
 
 
@@ -552,7 +552,7 @@ def test_single_ablation_rejects_unverified_score_or_calibration():
         )
 
 
-def test_development_reference_uses_heldout_fold_not_all_development_calibrator():
+def test_development_reference_records_binding_identity_holdout_receipt():
     from maskimpute import (
         MaskImputeConfig,
         PreZeroCountModelConfig,
@@ -569,7 +569,7 @@ def test_development_reference_uses_heldout_fold_not_all_development_calibrator(
         cell_ids,
         PreZeroCountModelConfig(n_folds=2, link_max_iter=25),
     )
-    artifact = _nonidentity_calibration_artifact()
+    artifact = _binding_identity_calibration_artifact()
     result = _fit_ablation_once(
         counts,
         score,
@@ -600,7 +600,7 @@ def test_development_reference_uses_heldout_fold_not_all_development_calibrator(
     full[observed_zero] = artifact.transform(direct[observed_zero])
 
     np.testing.assert_allclose(result.p_pre_zero, expected)
-    assert not np.array_equal(result.p_pre_zero, full)
+    np.testing.assert_array_equal(result.p_pre_zero, full)
     assert result.diagnostics["score"]["calibration_scope"] == (
         "leave_one_biological_draw_out"
     )
@@ -608,6 +608,26 @@ def test_development_reference_uses_heldout_fold_not_all_development_calibrator(
         "mechanism": "symsim",
         "biological_id": "draw-01",
     }
+    fold = next(
+        item
+        for item in artifact.to_dict()["development_holdout_calibrators"]
+        if item["mechanism"] == "symsim" and item["biological_id"] == "draw-01"
+    )
+    receipt = result.diagnostics["score"]["calibration_fold_receipt"]
+    assert receipt["calibrator_algorithm"] == "identity"
+    assert len(receipt["calibrator_sha256"]) == 64
+    assert receipt["held_out_manifest_sha256s"] == tuple(
+        fold["held_out_manifest_sha256s"]
+    )
+    assert receipt["training_manifest_sha256s"] == tuple(
+        fold["training_manifest_sha256s"]
+    )
+    assert set(receipt["held_out_manifest_sha256s"]).isdisjoint(
+        receipt["training_manifest_sha256s"]
+    )
+    assert result.diagnostics["score"]["equivalence_reason"] == (
+        "retained_identity_calibrator_equals_direct_score"
+    )
 
 
 def test_final_reference_uses_retained_all_development_calibrator_on_unseen_draw():

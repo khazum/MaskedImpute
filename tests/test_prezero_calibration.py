@@ -100,7 +100,7 @@ def test_calibration_scope_constant_binds_the_tracked_development_protocol():
     }
 
 
-def test_calibration_amendment_contract_is_tracked_fixed_and_pre_final():
+def test_binding_calibration_contract_is_tracked_fixed_and_pre_final():
     from maskimpute.calibration import CALIBRATION_CONTRACT_SHA256
 
     path = Path("study/calibration_contract.json")
@@ -109,6 +109,7 @@ def test_calibration_amendment_contract_is_tracked_fixed_and_pre_final():
 
     assert hashlib.sha256(contract_bytes).hexdigest() == CALIBRATION_CONTRACT_SHA256
     assert contract["schema_version"] == 1
+    assert contract["contract_id"] == "prezero-calibration-retention-binding-v1"
     assert contract["artifact_schema_version"] == 3
     assert contract["status"] == "adopted"
     assert contract["timing"] == {
@@ -147,7 +148,7 @@ def test_calibration_amendment_contract_is_tracked_fixed_and_pre_final():
         ],
         "log_loss_worsening_tolerance": 1e-3,
         "minimum_biological_draws_improved": 2,
-        "minimum_exact_mechanisms_improved": 1,
+        "minimum_exact_mechanisms_improved": 3,
         "minimum_technical_records_improved": 4,
         "require_all_biological_draws_improved": True,
         "require_all_eligible_exact_mechanisms_improved": True,
@@ -157,6 +158,9 @@ def test_calibration_amendment_contract_is_tracked_fixed_and_pre_final():
             "reported_not_gated_nested_technical_observation"
         ),
     }
+    assert len(contract["truth_scope"]["eligible_exact_mechanisms"]) < (
+        contract["retention_rules"]["minimum_exact_mechanisms_improved"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -644,7 +648,7 @@ def test_retention_gate_requires_every_exact_mechanism_draw_and_technical_record
     )
 
 
-def test_retention_gate_passes_consistent_two_draw_evidence_and_does_not_gate_record_slope():
+def test_retention_gate_preserves_draw_record_evidence_when_mechanism_count_blocks():
     from maskimpute.calibration import CalibrationThresholds, retention_reasons
 
     records = {
@@ -678,7 +682,10 @@ def test_retention_gate_passes_consistent_two_draw_evidence_and_does_not_gate_re
         CalibrationThresholds(),
     )
 
-    assert reasons == ()
+    assert reasons == (
+        "insufficient_eligible_exact_truth_mechanisms:1<3",
+        "insufficient_exact_mechanism_brier_improvement:1<3",
+    )
     assert improved_mechanisms == ("symsim",)
     assert improved_draws == ("symsim/draw-01", "symsim/draw-02")
     assert improved_records == tuple(records)
@@ -687,7 +694,9 @@ def test_retention_gate_passes_consistent_two_draw_evidence_and_does_not_gate_re
 @pytest.mark.parametrize(
     "override",
     [
+        {"minimum_exact_mechanisms_improved": 1},
         {"minimum_exact_mechanisms_improved": 2},
+        {"minimum_exact_mechanisms_improved": 4},
         {"minimum_biological_draws_improved": 1},
         {"minimum_biological_draws_improved": 3},
         {"minimum_technical_records_improved": 3},
@@ -786,8 +795,12 @@ def test_cross_validated_candidate_panel_keeps_identity_and_all_three_alternativ
     for candidate in decision.candidates[1:]:
         assert candidate.eligible is False
         assert candidate.eligibility_reasons
-        assert not any(
-            "eligible_exact_truth_mechanisms:1<3" in reason
+        assert (
+            "insufficient_eligible_exact_truth_mechanisms:1<3"
+            in candidate.eligibility_reasons
+        )
+        assert any(
+            reason.startswith("insufficient_exact_mechanism_brier_improvement:")
             for reason in candidate.eligibility_reasons
         )
 
@@ -858,7 +871,7 @@ def _consistent_two_draw_retention_records():
     )
 
 
-def test_real_shaped_two_draw_fixture_retains_beta_and_isotonic_but_rejects_logistic():
+def test_real_shaped_fixture_reports_improvement_but_rejects_one_mechanism_fit():
     from maskimpute.calibration import evaluate_calibration_candidates
 
     decision = evaluate_calibration_candidates(_consistent_two_draw_retention_records())
@@ -871,8 +884,11 @@ def test_real_shaped_two_draw_fixture_retains_beta_and_isotonic_but_rejects_logi
     )
     for algorithm in ("beta", "isotonic"):
         candidate = candidates[algorithm]
-        assert candidate.eligible is True
-        assert candidate.eligibility_reasons == ()
+        assert candidate.eligible is False
+        assert candidate.eligibility_reasons == (
+            "insufficient_eligible_exact_truth_mechanisms:1<3",
+            "insufficient_exact_mechanism_brier_improvement:1<3",
+        )
         assert candidate.brier_improved_mechanisms == ("symsim",)
         assert candidate.brier_improved_biological_draws == (
             "symsim/draw-01",
@@ -884,17 +900,54 @@ def test_real_shaped_two_draw_fixture_retains_beta_and_isotonic_but_rejects_logi
             "symsim/draw-02/moderate",
             "symsim/draw-02/severe",
         )
-    assert decision.selected_algorithm == "isotonic"
+    assert decision.selected_algorithm == "identity"
 
 
-def test_schema3_artifact_retains_exact_lodo_calibrators_for_development_use():
+def test_single_exact_mechanism_forces_identity_under_three_mechanism_gate():
+    from maskimpute.calibration import fit_development_calibration
+
+    artifact = fit_development_calibration(
+        _consistent_two_draw_retention_records()
+    )
+    payload = artifact.to_dict()
+
+    assert payload["selected_algorithm"] == "identity"
+    assert payload["calibrator"] == {"algorithm": "identity", "parameters": {}}
+    candidates = {
+        candidate["algorithm"]: candidate
+        for candidate in payload["selection"]["candidates"]
+    }
+    for candidate in (
+        candidates["logistic"],
+        candidates["beta"],
+        candidates["isotonic"],
+    ):
+        assert candidate["eligible"] is False
+        assert (
+            "insufficient_eligible_exact_truth_mechanisms:1<3"
+            in candidate["eligibility_reasons"]
+        )
+    assert (
+        "insufficient_exact_mechanism_brier_improvement:0<3"
+        in candidates["logistic"]["eligibility_reasons"]
+    )
+    for algorithm in ("beta", "isotonic"):
+        candidate = candidates[algorithm]
+        assert candidate["brier_improved_mechanisms"] == ["symsim"]
+        assert (
+            "insufficient_exact_mechanism_brier_improvement:1<3"
+            in candidate["eligibility_reasons"]
+        )
+
+
+def test_schema3_artifact_retains_exact_identity_lodo_receipts():
     from maskimpute.calibration import fit_development_calibration
 
     records = _consistent_two_draw_retention_records()
     artifact = fit_development_calibration(records)
     payload = artifact.to_dict()
 
-    assert artifact.selected_algorithm == "isotonic"
+    assert artifact.selected_algorithm == "identity"
     folds = payload["development_holdout_calibrators"]
     assert [(fold["mechanism"], fold["biological_id"]) for fold in folds] == [
         ("symsim", "draw-01"),
@@ -915,13 +968,9 @@ def test_schema3_artifact_retains_exact_lodo_calibrators_for_development_use():
         mechanism="symsim",
         biological_id="draw-01",
     )
-    fold = folds[0]["calibrator"]["parameters"]
-    np.testing.assert_allclose(
-        transformed,
-        np.interp(sample, fold["knots"], fold["values"]),
-    )
-    assert not np.array_equal(transformed, artifact.transform(sample))
-    assert not np.array_equal(
+    np.testing.assert_array_equal(transformed, sample)
+    np.testing.assert_array_equal(transformed, artifact.transform(sample))
+    np.testing.assert_array_equal(
         transformed,
         artifact.transform_for_development_holdout(
             sample,
@@ -961,7 +1010,7 @@ def test_fitted_artifact_is_deterministic_complete_and_score_only():
     assert payload["inference_features"] == ["p_pre_zero"]
     assert payload["selected_algorithm"] == payload["calibrator"]["algorithm"]
     assert payload["retention_contract"] == {
-        "contract_id": "prezero-calibration-retention-development-amendment-v1",
+        "contract_id": "prezero-calibration-retention-binding-v1",
         "path": "study/calibration_contract.json",
         "sha256": CALIBRATION_CONTRACT_SHA256,
     }
@@ -970,7 +1019,7 @@ def test_fitted_artifact_is_deterministic_complete_and_score_only():
         "eligible_mechanisms": ["symsim"],
         "eligible_mechanism_count": 1,
         "minimum_biological_draws_improved": 2,
-        "minimum_exact_mechanisms_improved": 1,
+        "minimum_exact_mechanisms_improved": 3,
         "minimum_technical_records_improved": 4,
         "panel_limitations": {
             "semisynthetic": "proxy_truth_not_exact",
@@ -1128,7 +1177,9 @@ def test_artifact_loader_rejects_boolean_schema_even_with_recomputed_digest(
         load_calibration_artifact(path)
 
 
-def test_artifact_loader_rejects_obsolete_schema2_after_amendment(tmp_path: Path):
+def test_artifact_loader_rejects_obsolete_schema2_under_binding_contract(
+    tmp_path: Path,
+):
     from maskimpute.calibration import load_calibration_artifact
 
     payload = {
@@ -1142,7 +1193,7 @@ def test_artifact_loader_rejects_obsolete_schema2_after_amendment(tmp_path: Path
         load_calibration_artifact(path)
 
 
-def test_artifact_loader_rejects_rehashed_amendment_contract_substitution(
+def test_artifact_loader_rejects_rehashed_binding_contract_substitution(
     tmp_path: Path,
 ):
     from maskimpute.calibration import (
@@ -1153,10 +1204,10 @@ def test_artifact_loader_rejects_rehashed_amendment_contract_substitution(
     payload = fit_development_calibration(_development_records()).to_dict()
     payload["retention_contract"]["sha256"] = "0" * 64
     _rehash_payload(payload)
-    path = tmp_path / "substituted-amendment.json"
+    path = tmp_path / "substituted-contract.json"
     _canonical_write(path, payload)
 
-    with pytest.raises(ValueError, match="amendment|contract"):
+    with pytest.raises(ValueError, match="contract"):
         load_calibration_artifact(path)
 
 

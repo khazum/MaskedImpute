@@ -391,7 +391,7 @@ def _tiny_cell_ids() -> tuple[str, ...]:
     return tuple(f"external-v27-cell-{index}" for index in range(len(_tiny_counts())))
 
 
-def _retained_nonidentity_calibration_artifact():
+def _binding_identity_calibration_artifact():
     from maskimpute.calibration import (
         DEVELOPMENT_PROTOCOL_SHA256,
         CalibrationRecord,
@@ -436,7 +436,7 @@ def _retained_nonidentity_calibration_artifact():
             )
         )
     artifact = fit_development_calibration(records)
-    assert artifact.selected_algorithm == "isotonic"
+    assert artifact.selected_algorithm == "identity"
     return artifact
 
 
@@ -594,13 +594,13 @@ def test_exact_count_model_artifact_is_revalidated_and_reported_as_verified():
     }
 
 
-def test_public_reference_applies_retained_all_development_calibrator():
+def test_public_reference_applies_binding_identity_calibrator():
     from maskimpute import fit_p_pre_zero_count_model, impute_counts
 
     counts = _tiny_counts()
     cell_ids = _tiny_cell_ids()
     score = fit_p_pre_zero_count_model(counts, cell_ids)
-    calibration = _retained_nonidentity_calibration_artifact()
+    calibration = _binding_identity_calibration_artifact()
 
     result = impute_counts(
         counts,
@@ -617,13 +617,13 @@ def test_public_reference_applies_retained_all_development_calibrator():
         score.p_pre_zero[observed_zero]
     )
     np.testing.assert_allclose(result.p_pre_zero, expected)
-    assert not np.array_equal(result.p_pre_zero, score.p_pre_zero)
+    np.testing.assert_array_equal(result.p_pre_zero, score.p_pre_zero)
     diagnostics = result.diagnostics
     assert diagnostics["score_source"] == (
         "maskimpute_retained_calibrated_cross_fitted_count_only_p_pre_zero"
     )
     assert diagnostics["score_calibration"] == {
-        "algorithm": "isotonic",
+        "algorithm": "identity",
         "artifact_payload_sha256": calibration.to_dict()["payload_sha256"],
         "scope": "all_development_fit_for_external_or_final_inference",
         "training_manifest_sha256s": tuple(
@@ -638,7 +638,7 @@ def test_public_calibration_requires_exact_score_and_artifact():
     counts = _tiny_counts()
     cell_ids = _tiny_cell_ids()
     score = fit_p_pre_zero_count_model(counts, cell_ids)
-    calibration = _retained_nonidentity_calibration_artifact()
+    calibration = _binding_identity_calibration_artifact()
     config = _tiny_config(max_epochs=1, patience=1)
 
     with pytest.raises(TypeError, match="PreZeroCountModelScore"):

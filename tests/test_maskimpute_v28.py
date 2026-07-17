@@ -776,7 +776,11 @@ def test_tracked_revision_authorities_keep_full_comparator_denominator(tmp_path)
         and entry.configuration_id == "v28-c01-nb-parent-c03"
     )
     assert len(v28_rows) == 16 * 3
-    assert all(entry.preflight_status == "planned" for entry in v28_rows)
+    assert all(entry.preflight_status == "blocked_authority" for entry in v28_rows)
+    assert all(
+        entry.preflight_reason == "count_score_or_calibration_authority_pending"
+        for entry in v28_rows
+    )
     assert any(
         value.configuration_id == "v28-c01-nb-parent-c03"
         for value in plan.configurations

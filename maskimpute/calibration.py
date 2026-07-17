@@ -24,11 +24,9 @@ DEVELOPMENT_PROTOCOL_SHA256 = (
     "7cfa1b55458b5b2bc4c22e3a155086724586d95df40aa61c4b78b1a779794249"
 )
 CALIBRATION_CONTRACT_SHA256 = (
-    "c1cb47b86e1132ef080830c6b58bf7fa4aac524ca832a9e7e55b81d41fb41ef0"
+    "180d85cc18e359970fff3c9cff37190c2b944b13b0883a46be2765c439a8a1b3"
 )
-_CALIBRATION_CONTRACT_ID = (
-    "prezero-calibration-retention-development-amendment-v1"
-)
+_CALIBRATION_CONTRACT_ID = "prezero-calibration-retention-binding-v1"
 _CALIBRATION_CONTRACT_PATH = "study/calibration_contract.json"
 _DEVELOPMENT_NAMESPACE = "dev"
 _DEVELOPMENT_DATA_ROLE = "development"
@@ -40,7 +38,7 @@ _DEVELOPMENT_PANEL_KEYS = frozenset(
     for technical_view in _SYMSIM_TECHNICAL_VIEWS
 )
 _PRESPECIFIED_THRESHOLDS = {
-    "minimum_exact_mechanisms_improved": 1,
+    "minimum_exact_mechanisms_improved": 3,
     "minimum_biological_draws_improved": 2,
     "minimum_technical_records_improved": 4,
     "brier_improvement_epsilon": 1e-6,
@@ -770,7 +768,7 @@ def calibration_metrics(
 
 @dataclass(frozen=True, slots=True)
 class CalibrationThresholds:
-    minimum_exact_mechanisms_improved: int = 1
+    minimum_exact_mechanisms_improved: int = 3
     minimum_biological_draws_improved: int = 2
     minimum_technical_records_improved: int = 4
     brier_improvement_epsilon: float = 1e-6
@@ -1498,7 +1496,7 @@ def _validate_artifact_payload(
     ):
         raise ValueError(
             "calibration artifact schema 2 is obsolete after the development "
-            "retention amendment"
+            "retention contract"
         )
     payload = _exact_keys(
         value,
@@ -1565,7 +1563,7 @@ def _validate_artifact_payload(
         "path": _CALIBRATION_CONTRACT_PATH,
         "sha256": CALIBRATION_CONTRACT_SHA256,
     }:
-        raise ValueError("calibration retention amendment contract binding is invalid")
+        raise ValueError("calibration retention contract binding is invalid")
 
     truth_eligibility = _exact_keys(
         payload["truth_eligibility"],
@@ -2123,9 +2121,9 @@ def _verify_tracked_calibration_contract() -> None:
     try:
         contract_bytes = path.read_bytes()
     except OSError as exc:
-        raise RuntimeError("tracked calibration amendment contract is unavailable") from exc
+        raise RuntimeError("tracked calibration retention contract is unavailable") from exc
     if hashlib.sha256(contract_bytes).hexdigest() != CALIBRATION_CONTRACT_SHA256:
-        raise ValueError("tracked calibration amendment contract digest differs")
+        raise ValueError("tracked calibration retention contract digest differs")
 
 
 def fit_development_calibration(

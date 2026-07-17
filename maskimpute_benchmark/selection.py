@@ -2128,7 +2128,7 @@ def _load_selection_authority(
         raise SelectionAuthorityError("calibration contract checksum mismatch")
     expected_calibration_contract = {
         "schema_version": 1,
-        "contract_id": "prezero-calibration-retention-development-amendment-v1",
+        "contract_id": "prezero-calibration-retention-binding-v1",
         "artifact_schema_version": 3,
         "status": "adopted",
         "timing": {
@@ -2154,7 +2154,7 @@ def _load_selection_authority(
             "final_inference": "all_development_fitted_calibrator",
         },
         "retention_rules": {
-            "minimum_exact_mechanisms_improved": 1,
+            "minimum_exact_mechanisms_improved": 3,
             "minimum_biological_draws_improved": 2,
             "minimum_technical_records_improved": 4,
             "brier_improvement_epsilon": 1e-6,
@@ -2182,9 +2182,7 @@ def _load_selection_authority(
         },
     }
     if payloads["study/calibration_contract.json"] != expected_calibration_contract:
-        raise SelectionAuthorityError(
-            "calibration retention amendment contract is invalid"
-        )
+        raise SelectionAuthorityError("calibration retention contract is invalid")
     required_ids = (
         tuple(contract["required_comparator_ids"])
         if type(contract["required_comparator_ids"]) is list
@@ -3123,12 +3121,12 @@ def _validate_bound_development_artifacts(
     if verified_calibration.get("schema_version") != 3:
         raise SelectionAuthorityError("retained calibration must use artifact schema 3")
     if verified_calibration.get("retention_contract") != {
-        "contract_id": "prezero-calibration-retention-development-amendment-v1",
+        "contract_id": "prezero-calibration-retention-binding-v1",
         "path": "study/calibration_contract.json",
         "sha256": authority.file_sha256["study/calibration_contract.json"],
     }:
         raise SelectionAuthorityError(
-            "retained calibration does not bind the adopted retention amendment"
+            "retained calibration does not bind the adopted retention contract"
         )
     holdout_calibrators = verified_calibration.get("development_holdout_calibrators")
     if not isinstance(holdout_calibrators, list) or [

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_id": "prezero-calibration-retention-development-amendment-v1",
+  "contract_id": "prezero-calibration-retention-binding-v1",
   "artifact_schema_version": 3,
   "status": "adopted",
   "timing": {
@@ -26,7 +26,7 @@
     "final_inference": "all_development_fitted_calibrator"
   },
   "retention_rules": {
-    "minimum_exact_mechanisms_improved": 1,
+    "minimum_exact_mechanisms_improved": 3,
     "minimum_biological_draws_improved": 2,
     "minimum_technical_records_improved": 4,
     "brier_improvement_epsilon": 0.000001,

@@ -37,7 +37,7 @@
   "count_model_config_sha256": "01a8355b0b99129ab7e3996790323b14531c130fd29e68bba80a478c13ebc1c6",
   "ablation_registry_path": "study/ablations.json",
   "calibration_contract_path": "study/calibration_contract.json",
-  "calibration_contract_sha256": "c1cb47b86e1132ef080830c6b58bf7fa4aac524ca832a9e7e55b81d41fb41ef0",
+  "calibration_contract_sha256": "180d85cc18e359970fff3c9cff37190c2b944b13b0883a46be2765c439a8a1b3",
   "dataset_qc_policy": {
     "cell_exclusion_rule": "observed_library_size_equals_zero",
     "minimum_retained_cells": 2,

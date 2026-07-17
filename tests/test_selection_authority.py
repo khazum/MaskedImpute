@@ -566,7 +566,31 @@ def test_public_selection_api_accepts_results_only_not_design_authority():
     assert tuple(signature.parameters) == ("payload",)
 
 
-def test_repository_authority_derives_design_methods_and_ready_calibration():
+def test_tracked_ledger_atomically_invalidates_old_score_and_calibration():
+    calibration_path = Path("study/calibration_contract.json")
+    selection_path = Path("study/selection_contract.json")
+    selection = json.loads(selection_path.read_text())
+    ledger = json.loads(Path("study/development_search.json").read_text())
+
+    calibration_sha = hashlib.sha256(calibration_path.read_bytes()).hexdigest()
+    selection_sha = hashlib.sha256(selection_path.read_bytes()).hexdigest()
+    assert selection["calibration_contract_sha256"] == calibration_sha
+    assert ledger["authority"]["calibration_contract_sha256"] == calibration_sha
+    assert ledger["authority"]["selection_contract_sha256"] == selection_sha
+
+    assert ledger["count_score_manifest"] == {
+        "status": "pending",
+        "path": "artifacts/study/development/count_scores/manifest.json",
+        "sha256": None,
+    }
+    assert ledger["retained_calibration_artifact"] == {
+        "status": "pending",
+        "path": "artifacts/study/development/calibration/retained_calibration.json",
+        "sha256": None,
+    }
+
+
+def test_repository_authority_derives_design_methods_and_pending_artifacts():
     from maskimpute_benchmark.selection import (
         _load_selection_authority,
         load_publication_execution_authority,
@@ -596,20 +620,16 @@ def test_repository_authority_derives_design_methods_and_ready_calibration():
         "sccr",
         "scsdae",
     )
-    assert authority.retained_calibration.status == "ready"
+    assert authority.retained_calibration.status == "pending"
     assert authority.retained_calibration.path == (
         "artifacts/study/development/calibration/retained_calibration.json"
     )
-    assert authority.retained_calibration.sha256 == (
-        "905567fdb35e7e1f44defca9c76ee13b0442fc6beba3e5fc70a543f8dd59dcd9"
-    )
-    assert authority.count_score_manifest.status == "ready"
+    assert authority.retained_calibration.sha256 is None
+    assert authority.count_score_manifest.status == "pending"
     assert authority.count_score_manifest.path == (
         "artifacts/study/development/count_scores/manifest.json"
     )
-    assert authority.count_score_manifest.sha256 == (
-        "0aa43abf97499faea5c1506bcd112ae608fd51490715dbdb784184d709632a02"
-    )
+    assert authority.count_score_manifest.sha256 is None
     assert dict(authority.base_maskimpute_config) == {
         "hidden_dims": (128, 64),
         "latent_dim": 24,
@@ -686,7 +706,7 @@ def test_repository_authority_derives_design_methods_and_ready_calibration():
         "dd4da34e0ebe5e7eb349fac3ed89063781bcddf640b01601b9a3c82a2e43b26f"
     )
     assert authority.file_sha256["study/calibration_contract.json"] == (
-        "c1cb47b86e1132ef080830c6b58bf7fa4aac524ca832a9e7e55b81d41fb41ef0"
+        "180d85cc18e359970fff3c9cff37190c2b944b13b0883a46be2765c439a8a1b3"
     )
     assert len(authority.attempts) == 20
     assert tuple(item.configuration_id for item in authority.attempts)[:2] == (
@@ -707,14 +727,16 @@ def test_repository_authority_derives_design_methods_and_ready_calibration():
     )
 
 
-def test_public_selection_rejects_malformed_result_before_evidence_validation():
+def test_public_selection_rejects_malformed_result_before_evidence_validation(tmp_path):
     from maskimpute_benchmark.selection import (
         SelectionAuthorityError,
         _select_for_repository,
     )
 
+    repository, _calibration_sha = _ready_repository(tmp_path)
+
     with pytest.raises(SelectionAuthorityError, match="missing or extra fields"):
-        _select_for_repository({}, Path.cwd(), require_clean=False)
+        _select_for_repository({}, repository, require_clean=False)
 
 
 def test_ready_public_selection_binds_results_to_all_repository_authorities(
