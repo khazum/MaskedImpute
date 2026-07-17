@@ -1962,8 +1962,7 @@ def _load_selection_authority(
                 f"method {method_id} same-input execution scope is inconsistent"
             )
         if execution_scope == "external_reference_only" and (
-            row["track"] != "external_reference"
-            or applicability_reason is not None
+            row["track"] != "external_reference" or applicability_reason is not None
         ):
             raise SelectionAuthorityError(
                 f"method {method_id} external-reference execution scope is inconsistent"
@@ -2715,6 +2714,177 @@ def _load_selection_authority(
     )
 
 
+_DOWNSTREAM_SELECTION_BINDING_FIELDS = frozenset(
+    {
+        "path",
+        "manifest_file_sha256",
+        "manifest_sha256",
+        "plan_sha256",
+        "planned_denominator_count",
+        "endpoint_row_count",
+    }
+)
+
+
+def _selection_downstream_denominators(
+    records: object,
+) -> tuple[tuple[object, ...], ...]:
+    if isinstance(records, (str, bytes)) or not isinstance(records, Sequence):
+        raise SelectionAuthorityError("selection records are invalid")
+    result: set[tuple[object, ...]] = set()
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping):
+            raise SelectionAuthorityError(f"selection record {index} is invalid")
+        key = (
+            record.get("mechanism"),
+            record.get("biological_id"),
+            record.get("technical_view"),
+            record.get("dataset_id"),
+            record.get("method"),
+            record.get("model_seed"),
+        )
+        if any(not isinstance(value, str) or not value for value in key[:5]) or (
+            key[5] is not None and (isinstance(key[5], bool) or type(key[5]) is not int)
+        ):
+            raise SelectionAuthorityError(
+                f"selection record {index} denominator identity is invalid"
+            )
+        result.add(key)
+    if not result:
+        raise SelectionAuthorityError("selection denominator set is empty")
+    return tuple(sorted(result, key=lambda value: tuple(str(item) for item in value)))
+
+
+def _downstream_output_directory(repository: Path, value: object) -> Path:
+    if not isinstance(value, str) or not value:
+        raise SelectionAuthorityError("downstream evidence path is invalid")
+    relative = PurePosixPath(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SelectionAuthorityError("downstream evidence path is unsafe")
+    path = repository.joinpath(*relative.parts)
+    for component in (path, *path.parents):
+        if component == repository.parent:
+            break
+        if component.is_symlink():
+            raise SelectionAuthorityError("downstream evidence path contains a symlink")
+    if not path.is_dir():
+        raise SelectionAuthorityError("downstream evidence directory is absent")
+    return path
+
+
+def validate_downstream_selection_completeness(
+    repository: Path,
+    records: object,
+    binding: object,
+) -> Mapping[str, str]:
+    """Require bound eight-row downstream evidence for every selection denominator."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    row = _exact_authority_mapping(
+        binding,
+        _DOWNSTREAM_SELECTION_BINDING_FIELDS,
+        "downstream evidence binding",
+    )
+    directory = _downstream_output_directory(repository, row["path"])
+    manifest_path = directory / "downstream_manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise SelectionAuthorityError("downstream evidence manifest is absent")
+    manifest_file_sha = _authority_sha(
+        row["manifest_file_sha256"], "downstream manifest file checksum"
+    )
+    if _file_sha256(manifest_path) != manifest_file_sha:
+        raise SelectionAuthorityError("downstream manifest file checksum mismatch")
+    try:
+        from .downstream_evidence import (
+            DownstreamEvidenceError,
+            validate_downstream_evidence_completeness,
+        )
+
+        evidence = validate_downstream_evidence_completeness(
+            directory,
+            expected_denominators=_selection_downstream_denominators(records),
+        )
+    except DownstreamEvidenceError as error:
+        raise SelectionAuthorityError(
+            f"downstream evidence completeness failed: {error}"
+        ) from error
+    if evidence.payload.get("source_kind") != "development":
+        raise SelectionAuthorityError("selection downstream source is not development")
+    expected_count = row["planned_denominator_count"]
+    expected_rows = row["endpoint_row_count"]
+    if (
+        row["manifest_sha256"] != evidence.manifest_sha256
+        or row["plan_sha256"] != evidence.plan_sha256
+        or isinstance(expected_count, bool)
+        or type(expected_count) is not int
+        or expected_count != evidence.planned_denominator_count
+        or isinstance(expected_rows, bool)
+        or type(expected_rows) is not int
+        or expected_rows != evidence.endpoint_row_count
+    ):
+        raise SelectionAuthorityError("downstream evidence binding differs")
+    return MappingProxyType(
+        {
+            "downstream_manifest_file_sha256": manifest_file_sha,
+            "downstream_manifest_sha256": evidence.manifest_sha256,
+            "downstream_plan_sha256": evidence.plan_sha256,
+        }
+    )
+
+
+def attach_downstream_evidence_to_selection_result(
+    payload: object,
+    repository: Path,
+    relative_directory: str,
+) -> dict[str, object]:
+    """Upgrade a schema-2/3 result to selection-complete schema 4."""
+
+    if type(payload) is not dict or payload.get("schema_version") not in {2, 3}:
+        raise SelectionAuthorityError("downstream attachment requires schema 2 or 3")
+    original_sha = _authority_sha(
+        payload.get("result_sha256"), "development result checksum"
+    )
+    original_core = {
+        key: value for key, value in payload.items() if key != "result_sha256"
+    }
+    if _canonical_sha256(original_core) != original_sha:
+        raise SelectionAuthorityError("development result checksum mismatch")
+    directory = _downstream_output_directory(repository, relative_directory)
+    try:
+        from .downstream_evidence import load_downstream_evidence_manifest
+
+        evidence = load_downstream_evidence_manifest(directory)
+    except Exception as error:
+        raise SelectionAuthorityError(
+            "downstream evidence cannot be attached"
+        ) from error
+    manifest_path = directory / "downstream_manifest.json"
+    binding: dict[str, object] = {
+        "path": relative_directory,
+        "manifest_file_sha256": _file_sha256(manifest_path),
+        "manifest_sha256": evidence.manifest_sha256,
+        "plan_sha256": evidence.plan_sha256,
+        "planned_denominator_count": evidence.planned_denominator_count,
+        "endpoint_row_count": evidence.endpoint_row_count,
+    }
+    revision_versions = (
+        [] if payload["schema_version"] == 2 else list(payload["revision_versions"])
+    )
+    upgraded_core = {
+        **original_core,
+        "schema_version": 4,
+        "revision_versions": revision_versions,
+        "downstream_evidence": binding,
+    }
+    upgraded = {
+        **upgraded_core,
+        "result_sha256": _canonical_sha256(upgraded_core),
+    }
+    validate_downstream_selection_completeness(repository, upgraded["records"], binding)
+    return upgraded
+
+
 def _select_for_repository(
     payload: object,
     repository: Path,
@@ -2741,6 +2911,8 @@ def _select_for_repository(
         if schema_version == 2
         else {*base_fields, "revision_versions"}
         if schema_version == 3
+        else {*base_fields, "revision_versions", "downstream_evidence"}
+        if schema_version == 4
         else base_fields
     )
     data = _exact_authority_mapping(
@@ -2748,13 +2920,18 @@ def _select_for_repository(
         expected_fields,
         "development result payload",
     )
-    if schema_version not in {2, 3} or type(schema_version) is not int:
+    if schema_version not in {2, 3, 4} or type(schema_version) is not int:
         raise SelectionAuthorityError(
-            "development result schema_version must equal 2 or 3"
+            "development result schema_version must equal 2, 3, or 4"
         )
-    if schema_version == 3:
+    if schema_version in {3, 4}:
         revision_versions = data["revision_versions"]
-        if revision_versions not in (["v28"], ["v28", "v29"]):
+        allowed_versions = (
+            ([], ["v28"], ["v28", "v29"])
+            if schema_version == 4
+            else (["v28"], ["v28", "v29"])
+        )
+        if revision_versions not in allowed_versions:
             raise SelectionAuthorityError(
                 "development revision versions are incomplete or reordered"
             )
@@ -2865,15 +3042,39 @@ def _select_for_repository(
         status,
         MappingProxyType(dataset_bindings),
     )
-    if schema_version == 2:
+    downstream_bindings: Mapping[str, str] = MappingProxyType({})
+    if schema_version == 4:
+        downstream_bindings = validate_downstream_selection_completeness(
+            repository,
+            data["records"],
+            data["downstream_evidence"],
+        )
+    if schema_version == 2 or (schema_version == 4 and data["revision_versions"] == []):
         try:
             from .evaluation_manifest import (
                 EvaluationManifestError,
                 validate_selection_evaluation_manifest,
             )
 
+            evaluation_data = data
+            if schema_version == 4:
+                evaluation_core = {
+                    key: value
+                    for key, value in data.items()
+                    if key
+                    not in {
+                        "downstream_evidence",
+                        "revision_versions",
+                        "result_sha256",
+                    }
+                }
+                evaluation_core["schema_version"] = 2
+                evaluation_data = {
+                    **evaluation_core,
+                    "result_sha256": _canonical_sha256(evaluation_core),
+                }
             evaluation_evidence = validate_selection_evaluation_manifest(
-                repository, data, authority, status
+                repository, evaluation_data, authority, status
             )
         except EvaluationManifestError as error:
             raise SelectionAuthorityError(
@@ -2887,9 +3088,21 @@ def _select_for_repository(
                 validate_revision_selection_evaluation,
             )
 
+            revision_data = data
+            if schema_version == 4:
+                revision_core = {
+                    key: value
+                    for key, value in data.items()
+                    if key not in {"downstream_evidence", "result_sha256"}
+                }
+                revision_core["schema_version"] = 3
+                revision_data = {
+                    **revision_core,
+                    "result_sha256": _canonical_sha256(revision_core),
+                }
             evaluation_evidence = validate_revision_selection_evaluation(
                 repository,
-                data,
+                revision_data,
                 data["revision_versions"][-1],
                 require_clean=require_clean,
             )
@@ -2932,6 +3145,7 @@ def _select_for_repository(
             "retained_calibration_artifact_sha256": calibration_sha,
             "count_score_manifest_sha256": count_score_sha,
             **artifact_bindings,
+            **dict(downstream_bindings),
             **dict(evaluation_evidence.bindings),
         }
     )
@@ -3417,7 +3631,9 @@ __all__ = [
     "SelectionAuthority",
     "SelectionAuthorityError",
     "SelectionReport",
+    "attach_downstream_evidence_to_selection_result",
     "finalize_development_artifact_bindings",
     "load_publication_execution_authority",
     "select_development_candidate",
+    "validate_downstream_selection_completeness",
 ]

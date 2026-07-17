@@ -92,6 +92,7 @@ ENDPOINT_REASON_CODES = frozenset(
         "trajectory_graph_disconnected",
         "trajectory_graph_has_zero_degree",
         "trajectory_root_not_prespecified",
+        "upstream_run_not_completed",
     }
 )
 
@@ -389,6 +390,28 @@ def _unavailable_record(
         family_id=family_id,
         family_size=family_size,
         alpha=alpha,
+    )
+
+
+def terminal_downstream_endpoints(
+    reason: str, *, procedure: str
+) -> tuple[EndpointRecord, ...]:
+    """Return all eight unavailable endpoints for one terminal denominator."""
+
+    if reason not in ENDPOINT_REASON_CODES:
+        raise ValueError("terminal downstream reason must be a fixed reason code")
+    if not isinstance(procedure, str) or not procedure:
+        raise ValueError("terminal downstream procedure must be nonempty")
+    return tuple(
+        _unavailable_record(
+            endpoint,
+            reason,
+            direction=_ENDPOINT_CONTRACT[endpoint][0],
+            descriptive_n=0,
+            descriptive_unit=_ENDPOINT_CONTRACT[endpoint][1],
+            procedure=procedure,
+        )
+        for endpoint in DOWNSTREAM_ENDPOINT_NAMES
     )
 
 
@@ -1441,16 +1464,9 @@ def evaluate_downstream_endpoints(
         FloatingPointError,
         OverflowError,
     ):
-        records = tuple(
-            _unavailable_record(
-                endpoint,
-                "numeric_evaluation_failed",
-                direction=_ENDPOINT_CONTRACT[endpoint][0],
-                descriptive_n=0,
-                descriptive_unit=_ENDPOINT_CONTRACT[endpoint][1],
-                procedure="terminal_expected_numeric_failure",
-            )
-            for endpoint in DOWNSTREAM_ENDPOINT_NAMES
+        records = terminal_downstream_endpoints(
+            "numeric_evaluation_failed",
+            procedure="terminal_expected_numeric_failure",
         )
         return records
     records = (
