@@ -36,6 +36,60 @@ DOWNSTREAM_ENDPOINT_NAMES = (
     "trajectory_pseudotime_rank_loss",
 )
 
+_ENDPOINT_CONTRACT = MappingProxyType(
+    {
+        "marker_rank_loss": ("lower_is_better", "truth_markers"),
+        "clustering_ari_loss": ("lower_is_better", "cells"),
+        "clustering_nmi_loss": ("lower_is_better", "cells"),
+        "positive_de_marker_recall": ("higher_is_better", "truth_markers"),
+        "positive_de_false_discovery_rate": (
+            "lower_is_better",
+            "discoveries",
+        ),
+        "heldout_gene_profile_rank_loss": (
+            "lower_is_better",
+            "heldout_variable_genes",
+        ),
+        "heldout_cell_profile_rank_loss": (
+            "lower_is_better",
+            "heldout_variable_cells",
+        ),
+        "trajectory_pseudotime_rank_loss": (
+            "lower_is_better",
+            "trajectory_cells",
+        ),
+    }
+)
+
+ENDPOINT_REASON_CODES = frozenset(
+    {
+        "constant_diffusion_pseudotime",
+        "constant_method_representation",
+        "deterministic_kmeans_failed",
+        "fewer_distinct_method_profiles_than_groups",
+        "fewer_than_three_trajectory_cells",
+        "fewer_than_two_cells_in_group",
+        "fewer_than_two_cells_in_one_vs_rest_arm",
+        "fewer_than_two_genes",
+        "fewer_than_two_groups",
+        "genuine_pseudotime_not_available_in_simulator_output",
+        "group_has_no_truth_markers",
+        "group_labels_unavailable",
+        "group_specific_marker_truth_unavailable",
+        "heldout_has_no_variable_cell_profiles",
+        "heldout_has_no_variable_gene_profiles",
+        "independent_heldout_counts_unavailable",
+        "no_truth_markers",
+        "nonfinite_diffusion_pseudotime",
+        "trajectory_affinity_scale_unavailable",
+        "trajectory_diffusion_eigensolver_failed",
+        "trajectory_diffusion_modes_unavailable",
+        "trajectory_graph_disconnected",
+        "trajectory_graph_has_zero_degree",
+        "trajectory_root_not_prespecified",
+    }
+)
+
 
 def _stable_ids(values: object, name: str) -> tuple[str, ...]:
     try:
@@ -233,18 +287,21 @@ class EndpointRecord:
     alpha: float | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.endpoint, str) or not self.endpoint:
-            raise ValueError("endpoint must be nonempty")
+        if self.endpoint not in _ENDPOINT_CONTRACT:
+            raise ValueError("endpoint is not in the fixed downstream schema")
         if self.status not in {"completed", "unavailable"}:
             raise ValueError("endpoint status must be completed or unavailable")
-        if self.direction not in {"lower_is_better", "higher_is_better"}:
-            raise ValueError("endpoint direction is invalid")
+        expected_direction, expected_descriptive_unit = _ENDPOINT_CONTRACT[
+            self.endpoint
+        ]
+        if self.direction != expected_direction:
+            raise ValueError("endpoint direction contradicts the fixed schema")
         if self.independent_unit != "biological_draw" or self.independent_n != 1:
             raise ValueError("each endpoint record must represent one biological draw")
         if type(self.descriptive_n) is not int or self.descriptive_n < 0:
             raise ValueError("descriptive_n must be a nonnegative integer")
-        if not isinstance(self.descriptive_unit, str) or not self.descriptive_unit:
-            raise ValueError("descriptive_unit must be nonempty")
+        if self.descriptive_unit != expected_descriptive_unit:
+            raise ValueError("endpoint descriptive unit contradicts the fixed schema")
         if not isinstance(self.procedure, str) or not self.procedure:
             raise ValueError("procedure must be nonempty")
         if self.status == "completed":
@@ -252,8 +309,8 @@ class EndpointRecord:
                 raise ValueError("completed endpoint requires a finite value")
             if self.reason is not None:
                 raise ValueError("completed endpoint cannot have a reason")
-        elif self.value is not None or not self.reason:
-            raise ValueError("unavailable endpoint requires only a reason")
+        elif self.value is not None or self.reason not in ENDPOINT_REASON_CODES:
+            raise ValueError("unavailable endpoint requires a fixed reason code")
         family_fields = (self.family_id, self.family_size, self.alpha)
         if any(value is not None for value in family_fields):
             if (

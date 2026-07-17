@@ -755,3 +755,34 @@ def test_complete_evaluator_always_returns_fixed_eight_row_schema() -> None:
     )
     assert by_name["heldout_gene_profile_rank_loss"].status == "completed"
     assert by_name["heldout_cell_profile_rank_loss"].status == "completed"
+
+
+def test_endpoint_schema_rejects_ad_hoc_names_directions_units_and_reasons() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        ENDPOINT_REASON_CODES,
+        EndpointRecord,
+    )
+
+    assert "genuine_pseudotime_not_available_in_simulator_output" in (
+        ENDPOINT_REASON_CODES
+    )
+    valid = {
+        "endpoint": "marker_rank_loss",
+        "value": None,
+        "status": "unavailable",
+        "reason": "group_specific_marker_truth_unavailable",
+        "direction": "lower_is_better",
+        "independent_unit": "biological_draw",
+        "independent_n": 1,
+        "descriptive_n": 0,
+        "descriptive_unit": "truth_markers",
+        "procedure": "fixed-test-procedure",
+    }
+    for field, invalid, message in (
+        ("endpoint", "invented_endpoint", "fixed downstream schema"),
+        ("direction", "higher_is_better", "direction"),
+        ("descriptive_unit", "cells", "descriptive unit"),
+        ("reason", "invented_reason", "reason code"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            EndpointRecord(**{**valid, field: invalid})
