@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass, fields, replace
 import hashlib
 import json
 import os
@@ -228,18 +229,82 @@ def _stable_file_identity(value: os.stat_result) -> tuple[int, ...]:
     )
 
 
+def _directory_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+    )
+
+
+@contextmanager
+def _pinned_parent_directory(path: Path, name: str) -> Iterator[int]:
+    """Yield a parent dirfd reached through one revalidated no-symlink walk."""
+
+    absolute = path.absolute()
+    if not absolute.name:
+        raise FinalRunnerContractError(f"{name} path is invalid")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptors: list[int] = []
+    edges: list[tuple[int, str, int, tuple[int, ...]]] = []
+    try:
+        current = os.open(absolute.anchor, flags)
+        descriptors.append(current)
+        for component in absolute.parent.relative_to(absolute.anchor).parts:
+            named = os.stat(component, dir_fd=current, follow_symlinks=False)
+            if not stat.S_ISDIR(named.st_mode):
+                raise FinalRunnerContractError(f"{name} parent path is not a directory")
+            child = os.open(component, flags, dir_fd=current)
+            opened = os.fstat(child)
+            expected = _directory_identity(named)
+            if _directory_identity(opened) != expected:
+                os.close(child)
+                raise FinalRunnerContractError(
+                    f"{name} parent path changed while being opened"
+                )
+            descriptors.append(child)
+            edges.append((current, component, child, expected))
+            current = child
+        yield current
+        for parent, component, child, expected in edges:
+            named_after = os.stat(
+                component,
+                dir_fd=parent,
+                follow_symlinks=False,
+            )
+            opened_after = os.fstat(child)
+            if (
+                _directory_identity(named_after) != expected
+                or _directory_identity(opened_after) != expected
+            ):
+                raise FinalRunnerContractError(
+                    f"{name} parent path changed during validation"
+                )
+    except FinalRunnerContractError:
+        raise
+    except OSError as error:
+        raise FinalRunnerContractError(f"cannot validate {name} parent path") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def _read_bound_h5ad(
     path: Path,
     binding: DatasetBinding | RegisteredTrajectoryBinding,
     *,
     max_bytes: int | None = None,
     structure_validator: Callable[[Path], None] | None = None,
+    parent_descriptor: int | None = None,
 ):
     """Open one exact H5AD inode and recheck its byte and semantic bindings."""
-
-    import anndata as ad
-
-    from .schema import benchmark_dataset_sha256
 
     if not isinstance(path, Path) or not isinstance(
         binding, (DatasetBinding, RegisteredTrajectoryBinding)
@@ -249,14 +314,53 @@ def _read_bound_h5ad(
         raise ValueError("max_bytes must be a positive integer or None")
     if structure_validator is not None and not callable(structure_validator):
         raise TypeError("structure_validator must be callable or None")
+    if parent_descriptor is not None and (
+        type(parent_descriptor) is not int or parent_descriptor < 0
+    ):
+        raise ValueError("parent_descriptor must be an open descriptor or None")
+    if parent_descriptor is None:
+        with _pinned_parent_directory(path, "final dataset") as pinned_parent:
+            return _read_bound_h5ad_from_parent(
+                path,
+                binding,
+                parent_descriptor=pinned_parent,
+                max_bytes=max_bytes,
+                structure_validator=structure_validator,
+            )
+    return _read_bound_h5ad_from_parent(
+        path,
+        binding,
+        parent_descriptor=parent_descriptor,
+        max_bytes=max_bytes,
+        structure_validator=structure_validator,
+    )
+
+
+def _read_bound_h5ad_from_parent(
+    path: Path,
+    binding: DatasetBinding | RegisteredTrajectoryBinding,
+    *,
+    parent_descriptor: int,
+    max_bytes: int | None,
+    structure_validator: Callable[[Path], None] | None,
+):
+    import anndata as ad
+
+    from .schema import benchmark_dataset_sha256
+
     descriptor = -1
     try:
-        if path.resolve(strict=True) != path.absolute():
-            raise FinalRunnerContractError("final dataset path contains a symlink")
-        named_before = path.lstat()
+        if not stat.S_ISDIR(os.fstat(parent_descriptor).st_mode):
+            raise FinalRunnerContractError("final dataset parent is not a directory")
+        named_before = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
         descriptor = os.open(
-            path,
+            path.name,
             os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent_descriptor,
         )
         opened_before = os.fstat(descriptor)
         if (
@@ -286,7 +390,11 @@ def _read_bound_h5ad(
             structure_validator(opened_path)
         dataset = ad.read_h5ad(opened_path)
         opened_after = os.fstat(descriptor)
-        named_after = path.lstat()
+        named_after = os.stat(
+            path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
         if _stable_file_identity(opened_before) != _stable_file_identity(
             opened_after
         ) or _stable_file_identity(opened_before) != _stable_file_identity(named_after):
@@ -300,6 +408,63 @@ def _read_bound_h5ad(
         raise FinalRunnerContractError(
             f"cannot load final dataset {binding.dataset_id}"
         ) from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _sha256_bound_regular_file(
+    parent_descriptor: int,
+    leaf_name: str,
+    name: str,
+    *,
+    max_bytes: int | None = None,
+) -> str:
+    """Hash one unique regular leaf through an already pinned parent dirfd."""
+
+    descriptor = -1
+    try:
+        named_before = os.stat(
+            leaf_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        descriptor = os.open(
+            leaf_name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened_before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_before.st_mode)
+            or opened_before.st_nlink != 1
+            or _stable_file_identity(opened_before)
+            != _stable_file_identity(named_before)
+        ):
+            raise FinalRunnerContractError(f"{name} is not a unique regular file")
+        if max_bytes is not None and opened_before.st_size > max_bytes:
+            raise FinalRunnerContractError(f"{name} exceeds its size bound")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        opened_after = os.fstat(descriptor)
+        named_after = os.stat(
+            leaf_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if _stable_file_identity(opened_before) != _stable_file_identity(
+            opened_after
+        ) or _stable_file_identity(opened_before) != _stable_file_identity(named_after):
+            raise FinalRunnerContractError(f"{name} changed while being hashed")
+        return digest.hexdigest()
+    except FinalRunnerContractError:
+        raise
+    except OSError as error:
+        raise FinalRunnerContractError(f"cannot hash {name}") from error
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -851,6 +1016,26 @@ def load_prepared_trajectory_dataset(
         raise FinalRunnerContractError(
             "registered trajectory dataset authority is invalid"
         ) from error
+    validated_authority_payload: dict[str, object] = {}
+    for definition in fields(authority):
+        value = getattr(authority, definition.name)
+        validated_authority_payload[definition.name] = (
+            dict(value) if isinstance(value, Mapping) else value
+        )
+    validated_authority_raw = (
+        json.dumps(
+            validated_authority_payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    if validated_authority_raw != authority_raw:
+        raise FinalRunnerContractError(
+            "registered trajectory dataset authority differs from captured bytes"
+        )
 
     receipt_raw = _read_unique_file(
         receipt_path,
@@ -882,53 +1067,71 @@ def load_prepared_trajectory_dataset(
         )
 
     size_ceiling = _scaling_h5ad_size_ceiling(authority.cells, authority.genes)
-    try:
-        evaluator_dataset = _read_bound_h5ad(
-            dataset_path,
-            binding,
-            max_bytes=size_ceiling,
-            structure_validator=_validate_trajectory_h5ad_structure,
-        )
-        prepared = _prepare_registered_trajectory_dataset(
-            evaluator_dataset,
-            binding,
-        )
-    except FinalRunnerContractError:
-        raise
-    except Exception as error:
-        raise FinalRunnerContractError(
-            "registered trajectory evaluator dataset failed preparation"
-        ) from error
-    if _trajectory_dataset_receipt(binding, prepared) != receipt:
-        raise FinalRunnerContractError(
-            "registered trajectory prepared input differs from its receipt"
-        )
-    try:
-        final_identities = {
-            path: _stable_file_identity(path.lstat()) for path in initial_identities
-        }
-    except OSError as error:
-        raise FinalRunnerContractError(
-            "registered trajectory dataset pair changed during preparation"
-        ) from error
-    if (
-        final_identities != initial_identities
-        or _read_unique_file(
-            authority_path,
-            "registered trajectory authority",
-            max_bytes=1024 * 1024,
-        )
-        != authority_raw
-        or _read_unique_file(
-            receipt_path,
-            "registered trajectory dataset receipt",
-            max_bytes=1024 * 1024,
-        )
-        != receipt_raw
-    ):
-        raise FinalRunnerContractError(
-            "registered trajectory dataset pair changed during preparation"
-        )
+    with _pinned_parent_directory(
+        dataset_path,
+        "registered trajectory evaluator dataset",
+    ) as dataset_parent_descriptor:
+        try:
+            evaluator_dataset = _read_bound_h5ad(
+                dataset_path,
+                binding,
+                max_bytes=size_ceiling,
+                structure_validator=_validate_trajectory_h5ad_structure,
+                parent_descriptor=dataset_parent_descriptor,
+            )
+            prepared = _prepare_registered_trajectory_dataset(
+                evaluator_dataset,
+                binding,
+            )
+        except FinalRunnerContractError:
+            raise
+        except Exception as error:
+            raise FinalRunnerContractError(
+                "registered trajectory evaluator dataset failed preparation"
+            ) from error
+        if _trajectory_dataset_receipt(binding, prepared) != receipt:
+            raise FinalRunnerContractError(
+                "registered trajectory prepared input differs from its receipt"
+            )
+        if (
+            _sha256_bound_regular_file(
+                dataset_parent_descriptor,
+                dataset_path.name,
+                "registered trajectory evaluator dataset",
+                max_bytes=size_ceiling,
+            )
+            != binding.dataset_file_sha256
+        ):
+            raise FinalRunnerContractError(
+                "registered trajectory evaluator dataset checksum changed "
+                "during preparation"
+            )
+        try:
+            final_identities = {
+                path: _stable_file_identity(path.lstat()) for path in initial_identities
+            }
+        except OSError as error:
+            raise FinalRunnerContractError(
+                "registered trajectory dataset pair changed during preparation"
+            ) from error
+        if (
+            final_identities != initial_identities
+            or _read_unique_file(
+                authority_path,
+                "registered trajectory authority",
+                max_bytes=1024 * 1024,
+            )
+            != authority_raw
+            or _read_unique_file(
+                receipt_path,
+                "registered trajectory dataset receipt",
+                max_bytes=1024 * 1024,
+            )
+            != receipt_raw
+        ):
+            raise FinalRunnerContractError(
+                "registered trajectory dataset pair changed during preparation"
+            )
     return TrajectoryPreparedDataset(
         authority=authority,
         binding=binding,

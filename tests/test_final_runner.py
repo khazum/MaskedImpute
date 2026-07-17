@@ -697,6 +697,71 @@ def test_load_prepared_trajectory_dataset_rejects_a_receipt_replacement(
     assert receipt_path.read_bytes() == raced_raw
 
 
+def test_load_prepared_trajectory_dataset_rejects_a_transient_parent_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    registered = final_runner.materialize_prepared_trajectory_dataset(
+        repository,
+        round_dir,
+    )
+    dataset_parent = round_dir / "results/trajectory/dataset"
+    dataset_path = dataset_parent / "evaluator.h5ad"
+    receipt_name = "dataset_receipt.json"
+    bound_parent = dataset_parent.with_name("receipt-bound-dataset")
+    decoy_parent = dataset_parent.with_name("stable-decoy-dataset")
+    os.replace(dataset_parent, bound_parent)
+    dataset_parent.mkdir()
+    (dataset_parent / receipt_name).write_bytes(
+        (bound_parent / receipt_name).read_bytes()
+    )
+    dataset_path.write_bytes(b"stable non-bound evaluator bytes\n")
+    stable_decoy_sha256 = hashlib.sha256(dataset_path.read_bytes()).hexdigest()
+    assert stable_decoy_sha256 != registered.binding.dataset_file_sha256
+
+    real_read = final_runner._read_bound_h5ad
+    swapped = False
+
+    def read_during_transient_parent_replacement(path, binding, **kwargs):
+        nonlocal swapped
+        os.replace(dataset_parent, decoy_parent)
+        os.replace(bound_parent, dataset_parent)
+        try:
+            swapped = True
+            return real_read(path, binding, **kwargs)
+        finally:
+            os.replace(dataset_parent, bound_parent)
+            os.replace(decoy_parent, dataset_parent)
+
+    monkeypatch.setattr(
+        final_runner,
+        "_read_bound_h5ad",
+        read_during_transient_parent_replacement,
+    )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="checksum",
+    ):
+        final_runner.load_prepared_trajectory_dataset(repository, round_dir)
+
+    assert swapped
+    assert hashlib.sha256(dataset_path.read_bytes()).hexdigest() == stable_decoy_sha256
+    assert stable_decoy_sha256 != registered.binding.dataset_file_sha256
+
+
 def test_registered_trajectory_dataset_before_journal_reconciles_and_resumes(
     tmp_path: Path,
 ) -> None:
