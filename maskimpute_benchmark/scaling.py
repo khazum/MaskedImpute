@@ -509,6 +509,70 @@ def scaling_requests(
     return values[0], values[1]
 
 
+def _scaling_dataset_design_sha256(
+    contract: ScalingContract,
+    protocol: Protocol,
+    request: SimulationRequest,
+    seeds: ScalingSeeds,
+) -> str:
+    return canonical_sha256(
+        {
+            "schema": "maskimpute-scaling-dataset-design-v1",
+            "scaling_contract_sha256": contract.file_sha256,
+            "protocol": asdict(protocol),
+            "request": {
+                "mechanism": request.mechanism,
+                "namespace": request.namespace,
+                "biological_id": request.biological_id,
+                "cells": request.cells,
+                "genes": request.genes,
+                "biological_seed": request.biological_seed,
+                "moderate_measurement_seed": seeds.moderate,
+                "severe_measurement_seed": seeds.severe,
+            },
+        }
+    )
+
+
+def _expected_scaling_dataset_authority(
+    contract: ScalingContract,
+    base_protocol: Protocol,
+    output_dir: Path,
+    cells: int,
+) -> dict[str, object]:
+    protocol = scaling_protocol(base_protocol, contract, cells)
+    moderate, _severe = scaling_requests(
+        contract, protocol, output_dir / "generated"
+    )
+    seeds = derive_scaling_seeds(contract, cells)
+    try:
+        relative = moderate.output_path.absolute().relative_to(
+            output_dir.absolute()
+        )
+    except ValueError as error:  # pragma: no cover - constructed from output_dir
+        raise ScalingContractError(
+            "derived scaling dataset path escaped its result root"
+        ) from error
+    return {
+        "cells": cells,
+        "genes": contract.genes,
+        "namespace": protocol.development.namespace,
+        "mechanism": contract.mechanism,
+        "technical_view": contract.technical_view,
+        "dataset_id": moderate.dataset_id,
+        "independent_unit_id": moderate.independent_unit_id,
+        "moderate_output_path": relative.as_posix(),
+        "protocol_sha256": canonical_sha256(asdict(protocol)),
+        "design_sha256": _scaling_dataset_design_sha256(
+            contract, protocol, moderate, seeds
+        ),
+        "seed_source_sha256": contract.file_sha256,
+        "seeds": asdict(seeds),
+        "severe_retention": "discarded_after_receipt",
+        "native_retention": "discarded_after_receipt",
+    }
+
+
 def build_scaling_plan(
     contract: ScalingContract,
     registry: MethodRegistry,
@@ -516,6 +580,7 @@ def build_scaling_plan(
     *,
     frozen_method_sha256: str,
     method_registry_file_sha256: str,
+    protocol_file_sha256: str,
     execution_authority_sha256: str,
     execution_environment_sha256: str,
     implementation_source_sha256: str,
@@ -556,6 +621,9 @@ def build_scaling_plan(
         "frozen_method_sha256": _sha256(frozen_method_sha256, "frozen method checksum"),
         "method_registry_file_sha256": _sha256(
             method_registry_file_sha256, "method registry file checksum"
+        ),
+        "protocol_file_sha256": _sha256(
+            protocol_file_sha256, "study protocol file checksum"
         ),
         "execution_authority_sha256": _sha256(
             execution_authority_sha256, "execution authority checksum"
@@ -676,6 +744,24 @@ class ScalingResultStore:
             raise ScalingContractError("scaling output root is not canonical")
         self.output_dir = resolved
         self.plan = plan
+        repository = Path(__file__).resolve().parents[1]
+        contract_path = repository / "study/scaling_panel.json"
+        protocol_path = repository / "study/protocol.json"
+        self.contract = load_scaling_contract(contract_path)
+        self.base_protocol = load_protocol(protocol_path)
+        if (
+            plan.input_hashes.get("scaling_contract_sha256")
+            != self.contract.file_sha256
+            or plan.input_hashes.get("protocol_file_sha256")
+            != _file_sha256(protocol_path)
+        ):
+            raise ScalingContractError(
+                "scaling store authority differs from the tracked design"
+            )
+        self._prepared_datasets: dict[
+            int, tuple[str, str, PreparedDataset]
+        ] = {}
+        self._metric_authorities: dict[int, dict[str, object]] = {}
 
     @property
     def checkpoint_path(self) -> Path:
@@ -728,6 +814,16 @@ class ScalingResultStore:
             or value.get("receipt_sha256") != canonical_sha256(unsigned)
         ):
             raise ScalingContractError("scaling dataset receipt binding is invalid")
+        expected_authority = _expected_scaling_dataset_authority(
+            self.contract, self.base_protocol, self.output_dir, expected_cells
+        )
+        if any(
+            value.get(name) != expected
+            for name, expected in expected_authority.items()
+        ):
+            raise ScalingContractError(
+                "scaling dataset seed, design, or protocol authority differs"
+            )
         for field in (
             "dataset_sha256",
             "truth_sha256",
@@ -779,10 +875,69 @@ class ScalingResultStore:
             or _file_sha256(output_path) != value["moderate_output_file_sha256"]
         ):
             raise ScalingContractError("moderate scaling dataset integrity failed")
+        receipt_sha = str(value["receipt_sha256"])
+        file_sha = str(value["moderate_output_file_sha256"])
+        cached = self._prepared_datasets.get(expected_cells)
+        if cached is None or cached[:2] != (receipt_sha, file_sha):
+            try:
+                import anndata as ad
+
+                from .datasets import _truth_sha256
+                from .runner import DatasetQCPolicy
+                from .schema import benchmark_dataset_sha256
+
+                dataset = ad.read_h5ad(output_path)
+                if (
+                    benchmark_dataset_sha256(dataset) != value["dataset_sha256"]
+                    or _truth_sha256(dataset) != value["truth_sha256"]
+                ):
+                    raise ScalingContractError(
+                        "moderate scaling dataset semantic hash mismatch"
+                    )
+                prepared = prepare_dataset_for_execution(
+                    dataset,
+                    _dataset_binding(value),
+                    DatasetQCPolicy.fixed(),
+                )
+            except ScalingContractError:
+                raise
+            except Exception as error:
+                raise ScalingContractError(
+                    "moderate scaling dataset semantic validation failed"
+                ) from error
+            self._prepared_datasets[expected_cells] = (
+                receipt_sha,
+                file_sha,
+                prepared,
+            )
+            from .runner import _evaluator_targets
+
+            observed, truth, truth_kind, _marker_mask = _evaluator_targets(prepared)
+            if truth_kind != "exact_pre_capture" or truth is None:
+                raise ScalingContractError(
+                    "scaling metric validation requires exact pre-capture truth"
+                )
+            self._metric_authorities[expected_cells] = {
+                "mse": int(observed.size),
+                "mse_dropout": int(((observed == 0) & (truth > 0)).sum()),
+                "mse_pre_dropout_zero": int((truth == 0).sum()),
+                "mse_nonzero": int(((observed > 0) & (truth > 0)).sum()),
+                "gnrmse": int(truth.shape[1]),
+                "mean_distortion": int(truth.shape[1]),
+                "variance_distortion": int(truth.shape[1]),
+                "mean_gene_wasserstein_distance": int(truth.shape[1]),
+                "n_corr_genes": int(truth.shape[1]),
+                "correlation_pairs": int(
+                    truth.shape[1] * (truth.shape[1] - 1) // 2
+                ),
+            }
         return MappingProxyType(dict(value))
 
     def _validate_record(
-        self, value: object, entry: ScalingPlanEntry
+        self,
+        value: object,
+        entry: ScalingPlanEntry,
+        dataset_receipt: Mapping[str, object],
     ) -> Mapping[str, object]:
         if not isinstance(value, dict) or set(value) != {
             "run",
@@ -835,6 +990,99 @@ class ScalingResultStore:
             run.get(name) != expected_value for name, expected_value in expected.items()
         ):
             raise ScalingContractError("stored scaling record differs from its plan")
+        cached = self._prepared_datasets.get(entry.cells)
+        if cached is None:
+            raise ScalingContractError(
+                "stored scaling record lacks a validated dataset authority"
+            )
+        prepared = cached[2]
+        from .runner import (
+            DatasetQCPolicy,
+            _OUTCOME_STATUSES,
+            method_input_sha256,
+        )
+
+        metric_authority = self._metric_authorities.get(entry.cells)
+        if metric_authority is None:
+            raise ScalingContractError(
+                "stored scaling metrics lack validated truth authority"
+            )
+        expected_run = {
+            "dataset_id": dataset_receipt["dataset_id"],
+            "source_dataset_sha256": dataset_receipt["dataset_sha256"],
+            "mechanism": self.contract.mechanism,
+            "biological_id": "draw-01",
+            "technical_view": self.contract.technical_view,
+            "method_input_sha256": method_input_sha256(prepared.method_input),
+            "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+            "excluded_cell_count": prepared.audit.excluded_cell_count,
+            "excluded_cell_ids_sha256": prepared.audit.excluded_cell_ids_sha256,
+            "retained_cell_count": prepared.audit.retained_cell_count,
+            "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
+            "retained_gene_count": prepared.method_input.shape[1],
+            "observed_zero_count": int((prepared.method_input.counts == 0).sum()),
+        }
+        if any(run.get(name) != expected for name, expected in expected_run.items()):
+            raise ScalingContractError(
+                "stored scaling record dataset identity differs"
+            )
+        if (
+            run.get("status") not in _OUTCOME_STATUSES
+            or isinstance(run.get("runtime_seconds"), bool)
+            or not isinstance(run.get("runtime_seconds"), (int, float))
+            or not np.isfinite(float(run["runtime_seconds"]))
+            or float(run["runtime_seconds"]) < 0.0
+            or any(
+                isinstance(run.get(name), bool)
+                or type(run.get(name)) is not int
+                or run[name] < 0
+                for name in ("peak_rss_bytes", "peak_gpu_bytes")
+            )
+            or any(
+                not isinstance(run.get(name), str) or not run[name]
+                for name in ("rss_measurement", "gpu_measurement")
+            )
+        ):
+            raise ScalingContractError(
+                "stored scaling status, runtime, or resource evidence is invalid"
+            )
+        if run["status"] == "completed":
+            if run.get("reason") is not None:
+                raise ScalingContractError(
+                    "completed scaling run cannot have a terminal reason"
+                )
+        elif not isinstance(run.get("reason"), str) or not run["reason"]:
+            raise ScalingContractError(
+                "noncompleted scaling run lacks its terminal reason"
+            )
+        if (
+            run.get("calibration_artifact_sha256") is not None
+            or run.get("calibration_context_sha256") is not None
+            or run.get("calibration_fold_calibrator_sha256") is not None
+            or run.get("calibration_training_manifest_sha256s") not in ((), [])
+            or run.get("calibration_held_out_manifest_sha256s") not in ((), [])
+        ):
+            raise ScalingContractError(
+                "scaling run contains an unauthorized fold-calibration receipt"
+            )
+        for name in ("stdout", "stderr"):
+            if (
+                run.get(f"{name}_sha256")
+                != run.get(f"{name}_file_sha256")
+            ):
+                raise ScalingContractError(
+                    f"scaling {name} content receipt differs"
+                )
+        for name in ("native_output_sha256", "evaluator_output_sha256"):
+            if run.get(name) is not None:
+                _sha256(run[name], f"scaling {name}")
+        if run["status"] == "completed" and (
+            run.get("native_output_sha256") is None
+            or run.get("evaluator_output_sha256") is None
+        ):
+            raise ScalingContractError(
+                "completed scaling run lacks output hash evidence"
+            )
         if run.get("native_output_retention") not in {"hash_only", "not_available"}:
             raise ScalingContractError("native scaling output retention is invalid")
         if run.get("evaluator_output_retention") not in {
@@ -842,6 +1090,18 @@ class ScalingResultStore:
             "not_available",
         }:
             raise ScalingContractError("evaluator scaling output retention is invalid")
+        if run["native_output_retention"] != (
+            "not_available"
+            if run.get("native_output_sha256") is None
+            else "hash_only"
+        ) or run["evaluator_output_retention"] != (
+            "not_available"
+            if run.get("evaluator_output_sha256") is None
+            else "hash_only"
+        ):
+            raise ScalingContractError(
+                "scaling output retention differs from its hashes"
+            )
         self._verify_artifact(
             run.get("stdout_path"),
             run.get("stdout_file_sha256"),
@@ -870,6 +1130,90 @@ class ScalingResultStore:
             )
         ):
             raise ScalingContractError("scaling metric denominator is incomplete")
+        expected_metric_identity = {
+            "mechanism": self.contract.mechanism,
+            "biological_id": "draw-01",
+            "technical_view": self.contract.technical_view,
+            "dataset_id": dataset_receipt["dataset_id"],
+            "method": entry.method_id,
+            "model_seed": entry.model_seed,
+            "configuration_id": entry.configuration_id,
+            "configuration_sha256": entry.configuration_sha256,
+        }
+        expected_n = metric_authority
+        correlation_pairs = int(metric_authority["correlation_pairs"])
+        gene_count = int(metric_authority["n_corr_genes"])
+        for metric in metrics:
+            if any(
+                metric.get(name) != expected
+                for name, expected in expected_metric_identity.items()
+            ):
+                raise ScalingContractError(
+                    "scaling metric dataset or configuration identity differs"
+                )
+            metric_name = str(metric["metric"])
+            value_number = metric.get("value")
+            metric_n = metric.get("n")
+            metric_status = metric.get("status")
+            metric_reason = metric.get("reason")
+            if run["status"] != "completed":
+                if (
+                    value_number is not None
+                    or metric_n != 0
+                    or metric_status != "unavailable"
+                    or metric_reason != run["reason"]
+                ):
+                    raise ScalingContractError(
+                        "noncompleted scaling metric does not preserve its reason"
+                    )
+                continue
+            if value_number is None:
+                if (
+                    metric_status != "unavailable"
+                    or not isinstance(metric_reason, str)
+                    or not metric_reason
+                    or type(metric_n) is not int
+                    or metric_n < 0
+                ):
+                    raise ScalingContractError(
+                        "unavailable scaling metric evidence is invalid"
+                    )
+                if metric_name != "corr_err" or metric_n not in {
+                    gene_count,
+                    correlation_pairs,
+                }:
+                    raise ScalingContractError(
+                        "unavailable scaling metric denominator differs"
+                    )
+                continue
+            if (
+                isinstance(value_number, bool)
+                or not isinstance(value_number, (int, float))
+                or not np.isfinite(float(value_number))
+                or float(value_number) < 0.0
+                or metric_status != "completed"
+                or metric_reason is not None
+                or type(metric_n) is not int
+                or metric_n < 0
+            ):
+                raise ScalingContractError("completed scaling metric is invalid")
+            required_n = (
+                correlation_pairs
+                if metric_name == "corr_err"
+                else expected_n[metric_name]
+            )
+            if metric_n != required_n:
+                raise ScalingContractError(
+                    "completed scaling metric denominator differs"
+                )
+            if metric_name == "corr_err" and float(value_number) > 2.0:
+                raise ScalingContractError(
+                    "scaling correlation distortion exceeds its range"
+                )
+            if metric_name == "n_corr_genes" and float(value_number) != gene_count:
+                raise ScalingContractError(
+                    "scaling correlation gene count differs"
+                )
         return MappingProxyType(dict(value))
 
     def load(self) -> ScalingCheckpoint | None:
@@ -916,8 +1260,11 @@ class ScalingResultStore:
             self._validate_dataset_receipt(value, cells)
             for value, cells in zip(datasets, expected_cells, strict=False)
         )
+        receipts_by_cells = {
+            int(value["cells"]): value for value in dataset_values
+        }
         record_values = tuple(
-            self._validate_record(value, entry)
+            self._validate_record(value, entry, receipts_by_cells[entry.cells])
             for value, entry in zip(records, self.plan.entries, strict=False)
         )
         if record_values:
@@ -1042,7 +1389,15 @@ class ScalingResultStore:
         )
         unsigned = {"run": stored_run, "metrics": value.get("metrics")}
         stored = {**unsigned, "record_sha256": canonical_sha256(unsigned)}
-        self._validate_record(stored, entry)
+        receipt = next(
+            (value for value in datasets if value.get("cells") == entry.cells),
+            None,
+        )
+        if receipt is None:
+            raise ScalingContractError(
+                "scaling attempt lacks its dataset receipt"
+            )
+        self._validate_record(stored, entry, receipt)
         records.append(stored)
         return self._write(datasets, records)
 
@@ -1094,22 +1449,8 @@ def _dataset_receipt_from_artifacts(
         raise ScalingContractError("scaling output escaped its result root") from error
     seeds = derive_scaling_seeds(contract, protocol.development.cells)
     request = moderate_artifact.request
-    design_sha256 = canonical_sha256(
-        {
-            "schema": "maskimpute-scaling-dataset-design-v1",
-            "scaling_contract_sha256": contract.file_sha256,
-            "protocol": asdict(protocol),
-            "request": {
-                "mechanism": request.mechanism,
-                "namespace": request.namespace,
-                "biological_id": request.biological_id,
-                "cells": request.cells,
-                "genes": request.genes,
-                "biological_seed": request.biological_seed,
-                "moderate_measurement_seed": seeds.moderate,
-                "severe_measurement_seed": seeds.severe,
-            },
-        }
+    design_sha256 = _scaling_dataset_design_sha256(
+        contract, protocol, request, seeds
     )
     unsigned: dict[str, object] = {
         "schema_version": 1,
@@ -1341,6 +1682,7 @@ def load_scaling_execution_authority(
             frozen.get("payload_sha256"), "frozen method payload checksum"
         ),
         method_registry_file_sha256=_file_sha256(registry_path),
+        protocol_file_sha256=_file_sha256(selected / "study/protocol.json"),
         execution_authority_sha256=authority.authority_sha256,
         execution_environment_sha256=environments.registry_sha256,
         implementation_source_sha256=implementation_source_sha256(),

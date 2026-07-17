@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,9 @@ def _plan():
         configurations,
         frozen_method_sha256=SHA_A,
         method_registry_file_sha256=SHA_B,
+        protocol_file_sha256=hashlib.sha256(
+            (REPOSITORY / "study/protocol.json").read_bytes()
+        ).hexdigest(),
         execution_authority_sha256=SHA_C,
         execution_environment_sha256=SHA_D,
         implementation_source_sha256="e" * 64,
@@ -208,6 +212,9 @@ def test_scaling_plan_rejects_registry_default_for_candidate() -> None:
             changed,
             frozen_method_sha256=SHA_A,
             method_registry_file_sha256=SHA_B,
+            protocol_file_sha256=hashlib.sha256(
+                (REPOSITORY / "study/protocol.json").read_bytes()
+            ).hexdigest(),
             execution_authority_sha256=SHA_C,
             execution_environment_sha256=SHA_D,
             implementation_source_sha256="e" * 64,
@@ -303,24 +310,78 @@ def test_scaling_record_keeps_metrics_and_hashes_but_not_dense_outputs() -> None
 
 
 def _dataset_receipt(output_dir: Path, cells: int = 10_000) -> dict[str, object]:
-    from maskimpute_benchmark.protocol import canonical_sha256
+    import anndata as ad
+    import numpy as np
+    import pandas as pd
+    from scipy import sparse
 
-    relative = f"generated/scaling-{cells}/dataset/moderate.h5ad"
+    from maskimpute_benchmark.datasets import _truth_sha256
+    from maskimpute_benchmark.protocol import canonical_sha256, load_protocol
+    from maskimpute_benchmark.scaling import (
+        _expected_scaling_dataset_authority,
+        load_scaling_contract,
+    )
+    from maskimpute_benchmark.schema import benchmark_dataset_sha256
+
+    contract = load_scaling_contract(REPOSITORY / "study/scaling_panel.json")
+    protocol = load_protocol(REPOSITORY / "study/protocol.json")
+    expected = _expected_scaling_dataset_authority(
+        contract, protocol, output_dir, cells
+    )
+    relative = str(expected["moderate_output_path"])
     path = output_dir / relative
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(b"fixed-moderate-h5ad-fixture")
+    rows = np.arange(cells, dtype=np.int32)
+    observed = sparse.csr_matrix(
+        (np.ones(cells, dtype=np.int64), (rows, rows % 500)),
+        shape=(cells, 500),
+    )
+    truth_columns = np.concatenate((rows % 500, (rows + 1) % 500))
+    truth_rows = np.concatenate((rows, rows))
+    truth = sparse.csr_matrix(
+        (
+            np.ones(cells * 2, dtype=np.int64),
+            (truth_rows, truth_columns),
+        ),
+        shape=(cells, 500),
+    )
+    obs = pd.DataFrame(
+        {
+            "dataset_id": [expected["dataset_id"]] * cells,
+            "mechanism": ["symsim"] * cells,
+            "condition": ["moderate"] * cells,
+            "biological_id": ["draw-01"] * cells,
+            "technical_view": ["moderate"] * cells,
+            "draw": np.ones(cells, dtype=np.int64),
+            "library_size": np.ones(cells, dtype=np.int64),
+            "group": np.where(rows % 2 == 0, "group-a", "group-b"),
+        },
+        index=[f"cell-{index:05d}" for index in range(cells)],
+    )
+    var = pd.DataFrame(index=[f"gene-{index:04d}" for index in range(500)])
+    dataset = ad.AnnData(X=observed, obs=obs, var=var)
+    dataset.layers["pre_capture_counts"] = truth
+    dataset.uns["truth_kind"] = "exact_pre_capture"
+    dataset.uns["primary_truth_layer"] = "pre_capture_counts"
+    dataset.uns["provenance"] = {
+        "source": "https://example.invalid/symsim-scaling-fixture",
+        "source_sha256": "9" * 64,
+        "software": "SymSim",
+        "software_version": "fixture-1",
+        "parameters": {"cells": cells, "genes": 500},
+        "seeds": dict(expected["seeds"]),
+    }
+    dataset.uns["normalization"] = {
+        "input": "raw_umi_counts",
+        "size_factor": "none",
+    }
+    dataset.uns["allowed_covariates"] = {"obs": [], "var": []}
+    dataset.write_h5ad(path)
     unsigned: dict[str, object] = {
         "schema_version": 1,
-        "cells": cells,
-        "genes": 500,
-        "namespace": f"scaling-{cells}",
-        "mechanism": "symsim",
-        "technical_view": "moderate",
-        "dataset_id": f"dataset-{cells}",
-        "independent_unit_id": f"scaling-{cells}-draw-01",
-        "dataset_sha256": SHA_A,
-        "truth_sha256": SHA_B,
-        "moderate_output_path": relative,
+        **expected,
+        "dataset_sha256": benchmark_dataset_sha256(dataset),
+        "truth_sha256": _truth_sha256(dataset),
         "moderate_output_file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "moderate_output_size_bytes": path.stat().st_size,
         "severe_dataset_sha256": SHA_C,
@@ -329,32 +390,41 @@ def _dataset_receipt(output_dir: Path, cells: int = 10_000) -> dict[str, object]
         "moderate_native_manifest_sha256": "e" * 64,
         "severe_native_manifest_sha256": "f" * 64,
         "native_files_sha256": "1" * 64,
-        "protocol_sha256": "2" * 64,
-        "design_sha256": "3" * 64,
-        "seed_source_sha256": "4" * 64,
-        "seeds": {"biological": 1, "moderate": 2, "severe": 3},
-        "severe_retention": "discarded_after_receipt",
-        "native_retention": "discarded_after_receipt",
     }
     return {**unsigned, "receipt_sha256": canonical_sha256(unsigned)}
 
 
-def _first_attempt(plan):
+def _first_attempt(plan, output_dir: Path, receipt):
+    import anndata as ad
+
     from maskimpute_benchmark.runner import (
+        DatasetQCPolicy,
         LongFormMetric,
         RawRunResult,
+        _evaluator_targets,
+        method_input_sha256,
+        prepare_dataset_for_execution,
     )
     from maskimpute_benchmark.scaling import (
-        _SCALING_ACCURACY_METRICS,
         ScalingEvaluatedAttempt,
+        _bounded_scaling_metric_values,
+        _dataset_binding,
     )
 
     entry = plan.entries[0]
+    dataset = ad.read_h5ad(output_dir / receipt["moderate_output_path"])
+    prepared = prepare_dataset_for_execution(
+        dataset, _dataset_binding(receipt), DatasetQCPolicy.fixed()
+    )
+    observed, truth, truth_kind, _marker = _evaluator_targets(prepared)
+    assert truth_kind == "exact_pre_capture"
+    assert truth is not None
+    metric_values = _bounded_scaling_metric_values(truth, observed, truth)
     run = RawRunResult(
         run_id=entry.run_id,
         method_id=entry.method_id,
-        dataset_id="dataset-10000",
-        source_dataset_sha256=SHA_A,
+        dataset_id=str(receipt["dataset_id"]),
+        source_dataset_sha256=str(receipt["dataset_sha256"]),
         mechanism="symsim",
         biological_id="draw-01",
         technical_view="moderate",
@@ -364,14 +434,14 @@ def _first_attempt(plan):
         configuration_kind=entry.configuration_kind,
         requires_count_score=entry.requires_count_score,
         requires_calibration=entry.requires_calibration,
-        method_input_sha256=SHA_C,
-        dataset_qc_policy_sha256=SHA_D,
-        excluded_cell_count=0,
-        excluded_cell_ids_sha256="e" * 64,
-        retained_cell_count=10_000,
-        retained_cell_ids_sha256="f" * 64,
-        retained_gene_count=500,
-        observed_zero_count=4_000_000,
+        method_input_sha256=method_input_sha256(prepared.method_input),
+        dataset_qc_policy_sha256=DatasetQCPolicy.fixed().sha256,
+        excluded_cell_count=prepared.audit.excluded_cell_count,
+        excluded_cell_ids_sha256=prepared.audit.excluded_cell_ids_sha256,
+        retained_cell_count=prepared.audit.retained_cell_count,
+        retained_cell_ids_sha256=prepared.audit.retained_cell_ids_sha256,
+        retained_gene_count=prepared.method_input.shape[1],
+        observed_zero_count=int((prepared.method_input.counts == 0).sum()),
         status="completed",
         reason=None,
         runtime_seconds=1.25,
@@ -394,18 +464,18 @@ def _first_attempt(plan):
             mechanism="symsim",
             biological_id="draw-01",
             technical_view="moderate",
-            dataset_id="dataset-10000",
+            dataset_id=str(receipt["dataset_id"]),
             method=entry.method_id,
             model_seed=entry.model_seed,
             configuration_id=entry.configuration_id,
             configuration_sha256=entry.configuration_sha256,
             metric=name,
-            value=0.5,
-            n=5_000_000,
-            status="completed",
-            reason=None,
+            value=value,
+            n=n,
+            status="completed" if value is not None else "unavailable",
+            reason=reason,
         )
-        for name in _SCALING_ACCURACY_METRICS
+        for name, (value, n, reason) in metric_values.items()
     )
     return ScalingEvaluatedAttempt(
         run=run,
@@ -428,9 +498,10 @@ def test_scaling_store_resumes_exact_prefix_without_dense_outputs(
 
     plan = _plan()
     store = ScalingResultStore(tmp_path, plan)
-    report = store.append_dataset(_dataset_receipt(tmp_path))
+    receipt = _dataset_receipt(tmp_path)
+    report = store.append_dataset(receipt)
     assert report.status == "running"
-    attempt = _first_attempt(plan)
+    attempt = _first_attempt(plan, tmp_path, receipt)
     report = store.append_attempt(
         plan.entries[0],
         scaling_attempt_record(attempt, cells=10_000, accuracy_enabled=True),
@@ -455,17 +526,101 @@ def test_scaling_store_rejects_log_tampering(tmp_path: Path) -> None:
 
     plan = _plan()
     store = ScalingResultStore(tmp_path, plan)
-    store.append_dataset(_dataset_receipt(tmp_path))
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
     report = store.append_attempt(
         plan.entries[0],
         scaling_attempt_record(
-            _first_attempt(plan), cells=10_000, accuracy_enabled=True
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
         ),
     )
     stdout = tmp_path / report.records[0]["run"]["stdout_path"]
     stdout.write_bytes(b"tampered")
 
     with pytest.raises(ScalingContractError, match="stdout integrity"):
+        store.load()
+
+
+def _rewrite_scaling_checkpoint(path: Path, mutate) -> None:
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mutate(payload)
+    body = {key: value for key, value in payload.items() if key != "checkpoint_sha256"}
+    payload["checkpoint_sha256"] = canonical_sha256(body)
+    path.write_text(
+        json.dumps(
+            payload,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_scaling_store_rejects_rehashed_seed_authority_drift(tmp_path: Path) -> None:
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.scaling import ScalingContractError, ScalingResultStore
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+
+    def mutate(payload: dict[str, object]) -> None:
+        receipt = payload["datasets"][0]
+        receipt["seeds"]["biological"] += 100
+        unsigned = {
+            key: value for key, value in receipt.items() if key != "receipt_sha256"
+        }
+        receipt["receipt_sha256"] = canonical_sha256(unsigned)
+
+    _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
+    with pytest.raises(ScalingContractError, match="seed|design|authority"):
+        store.load()
+
+
+def test_scaling_store_rejects_rehashed_invalid_run_and_metric_semantics(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    store.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+
+    def mutate(payload: dict[str, object]) -> None:
+        record = payload["records"][0]
+        record["run"]["status"] = "forged_status"
+        record["run"]["runtime_seconds"] = -99
+        record["run"]["peak_rss_bytes"] = -1
+        record["metrics"][0]["value"] = "not-a-number"
+        record["metrics"][0]["n"] = -7
+        unsigned = {
+            key: value for key, value in record.items() if key != "record_sha256"
+        }
+        record["record_sha256"] = canonical_sha256(unsigned)
+
+    _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
+    with pytest.raises(ScalingContractError, match="status|runtime|resource|metric"):
         store.load()
 
 

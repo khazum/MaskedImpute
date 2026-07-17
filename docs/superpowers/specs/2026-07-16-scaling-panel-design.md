@@ -48,3 +48,11 @@ files are hashed, receipted, and then deleted. A canonical checkpoint binds a
 strict plan prefix, dataset receipts, logs, metrics, code, frozen method,
 runtime, and tracked authorities. Resume refuses changed bytes or a changed
 implementation hash.
+
+Resume derives the expected seed triple, ephemeral protocol, dataset ID,
+independent-unit ID, path, and design digest from the tracked scaling contract
+and study protocol. It reopens the retained moderate H5AD, recomputes its
+semantic and truth hashes and QC/input identities, and validates every stored
+run, resource, output-hash, failure, and metric denominator field against that
+authority. Self-consistent checkpoint hashes alone are not evidence of a valid
+scaling row.
