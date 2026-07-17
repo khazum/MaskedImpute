@@ -786,3 +786,136 @@ def test_endpoint_schema_rejects_ad_hoc_names_directions_units_and_reasons() -> 
     ):
         with pytest.raises(ValueError, match=message):
             EndpointRecord(**{**valid, field: invalid})
+
+
+def test_clustering_partition_and_model_selection_are_truth_free() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        evaluator_targets_from_dataset,
+        evaluate_clustering_endpoints,
+        infer_clustering_partition,
+    )
+
+    groups = ("a",) * 4 + ("b",) * 4 + ("c",) * 4
+    values = np.asarray(
+        [[20, 18, 0, 0, 0, 0]] * 4
+        + [[0, 0, 20, 18, 0, 0]] * 4
+        + [[0, 0, 0, 0, 20, 18]] * 4,
+        dtype=float,
+    )
+    output, targets, dataset = _clustering_fixture(groups, values)
+    baseline = infer_clustering_partition(output)
+
+    # This truth has different label values, group count, and group sizes.
+    # It remains endpoint-eligible but cannot alter fitted assignments or k.
+    changed = dataset.copy()
+    changed.obs["group"] = ("left",) * 5 + ("right",) * 7
+    changed_targets = evaluator_targets_from_dataset(changed)
+    repeated = infer_clustering_partition(output)
+
+    assert repeated == baseline
+    assert baseline.n_clusters == 3
+    assert baseline.model_selection == "minimum_davies_bouldin_fixed_k_grid_2_to_10"
+    assert all(
+        record.status == "completed"
+        for record in evaluate_clustering_endpoints(output, targets)
+    )
+    assert all(
+        record.status == "completed"
+        for record in evaluate_clustering_endpoints(output, changed_targets)
+    )
+
+
+def test_complete_evaluator_reuses_one_svd_for_clustering_and_trajectory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.downstream_evaluation as downstream
+
+    pseudotime = np.arange(20, dtype=float)
+    values = np.column_stack([20.0 - pseudotime, pseudotime + 1.0, np.full(20, 2.0)])
+    cell_ids = tuple(f"cell-{index:02d}" for index in range(20, 0, -1))
+    gene_ids = ("gene-03", "gene-02", "gene-01")
+    dataset = ad.AnnData(
+        X=np.zeros_like(values, dtype=np.int64),
+        obs=pd.DataFrame(
+            {
+                "mechanism": ["trajectory-reference"] * 20,
+                "group": ["early"] * 10 + ["late"] * 10,
+                "pseudotime": pseudotime,
+            },
+            index=cell_ids,
+        ),
+        var=pd.DataFrame(index=gene_ids),
+    )
+    output = downstream.MethodOutput(values, cell_ids, gene_ids)
+    targets = downstream.evaluator_targets_from_dataset(
+        dataset,
+        trajectory_root_cell_id=cell_ids[0],
+        trajectory_source_id="registered-synthetic-trajectory",
+    )
+    original = np.linalg.svd
+    calls = 0
+
+    def counted_svd(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(np.linalg, "svd", counted_svd)
+    records = downstream.evaluate_downstream_endpoints(output, targets)
+
+    assert len(records) == 8
+    assert calls == 1
+
+
+def test_sparse_knn_distance_construction_is_block_bounded_at_final_panel_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.downstream_evaluation as downstream
+
+    n_cells = 2_700
+    coordinate = np.linspace(0.0, 1.0, n_cells)
+    representation = np.column_stack((coordinate, coordinate * coordinate))
+    original = downstream._squared_distance_block
+    observed_shapes: list[tuple[int, int]] = []
+
+    def observed(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+        result = original(left, right)
+        observed_shapes.append(result.shape)
+        return result
+
+    monkeypatch.setattr(downstream, "_squared_distance_block", observed)
+    graph = downstream._sparse_knn_squared_distances(representation, 15)
+
+    assert graph.shape == (n_cells, n_cells)
+    assert 0 < graph.nnz <= 2 * n_cells * 15
+    assert observed_shapes
+    assert (
+        max(shape[0] for shape in observed_shapes)
+        <= downstream.TRAJECTORY_DISTANCE_BLOCK_SIZE
+    )
+    assert all(shape[1] == n_cells for shape in observed_shapes)
+    assert (n_cells, n_cells) not in observed_shapes
+
+
+def test_expected_numeric_failure_returns_fixed_eight_terminal_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.downstream_evaluation as downstream
+
+    pseudotime = np.arange(12, dtype=float)
+    values = np.column_stack([12.0 - pseudotime, pseudotime + 1.0, np.full(12, 2.0)])
+    output, targets = _trajectory_fixture(values, pseudotime)
+
+    def fail_svd(*_args, **_kwargs):
+        raise np.linalg.LinAlgError("expected numerical nonconvergence")
+
+    monkeypatch.setattr(np.linalg, "svd", fail_svd)
+    records = downstream.evaluate_downstream_endpoints(output, targets)
+
+    assert (
+        tuple(record.endpoint for record in records)
+        == downstream.DOWNSTREAM_ENDPOINT_NAMES
+    )
+    assert len(records) == 8
+    assert {record.status for record in records} == {"unavailable"}
+    assert {record.reason for record in records} == {"numeric_evaluation_failed"}

@@ -19,11 +19,14 @@ from scipy import stats
 CLUSTERING_SEED = 20_260_716
 CLUSTERING_N_INIT = 20
 CLUSTERING_MAX_COMPONENTS = 30
+CLUSTERING_MIN_K = 2
+CLUSTERING_MAX_K = 10
 POSITIVE_DE_ALPHA = 0.05
 POSITIVE_DE_FAMILY_ID = "one_vs_rest_all_groups_all_genes"
 TRAJECTORY_MAX_NEIGHBORS = 15
 TRAJECTORY_MAX_COMPONENTS = 30
 TRAJECTORY_DIFFUSION_MODES = 15
+TRAJECTORY_DISTANCE_BLOCK_SIZE = 128
 
 DOWNSTREAM_ENDPOINT_NAMES = (
     "marker_rank_loss",
@@ -70,6 +73,7 @@ ENDPOINT_REASON_CODES = frozenset(
         "fewer_than_three_trajectory_cells",
         "fewer_than_two_cells_in_group",
         "fewer_than_two_cells_in_one_vs_rest_arm",
+        "fewer_than_two_distinct_method_profiles",
         "fewer_than_two_genes",
         "fewer_than_two_groups",
         "genuine_pseudotime_not_available_in_simulator_output",
@@ -81,6 +85,7 @@ ENDPOINT_REASON_CODES = frozenset(
         "independent_heldout_counts_unavailable",
         "no_truth_markers",
         "nonfinite_diffusion_pseudotime",
+        "numeric_evaluation_failed",
         "trajectory_affinity_scale_unavailable",
         "trajectory_diffusion_eigensolver_failed",
         "trajectory_diffusion_modes_unavailable",
@@ -127,7 +132,12 @@ def _dense_float_matrix(value: object, name: str) -> np.ndarray:
 
 @dataclass(frozen=True, slots=True)
 class MethodOutput:
-    """Truth-free output returned by a method before evaluator access."""
+    """Truth-free method matrix on the evaluator's common output scale.
+
+    Production records persist values as ``log2(CP10k + 1)``.  This object
+    intentionally carries no labels, markers, heldout split, or trajectory
+    truth and downstream procedures never renormalize the persisted values.
+    """
 
     values: np.ndarray
     cell_ids: tuple[str, ...]
@@ -409,7 +419,7 @@ def _aligned_evaluator_arrays(
     return values, cell_ids, gene_ids, target_cell_order, target_gene_order
 
 
-def _log_cp10k(values: np.ndarray) -> np.ndarray:
+def _counts_to_log2_cp10k(values: np.ndarray) -> np.ndarray:
     library_size = np.sum(values, axis=1, dtype=np.float64)
     scale = np.divide(
         10_000.0,
@@ -417,7 +427,81 @@ def _log_cp10k(values: np.ndarray) -> np.ndarray:
         out=np.zeros_like(library_size),
         where=library_size > 0.0,
     )
-    return np.log1p(values * scale[:, None])
+    return np.log2(values * scale[:, None] + 1.0)
+
+
+@dataclass(frozen=True, slots=True)
+class _EvaluationWorkspace:
+    """Canonical alignment and one reusable truth-free PCA representation."""
+
+    values: np.ndarray
+    cell_ids: tuple[str, ...]
+    gene_ids: tuple[str, ...]
+    target_cell_order: np.ndarray
+    target_gene_order: np.ndarray
+    representation: np.ndarray | None
+    representation_reason: str | None
+
+
+def _pca_representation(values: np.ndarray) -> tuple[np.ndarray | None, str | None]:
+    centered = np.array(values, dtype=np.float64, copy=True)
+    centered -= np.mean(centered, axis=0)
+    left, singular, _right = np.linalg.svd(centered, full_matrices=False)
+    if not singular.size:
+        return None, "constant_method_representation"
+    input_scale = max(float(singular[0]), 1.0)
+    tolerance = np.finfo(np.float64).eps * max(centered.shape) * input_scale
+    rank = int(np.sum(singular > tolerance))
+    if rank == 0:
+        return None, "constant_method_representation"
+    components = min(max(CLUSTERING_MAX_COMPONENTS, TRAJECTORY_MAX_COMPONENTS), rank)
+    representation = left[:, :components] * singular[:components]
+    representation.setflags(write=False)
+    return representation, None
+
+
+def _evaluation_workspace(
+    output: MethodOutput,
+    targets: EvaluatorTargets,
+    *,
+    include_representation: bool,
+) -> _EvaluationWorkspace:
+    values, cell_ids, gene_ids, target_cells, target_genes = _aligned_evaluator_arrays(
+        output, targets
+    )
+    representation: np.ndarray | None = None
+    representation_reason: str | None = None
+    if include_representation:
+        representation, representation_reason = _pca_representation(values)
+    return _EvaluationWorkspace(
+        values=values,
+        cell_ids=cell_ids,
+        gene_ids=gene_ids,
+        target_cell_order=target_cells,
+        target_gene_order=target_genes,
+        representation=representation,
+        representation_reason=representation_reason,
+    )
+
+
+def _truth_free_workspace(output: MethodOutput) -> _EvaluationWorkspace:
+    cell_ids = tuple(sorted(output.cell_ids))
+    gene_ids = tuple(sorted(output.gene_ids))
+    cells = {value: index for index, value in enumerate(output.cell_ids)}
+    genes = {value: index for index, value in enumerate(output.gene_ids)}
+    cell_order = np.asarray([cells[value] for value in cell_ids])
+    gene_order = np.asarray([genes[value] for value in gene_ids])
+    values = output.values[cell_order][:, gene_order]
+    representation, reason = _pca_representation(values)
+    return _EvaluationWorkspace(
+        values=values,
+        cell_ids=cell_ids,
+        gene_ids=gene_ids,
+        target_cell_order=np.arange(len(cell_ids)),
+        target_gene_order=np.arange(len(gene_ids)),
+        representation=representation,
+        representation_reason=reason,
+    )
 
 
 def _descending_average_ranks(values: np.ndarray) -> np.ndarray:
@@ -495,7 +579,10 @@ def _benjamini_hochberg(p_values: np.ndarray) -> np.ndarray:
 
 
 def evaluate_marker_and_de_endpoints(
-    output: MethodOutput, targets: EvaluatorTargets
+    output: MethodOutput,
+    targets: EvaluatorTargets,
+    *,
+    _workspace: _EvaluationWorkspace | None = None,
 ) -> tuple[EndpointRecord, EndpointRecord, EndpointRecord]:
     """Evaluate group-specific marker ranking and positive-control DE.
 
@@ -503,11 +590,14 @@ def evaluate_marker_and_de_endpoints(
     one-vs-rest group-by-gene hypothesis in this biological draw.
     """
 
-    values, _cell_ids, _gene_ids, target_cells, target_genes = (
-        _aligned_evaluator_arrays(output, targets)
+    workspace = _workspace or _evaluation_workspace(
+        output, targets, include_representation=False
     )
-    marker_procedure = "group_macro_mean_normalized_true_marker_rank_log1p_cp10k"
-    de_procedure = "one_sided_welch_log1p_cp10k_global_bh"
+    values = workspace.values
+    target_cells = workspace.target_cell_order
+    target_genes = workspace.target_gene_order
+    marker_procedure = "group_macro_mean_normalized_true_marker_rank_log2_cp10k_plus_1"
+    de_procedure = "one_sided_welch_log2_cp10k_plus_1_global_bh"
     if targets.group_labels is None:
         reason = targets.group_labels_reason or "group_labels_unavailable"
         family_size = None
@@ -566,8 +656,7 @@ def evaluate_marker_and_de_endpoints(
         [targets.group_markers[group][target_genes] for group in groups], axis=0
     )
     truth_marker_count = int(np.sum(marker_truth))
-    log_values = _log_cp10k(values)
-    scores = _one_vs_rest_scores(log_values, labels, groups)
+    scores = _one_vs_rest_scores(values, labels, groups)
 
     if values.shape[1] < 2:
         marker_record = _unavailable_record(
@@ -656,7 +745,7 @@ def evaluate_marker_and_de_endpoints(
         )
     else:
         adjusted = _benjamini_hochberg(
-            _one_sided_welch_p_values(log_values, labels, groups)
+            _one_sided_welch_p_values(values, labels, groups)
         )
         discoveries = adjusted <= POSITIVE_DE_ALPHA
         discovery_count = int(np.sum(discoveries))
@@ -765,6 +854,119 @@ def _deterministic_kmeans(values: np.ndarray, n_clusters: int) -> np.ndarray | N
     return best_labels
 
 
+def _davies_bouldin_index(
+    values: np.ndarray, labels: np.ndarray, n_clusters: int
+) -> float:
+    centers = np.vstack(
+        [np.mean(values[labels == index], axis=0) for index in range(n_clusters)]
+    )
+    point_distances = np.sqrt(
+        np.maximum(
+            _squared_euclidean(values, centers)[np.arange(values.shape[0]), labels],
+            0.0,
+        )
+    )
+    scatter = np.asarray(
+        [np.mean(point_distances[labels == index]) for index in range(n_clusters)],
+        dtype=np.float64,
+    )
+    center_distances = np.sqrt(np.maximum(_squared_euclidean(centers, centers), 0.0))
+    np.fill_diagonal(center_distances, np.inf)
+    ratios = np.divide(
+        scatter[:, None] + scatter[None, :],
+        center_distances,
+        out=np.full_like(center_distances, np.inf),
+        where=center_distances > 0.0,
+    )
+    np.fill_diagonal(ratios, -np.inf)
+    return float(np.mean(np.max(ratios, axis=1)))
+
+
+@dataclass(frozen=True, slots=True)
+class ClusteringPartition:
+    """Auditable truth-free cluster fit in canonical cell-ID order."""
+
+    cell_ids: tuple[str, ...]
+    assignments: tuple[int, ...]
+    n_clusters: int
+    model_selection: str
+    criterion_value: float
+
+    def __post_init__(self) -> None:
+        if len(self.cell_ids) != len(self.assignments):
+            raise ValueError("clustering assignments must match cell IDs")
+        if self.n_clusters < CLUSTERING_MIN_K:
+            raise ValueError("clustering partition requires at least two clusters")
+        if len(set(self.assignments)) != self.n_clusters:
+            raise ValueError("clustering partition has the wrong cluster count")
+        if self.model_selection != "minimum_davies_bouldin_fixed_k_grid_2_to_10":
+            raise ValueError("clustering model-selection rule is not prespecified")
+        if not np.isfinite(self.criterion_value) or self.criterion_value < 0.0:
+            raise ValueError("clustering criterion must be finite and nonnegative")
+
+
+def _select_clustering_partition(
+    representation: np.ndarray, cell_ids: tuple[str, ...]
+) -> tuple[ClusteringPartition | None, str | None]:
+    distinct_profiles = int(np.unique(representation, axis=0).shape[0])
+    maximum_k = min(
+        CLUSTERING_MAX_K,
+        representation.shape[0] // 2,
+        distinct_profiles,
+    )
+    if maximum_k < CLUSTERING_MIN_K:
+        return None, "fewer_than_two_distinct_method_profiles"
+
+    best: ClusteringPartition | None = None
+    for n_clusters in range(CLUSTERING_MIN_K, maximum_k + 1):
+        labels = _deterministic_kmeans(representation, n_clusters)
+        if labels is None:
+            continue
+        counts = np.bincount(labels, minlength=n_clusters)
+        if np.any(counts < 2):
+            continue
+        criterion = _davies_bouldin_index(representation, labels, n_clusters)
+        if not np.isfinite(criterion):
+            continue
+        canonical = _canonical_cluster_labels(labels)
+        candidate = ClusteringPartition(
+            cell_ids=cell_ids,
+            assignments=canonical,
+            n_clusters=n_clusters,
+            model_selection="minimum_davies_bouldin_fixed_k_grid_2_to_10",
+            criterion_value=criterion,
+        )
+        if best is None or (candidate.criterion_value, candidate.n_clusters) < (
+            best.criterion_value,
+            best.n_clusters,
+        ):
+            best = candidate
+    if best is None:
+        return None, "deterministic_kmeans_failed"
+    return best, None
+
+
+def infer_clustering_partition(output: MethodOutput) -> ClusteringPartition:
+    """Fit clusters without accepting or consulting evaluator truth.
+
+    Candidate ``k`` values are the fixed grid 2--10, restricted only by the
+    number of cells and distinct method profiles.  Davies--Bouldin index is
+    minimized with smaller ``k`` as the deterministic tie-break.
+    """
+
+    workspace = _truth_free_workspace(output)
+    if workspace.representation is None:
+        raise ValueError(
+            workspace.representation_reason or "constant_method_representation"
+        )
+    partition, reason = _select_clustering_partition(
+        workspace.representation, workspace.cell_ids
+    )
+    if partition is None:
+        raise ValueError(reason or "deterministic_kmeans_failed")
+    return partition
+
+
 def _contingency(
     truth: np.ndarray, predicted: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -822,15 +1024,21 @@ def _normalized_mutual_information(truth: np.ndarray, predicted: np.ndarray) -> 
 
 
 def evaluate_clustering_endpoints(
-    output: MethodOutput, targets: EvaluatorTargets
+    output: MethodOutput,
+    targets: EvaluatorTargets,
+    *,
+    _workspace: _EvaluationWorkspace | None = None,
 ) -> tuple[EndpointRecord, EndpointRecord]:
     """Return deterministic clustering recovery as one minus ARI and NMI."""
 
-    values, _cell_ids, _gene_ids, target_cells, _target_genes = (
-        _aligned_evaluator_arrays(output, targets)
+    workspace = _workspace or _evaluation_workspace(
+        output, targets, include_representation=True
     )
+    values = workspace.values
+    target_cells = workspace.target_cell_order
     procedure = (
-        "log1p_cp10k_full_svd_pca_kmeans_"
+        "log2_cp10k_plus_1_full_svd_pca_kmeans_fixed_k_grid=2:10_"
+        "minimum_davies_bouldin_"
         f"seed={CLUSTERING_SEED}_n_init={CLUSTERING_N_INIT}"
     )
     labels: np.ndarray | None
@@ -848,46 +1056,43 @@ def evaluate_clustering_endpoints(
             reason = None
     if reason is None:
         assert labels is not None
-        normalized = _log_cp10k(values)
-        input_scale = max(float(np.linalg.norm(normalized, ord=2)), 1.0)
-        centered = normalized.copy()
-        centered -= np.mean(centered, axis=0)
-        left, singular, _right = np.linalg.svd(centered, full_matrices=False)
-        tolerance = np.finfo(np.float64).eps * max(centered.shape) * input_scale
-        rank = int(np.sum(singular > tolerance))
-        if rank == 0:
-            reason = "constant_method_representation"
+        representation = workspace.representation
+        if representation is None:
+            reason = workspace.representation_reason or "constant_method_representation"
         else:
-            components = min(CLUSTERING_MAX_COMPONENTS, rank)
-            representation = left[:, :components] * singular[:components]
-            n_groups = len(set(labels.tolist()))
-            if np.unique(representation, axis=0).shape[0] < n_groups:
-                reason = "fewer_distinct_method_profiles_than_groups"
+            components = min(CLUSTERING_MAX_COMPONENTS, representation.shape[1])
+            cluster_representation = representation[:, :components]
+            partition, reason = _select_clustering_partition(
+                cluster_representation, workspace.cell_ids
+            )
+            if partition is None:
+                assert reason is not None
             else:
-                predicted = _deterministic_kmeans(representation, n_groups)
-                if predicted is None:
-                    reason = "deterministic_kmeans_failed"
-                else:
-                    ari_loss = 1.0 - _adjusted_rand_index(labels, predicted)
-                    nmi_loss = 1.0 - _normalized_mutual_information(labels, predicted)
-                    return (
-                        _completed_record(
-                            "clustering_ari_loss",
-                            ari_loss,
-                            direction="lower_is_better",
-                            descriptive_n=values.shape[0],
-                            descriptive_unit="cells",
-                            procedure=procedure,
-                        ),
-                        _completed_record(
-                            "clustering_nmi_loss",
-                            nmi_loss,
-                            direction="lower_is_better",
-                            descriptive_n=values.shape[0],
-                            descriptive_unit="cells",
-                            procedure=procedure,
-                        ),
-                    )
+                predicted = np.asarray(partition.assignments, dtype=np.int64)
+                ari_loss = 1.0 - _adjusted_rand_index(labels, predicted)
+                nmi_loss = 1.0 - _normalized_mutual_information(labels, predicted)
+                fitted_procedure = (
+                    f"{procedure}_selected_k={partition.n_clusters}_"
+                    f"davies_bouldin={partition.criterion_value:.17g}"
+                )
+                return (
+                    _completed_record(
+                        "clustering_ari_loss",
+                        ari_loss,
+                        direction="lower_is_better",
+                        descriptive_n=values.shape[0],
+                        descriptive_unit="cells",
+                        procedure=fitted_procedure,
+                    ),
+                    _completed_record(
+                        "clustering_nmi_loss",
+                        nmi_loss,
+                        direction="lower_is_better",
+                        descriptive_n=values.shape[0],
+                        descriptive_unit="cells",
+                        procedure=fitted_procedure,
+                    ),
+                )
     return (
         _unavailable_record(
             "clustering_ari_loss",
@@ -926,14 +1131,20 @@ def _profile_spearman(method_profile: np.ndarray, heldout_profile: np.ndarray) -
 
 
 def evaluate_heldout_endpoints(
-    output: MethodOutput, targets: EvaluatorTargets
+    output: MethodOutput,
+    targets: EvaluatorTargets,
+    *,
+    _workspace: _EvaluationWorkspace | None = None,
 ) -> tuple[EndpointRecord, EndpointRecord]:
     """Compare method profiles with an independent evaluator-only count split."""
 
-    values, _cell_ids, _gene_ids, target_cells, target_genes = (
-        _aligned_evaluator_arrays(output, targets)
+    workspace = _workspace or _evaluation_workspace(
+        output, targets, include_representation=False
     )
-    procedure = "mean_profile_spearman_log1p_cp10k_independent_count_split"
+    values = workspace.values
+    target_cells = workspace.target_cell_order
+    target_genes = workspace.target_gene_order
+    procedure = "mean_profile_spearman_log2_cp10k_plus_1_independent_count_split"
     if targets.heldout_counts is None:
         reason = targets.heldout_reason or "independent_heldout_counts_unavailable"
         return (
@@ -956,8 +1167,8 @@ def evaluate_heldout_endpoints(
         )
 
     heldout = targets.heldout_counts[target_cells][:, target_genes]
-    method_log = _log_cp10k(values)
-    heldout_log = _log_cp10k(heldout)
+    method_log = values
+    heldout_log = _counts_to_log2_cp10k(heldout)
     variable_genes = np.ptp(heldout_log, axis=0) > 0.0
     variable_cells = np.ptp(heldout_log, axis=1) > 0.0
 
@@ -1009,28 +1220,52 @@ def evaluate_heldout_endpoints(
     return gene_record, cell_record
 
 
-def _trajectory_representation(values: np.ndarray) -> np.ndarray | None:
-    normalized = _log_cp10k(values)
-    input_scale = max(float(np.linalg.norm(normalized, ord=2)), 1.0)
-    centered = normalized.copy()
-    centered -= np.mean(centered, axis=0)
-    left, singular, _right = np.linalg.svd(centered, full_matrices=False)
-    if not singular.size:
-        return None
-    tolerance = np.finfo(np.float64).eps * max(centered.shape) * input_scale
-    rank = int(np.sum(singular > tolerance))
-    if rank == 0:
-        return None
-    components = min(TRAJECTORY_MAX_COMPONENTS, rank)
-    return left[:, :components] * singular[:components]
-
-
-def _pairwise_squared_distance(values: np.ndarray) -> np.ndarray:
-    norms = np.sum(values * values, axis=1, dtype=np.float64)
-    distances = norms[:, None] + norms[None, :] - 2.0 * (values @ values.T)
+def _squared_distance_block(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    left_norms = np.sum(left * left, axis=1, dtype=np.float64)
+    right_norms = np.sum(right * right, axis=1, dtype=np.float64)
+    distances = left_norms[:, None] + right_norms[None, :] - 2.0 * (left @ right.T)
     np.maximum(distances, 0.0, out=distances)
-    np.fill_diagonal(distances, 0.0)
     return distances
+
+
+def _sparse_knn_squared_distances(
+    representation: np.ndarray, n_neighbors: int
+) -> sparse.csr_matrix:
+    """Return a symmetric exact-kNN graph without allocating an N-by-N array."""
+
+    n_cells = representation.shape[0]
+    if not 1 <= n_neighbors < n_cells:
+        raise ValueError("n_neighbors must be between one and n_cells minus one")
+    edges: dict[tuple[int, int], float] = {}
+    for start in range(0, n_cells, TRAJECTORY_DISTANCE_BLOCK_SIZE):
+        stop = min(start + TRAJECTORY_DISTANCE_BLOCK_SIZE, n_cells)
+        distances = _squared_distance_block(representation[start:stop], representation)
+        local = np.arange(stop - start)
+        distances[local, np.arange(start, stop)] = np.inf
+        neighbors = np.argsort(distances, axis=1, kind="mergesort")[:, :n_neighbors]
+        for local_index, columns in enumerate(neighbors):
+            row = start + local_index
+            for column in columns.tolist():
+                edge = (min(row, int(column)), max(row, int(column)))
+                distance = float(distances[local_index, column])
+                previous = edges.get(edge)
+                if previous is None or distance < previous:
+                    edges[edge] = distance
+    ordered = tuple(sorted(edges.items()))
+    rows = np.asarray(
+        [index for (left, right), _value in ordered for index in (left, right)],
+        dtype=np.int64,
+    )
+    columns = np.asarray(
+        [index for (left, right), _value in ordered for index in (right, left)],
+        dtype=np.int64,
+    )
+    data = np.asarray(
+        [value for _edge, value in ordered for _ in range(2)], dtype=np.float64
+    )
+    result = sparse.csr_matrix((data, (rows, columns)), shape=(n_cells, n_cells))
+    result.sort_indices()
+    return result
 
 
 def _diffusion_distance_from_root(
@@ -1042,47 +1277,23 @@ def _diffusion_distance_from_root(
         max(2, int(np.sqrt(n_cells))),
         n_cells - 1,
     )
-    distances = _pairwise_squared_distance(representation)
-    neighbor_distance = distances.copy()
-    np.fill_diagonal(neighbor_distance, np.inf)
-    neighbor_order = np.argsort(neighbor_distance, axis=1, kind="mergesort")[
-        :, :n_neighbors
-    ]
-    edge_mask = np.zeros((n_cells, n_cells), dtype=bool)
-    edge_mask[
-        np.repeat(np.arange(n_cells), n_neighbors), neighbor_order.reshape(-1)
-    ] = True
-    edge_mask |= edge_mask.T
-    positive = distances[edge_mask & (distances > 0.0)]
+    distances = _sparse_knn_squared_distances(representation, n_neighbors)
+    positive = distances.data[distances.data > 0.0]
     if positive.size == 0:
         return None, "trajectory_affinity_scale_unavailable"
     scale_squared = float(np.median(positive))
     if not np.isfinite(scale_squared) or scale_squared <= 0.0:
         return None, "trajectory_affinity_scale_unavailable"
-    graph = sparse.csr_matrix(edge_mask)
+    graph = distances.copy()
+    graph.data = np.ones(graph.nnz, dtype=np.float64)
     component_count = sparse.csgraph.connected_components(
         graph, directed=False, return_labels=False
     )
     if component_count != 1:
         return None, "trajectory_graph_disconnected"
-    rows, columns = np.nonzero(edge_mask)
-    diagonal = np.arange(n_cells)
-    affinity = sparse.csr_matrix(
-        (
-            np.concatenate(
-                [
-                    np.exp(-distances[rows, columns] / (2.0 * scale_squared)),
-                    np.ones(n_cells, dtype=np.float64),
-                ]
-            ),
-            (
-                np.concatenate([rows, diagonal]),
-                np.concatenate([columns, diagonal]),
-            ),
-        ),
-        shape=(n_cells, n_cells),
-    )
-    affinity.eliminate_zeros()
+    affinity = distances.copy()
+    affinity.data = np.exp(-affinity.data / (2.0 * scale_squared))
+    affinity = affinity + sparse.identity(n_cells, format="csr", dtype=np.float64)
     degree = np.asarray(affinity.sum(axis=1)).reshape(-1)
     if np.any(degree <= 0.0):
         return None, "trajectory_graph_has_zero_degree"
@@ -1127,16 +1338,21 @@ def _diffusion_distance_from_root(
 
 
 def evaluate_trajectory_endpoint(
-    output: MethodOutput, targets: EvaluatorTargets
+    output: MethodOutput,
+    targets: EvaluatorTargets,
+    *,
+    _workspace: _EvaluationWorkspace | None = None,
 ) -> EndpointRecord:
     """Evaluate genuine root-oriented pseudotime with multiscale diffusion."""
 
-    values, cell_ids, _gene_ids, _target_cells, _target_genes = (
-        _aligned_evaluator_arrays(output, targets)
+    workspace = _workspace or _evaluation_workspace(
+        output, targets, include_representation=True
     )
+    values = workspace.values
+    cell_ids = workspace.cell_ids
     procedure = (
-        "root_oriented_multiscale_diffusion_log1p_cp10k_full_svd_"
-        "knn=floor_sqrt_n_capped_15_sparse_eigsh_modes=15"
+        "root_oriented_multiscale_diffusion_log2_cp10k_plus_1_full_svd_"
+        "blockwise_exact_knn=floor_sqrt_n_capped_15_sparse_eigsh_modes=15"
     )
     if targets.trajectory is None:
         return _unavailable_record(
@@ -1157,7 +1373,7 @@ def evaluate_trajectory_endpoint(
             descriptive_unit="trajectory_cells",
             procedure=procedure,
         )
-    representation = _trajectory_representation(values)
+    representation = workspace.representation
     if representation is None:
         return _unavailable_record(
             "trajectory_pseudotime_rank_loss",
@@ -1167,6 +1383,7 @@ def evaluate_trajectory_endpoint(
             descriptive_unit="trajectory_cells",
             procedure=procedure,
         )
+    representation = representation[:, :TRAJECTORY_MAX_COMPONENTS]
     trajectory = targets.trajectory
     trajectory_cells = {value: index for index, value in enumerate(trajectory.cell_ids)}
     pseudotime = trajectory.pseudotime[
@@ -1200,12 +1417,42 @@ def evaluate_downstream_endpoints(
 ) -> tuple[EndpointRecord, ...]:
     """Return the fixed complete evaluator-only endpoint record."""
 
-    marker, recall, false_discovery_rate = evaluate_marker_and_de_endpoints(
-        output, targets
-    )
-    clustering_ari, clustering_nmi = evaluate_clustering_endpoints(output, targets)
-    heldout_gene, heldout_cell = evaluate_heldout_endpoints(output, targets)
-    trajectory = evaluate_trajectory_endpoint(output, targets)
+    try:
+        workspace = _evaluation_workspace(
+            output,
+            targets,
+            include_representation=(
+                targets.group_labels is not None or targets.trajectory is not None
+            ),
+        )
+        marker, recall, false_discovery_rate = evaluate_marker_and_de_endpoints(
+            output, targets, _workspace=workspace
+        )
+        clustering_ari, clustering_nmi = evaluate_clustering_endpoints(
+            output, targets, _workspace=workspace
+        )
+        heldout_gene, heldout_cell = evaluate_heldout_endpoints(
+            output, targets, _workspace=workspace
+        )
+        trajectory = evaluate_trajectory_endpoint(output, targets, _workspace=workspace)
+    except (
+        np.linalg.LinAlgError,
+        sparse.linalg.ArpackError,
+        FloatingPointError,
+        OverflowError,
+    ):
+        records = tuple(
+            _unavailable_record(
+                endpoint,
+                "numeric_evaluation_failed",
+                direction=_ENDPOINT_CONTRACT[endpoint][0],
+                descriptive_n=0,
+                descriptive_unit=_ENDPOINT_CONTRACT[endpoint][1],
+                procedure="terminal_expected_numeric_failure",
+            )
+            for endpoint in DOWNSTREAM_ENDPOINT_NAMES
+        )
+        return records
     records = (
         marker,
         clustering_ari,
