@@ -55,7 +55,10 @@ _DISPOSITION_FAILURE_STATUSES = frozenset(
 )
 
 _FIXED_PATHS = {
-    "selection_input": "artifacts/study/development/evaluation/development_selection_input.json",
+    "selection_input": (
+        "artifacts/study/development/evaluation/"
+        "development_selection_input-downstream.json"
+    ),
     "selection_report": "artifacts/study/development/evaluation/development_selection_report.json",
     "evaluation_manifest": "artifacts/study/development/evaluation/evaluation_manifest.json",
     "reconstruction_checkpoint": "artifacts/study/development/competition-reconstruction/checkpoint.json",

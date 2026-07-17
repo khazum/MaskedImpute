@@ -611,20 +611,41 @@ def validate_revision_activation(
         raise TypeError("repository must be a pathlib.Path")
     root = repository.resolve(strict=True)
     paths = revision_stage_paths(version)
-    selection_input, input_sha = _read_canonical_json(
-        _safe_repository_path(
-            root, paths.activation_selection_input, "revision activation selection input"
-        ),
-        "revision activation selection input",
-        indented=False,
+    from .selection_promotion import (
+        SelectionPromotionError,
+        _secure_canonical_json,
     )
-    selection_report, report_sha = _read_canonical_json(
-        _safe_repository_path(
-            root, paths.activation_selection_report, "revision activation selection report"
-        ),
-        "revision activation selection report",
-        indented=False,
-    )
+
+    try:
+        selection_input, input_sha = _secure_canonical_json(
+            _safe_repository_path(
+                root,
+                paths.activation_selection_input,
+                "revision activation selection input",
+            ),
+            "revision activation selection input",
+        )
+        selection_report, report_sha = _secure_canonical_json(
+            _safe_repository_path(
+                root,
+                paths.activation_selection_report,
+                "revision activation selection report",
+            ),
+            "revision activation selection report",
+        )
+    except SelectionPromotionError as error:
+        raise RevisionAuthorityError(
+            "fixed revision activation selection input/report evidence is absent, "
+            "unsafe, or noncanonical"
+        ) from error
+    expected_activation_versions = [] if version == "v28" else ["v28"]
+    if (
+        selection_input.get("schema_version") != 4
+        or selection_input.get("revision_versions") != expected_activation_versions
+    ):
+        raise RevisionAuthorityError(
+            "revision activation selection input is not selection-complete schema 4"
+        )
     from .selection import _select_for_repository
 
     try:

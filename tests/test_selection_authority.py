@@ -3,10 +3,12 @@ from __future__ import annotations
 import inspect
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import importlib.util
 import subprocess
+import sys
 from types import SimpleNamespace
 import zlib
 
@@ -1131,32 +1133,277 @@ def test_cli_main_recomputes_selection_against_repository_authority(
     assert spec is not None and spec.loader is not None
     script = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(script)
-    input_path = tmp_path / "input.json"
-    output_path = tmp_path / "output.json"
-    sentinel = {"schema_version": 2}
+    input_path = tmp_path / "development_selection_input-downstream.json"
+    output_path = tmp_path / "development_selection_report.json"
+    sentinel = {"schema_version": 4}
     observed = []
+    monkeypatch.setattr(script, "SELECTION_INPUT_PATH", input_path)
+    monkeypatch.setattr(script, "SELECTION_REPORT_PATH", output_path)
     monkeypatch.setattr(
         script,
-        "_parser",
-        lambda: SimpleNamespace(
-            parse_args=lambda: SimpleNamespace(input=input_path, output=output_path),
-            error=lambda message: (_ for _ in ()).throw(AssertionError(message)),
-        ),
+        "_secure_canonical_json",
+        lambda path, label: (sentinel, "1" * 64)
+        if path == input_path and label == "base selection-complete input"
+        else pytest.fail("base selector read a noncanonical input path"),
     )
-    monkeypatch.setattr(script, "_load", lambda path: sentinel)
     monkeypatch.setattr(
         script,
         "_report",
         lambda payload, repository: observed.append((payload, repository))
         or {"selected_configuration": "v28-c01-nb-parent-c03"},
     )
-    monkeypatch.setattr(script, "_atomic_write", lambda *_args: None)
 
-    assert script.main() == 0
+    assert script.main([]) == 0
     assert observed == [(sentinel, script.REPOSITORY_ROOT)]
     assert json.loads(capsys.readouterr().out) == {
         "selected_configuration": "v28-c01-nb-parent-c03"
     }
+    published = output_path.read_bytes()
+    assert script.main([]) == 0
+    capsys.readouterr()
+    assert output_path.read_bytes() == published
+
+    monkeypatch.setattr(
+        script,
+        "_report",
+        lambda *_args: {"selected_configuration": "different"},
+    )
+    assert script.main([]) == 2
+    assert output_path.read_bytes() == published
+
+
+def test_base_selector_exposes_no_path_override_or_alternate_schema_four_input(
+    tmp_path: Path,
+) -> None:
+    alternate = tmp_path / "alternate-schema-four.json"
+    alternate.write_text(
+        json.dumps({"schema_version": 4}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "report.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/select_development_candidate.py",
+            "--input",
+            str(alternate),
+            "--output",
+            str(output),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 2
+    assert "unrecognized arguments" in completed.stderr
+    assert not output.exists()
+
+    help_result = subprocess.run(
+        [sys.executable, "scripts/select_development_candidate.py", "--help"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert help_result.returncode == 0
+    assert "--input" not in help_result.stdout
+    assert "--output" not in help_result.stdout
+
+
+def test_base_selector_rejects_symlink_report_without_touching_referent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    specification = importlib.util.spec_from_file_location(
+        "select_development_candidate_symlink_report",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert specification is not None and specification.loader is not None
+    script = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(script)
+    input_path = tmp_path / "evaluation/development_selection_input-downstream.json"
+    report_path = tmp_path / "evaluation/development_selection_report.json"
+    report_path.parent.mkdir(parents=True)
+    referent = tmp_path / "referent.json"
+    referent.write_bytes(b"unchanged\n")
+    report_path.symlink_to(referent)
+    monkeypatch.setattr(script, "SELECTION_INPUT_PATH", input_path)
+    monkeypatch.setattr(script, "SELECTION_REPORT_PATH", report_path)
+    monkeypatch.setattr(
+        script,
+        "_secure_canonical_json",
+        lambda *_args: ({"schema_version": 4}, "1" * 64),
+    )
+    monkeypatch.setattr(
+        script,
+        "_report",
+        lambda *_args: {"selected_configuration": "v27-c01-direct-r1-g1"},
+    )
+
+    assert script.main([]) == 2
+    assert report_path.is_symlink()
+    assert referent.read_bytes() == b"unchanged\n"
+
+
+def test_base_selector_parent_swap_cannot_publish_report_in_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.selection_promotion as promotion
+
+    specification = importlib.util.spec_from_file_location(
+        "select_development_candidate_swapped_report",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert specification is not None and specification.loader is not None
+    script = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(script)
+    parent = tmp_path / "evaluation"
+    parent.mkdir()
+    input_path = parent / "development_selection_input-downstream.json"
+    report_path = parent / "development_selection_report.json"
+    displaced = tmp_path / "evaluation-displaced"
+    replacement = tmp_path / "evaluation-replacement"
+    replacement.mkdir()
+    monkeypatch.setattr(script, "SELECTION_INPUT_PATH", input_path)
+    monkeypatch.setattr(script, "SELECTION_REPORT_PATH", report_path)
+    monkeypatch.setattr(
+        script,
+        "_secure_canonical_json",
+        lambda *_args: ({"schema_version": 4}, "1" * 64),
+    )
+    monkeypatch.setattr(
+        script,
+        "_report",
+        lambda *_args: {"selected_configuration": "v27-c01-direct-r1-g1"},
+    )
+    real_link = promotion.os.link
+    swapped = False
+
+    def swap_parent(source_name, destination_name, *args, **kwargs):
+        nonlocal swapped
+        if not swapped:
+            parent.rename(displaced)
+            replacement.rename(parent)
+            swapped = True
+        return real_link(source_name, destination_name, *args, **kwargs)
+
+    monkeypatch.setattr(promotion.os, "link", swap_parent)
+
+    assert script.main([]) == 2
+    assert not os.path.lexists(report_path)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        b'{"schema_version":4, "records":[]}\n',
+        b'{"schema_version":4,"schema_version":4}\n',
+    ),
+)
+def test_base_selector_rejects_noncanonical_or_duplicate_key_fixed_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw: bytes,
+) -> None:
+    specification = importlib.util.spec_from_file_location(
+        "select_development_candidate_invalid_fixed_input",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert specification is not None and specification.loader is not None
+    script = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(script)
+    input_path = tmp_path / "evaluation/development_selection_input-downstream.json"
+    report_path = tmp_path / "evaluation/development_selection_report.json"
+    input_path.parent.mkdir(parents=True)
+    input_path.write_bytes(raw)
+    monkeypatch.setattr(script, "SELECTION_INPUT_PATH", input_path)
+    monkeypatch.setattr(script, "SELECTION_REPORT_PATH", report_path)
+    monkeypatch.setattr(
+        script,
+        "_report",
+        lambda *_args: pytest.fail("invalid fixed input reached selection"),
+    )
+
+    assert script.main([]) == 2
+    assert not report_path.exists()
+
+
+def test_base_selector_rejects_symlinked_fixed_input_before_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    specification = importlib.util.spec_from_file_location(
+        "select_development_candidate_symlinked_fixed_input",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert specification is not None and specification.loader is not None
+    script = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(script)
+    input_path = tmp_path / "evaluation/development_selection_input-downstream.json"
+    report_path = tmp_path / "evaluation/development_selection_report.json"
+    input_path.parent.mkdir(parents=True)
+    referent = tmp_path / "input-referent.json"
+    referent.write_bytes(b'{"schema_version":4}\n')
+    input_path.symlink_to(referent)
+    monkeypatch.setattr(script, "SELECTION_INPUT_PATH", input_path)
+    monkeypatch.setattr(script, "SELECTION_REPORT_PATH", report_path)
+    monkeypatch.setattr(
+        script,
+        "_report",
+        lambda *_args: pytest.fail("symlinked fixed input reached selection"),
+    )
+
+    assert script.main([]) == 2
+    assert not report_path.exists()
+
+
+def test_base_selector_rejects_parent_swap_during_fixed_input_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.selection_promotion as promotion
+
+    specification = importlib.util.spec_from_file_location(
+        "select_development_candidate_swapped_fixed_input",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert specification is not None and specification.loader is not None
+    script = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(script)
+    parent = tmp_path / "evaluation"
+    parent.mkdir()
+    input_path = parent / "development_selection_input-downstream.json"
+    report_path = parent / "development_selection_report.json"
+    input_path.write_bytes(b'{"schema_version":4}\n')
+    displaced = tmp_path / "evaluation-displaced"
+    replacement = tmp_path / "evaluation-replacement"
+    replacement.mkdir()
+    (replacement / input_path.name).write_bytes(b'{"schema_version":4}\n')
+    monkeypatch.setattr(script, "SELECTION_INPUT_PATH", input_path)
+    monkeypatch.setattr(script, "SELECTION_REPORT_PATH", report_path)
+    monkeypatch.setattr(
+        script,
+        "_report",
+        lambda *_args: pytest.fail("swapped fixed input reached selection"),
+    )
+    real_read = promotion.os.read
+    swapped = False
+
+    def swap_parent(descriptor: int, size: int) -> bytes:
+        nonlocal swapped
+        if not swapped:
+            parent.rename(displaced)
+            replacement.rename(parent)
+            swapped = True
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(promotion.os, "read", swap_parent)
+
+    assert script.main([]) == 2
+    assert not report_path.exists()
 
 
 def test_cli_repository_selection_requires_clean_tracked_authority(

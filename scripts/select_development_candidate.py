@@ -5,11 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import sys
-import tempfile
-from typing import Any
+from typing import Any, Sequence
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -17,8 +15,25 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from maskimpute_benchmark.selection import (  # noqa: E402
+    SelectionAuthorityError,
     _select_for_repository,
     select_development_candidate,
+)
+from maskimpute_benchmark.selection_promotion import (  # noqa: E402
+    SelectionPromotionError,
+    _immutable_publish,
+    _secure_canonical_json,
+)
+
+
+SELECTION_INPUT_PATH = (
+    REPOSITORY_ROOT
+    / "artifacts/study/development/evaluation/"
+    "development_selection_input-downstream.json"
+)
+SELECTION_REPORT_PATH = (
+    REPOSITORY_ROOT
+    / "artifacts/study/development/evaluation/development_selection_report.json"
 )
 
 
@@ -104,55 +119,36 @@ def _canonical_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def _atomic_write(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--input",
-        type=Path,
-        default=REPOSITORY_ROOT
-        / "artifacts/study/development/evaluation/"
-        "development_selection_input-downstream.json",
+    return argparse.ArgumentParser(
+        description=(
+            "Apply the fixed development gates to the immutable base "
+            "selection-complete input."
+        )
     )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=REPOSITORY_ROOT
-        / "artifacts/study/development/evaluation/development_selection_report.json",
-    )
-    return parser
 
 
-def main() -> int:
-    parser = _parser()
-    arguments = parser.parse_args()
-    if arguments.input.resolve() == arguments.output.resolve():
-        parser.error("--input and --output must differ")
-    report = _report(_load(arguments.input), REPOSITORY_ROOT)
-    encoded = _canonical_bytes(report)
-    _atomic_write(arguments.output, encoded)
+def main(argv: Sequence[str] | None = None) -> int:
+    _parser().parse_args(argv)
+    try:
+        payload, _input_file_sha256 = _secure_canonical_json(
+            SELECTION_INPUT_PATH,
+            "base selection-complete input",
+        )
+        if payload.get("schema_version") != 4:
+            raise ValueError("fixed selection input must be selection-complete schema 4")
+        report = _report(payload, REPOSITORY_ROOT)
+        encoded = _canonical_bytes(report)
+        _immutable_publish(SELECTION_REPORT_PATH, encoded)
+    except (
+        OSError,
+        SelectionAuthorityError,
+        SelectionPromotionError,
+        TypeError,
+        ValueError,
+    ) as error:
+        print(json.dumps({"error": str(error)}, sort_keys=True), file=sys.stderr)
+        return 2
     print(encoded.decode("utf-8"), end="")
     return 0
 

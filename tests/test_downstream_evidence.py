@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import struct
 import sys
 import zlib
@@ -1028,6 +1029,16 @@ def test_development_downstream_routes_to_latest_fixed_revision_without_fallback
     _write_canonical(
         v29_path,
         {"schema_version": 3, "revision_versions": ["v29"]},
+    )
+    with pytest.raises(
+        DownstreamEvidenceError,
+        match="v29 revision selection input identity differs",
+    ):
+        development_downstream_revision_version(tmp_path)
+
+    _write_canonical(
+        v29_path,
+        {"schema_version": 4, "revision_versions": ["v28", "v29"]},
     )
     with pytest.raises(
         DownstreamEvidenceError,
@@ -2065,6 +2076,28 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
     )
     assert binding["source_selection_input_file_sha256"] == source_file_sha
     assert binding["source_selection_result_sha256"] == payload["result_sha256"]
+
+    v28_paths = development_selection_stage_paths("v28")
+    v28_core = {
+        **core,
+        "schema_version": 3,
+        "revision_versions": ["v28"],
+    }
+    v28_payload = {
+        **v28_core,
+        "result_sha256": canonical_sha256(v28_core),
+    }
+    _write_canonical(tmp_path / v28_paths.source_selection_input, v28_payload)
+    shutil.copytree(destination, tmp_path / v28_paths.downstream_directory)
+    with pytest.raises(
+        SelectionAuthorityError,
+        match="downstream revision sources differ",
+    ):
+        attach_downstream_evidence_to_selection_result(
+            v28_payload,
+            tmp_path,
+            v28_paths.downstream_directory,
+        )
 
     missing_denominator = [
         record
