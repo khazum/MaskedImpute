@@ -1,0 +1,165 @@
+% Genome Biology Methodology draft. Numerical claims must be rendered only from
+% the sealed final-analysis artifact; every unresolved field is visibly marked.
+\documentclass[pdflatex,sn-vancouver-num]{sn-jnl}
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage{xcolor}
+
+\newcommand{\PendingResult}[1]{\textcolor{red}{\textbf{[PENDING SEALED EVIDENCE: #1]}}}
+\newcommand{\PendingAuthor}[1]{\textcolor{red}{\textbf{[AUTHOR INPUT REQUIRED: #1]}}}
+
+\raggedbottom
+
+\begin{document}
+
+\title[Calibrated selective single-cell imputation]{MaskImpute: calibrated selective imputation for single-cell RNA-sequencing count matrices}
+
+% Author names, affiliations, correspondence, and contribution statements are
+% intentionally absent. They may be restored only from author-approved input.
+
+\abstract{MaskImpute is a selective single-cell RNA-sequencing imputation method that estimates whether each observed zero preceded technical loss and restricts reconstruction accordingly. We designed a truth-aware benchmark spanning four independent simulation mechanisms, paired sequencing-depth views, modern same-input comparators, molecular validation, ablations, and resource scaling. \PendingResult{replace this sentence with the sealed primary result and calibrated conclusion}. All analyses are generated from immutable, machine-readable study artifacts.}
+
+\keywords{single-cell RNA sequencing, dropout, selective imputation, count model, benchmark, reproducible research}
+
+\maketitle
+
+\section{Background}
+
+Single-cell RNA-sequencing count matrices contain biological zeros, sampling zeros, and zeros introduced by measurement loss. Treating every zero as missing can invent expression, while leaving every zero untouched can obscure recoverable signal. Existing imputation approaches span low-rank recovery, diffusion, autoencoder, probabilistic count-model, matrix-factorization, and graph-based formulations \cite{vanDijk2018MAGIC,Eraslan2019DCA,Lopez2018scVI,Linderman2022ALRA,Huang2018SAVER}. Their assumptions and output scales differ, so comparisons require common inputs, transformations, resource limits, and explicit failure accounting.
+
+MaskImpute separates two questions: whether an observed zero plausibly preceded dropout, and what value a masked reconstruction model predicts. It applies the reconstruction only where the prespecified score and gate support intervention, while retaining observed positive counts. We evaluate whether this selective policy improves reconstruction without the false-positive expression and molecular-signal distortions that can arise from unrestricted denoising.
+
+This Methodology study was designed before the untouched final round. Development and final data use disjoint random-seed namespaces. The comparison denominator, four simulation mechanisms, paired technical views, metrics, calibration rule, model seeds, ablations, resource ceilings, and multiplicity families are machine-readable and version bound.
+
+\section{Results}
+
+\subsection{A four-mechanism benchmark separates biological and technical replication}
+
+The benchmark uses SymSim, SERGIO, SPARSim, and a semisynthetic thinning mechanism. Each biological draw produces paired moderate and severe measurement views. Model seeds and technical views are repeated observations nested within a biological draw, not independent biological replicates. The final panel contains five untouched biological draws per mechanism. Individual draw values accompany summaries because each mechanism has fewer than six biological replicates.
+
+\PendingResult{insert the sealed dataset denominator, execution-status table, and Figure 1}
+
+\subsection{Selective reconstruction is compared on common estimands and scales}
+
+All same-input methods receive the identical quality-controlled cell and gene set. Count-scale outputs are evaluated directly; normalized outputs are converted through prespecified, method-specific evaluator mappings before the common $\log_2(\mathrm{CP10k}+1)$ distributional analysis. Primary reconstruction errors, dropout-restricted errors, correlation error, false-positive expression, nonzero preservation, and per-gene empirical Wasserstein distance are reported together rather than reduced to one favorable metric.
+
+\PendingResult{insert sealed median/IQR estimates, paired intervals, win/tie/loss summaries, and Pareto results}
+
+\subsection{The pre-zero score is evaluated as a probability, not only as a gate}
+
+Cross-fitted count-model scores are generated without evaluator truth at inference time. Calibration may be retained only when the prespecified minimum number of exact simulator mechanisms is eligible; otherwise the identity map is used and the equivalence reason is recorded. Reliability, discrimination, and stratified performance are evaluated against simulator-owned pre-dropout zero truth.
+
+\PendingResult{insert sealed score reliability, calibration, and stratified results}
+
+\subsection{Biological endpoints are isolated from method inputs}
+
+Group labels, marker truth, held-out count splits, proteins, spike-ins, replicates, and bulk references remain evaluator-only. Prespecified endpoints include marker-rank loss, clustering loss, positive-control differential-expression recovery, held-out gene and cell profile concordance, RNA--protein concordance, ERCC recovery, technical-replicate concordance, and bulk--pseudobulk concordance. Trajectory recovery is reported as unavailable when a mechanism lacks genuine prespecified pseudotime rather than substituting a constructed label.
+
+\PendingResult{insert sealed orthogonal and evaluator-only endpoint results}
+
+\subsection{Ablations test selectivity, masking, scoring, and model capacity}
+
+The ablation panel changes one named component at a time where possible and includes a capacity-matched masked-autoencoder control with both selective penalties disabled. Optimizer, parameter, preprocessing, seed, and evaluation budgets are held fixed according to the tracked ablation registry.
+
+\PendingResult{insert sealed ablation results and component-attribution limits}
+
+\subsection{Resource scaling is reported with failures in the denominator}
+
+The prespecified scaling panel uses 10,000, 25,000, 50,000, and 100,000 cells from one fixed mechanism. Wall-clock time, peak resident memory, peak GPU memory, and terminal status are reported for every scheduled run. Accuracy is reported only where the truth matrix fits the prespecified metric implementation.
+
+\PendingResult{insert sealed scaling results and Figure 5}
+
+\subsection{External-reference methods form a separate applicability track}
+
+D3Impute and scTsI require a matched bulk reference and therefore are not presented as same-input competitors. Their development evidence is reported on a separate reference-available track, with endpoint overlap described explicitly and no use of evaluator truth as method input \cite{Zhu2025D3Impute,Guan2025scTsI}.
+
+\PendingResult{insert sealed external-reference availability and endpoint results}
+
+\section{Discussion}
+
+The principal interpretation must begin with the conditions under which selective imputation helps and those under which observed counts remain preferable. \PendingResult{insert the sealed scope-qualified interpretation}. Improvements in reconstruction error do not by themselves establish improved biological inference, so the molecular, marker, clustering, differential-expression, held-out, and distributional endpoints constrain the claim.
+
+The study has several prespecified limitations. Simulator truth is necessarily model dependent, so convergence across four distinct mechanisms is more informative than any single mechanism. Paired technical views and model seeds do not increase the biological sample size. The molecular datasets support specific conditional endpoints and do not constitute population-level validation across tissues or platforms. External-reference methods answer a different question because they receive information unavailable to same-input methods. A method that times out, exceeds resources, or is technically unavailable remains in the denominator.
+
+The untouched final round is used once after method and protocol freeze. Development-guided revisions are disclosed chronologically, including unsuccessful configurations. This separation reduces, but cannot eliminate, researcher degrees of freedom associated with model and benchmark construction.
+
+\section{Conclusions}
+
+\PendingResult{insert a concise conclusion supported only by the sealed final-analysis artifact}
+
+\section{Methods}
+
+\subsection{Study design, preregistered authority, and evidence lifecycle}
+
+Tracked JSON authorities define the protocol, development panel, method registry, search space, calibration contract, selection contract, ablations, source pins, runtime lock, and final lifecycle. Canonical checksums bind every authority consumed by an execution plan. Development artifacts are resumable but immutable once published. The final lifecycle permits one execution claim; terminal records must cover the complete planned denominator. Infrastructure errors, authority blocks, budget exhaustion, omissions, checksum mismatches, and unsafe paths fail closed.
+
+Development uses two biological draws per mechanism with moderate and severe technical views. The final simulation panel uses five new biological draws per mechanism, the same paired views, and three fixed model seeds for stochastic methods. Cell filtering is restricted to the union of zero-observed-library cells across the paired views and is applied identically to every method. Additional cell or gene filtering is forbidden.
+
+\subsection{Simulation mechanisms}
+
+SymSim, SERGIO, and SPARSim run from pinned upstream revisions in locked environments. The semisynthetic mechanism estimates biological structure from a fixed reference and applies independently seeded measurement thinning. Simulator adapters seal native output bytes before translation into the common AnnData truth schema. Paired views share biological truth but use distinct measurement seeds. Marker truth, pre-dropout counts, dropout indicators, and held-out splits are evaluator-owned.
+
+\subsection{Pre-zero probability estimation and calibration}
+
+For each evaluation input, a cross-fitted count model estimates the probability that an observed zero had positive pre-dropout abundance. The model uses only truth-free count-derived features and fixed hyperparameters. Fold assignments, training-cell identities, score arrays, exclusions, configuration hashes, and reliability strata are receipt bound. The calibration contract requires at least three eligible exact simulator mechanisms; because fewer are currently eligible, the binding rule forces the identity map unless future preregistered evidence satisfies that threshold.
+
+\subsection{MaskImpute architecture and selective output policy}
+
+MaskImpute trains a masked autoencoder on count-derived normalized inputs with explicit mask indicators, log-count-stratified artificial masking, and a prespecified pre-zero regularizer. The decoder predicts reconstructed abundance. A power-complement gate combines the reconstruction with the pre-zero score; observed positives are retained under the selective output policy. Hyperparameters, early stopping, model seeds, and all development configurations are recorded in the tracked search ledger.
+
+\subsection{Comparator methods and applicability}
+
+The same-input denominator includes observed counts, a capacity-matched autoencoder, ALRA, MAGIC, DCA, scVI, SAVER, scZiva, afMF, BiAEImpute, scCR, and scSDAE where scheduled by the frozen registry \cite{vanDijk2018MAGIC,Eraslan2019DCA,Lopez2018scVI,Linderman2022ALRA,Huang2018SAVER}. Each adapter invokes a pristine pinned source tree in an isolated runtime, records compatibility actions, and applies a declared evaluator conversion. scImpute and WEDGE are retained as historical comparators but are not rerun. scGACL, scTACL, and scZN retain explicit non-applicability reasons. D3Impute and scTsI are evaluated only when a prespecified matched bulk reference exists.
+
+\subsection{Reconstruction and distributional metrics}
+
+Primary metrics are mean squared error, dropout-restricted mean squared error, pre-dropout-zero mean squared error, gene-normalized root mean squared error, and correlation error. Secondary metrics quantify false-positive expression, nonzero preservation, mean and variance distortion, and the mean per-gene empirical Wasserstein distance on $\log_2(\mathrm{CP10k}+1)$. Metric directions and missingness rules are fixed before final execution. Evaluator outputs are stored as deterministic bounded zlib streams with compressed and uncompressed checksums and byte counts.
+
+\subsection{Evaluator-only biological endpoints}
+
+Method outputs contain only an aligned matrix and cell/gene identifiers. Endpoint targets are held in a separate evaluator object. Marker ranks and positive-control differential expression use simulator group-marker truth; Benjamini--Hochberg adjustment is applied once across the declared group-by-gene family. Clustering uses deterministic principal components and seeded $k$-means, reported as $1-\mathrm{ARI}$ and $1-\mathrm{NMI}$. Held-out gene and cell profile losses use independent count splits. Genuine pseudotime is required for trajectory recovery; absent truth yields a reason-coded unavailable result.
+
+\subsection{Statistical analysis}
+
+The biological draw is the independent unit. Model seeds are averaged within technical view and paired views remain nested within draw. Descriptive summaries report median and interquartile range together with individual draws. Candidate--comparator contrasts use prespecified hierarchical bootstrap resampling of biological draws and nested technical observations. Win/tie/loss counts, probability of improvement, and Pareto non-domination accompany interval estimates. Multiplicity is controlled with Holm adjustment within declared metric families. Terminal failures are excluded from numerical estimands but retained in method-specific denominators and completeness tables.
+
+\subsection{Resource measurement and scaling}
+
+Independent parent-process telemetry samples the full process tree. Runs are terminated when their frozen wall-time, resident-memory, or GPU-memory ceiling is exceeded. Scaling uses the fixed cell-count grid and one biological draw; its accuracy summaries are descriptive and are not treated as biological replication.
+
+\subsection{Reproducibility and software availability}
+
+Source revisions, source-tree hashes, runtime closure inventories, environment identities, command receipts, seeds, protocol files, and artifact checksums are machine readable. \PendingAuthor{choose and add an OSI-approved project license}. \PendingAuthor{provide the public repository URL and archival DOI}. The final release will include exact commands for development reconstruction, selection, freeze, one-use final execution, analysis generation, and manuscript rendering.
+
+\section*{Declarations}
+
+\subsection*{Ethics approval and consent to participate}
+\PendingAuthor{provide the applicable ethics determination and consent statement; do not infer exemption}
+
+\subsection*{Consent for publication}
+\PendingAuthor{provide the author-approved statement}
+
+\subsection*{Availability of data and materials}
+\PendingAuthor{provide public URLs, accessions, reviewer links, and archive DOI}
+
+\subsection*{Competing interests}
+\PendingAuthor{provide the author-approved competing-interest declaration}
+
+\subsection*{Funding}
+\PendingAuthor{provide funding sources and grant identifiers, or an approved no-funding statement}
+
+\subsection*{Authors' contributions}
+\PendingAuthor{provide names/initials and CRediT-aligned contributions}
+
+\subsection*{Acknowledgements}
+\PendingAuthor{provide acknowledgements or an approved not-applicable statement}
+
+\subsection*{Use of generative AI or AI-assisted technologies}
+\PendingAuthor{provide the author-approved disclosure required by current publisher policy}
+
+\bibliography{references}
+
+\end{document}

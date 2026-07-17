@@ -1,0 +1,3 @@
+# Preserve the verified official Springer Nature template bytes exactly.
+paper/sn-jnl.cls binary
+paper/sn-vancouver-num.bst binary
