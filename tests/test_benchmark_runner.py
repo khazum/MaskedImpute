@@ -1767,7 +1767,7 @@ def test_evaluator_conversion_failure_retains_only_stable_hashed_detail() -> Non
 
 
 @pytest.mark.parametrize("method_id", ["maskimpute", "capacity-matched-ae"])
-def test_in_tree_learned_methods_use_the_shared_raw_count_converter(
+def test_in_tree_adapter_contracts_require_score_evidence_before_shared_conversion(
     method_id: str,
 ) -> None:
     from maskimpute_benchmark.methods import snapshot_method_output
@@ -1792,7 +1792,7 @@ def test_in_tree_learned_methods_use_the_shared_raw_count_converter(
         command=None,
     )
 
-    evaluated = evaluate_adapter_outcome(
+    evaluation = lambda: evaluate_adapter_outcome(  # noqa: E731 - assertion closure
         _entry_for(prepared, method_id, seed=42),
         prepared,
         AdapterOutcome.completed(
@@ -1802,6 +1802,12 @@ def test_in_tree_learned_methods_use_the_shared_raw_count_converter(
             peak_gpu_bytes=1,
         ),
     )
+
+    if method_id == "maskimpute":
+        with pytest.raises(RunnerContractError, match="realized p_pre_zero"):
+            evaluation()
+        return
+    evaluated = evaluation()
 
     assert evaluated.run.status == "completed"
     assert evaluated.evaluator_output is not None

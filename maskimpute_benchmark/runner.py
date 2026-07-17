@@ -2672,6 +2672,7 @@ class EvaluatedAttempt:
     native_output: np.ndarray | None
     native_output_scale: str | None
     evaluator_output: np.ndarray | None
+    p_pre_zero_evidence: object
 
 
 def _metric_names() -> tuple[str, ...]:
@@ -3067,6 +3068,55 @@ def evaluate_adapter_outcome(
         else _evaluator_output_sha256(entry, prepared, evaluator_output)
     )
     calibration_receipt = outcome.calibration_fold_receipt
+    method_input_digest = method_input_sha256(prepared.method_input)
+    score_observed = _dense_evaluator_matrix(
+        prepared.evaluator_dataset.X, "observed counts for p_pre_zero"
+    )
+    score_truth_kind = prepared.evaluator_dataset.uns.get("truth_kind")
+    if not isinstance(score_truth_kind, str):
+        raise RunnerContractError("evaluator dataset truth_kind is invalid")
+    if score_truth_kind == "orthogonal_only":
+        score_truth = None
+    else:
+        score_truth_layer = prepared.evaluator_dataset.uns.get("primary_truth_layer")
+        if (
+            not isinstance(score_truth_layer, str)
+            or score_truth_layer not in prepared.evaluator_dataset.layers
+        ):
+            raise RunnerContractError("evaluator score truth layer is unavailable")
+        score_truth = _dense_evaluator_matrix(
+            prepared.evaluator_dataset.layers[score_truth_layer],
+            "p_pre_zero evaluator truth",
+        )
+    from .prezero_evidence import PreZeroEvidenceError, evaluate_prezero_evidence
+
+    try:
+        p_pre_zero_evidence = evaluate_prezero_evidence(
+            identity={
+                "run_id": entry.run_id,
+                "method_id": entry.method_id,
+                "dataset_id": entry.dataset_id,
+                "source_dataset_sha256": entry.source_dataset_sha256,
+                "mechanism": entry.mechanism,
+                "biological_id": entry.biological_id,
+                "technical_view": entry.technical_view,
+                "model_seed": entry.model_seed,
+                "configuration_id": entry.configuration_id,
+                "configuration_sha256": entry.configuration_sha256,
+                "method_input_sha256": method_input_digest,
+                "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
+            },
+            method_shape=prepared.method_input.shape,
+            method_id=entry.method_id,
+            execution=outcome.execution,
+            run_status=run_status,
+            run_reason=reason,
+            observed=score_observed,
+            truth=score_truth,
+            truth_kind=score_truth_kind,
+        )
+    except PreZeroEvidenceError as error:
+        raise RunnerContractError(str(error)) from error
     run = RawRunResult(
         run_id=entry.run_id,
         method_id=entry.method_id,
@@ -3081,7 +3131,7 @@ def evaluate_adapter_outcome(
         configuration_kind=entry.configuration_kind,
         requires_count_score=entry.requires_count_score,
         requires_calibration=entry.requires_calibration,
-        method_input_sha256=method_input_sha256(prepared.method_input),
+        method_input_sha256=method_input_digest,
         dataset_qc_policy_sha256=dataset_qc_policy_sha256,
         excluded_cell_count=prepared.audit.excluded_cell_count,
         excluded_cell_ids_sha256=prepared.audit.excluded_cell_ids_sha256,
@@ -3132,6 +3182,7 @@ def evaluate_adapter_outcome(
         native_output=native_output,
         native_output_scale=native_output_scale,
         evaluator_output=evaluator_output,
+        p_pre_zero_evidence=p_pre_zero_evidence,
     )
 
 

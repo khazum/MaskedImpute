@@ -1,0 +1,305 @@
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
+import anndata as ad
+import numpy as np
+import pytest
+
+from maskimpute import ImputationResult
+from maskimpute.ablations import AblationRunResult
+from maskimpute_benchmark.methods import (
+    MethodInput,
+    load_method_registry,
+    run_observed,
+    snapshot_method_output,
+)
+from maskimpute_benchmark.methods.maskimpute import MaskImputeAdapterExecution
+from maskimpute_benchmark.runner import (
+    AdapterOutcome,
+    DatasetBinding,
+    DatasetQCAudit,
+    PreparedDataset,
+    RunPlanEntry,
+    evaluate_adapter_outcome,
+)
+
+
+METHODS = Path("study/methods.json")
+SHA_A = "a" * 64
+SHA_B = "b" * 64
+
+
+def _prepared(mechanism: str = "symsim") -> PreparedDataset:
+    counts = np.array(
+        [[0.0, 0.0, 2.0, 0.0], [0.0, 3.0, 0.0, 0.0]], dtype="<f8"
+    )
+    cells = ("cell-1", "cell-2")
+    genes = ("gene-1", "gene-2", "gene-3", "gene-4")
+    truth_kind = {
+        "symsim": "exact_pre_capture",
+        "sergio": "exact_continuous",
+        "sparsim": "exact_continuous",
+        "semisynthetic": "proxy_high_depth",
+    }[mechanism]
+    truth_layer = {
+        "exact_pre_capture": "pre_capture_counts",
+        "exact_continuous": "latent_expression",
+        "proxy_high_depth": "reference_counts",
+    }[truth_kind]
+    truth = np.array(
+        [[0.0, 1.0, 2.0, 5.0], [0.0, 3.0, 1.0, 0.0]], dtype="<f8"
+    )
+    dataset = ad.AnnData(X=counts.copy())
+    dataset.obs_names = list(cells)
+    dataset.var_names = list(genes)
+    dataset.layers[truth_layer] = truth
+    dataset.uns["truth_kind"] = truth_kind
+    dataset.uns["primary_truth_layer"] = truth_layer
+    method_input = MethodInput(
+        source_dataset_sha256=SHA_A,
+        obs_ids=cells,
+        var_ids=genes,
+        shape=counts.shape,
+        obs_covariates=(),
+        var_covariates=(),
+        _count_bytes=counts.tobytes(order="C"),
+        _normalization_bytes=b"{}",
+    )
+    empty_ids_sha = hashlib.sha256(
+        b"maskimpute-external-cell-ids-v1\0\x00\x00\x00\x00\x00\x00\x00\x00"
+    ).hexdigest()
+    audit = DatasetQCAudit(
+        excluded_cell_count=0,
+        excluded_cell_ids_sha256=empty_ids_sha,
+        retained_cell_count=2,
+        retained_cell_ids_sha256=SHA_B,
+        excluded_cell_ids=(),
+        retained_cell_ids=cells,
+    )
+    binding = DatasetBinding(
+        mechanism=mechanism,
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id=f"dataset-{mechanism}",
+        dataset_sha256=SHA_A,
+        output_file_sha256="c" * 64,
+        truth_sha256="d" * 64,
+        output_path=f"{mechanism}.h5ad",
+        independent_unit_id=f"unit-{mechanism}",
+        cells=2,
+        genes=4,
+        manifest_sha256="e" * 64,
+        protocol_sha256="f" * 64,
+        design_sha256="1" * 64,
+        seed_source_sha256="2" * 64,
+    )
+    return PreparedDataset(
+        binding=binding,
+        audit=audit,
+        method_input=method_input,
+        evaluator_dataset=dataset,
+    )
+
+
+def _entry(prepared: PreparedDataset, method_id: str = "maskimpute") -> RunPlanEntry:
+    return RunPlanEntry(
+        ordinal=1,
+        run_id=f"run-{method_id}-{prepared.binding.mechanism}",
+        method_id=method_id,
+        dataset_id=prepared.binding.dataset_id,
+        source_dataset_sha256=prepared.binding.dataset_sha256,
+        mechanism=prepared.binding.mechanism,
+        biological_id=prepared.binding.biological_id,
+        technical_view=prepared.binding.technical_view,
+        model_seed=42 if method_id == "maskimpute" else None,
+        configuration_id="v27-reference" if method_id == "maskimpute" else "registry-default",
+        configuration_sha256="3" * 64,
+        preflight_status="planned",
+        preflight_reason=None,
+        configuration_kind="candidate_search" if method_id == "maskimpute" else "registry",
+        requires_count_score=method_id == "maskimpute",
+        requires_calibration=method_id == "maskimpute",
+    )
+
+
+def _maskimpute_execution(
+    prepared: PreparedDataset, probability: np.ndarray | None = None
+) -> MaskImputeAdapterExecution:
+    if probability is None:
+        probability = np.array(
+            [[0.8, 0.2, 0.0, 0.4], [0.7, 0.0, 0.3, 0.9]], dtype="<f8"
+        )
+    result = ImputationResult(
+        selective_counts=prepared.method_input.counts,
+        denoised_counts=prepared.method_input.counts,
+        p_pre_zero=probability,
+        latent=np.ones((2, 1), dtype="<f8"),
+        diagnostics={
+            "score": {
+                "source": "retained_calibrator",
+                "score_artifact_sha256": "4" * 64,
+                "score_input_sha256": "5" * 64,
+                "score_config_sha256": "6" * 64,
+                "calibration_artifact_sha256": "7" * 64,
+                "retained_calibrator": "identity",
+                "calibration_scope": "leave_one_biological_draw_out",
+                "equivalence_reason": "retained_identity_calibrator_equals_direct_score",
+            }
+        },
+    )
+    spec = load_method_registry(METHODS).by_id("maskimpute")
+    snapshot = snapshot_method_output(
+        spec,
+        prepared.method_input,
+        result.selective_counts,
+        source_dataset_sha256=prepared.method_input.source_dataset_sha256,
+        output_scale=spec.output_scale,
+        obs_ids=prepared.method_input.obs_ids,
+        var_ids=prepared.method_input.var_ids,
+    )
+    return MaskImputeAdapterExecution(
+        snapshot=snapshot,
+        compatibility_log=(),
+        environment_receipt=(),
+        stdout=b"",
+        stderr=b"",
+        command=None,
+        ablation_result=AblationRunResult(output_policy="selective", _result=result),
+    )
+
+
+def _completed_maskimpute(prepared: PreparedDataset):
+    return evaluate_adapter_outcome(
+        _entry(prepared),
+        prepared,
+        AdapterOutcome.completed(
+            _maskimpute_execution(prepared),
+            runtime_seconds=1,
+            peak_rss_bytes=1,
+            peak_gpu_bytes=1,
+        ),
+    )
+
+
+def test_adapter_exposes_realized_p_pre_zero_as_a_defensive_matrix() -> None:
+    prepared = _prepared()
+    execution = _maskimpute_execution(prepared)
+
+    first = execution.realized_p_pre_zero
+    expected = first.copy()
+    with pytest.raises(ValueError, match="read-only"):
+        first[0, 0] = 0.0
+
+    np.testing.assert_array_equal(execution.realized_p_pre_zero, expected)
+
+
+def test_evaluator_binds_realized_matrix_policy_and_machine_readable_metrics() -> None:
+    prepared = _prepared()
+    attempt = _completed_maskimpute(prepared)
+    evidence = attempt.p_pre_zero_evidence
+    record = evidence.to_record()
+
+    assert evidence.status == "completed"
+    assert evidence.reason is None
+    np.testing.assert_array_equal(
+        evidence.matrix, _maskimpute_execution(prepared).realized_p_pre_zero
+    )
+    assert record["identity"] == {
+        "run_id": "run-maskimpute-symsim",
+        "method_id": "maskimpute",
+        "dataset_id": "dataset-symsim",
+        "source_dataset_sha256": SHA_A,
+        "mechanism": "symsim",
+        "biological_id": "draw-01",
+        "technical_view": "moderate",
+        "model_seed": 42,
+        "configuration_id": "v27-reference",
+        "configuration_sha256": "3" * 64,
+        "method_input_sha256": attempt.run.method_input_sha256,
+        "retained_cell_ids_sha256": SHA_B,
+    }
+    assert record["matrix"]["shape"] == [2, 4]
+    assert record["matrix"]["dtype"] == "<f8"
+    assert len(record["matrix"]["semantic_sha256"]) == 64
+    assert record["policy"]["score_source"] == "retained_calibrator"
+    assert record["policy_sha256"]
+    assert record["overall"]["metrics"] == {
+        name: record["overall"]["metrics"][name]
+        for name in (
+            "auroc",
+            "auprc",
+            "brier",
+            "log_loss",
+            "calibration_intercept",
+            "calibration_slope",
+            "ece",
+        )
+    }
+    assert record["overall"]["reliability_bins"]
+    assert len(record["strata"]["library_size_quartiles"]) == 4
+    assert len(record["strata"]["truth_expression_bins"]) == 4
+    assert record["evidence_sha256"]
+
+
+def test_non_maskimpute_and_noncompleted_attempts_have_explicit_score_rows() -> None:
+    prepared = _prepared()
+    observed_execution = run_observed(
+        load_method_registry(METHODS).by_id("observed"), prepared.method_input
+    )
+    observed = evaluate_adapter_outcome(
+        _entry(prepared, "observed"),
+        prepared,
+        AdapterOutcome.completed(
+            observed_execution,
+            runtime_seconds=1,
+            peak_rss_bytes=1,
+            peak_gpu_bytes=0,
+        ),
+    ).p_pre_zero_evidence
+    timeout = evaluate_adapter_outcome(
+        _entry(prepared), prepared, AdapterOutcome.timeout()
+    ).p_pre_zero_evidence
+
+    assert observed.status == "not_applicable"
+    assert observed.reason == "method_does_not_emit_p_pre_zero"
+    assert observed.matrix is None
+    assert observed.to_record()["overall"]["metrics"]["brier"] == {
+        "value": None,
+        "n": 6,
+        "status": "not_applicable",
+        "reason": "method_does_not_emit_p_pre_zero",
+    }
+    assert timeout.status == "timeout"
+    assert timeout.reason == "timeout"
+    assert timeout.matrix is None
+    assert timeout.to_record()["overall"]["metrics"]["auroc"]["status"] == "timeout"
+
+
+def test_all_four_mechanisms_have_exact_or_reason_coded_score_evidence() -> None:
+    expected = {
+        "symsim": None,
+        "sergio": "undefined_for_continuous_truth",
+        "sparsim": "undefined_for_continuous_truth",
+        "semisynthetic": "proxy_truth_not_exact",
+    }
+
+    for mechanism, reason in expected.items():
+        record = _completed_maskimpute(_prepared(mechanism)).p_pre_zero_evidence.to_record()
+        metrics = record["overall"]["metrics"]
+        if reason is None:
+            assert metrics["brier"]["value"] is not None
+            assert metrics["brier"]["reason"] is None
+        else:
+            assert all(value["value"] is None for value in metrics.values())
+            assert {value["reason"] for value in metrics.values()} == {reason}
+            assert record["overall"]["reliability_bins"] == []
+        for stratum in (
+            *record["strata"]["library_size_quartiles"],
+            *record["strata"]["truth_expression_bins"],
+        ):
+            if reason is not None:
+                assert {value["reason"] for value in stratum["metrics"].values()} == {
+                    reason
+                }

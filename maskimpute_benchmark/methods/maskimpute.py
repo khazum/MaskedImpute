@@ -43,6 +43,18 @@ class MaskImputeAdapterExecution(AdapterExecution):
 
     ablation_result: AblationRunResult
 
+    @property
+    def realized_p_pre_zero(self) -> np.ndarray:
+        """Return the exact probability matrix used by this fitted execution."""
+
+        return self.ablation_result.p_pre_zero
+
+    @property
+    def realized_p_pre_zero_policy(self) -> object:
+        """Return the immutable diagnostic policy that produced the matrix."""
+
+        return self.ablation_result.diagnostics.get("score")
+
 
 def maskimpute_to_evaluator_counts(
     method_input: MethodInput,

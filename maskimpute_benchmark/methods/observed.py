@@ -63,6 +63,18 @@ class AdapterExecution:
     def stderr_sha256(self) -> str:
         return hashlib.sha256(self.stderr).hexdigest()
 
+    @property
+    def realized_p_pre_zero(self) -> np.ndarray | None:
+        """Return no score for adapters that do not emit MaskImpute evidence."""
+
+        return None
+
+    @property
+    def realized_p_pre_zero_policy(self) -> object | None:
+        """Return no score policy for adapters without realized score evidence."""
+
+        return None
+
 
 class AdapterUnavailableError(RuntimeError):
     """A reproducible failed or unavailable upstream execution attempt."""
