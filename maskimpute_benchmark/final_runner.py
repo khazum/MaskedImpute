@@ -43,6 +43,7 @@ from .runner import (
     RunnerContractError,
     RunPlanEntry,
     SpawnedRepositoryExecutor,
+    _prezero_evaluator_targets,
     enforce_calibration_fold_receipt,
     evaluate_adapter_outcome,
     prepare_dataset_pair_for_execution,
@@ -1237,15 +1238,102 @@ def _record_incremental_results_if_changed(
 class FinalResultStore:
     """Append-only per-attempt artifacts plus one immutable completion manifest."""
 
-    def __init__(self, output_dir: Path, plan: FinalExecutionPlan) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        plan: FinalExecutionPlan,
+        prepared_datasets: Mapping[str, PreparedDataset],
+        execution_authority: ExecutionAuthorityContext,
+    ) -> None:
         if not isinstance(output_dir, Path):
             raise TypeError("output_dir must be a pathlib.Path")
         if not isinstance(plan, FinalExecutionPlan):
             raise TypeError("plan must be a FinalExecutionPlan")
+        if not isinstance(prepared_datasets, Mapping):
+            raise TypeError("prepared_datasets must be a mapping")
+        if not isinstance(execution_authority, ExecutionAuthorityContext):
+            raise TypeError(
+                "execution_authority must be an ExecutionAuthorityContext"
+            )
+        if (
+            plan.input_hashes.get("execution_authority_sha256")
+            != execution_authority.authority_sha256
+        ):
+            raise FinalRunnerContractError(
+                "final result authority differs from the execution plan"
+            )
         self.output_dir = output_dir.absolute()
         self.plan = plan
+        self.prepared_datasets = MappingProxyType(
+            self._validate_prepared_datasets(prepared_datasets)
+        )
+        self.execution_authority = execution_authority
         self._artifacts = CheckpointStore(self.output_dir)
         self._records_cache: tuple[dict[str, object], ...] | None = None
+
+    def _validate_prepared_datasets(
+        self, prepared_datasets: Mapping[str, PreparedDataset]
+    ) -> dict[str, PreparedDataset]:
+        planned_dataset_ids = {entry.run.dataset_id for entry in self.plan.entries}
+        if set(prepared_datasets) != planned_dataset_ids:
+            raise FinalRunnerContractError(
+                "prepared dataset authority does not exactly cover the final plan"
+            )
+        result: dict[str, PreparedDataset] = {}
+        for dataset_id in sorted(planned_dataset_ids):
+            prepared = prepared_datasets.get(dataset_id)
+            if not isinstance(prepared, PreparedDataset):
+                raise FinalRunnerContractError(
+                    f"prepared final dataset is invalid for {dataset_id}"
+                )
+            entries = tuple(
+                entry.run
+                for entry in self.plan.entries
+                if entry.run.dataset_id == dataset_id
+            )
+            expected_binding = {
+                (
+                    entry.source_dataset_sha256,
+                    entry.mechanism,
+                    entry.biological_id,
+                    entry.technical_view,
+                )
+                for entry in entries
+            }
+            actual_binding = (
+                prepared.binding.dataset_sha256,
+                prepared.binding.mechanism,
+                prepared.binding.biological_id,
+                prepared.binding.technical_view,
+            )
+            if (
+                prepared.binding.dataset_id != dataset_id
+                or expected_binding != {actual_binding}
+                or prepared.method_input.source_dataset_sha256
+                != prepared.binding.dataset_sha256
+                or prepared.method_input.shape[0]
+                != prepared.audit.retained_cell_count
+                or prepared.method_input.obs_ids
+                != prepared.audit.retained_cell_ids
+            ):
+                raise FinalRunnerContractError(
+                    f"prepared final dataset differs from plan binding {dataset_id}"
+                )
+            observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
+            if observed.shape != prepared.method_input.shape or not np.array_equal(
+                observed, prepared.method_input.counts
+            ):
+                raise FinalRunnerContractError(
+                    f"prepared final observations differ from method input {dataset_id}"
+                )
+            if truth_kind != "orthogonal_only" and (
+                truth is None or truth.shape != prepared.method_input.shape
+            ):
+                raise FinalRunnerContractError(
+                    f"prepared final truth differs from method input {dataset_id}"
+                )
+            result[dataset_id] = prepared
+        return result
 
     @property
     def manifest_path(self) -> Path:
@@ -1513,6 +1601,19 @@ class FinalResultStore:
                 plan_entry.run.requires_calibration
                 and value.get("retained_calibration_sha256") is None
             )
+            or value.get("count_score_manifest_sha256")
+            != (
+                self.execution_authority.count_score_manifest_sha256
+                if plan_entry.run.requires_count_score
+                else None
+            )
+            or value.get("retained_calibration_sha256")
+            != (
+                self.execution_authority.retained_calibration_sha256
+                if plan_entry.run.method_id
+                in {"maskimpute", "capacity-matched-ae"}
+                else None
+            )
         ):
             raise FinalRunnerContractError(
                 "final execution request receipt differs from its plan"
@@ -1543,7 +1644,7 @@ class FinalResultStore:
             run = value.get("run")
             if not isinstance(run, Mapping):
                 raise FinalRunnerContractError("final execution run is invalid")
-            receipt = self._validate_execution_request_receipt(
+            self._validate_execution_request_receipt(
                 value.get("execution_request"), plan_entry, run
             )
             validation_run = self._validate_final_output_storage(run)
@@ -1554,15 +1655,18 @@ class FinalResultStore:
                     "p_pre_zero_evidence": value["p_pre_zero_evidence"],
                 },
                 plan_entry.run,
-                final_calibration_artifact_sha256=(
-                    None
-                    if receipt is None
-                    else receipt.get("retained_calibration_sha256")
+                prepared=self.prepared_datasets[plan_entry.run.dataset_id],
+                expected_dataset_qc_policy_sha256=DatasetQCPolicy.fixed().sha256,
+                expected_score_config_sha256=(
+                    self.execution_authority.count_model_config_sha256
+                ),
+                expected_calibration_artifact_sha256=(
+                    self.execution_authority.retained_calibration_sha256
                 ),
             )
         except (RunnerContractError, OSError, ValueError) as error:
             raise FinalRunnerContractError(
-                "final execution record or artifact is invalid"
+                f"final execution record or artifact is invalid: {error}"
             ) from error
         return value
 
@@ -1691,10 +1795,13 @@ class FinalResultStore:
                     "p_pre_zero_evidence": stored["p_pre_zero_evidence"],
                 },
                 plan_entry.run,
-                final_calibration_artifact_sha256=(
-                    None
-                    if request_receipt is None
-                    else request_receipt["retained_calibration_sha256"]
+                prepared=self.prepared_datasets[plan_entry.run.dataset_id],
+                expected_dataset_qc_policy_sha256=DatasetQCPolicy.fixed().sha256,
+                expected_score_config_sha256=(
+                    self.execution_authority.count_model_config_sha256
+                ),
+                expected_calibration_artifact_sha256=(
+                    self.execution_authority.retained_calibration_sha256
                 ),
             )
             self._artifacts._publish_immutable(
@@ -2128,6 +2235,7 @@ def execute_final_plan(
     if (
         plan.input_hashes.get("execution_authority_sha256")
         != authority.authority_sha256
+        or store.execution_authority != authority
     ):
         raise FinalRunnerContractError("final execution authority differs from plan")
     if os.path.lexists(store.manifest_path):
@@ -2444,7 +2552,12 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
             raise FinalRunnerContractError(
                 "final plan changed while materializing execution authority"
             )
-        store = FinalResultStore(destination / "results/final/execution", plan)
+        store = FinalResultStore(
+            destination / "results/final/execution",
+            plan,
+            prepared,
+            authority,
+        )
         if resuming:
             existing_records = store.load_records()
             store._records_cache = existing_records

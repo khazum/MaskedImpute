@@ -117,6 +117,7 @@ def _completed_checkpoint(tmp_path: Path):
         "schema_version": 1,
         "input_hashes": {
             "dataset_manifest_sha256": SHA_A,
+            "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
             "implementation_source_sha256": implementation_source_sha256(),
         },
         "entries": [entry.to_dict()],
@@ -147,8 +148,9 @@ def _completed_checkpoint(tmp_path: Path):
         __import__(
             "maskimpute_benchmark.runner", fromlist=["DevelopmentBudget"]
         ).DevelopmentBudget(),
+        prepared_datasets={prepared.binding.dataset_id: prepared},
     )
-    return plan, store, report
+    return plan, store, report, prepared
 
 
 def test_null_de_uses_deterministic_balanced_stratified_split() -> None:
@@ -224,8 +226,12 @@ def test_completed_checkpoint_loader_binds_and_revalidates_every_raw_artifact(
         load_completed_reconstruction_checkpoint,
     )
 
-    plan, store, report = _completed_checkpoint(tmp_path)
-    evidence = load_completed_reconstruction_checkpoint(store.output_dir, plan)
+    plan, store, report, prepared = _completed_checkpoint(tmp_path)
+    evidence = load_completed_reconstruction_checkpoint(
+        store.output_dir,
+        plan,
+        prepared_datasets={prepared.binding.dataset_id: prepared},
+    )
 
     assert evidence.checkpoint_sha256 == report.checkpoint_sha256
     assert evidence.checkpoint_file_sha256 != report.checkpoint_sha256
@@ -243,7 +249,11 @@ def test_completed_checkpoint_loader_binds_and_revalidates_every_raw_artifact(
     )
     (store.output_dir / evaluator.path).write_bytes(b"tampered")
     with pytest.raises(DevelopmentEvaluationError, match="checkpoint"):
-        load_completed_reconstruction_checkpoint(store.output_dir, plan)
+        load_completed_reconstruction_checkpoint(
+            store.output_dir,
+            plan,
+            prepared_datasets={prepared.binding.dataset_id: prepared},
+        )
 
 
 def test_completed_checkpoint_loader_rejects_cross_read_replacement(
@@ -256,11 +266,17 @@ def test_completed_checkpoint_loader_rejects_cross_read_replacement(
     from maskimpute_benchmark.protocol import canonical_sha256
     from maskimpute_benchmark.runner import CheckpointStore
 
-    plan, store, _report = _completed_checkpoint(tmp_path)
+    plan, store, _report, prepared = _completed_checkpoint(tmp_path)
     original_load = CheckpointStore.load
 
-    def replace_after_load(checkpoint_store, requested_plan):
-        report = original_load(checkpoint_store, requested_plan)
+    def replace_after_load(
+        checkpoint_store, requested_plan, *, prepared_datasets
+    ):
+        report = original_load(
+            checkpoint_store,
+            requested_plan,
+            prepared_datasets=prepared_datasets,
+        )
         payload = json.loads(checkpoint_store.checkpoint_path.read_bytes())
         payload["schema_version"] = 2
         core = {
@@ -274,7 +290,11 @@ def test_completed_checkpoint_loader_rejects_cross_read_replacement(
 
     monkeypatch.setattr(CheckpointStore, "load", replace_after_load)
     with pytest.raises(DevelopmentEvaluationError, match="changed"):
-        load_completed_reconstruction_checkpoint(store.output_dir, plan)
+        load_completed_reconstruction_checkpoint(
+            store.output_dir,
+            plan,
+            prepared_datasets={prepared.binding.dataset_id: prepared},
+        )
 
 
 def test_reconstruction_bridge_emits_exact_selection_rows_and_null_de_audit(
@@ -286,8 +306,12 @@ def test_reconstruction_bridge_emits_exact_selection_rows_and_null_de_audit(
     )
     from maskimpute_benchmark.selection import MethodDeclaration
 
-    plan, store, _report = _completed_checkpoint(tmp_path)
-    evidence = load_completed_reconstruction_checkpoint(store.output_dir, plan)
+    plan, store, _report, prepared = _completed_checkpoint(tmp_path)
+    evidence = load_completed_reconstruction_checkpoint(
+        store.output_dir,
+        plan,
+        prepared_datasets={prepared.binding.dataset_id: prepared},
+    )
     # Recreate the prepared evaluator dataset from the exact fixture used to
     # produce the checkpoint. The bridge must never send its group labels back
     # to the method process; they enter only here, after execution.
@@ -1016,8 +1040,12 @@ def test_schema2_writer_binds_evaluation_manifest_without_digest_cycle(
 
     repository = tmp_path / "repository"
     repository.mkdir()
-    plan, store, _ = _completed_checkpoint(repository)
-    reconstruction = load_completed_reconstruction_checkpoint(store.output_dir, plan)
+    plan, store, _, prepared = _completed_checkpoint(repository)
+    reconstruction = load_completed_reconstruction_checkpoint(
+        store.output_dir,
+        plan,
+        prepared_datasets={prepared.binding.dataset_id: prepared},
+    )
     adata = ad.AnnData(
         X=np.asarray([[1, 0], [0, 1], [2, 1], [1, 2]]),
         obs=pd.DataFrame(index=[f"cell-{index}" for index in range(4)]),

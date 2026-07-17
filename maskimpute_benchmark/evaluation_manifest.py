@@ -374,8 +374,11 @@ def _validate_reconstruction_evidence(
             load_completed_reconstruction_checkpoint,
         )
 
+        prepared = _prepare_reconstruction_datasets(repository, expected_plan)
         evidence = load_completed_reconstruction_checkpoint(
-            (repository / expected_path).parent, expected_plan
+            (repository / expected_path).parent,
+            expected_plan,
+            prepared_datasets=prepared,
         )
     except Exception as error:
         raise SelectionAuthorityError(
@@ -404,7 +407,6 @@ def _validate_reconstruction_evidence(
     try:
         from .development_evaluation import build_reconstruction_selection_records
 
-        prepared = _prepare_reconstruction_datasets(repository, expected_plan)
         rebuilt = build_reconstruction_selection_records(
             evidence,
             checkpoint_directory=(repository / expected_path).parent,

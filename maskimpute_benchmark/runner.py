@@ -2815,6 +2815,49 @@ def _evaluator_targets(
     return observed, truth, truth_kind, marker_mask
 
 
+def _prezero_evaluator_targets(
+    prepared: PreparedDataset,
+) -> tuple[np.ndarray, np.ndarray | None, str]:
+    """Return evaluator-private raw-count targets for realized score validation."""
+
+    if not isinstance(prepared, PreparedDataset):
+        raise TypeError("prepared must be a PreparedDataset")
+    if prepared.evaluator_dataset is None:
+        raise RunnerContractError(
+            "evaluator-private score authority is unavailable for p_pre_zero"
+        )
+    observed = _dense_evaluator_matrix(
+        prepared.evaluator_dataset.X, "observed counts for p_pre_zero"
+    )
+    truth_kind = prepared.evaluator_dataset.uns.get("truth_kind")
+    if not isinstance(truth_kind, str):
+        raise RunnerContractError("evaluator dataset truth_kind is invalid")
+    if truth_kind == "orthogonal_only":
+        truth = None
+    else:
+        truth_layer = prepared.evaluator_dataset.uns.get("primary_truth_layer")
+        if (
+            not isinstance(truth_layer, str)
+            or truth_layer not in prepared.evaluator_dataset.layers
+        ):
+            raise RunnerContractError("evaluator score truth layer is unavailable")
+        truth = _dense_evaluator_matrix(
+            prepared.evaluator_dataset.layers[truth_layer],
+            "p_pre_zero evaluator truth",
+        )
+    return observed, truth, truth_kind
+
+
+def _count_score_input_sha256(prepared: PreparedDataset) -> str:
+    """Recompute the count-model input digest from authoritative method counts."""
+
+    if not isinstance(prepared, PreparedDataset):
+        raise TypeError("prepared must be a PreparedDataset")
+    from maskimpute.count_model import _counts_sha256
+
+    return _counts_sha256(prepared.method_input.counts)
+
+
 def _evaluator_output_sha256(
     entry: RunPlanEntry,
     prepared: PreparedDataset,
@@ -3077,42 +3120,9 @@ def evaluate_adapter_outcome(
     )
     calibration_receipt = outcome.calibration_fold_receipt
     method_input_digest = method_input_sha256(prepared.method_input)
-    if prepared.evaluator_dataset is None:
-        score_observed = np.array(
-            prepared.method_input.counts,
-            dtype=np.float64,
-            copy=True,
-            order="C",
-        )
-        score_truth_kind = {
-            "symsim": "exact_pre_capture",
-            "sergio": "exact_continuous",
-            "sparsim": "exact_continuous",
-            "semisynthetic": "proxy_high_depth",
-        }.get(entry.mechanism, "orthogonal_only")
-        score_truth = None
-    else:
-        score_observed = _dense_evaluator_matrix(
-            prepared.evaluator_dataset.X, "observed counts for p_pre_zero"
-        )
-        score_truth_kind = prepared.evaluator_dataset.uns.get("truth_kind")
-        if not isinstance(score_truth_kind, str):
-            raise RunnerContractError("evaluator dataset truth_kind is invalid")
-        if score_truth_kind == "orthogonal_only":
-            score_truth = None
-        else:
-            score_truth_layer = prepared.evaluator_dataset.uns.get(
-                "primary_truth_layer"
-            )
-            if (
-                not isinstance(score_truth_layer, str)
-                or score_truth_layer not in prepared.evaluator_dataset.layers
-            ):
-                raise RunnerContractError("evaluator score truth layer is unavailable")
-            score_truth = _dense_evaluator_matrix(
-                prepared.evaluator_dataset.layers[score_truth_layer],
-                "p_pre_zero evaluator truth",
-            )
+    score_observed, score_truth, score_truth_kind = _prezero_evaluator_targets(
+        prepared
+    )
     try:
         p_pre_zero_evidence = evaluate_prezero_evidence(
             identity={
@@ -3247,6 +3257,73 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise RunnerContractError(f"duplicate checkpoint JSON key: {key}")
         result[key] = value
     return result
+
+
+def _validate_prepared_dataset_authority(
+    plan: CompetitionPlan,
+    prepared_datasets: Mapping[str, PreparedDataset],
+) -> dict[str, PreparedDataset]:
+    """Require one exact evaluator-private authority for every planned dataset."""
+
+    if not isinstance(prepared_datasets, Mapping):
+        raise TypeError("prepared_datasets must be a mapping")
+    planned_dataset_ids = {entry.dataset_id for entry in plan.entries}
+    if set(prepared_datasets) != planned_dataset_ids:
+        raise RunnerContractError(
+            "prepared dataset authority does not exactly cover the competition plan"
+        )
+    prepared_by_dataset: dict[str, PreparedDataset] = {}
+    for dataset_id in sorted(planned_dataset_ids):
+        prepared = prepared_datasets.get(dataset_id)
+        if not isinstance(prepared, PreparedDataset):
+            raise RunnerContractError(
+                f"prepared dataset authority is invalid for {dataset_id}"
+            )
+        entries = tuple(
+            entry for entry in plan.entries if entry.dataset_id == dataset_id
+        )
+        expected_binding = {
+            (
+                entry.source_dataset_sha256,
+                entry.mechanism,
+                entry.biological_id,
+                entry.technical_view,
+            )
+            for entry in entries
+        }
+        actual_binding = (
+            prepared.binding.dataset_sha256,
+            prepared.binding.mechanism,
+            prepared.binding.biological_id,
+            prepared.binding.technical_view,
+        )
+        if (
+            prepared.binding.dataset_id != dataset_id
+            or expected_binding != {actual_binding}
+            or prepared.method_input.source_dataset_sha256
+            != prepared.binding.dataset_sha256
+            or prepared.method_input.shape[0] != prepared.audit.retained_cell_count
+            or prepared.method_input.shape[1] != prepared.binding.genes
+            or prepared.method_input.obs_ids != prepared.audit.retained_cell_ids
+        ):
+            raise RunnerContractError(
+                f"prepared dataset authority differs from plan binding {dataset_id}"
+            )
+        observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
+        if observed.shape != prepared.method_input.shape or not np.array_equal(
+            observed, prepared.method_input.counts
+        ):
+            raise RunnerContractError(
+                f"prepared evaluator observations differ from method input {dataset_id}"
+            )
+        if truth_kind != "orthogonal_only" and (
+            truth is None or truth.shape != prepared.method_input.shape
+        ):
+            raise RunnerContractError(
+                f"prepared evaluator truth differs from method input {dataset_id}"
+            )
+        prepared_by_dataset[dataset_id] = prepared
+    return prepared_by_dataset
 
 
 class CheckpointStore:
@@ -3431,7 +3508,10 @@ class CheckpointStore:
         plan: CompetitionPlan,
         records: Sequence[Mapping[str, object]],
         budget: DevelopmentBudget,
+        *,
+        prepared_datasets: Mapping[str, PreparedDataset],
     ) -> CheckpointReport:
+        _validate_prepared_dataset_authority(plan, prepared_datasets)
         record_values = tuple(dict(record) for record in records)
         status = "completed" if len(record_values) == len(plan.entries) else "running"
         body: dict[str, object] = {
@@ -3448,7 +3528,7 @@ class CheckpointStore:
         }
         body["checkpoint_sha256"] = canonical_sha256(body)
         self._publish_checkpoint(body)
-        return self.load(plan)
+        return self.load(plan, prepared_datasets=prepared_datasets)
 
     def append(
         self,
@@ -3456,10 +3536,18 @@ class CheckpointStore:
         report: CheckpointReport | None,
         attempt: EvaluatedAttempt,
         budget: DevelopmentBudget,
+        *,
+        prepared_datasets: Mapping[str, PreparedDataset],
     ) -> CheckpointReport:
+        _validate_prepared_dataset_authority(plan, prepared_datasets)
         records = [] if report is None else list(report.records)
         records.append(self._stored_attempt(attempt))
-        return self.write(plan, records, budget)
+        return self.write(
+            plan,
+            records,
+            budget,
+            prepared_datasets=prepared_datasets,
+        )
 
     def _verify_artifact(self, relative: object, digest: object, name: str) -> Path:
         expected = _require_sha256(digest, f"{name} file checksum")
@@ -3620,7 +3708,10 @@ class CheckpointStore:
         value: object,
         entry: RunPlanEntry,
         *,
-        final_calibration_artifact_sha256: str | None = None,
+        prepared: PreparedDataset,
+        expected_dataset_qc_policy_sha256: str | None,
+        expected_score_config_sha256: str | None,
+        expected_calibration_artifact_sha256: str | None,
     ) -> dict[str, object]:
         if not isinstance(value, dict) or set(value) != {
             "run",
@@ -3653,6 +3744,26 @@ class CheckpointStore:
                 )
         if run.get("status") not in _OUTCOME_STATUSES:
             raise RunnerContractError("checkpoint run status is invalid")
+        authoritative_method_input_sha256 = method_input_sha256(
+            prepared.method_input
+        )
+        for name, expected in (
+            ("method_input_sha256", authoritative_method_input_sha256),
+            ("dataset_qc_policy_sha256", expected_dataset_qc_policy_sha256),
+            ("excluded_cell_count", prepared.audit.excluded_cell_count),
+            ("excluded_cell_ids_sha256", prepared.audit.excluded_cell_ids_sha256),
+            ("retained_cell_count", prepared.audit.retained_cell_count),
+            ("retained_cell_ids_sha256", prepared.audit.retained_cell_ids_sha256),
+            ("retained_gene_count", prepared.method_input.shape[1]),
+            (
+                "observed_zero_count",
+                int((prepared.method_input.counts == 0.0).sum()),
+            ),
+        ):
+            if run.get(name) != expected:
+                raise RunnerContractError(
+                    f"checkpoint run {name} differs from prepared-data authority"
+                )
         _require_nonnegative_number(run.get("runtime_seconds"), "checkpoint runtime")
         for name in (
             "retained_cell_count",
@@ -3684,14 +3795,14 @@ class CheckpointStore:
             if (
                 entry.requires_calibration
                 and run.get("status") == "completed"
-                and final_calibration_artifact_sha256 is None
+                and expected_calibration_artifact_sha256 is None
             ):
                 raise RunnerContractError(
                     "calibrated completed run lacks its LODO receipt"
                 )
-            if final_calibration_artifact_sha256 is not None:
+            if expected_calibration_artifact_sha256 is not None:
                 _require_sha256(
-                    final_calibration_artifact_sha256,
+                    expected_calibration_artifact_sha256,
                     "checkpoint final calibration artifact",
                 )
         else:
@@ -3710,6 +3821,13 @@ class CheckpointStore:
                     raise RunnerContractError(f"checkpoint {name} is invalid")
                 for digest in values:
                     _require_sha256(digest, f"checkpoint {name}")
+            if (
+                expected_calibration_artifact_sha256 is not None
+                and calibration_artifact != expected_calibration_artifact_sha256
+            ):
+                raise RunnerContractError(
+                    "checkpoint calibration artifact differs from execution authority"
+                )
         for stream in ("stdout", "stderr"):
             path = self._verify_artifact(
                 run.get(f"{stream}_path"),
@@ -3773,14 +3891,10 @@ class CheckpointStore:
             "model_seed": entry.model_seed,
             "configuration_id": entry.configuration_id,
             "configuration_sha256": entry.configuration_sha256,
-            "method_input_sha256": run.get("method_input_sha256"),
-            "retained_cell_ids_sha256": run.get("retained_cell_ids_sha256"),
+            "method_input_sha256": authoritative_method_input_sha256,
+            "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
         }
-        expected_calibration = (
-            final_calibration_artifact_sha256
-            if final_calibration_artifact_sha256 is not None
-            else run.get("calibration_artifact_sha256")
-        )
+        observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
         try:
             validate_stored_prezero_evidence(
                 evidence_value,
@@ -3797,9 +3911,14 @@ class CheckpointStore:
                 requires_count_score=entry.requires_count_score,
                 requires_calibration=entry.requires_calibration,
                 expected_calibration_artifact_sha256=(
-                    None if expected_calibration is None else str(expected_calibration)
+                    expected_calibration_artifact_sha256
                 ),
                 compressed=compressed_p_pre_zero,
+                observed=observed,
+                truth=truth,
+                truth_kind=truth_kind,
+                expected_score_input_sha256=_count_score_input_sha256(prepared),
+                expected_score_config_sha256=expected_score_config_sha256,
             )
         except PreZeroEvidenceError as error:
             raise RunnerContractError(str(error)) from error
@@ -3824,9 +3943,17 @@ class CheckpointStore:
                     )
         return value
 
-    def load(self, plan: CompetitionPlan) -> CheckpointReport:
+    def load(
+        self,
+        plan: CompetitionPlan,
+        *,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> CheckpointReport:
         if not isinstance(plan, CompetitionPlan):
             raise TypeError("plan must be a CompetitionPlan")
+        prepared_by_dataset = _validate_prepared_dataset_authority(
+            plan, prepared_datasets
+        )
         expected_source_sha256 = _require_sha256(
             plan.input_hashes.get("implementation_source_sha256"),
             "plan implementation source checksum",
@@ -3876,7 +4003,20 @@ class CheckpointStore:
         ):
             raise RunnerContractError("checkpoint records are not a plan prefix")
         records = tuple(
-            self._validate_stored_record(value, entry)
+            self._validate_stored_record(
+                value,
+                entry,
+                prepared=prepared_by_dataset[entry.dataset_id],
+                expected_dataset_qc_policy_sha256=plan.input_hashes.get(
+                    "dataset_qc_policy_sha256"
+                ),
+                expected_score_config_sha256=plan.input_hashes.get(
+                    "count_model_config_sha256"
+                ),
+                expected_calibration_artifact_sha256=plan.input_hashes.get(
+                    "retained_calibration_sha256"
+                ),
+            )
             for value, entry in zip(records_value, plan.entries, strict=False)
         )
         expected_status = (
@@ -3932,7 +4072,7 @@ def execute_competition_plan(
         raise TypeError("checkpoint_store must be a CheckpointStore")
     _require_sha256(plan.plan_sha256, "competition plan checksum")
     report = (
-        checkpoint_store.load(plan)
+        checkpoint_store.load(plan, prepared_datasets=prepared_datasets)
         if checkpoint_store.checkpoint_path.exists()
         else None
     )
@@ -4082,9 +4222,20 @@ def execute_competition_plan(
             outcome,
             dataset_qc_policy_sha256=qc_policy_sha256,
         )
-        report = checkpoint_store.append(plan, report, evaluated, budget)
+        report = checkpoint_store.append(
+            plan,
+            report,
+            evaluated,
+            budget,
+            prepared_datasets=prepared_datasets,
+        )
     if report is None:
-        report = checkpoint_store.write(plan, (), budget)
+        report = checkpoint_store.write(
+            plan,
+            (),
+            budget,
+            prepared_datasets=prepared_datasets,
+        )
     return report
 
 

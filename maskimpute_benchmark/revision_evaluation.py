@@ -949,6 +949,7 @@ def assemble_revision_evaluation(
         reconstruction = load_completed_reconstruction_checkpoint(
             reconstruction_directory,
             plan,
+            prepared_datasets=prepared,
         )
         rebuilt = build_reconstruction_selection_records(
             reconstruction,

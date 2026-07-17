@@ -41,6 +41,18 @@ SHA_A = "a" * 64
 SHA_B = "b" * 64
 
 
+def _score_input_sha256(prepared: PreparedDataset) -> str:
+    from maskimpute.count_model import _counts_sha256
+
+    return _counts_sha256(prepared.method_input.counts)
+
+
+def _prepared_datasets(
+    prepared: PreparedDataset,
+) -> dict[str, PreparedDataset]:
+    return {prepared.binding.dataset_id: prepared}
+
+
 def _prepared(mechanism: str = "symsim") -> PreparedDataset:
     counts = np.array([[0.0, 0.0, 2.0, 0.0], [0.0, 3.0, 0.0, 0.0]], dtype="<f8")
     cells = ("cell-1", "cell-2")
@@ -150,7 +162,7 @@ def _maskimpute_execution(
             "score": {
                 "source": "retained_calibrator",
                 "score_artifact_sha256": "4" * 64,
-                "score_input_sha256": "5" * 64,
+                "score_input_sha256": _score_input_sha256(prepared),
                 "score_config_sha256": "6" * 64,
                 "calibration_artifact_sha256": "7" * 64,
                 "retained_calibrator": "identity",
@@ -208,6 +220,8 @@ def _plan(prepared: PreparedDataset) -> CompetitionPlan:
         input_hashes={
             "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
             "implementation_source_sha256": implementation_source_sha256(),
+            "count_model_config_sha256": "6" * 64,
+            "retained_calibration_sha256": "7" * 64,
         },
         entries=(_entry(prepared),),
         plan_sha256="c" * 64,
@@ -257,6 +271,79 @@ def _rebind_score_payload(
         if key not in {"evidence_sha256", "storage"}
     }
     evidence["evidence_sha256"] = canonical_sha256(body)
+
+
+def _validate_stored_completed_score(
+    prepared: PreparedDataset,
+    record: dict[str, object],
+    compressed: bytes,
+) -> dict[str, object]:
+    from maskimpute_benchmark.prezero_evidence import (
+        validate_stored_prezero_evidence,
+    )
+
+    truth_layer = prepared.evaluator_dataset.uns["primary_truth_layer"]
+    return validate_stored_prezero_evidence(
+        record,
+        expected_identity=record["identity"],
+        run_status="completed",
+        run_reason=None,
+        observed_zero_count=6,
+        expected_shape=prepared.method_input.shape,
+        requires_count_score=True,
+        requires_calibration=True,
+        expected_calibration_artifact_sha256="7" * 64,
+        compressed=compressed,
+        observed=np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+        truth=np.asarray(
+            prepared.evaluator_dataset.layers[truth_layer], dtype=np.float64
+        ),
+        truth_kind="exact_pre_capture",
+        expected_score_input_sha256=_score_input_sha256(prepared),
+        expected_score_config_sha256="6" * 64,
+    )
+
+
+def _encoded_completed_score(
+    prepared: PreparedDataset,
+) -> tuple[dict[str, object], bytes]:
+    from maskimpute_benchmark.prezero_evidence import encode_prezero_evidence
+
+    record, compressed = encode_prezero_evidence(
+        _completed_maskimpute(prepared).p_pre_zero_evidence
+    )
+    assert compressed is not None
+    record["storage"]["path"] = "runs/test.p-pre-zero-f64.zlib"
+    return record, compressed
+
+
+def test_stored_score_validation_rejects_rehashed_metric_drift() -> None:
+    from maskimpute_benchmark.prezero_evidence import PreZeroEvidenceError
+
+    prepared = _prepared()
+    record, compressed = _encoded_completed_score(prepared)
+    record["overall"]["metrics"]["brier"]["value"] = 0.123456
+    _rebind_score_payload(
+        {"records": [{"p_pre_zero_evidence": record}]},
+    )
+
+    with pytest.raises(PreZeroEvidenceError, match="report differs"):
+        _validate_stored_completed_score(prepared, record, compressed)
+
+
+def test_stored_score_validation_rejects_rehashed_policy_drift() -> None:
+    from maskimpute_benchmark.prezero_evidence import PreZeroEvidenceError
+
+    prepared = _prepared()
+    record, compressed = _encoded_completed_score(prepared)
+    record["policy"]["score_input_sha256"] = "f" * 64
+    _rebind_score_payload(
+        {"records": [{"p_pre_zero_evidence": record}]},
+        score_raw=zlib.decompress(compressed),
+    )
+
+    with pytest.raises(PreZeroEvidenceError, match="score input"):
+        _validate_stored_completed_score(prepared, record, compressed)
 
 
 def test_adapter_exposes_realized_p_pre_zero_as_a_defensive_matrix() -> None:
@@ -436,8 +523,20 @@ def test_development_checkpoint_compresses_and_resumes_realized_score_evidence(
     first = CheckpointStore(tmp_path / "first")
     second = CheckpointStore(tmp_path / "second")
 
-    first_report = first.append(plan, None, attempt, DevelopmentBudget())
-    second_report = second.append(plan, None, attempt, DevelopmentBudget())
+    first_report = first.append(
+        plan,
+        None,
+        attempt,
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
+    )
+    second_report = second.append(
+        plan,
+        None,
+        attempt,
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
+    )
     evidence = first_report.records[0]["p_pre_zero_evidence"]
     storage = evidence["storage"]
     first_path = first.output_dir / storage["path"]
@@ -457,7 +556,37 @@ def test_development_checkpoint_compresses_and_resumes_realized_score_evidence(
     assert storage["uncompressed_sha256"] == hashlib.sha256(expected).hexdigest()
     assert storage["uncompressed_nbytes"] == len(expected)
     assert first_path.read_bytes() == second_path.read_bytes()
-    assert CheckpointStore(first.output_dir).load(plan) == first_report
+    assert (
+        CheckpointStore(first.output_dir).load(
+            plan, prepared_datasets=_prepared_datasets(prepared)
+        )
+        == first_report
+    )
+
+
+def test_development_checkpoint_rejects_rehashed_metric_drift(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    prepared_datasets = {prepared.binding.dataset_id: prepared}
+    plan = _plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    store.append(
+        plan,
+        None,
+        _completed_maskimpute(prepared),
+        DevelopmentBudget(),
+        prepared_datasets=prepared_datasets,
+    )
+
+    def mutate(payload: dict[str, object]) -> None:
+        evidence = payload["records"][0]["p_pre_zero_evidence"]
+        evidence["overall"]["metrics"]["brier"]["value"] = 0.123456
+        _rebind_score_payload(payload)
+
+    _rewrite_checkpoint(store, mutate)
+    with pytest.raises(RunnerContractError, match="report differs"):
+        store.load(plan, prepared_datasets=prepared_datasets)
 
 
 def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
@@ -467,7 +596,11 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
     plan = _plan(prepared)
     store = CheckpointStore(tmp_path / "competition")
     report = store.append(
-        plan, None, _completed_maskimpute(prepared), DevelopmentBudget()
+        plan,
+        None,
+        _completed_maskimpute(prepared),
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
     )
     evidence = report.records[0]["p_pre_zero_evidence"]
     path = store.output_dir / evidence["storage"]["path"]
@@ -475,7 +608,7 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
 
     path.write_bytes(original + b"tamper")
     with pytest.raises(RunnerContractError, match="p_pre_zero|score.*checksum"):
-        store.load(plan)
+        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
 
     path.write_bytes(original)
     _rewrite_checkpoint(
@@ -485,7 +618,7 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
         ),
     )
     with pytest.raises(RunnerContractError, match="p_pre_zero|score.*partial"):
-        store.load(plan)
+        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
 
 
 @pytest.mark.parametrize(
@@ -513,7 +646,13 @@ def test_development_checkpoint_rejects_semantically_invalid_score_payload(
     prepared = _prepared()
     plan = _plan(prepared)
     store = CheckpointStore(tmp_path / case)
-    store.append(plan, None, _completed_maskimpute(prepared), DevelopmentBudget())
+    store.append(
+        plan,
+        None,
+        _completed_maskimpute(prepared),
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
+    )
 
     def mutate(payload: dict[str, object]) -> None:
         evidence = payload["records"][0]["p_pre_zero_evidence"]
@@ -562,7 +701,7 @@ def test_development_checkpoint_rejects_semantically_invalid_score_payload(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="p_pre_zero|score"):
-        store.load(plan)
+        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
 
 
 def test_checkpoint_rejects_observed_zero_count_larger_than_retained_matrix(
@@ -593,7 +732,13 @@ def test_checkpoint_rejects_observed_zero_count_larger_than_retained_matrix(
         ),
     )
     store = CheckpointStore(tmp_path / "impossible-zero-count")
-    store.append(plan, None, attempt, DevelopmentBudget())
+    store.append(
+        plan,
+        None,
+        attempt,
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
+    )
 
     def mutate(payload: dict[str, object]) -> None:
         record = payload["records"][0]
@@ -614,7 +759,7 @@ def test_checkpoint_rejects_observed_zero_count_larger_than_retained_matrix(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="observed_zero_count"):
-        store.load(plan)
+        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
 
 
 def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
@@ -624,7 +769,11 @@ def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
     plan = _plan(prepared)
     store = CheckpointStore(tmp_path / "competition")
     report = store.append(
-        plan, None, _completed_maskimpute(prepared), DevelopmentBudget()
+        plan,
+        None,
+        _completed_maskimpute(prepared),
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
     )
     evidence = report.records[0]["p_pre_zero_evidence"]
     storage = evidence["storage"]
@@ -639,7 +788,7 @@ def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
 
     _rewrite_checkpoint(store, bind_oversized)
     with pytest.raises(RunnerContractError, match="p_pre_zero|score.*compressed"):
-        store.load(plan)
+        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
 
 
 def test_development_evidence_manifest_includes_realized_score_artifact(
@@ -652,9 +801,19 @@ def test_development_evidence_manifest_includes_realized_score_artifact(
     prepared = _prepared()
     plan = _plan(prepared)
     store = CheckpointStore(tmp_path / "competition")
-    store.append(plan, None, _completed_maskimpute(prepared), DevelopmentBudget())
+    store.append(
+        plan,
+        None,
+        _completed_maskimpute(prepared),
+        DevelopmentBudget(),
+        prepared_datasets=_prepared_datasets(prepared),
+    )
 
-    evidence = load_completed_reconstruction_checkpoint(store.output_dir, plan)
+    evidence = load_completed_reconstruction_checkpoint(
+        store.output_dir,
+        plan,
+        prepared_datasets=_prepared_datasets(prepared),
+    )
     score = next(item for item in evidence.raw_artifacts if item.kind == "p_pre_zero")
     assert score.run_id == "run-maskimpute-symsim"
     assert score.path.endswith(".p-pre-zero-f64.zlib")
