@@ -1500,16 +1500,27 @@ def test_schema2_consumer_rejects_reconstruction_raw_artifact_alias(
             input_hashes=inputs, plan_sha256=reconstruction["plan_sha256"]
         ),
     )
+    prepared = {}
     monkeypatch.setattr(
-        development_evaluation,
-        "load_completed_reconstruction_checkpoint",
-        lambda *_args: SimpleNamespace(
+        evaluation,
+        "_prepare_reconstruction_datasets",
+        lambda *_args: prepared,
+    )
+
+    def load_reconstruction_checkpoint(*_args, prepared_datasets):
+        assert prepared_datasets is prepared
+        return SimpleNamespace(
             checkpoint_file_sha256=reconstruction["checkpoint_file_sha256"],
             checkpoint_sha256=reconstruction["checkpoint_sha256"],
             plan_sha256=reconstruction["plan_sha256"],
             input_hashes=inputs,
             raw_artifacts=(),
-        ),
+        )
+
+    monkeypatch.setattr(
+        development_evaluation,
+        "load_completed_reconstruction_checkpoint",
+        load_reconstruction_checkpoint,
     )
 
     with pytest.raises(
@@ -1555,16 +1566,22 @@ def test_schema2_rehash_all_cannot_change_reconstructed_efficacy_metric(
     monkeypatch.setattr(evaluation, "_validate_orthogonal_evidence", lambda *_: {})
     monkeypatch.setattr(evaluation, "_validate_evaluator_audits", lambda *_: {})
     monkeypatch.setattr(evaluation, "_rebuild_reconstruction_plan", lambda *_: plan)
+    prepared = {}
     monkeypatch.setattr(
         evaluation,
         "_prepare_reconstruction_datasets",
-        lambda *_: {},
+        lambda *_: prepared,
         raising=False,
     )
+
+    def load_reconstruction_checkpoint(*_args, prepared_datasets):
+        assert prepared_datasets is prepared
+        return evidence
+
     monkeypatch.setattr(
         development_evaluation,
         "load_completed_reconstruction_checkpoint",
-        lambda *_: evidence,
+        load_reconstruction_checkpoint,
     )
     monkeypatch.setattr(
         development_evaluation,
