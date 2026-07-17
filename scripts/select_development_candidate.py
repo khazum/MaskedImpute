@@ -70,7 +70,7 @@ def _report(payload: dict[str, Any], repository: Path | None = None) -> dict[str
     report = (
         select_development_candidate(payload)
         if repository is None
-        else _select_for_repository(payload, repository, require_clean=False)
+        else _select_for_repository(payload, repository, require_clean=True)
     )
     return report.to_dict()
 
@@ -133,7 +133,7 @@ def main() -> int:
     arguments = parser.parse_args()
     if arguments.input.resolve() == arguments.output.resolve():
         parser.error("--input and --output must differ")
-    report = _report(_load(arguments.input))
+    report = _report(_load(arguments.input), REPOSITORY_ROOT)
     encoded = _canonical_bytes(report)
     _atomic_write(arguments.output, encoded)
     print(encoded.decode("utf-8"), end="")

@@ -45,7 +45,7 @@ _SOURCE_POLICIES = frozenset(
     }
 )
 _INTEGRATION_STATUSES = frozenset(
-    {"implemented", "pending", "pending_legacy_attempt", "unavailable"}
+    {"historical", "implemented", "pending", "pending_legacy_attempt", "unavailable"}
 )
 _EXECUTION_SCOPES = frozenset(
     {
@@ -480,6 +480,17 @@ def _parse_method(value: object) -> MethodSpec:
         raise MethodContractError(
             f"method {method_id} unavailable integration requires a reason"
         )
+    if integration_status == "historical" and execution_scope != "historical_not_run":
+        raise MethodContractError(
+            f"method {method_id} historical integration requires historical_not_run scope"
+        )
+    if execution_scope == "historical_not_run" and integration_status not in {
+        "historical",
+        "pending",
+    }:
+        raise MethodContractError(
+            f"method {method_id} historical_not_run scope has invalid integration status"
+        )
     return MethodSpec(
         id=method_id,
         display_name=display_name,
@@ -503,6 +514,23 @@ def _parse_method(value: object) -> MethodSpec:
     )
 
 
+def parse_method_registry(data: object) -> MethodRegistry:
+    """Parse an already authenticated version-1 method denominator."""
+
+    root = _mapping(data, "method registry", frozenset({"schema_version", "methods"}))
+    if root["schema_version"] != 1 or type(root["schema_version"]) is not int:
+        raise MethodContractError("method registry schema_version must be 1")
+    method_values = root["methods"]
+    if not isinstance(method_values, list) or not method_values:
+        raise MethodContractError("method registry methods must be a nonempty list")
+    methods = tuple(_parse_method(value) for value in method_values)
+    ids = [spec.id for spec in methods]
+    duplicates = sorted({method_id for method_id in ids if ids.count(method_id) > 1})
+    if duplicates:
+        raise MethodContractError(f"duplicate method id: {', '.join(duplicates)}")
+    return MethodRegistry(schema_version=1, methods=methods)
+
+
 def load_method_registry(path: Path) -> MethodRegistry:
     """Load the strict version-1 method denominator from canonical JSON."""
 
@@ -518,18 +546,7 @@ def load_method_registry(path: Path) -> MethodRegistry:
         raise MethodContractError(
             f"method registry is not valid JSON: {error}"
         ) from error
-    root = _mapping(data, "method registry", frozenset({"schema_version", "methods"}))
-    if root["schema_version"] != 1 or type(root["schema_version"]) is not int:
-        raise MethodContractError("method registry schema_version must be 1")
-    method_values = root["methods"]
-    if not isinstance(method_values, list) or not method_values:
-        raise MethodContractError("method registry methods must be a nonempty list")
-    methods = tuple(_parse_method(value) for value in method_values)
-    ids = [spec.id for spec in methods]
-    duplicates = sorted({method_id for method_id in ids if ids.count(method_id) > 1})
-    if duplicates:
-        raise MethodContractError(f"duplicate method id: {', '.join(duplicates)}")
-    return MethodRegistry(schema_version=1, methods=methods)
+    return parse_method_registry(data)
 
 
 def _git(path: Path, *arguments: str) -> str:
@@ -604,5 +621,6 @@ __all__ = [
     "MethodPlanEntry",
     "MethodRegistry",
     "load_method_registry",
+    "parse_method_registry",
     "verify_cached_method_sources",
 ]

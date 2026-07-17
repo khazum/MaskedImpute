@@ -944,6 +944,74 @@ def test_cli_forwards_results_without_reconstructing_caller_design(
     assert script._report(loaded) == {"selected": sentinel}
 
 
+def test_cli_main_recomputes_selection_against_repository_authority(
+    tmp_path, monkeypatch, capsys
+):
+    spec = importlib.util.spec_from_file_location(
+        "select_development_candidate_script_main_authority",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    input_path = tmp_path / "input.json"
+    output_path = tmp_path / "output.json"
+    sentinel = {"schema_version": 2}
+    observed = []
+    monkeypatch.setattr(
+        script,
+        "_parser",
+        lambda: SimpleNamespace(
+            parse_args=lambda: SimpleNamespace(input=input_path, output=output_path),
+            error=lambda message: (_ for _ in ()).throw(AssertionError(message)),
+        ),
+    )
+    monkeypatch.setattr(script, "_load", lambda path: sentinel)
+    monkeypatch.setattr(
+        script,
+        "_report",
+        lambda payload, repository: observed.append((payload, repository))
+        or {"selected_configuration": "v28-c01-nb-parent-c03"},
+    )
+    monkeypatch.setattr(script, "_atomic_write", lambda *_args: None)
+
+    assert script.main() == 0
+    assert observed == [(sentinel, script.REPOSITORY_ROOT)]
+    assert json.loads(capsys.readouterr().out) == {
+        "selected_configuration": "v28-c01-nb-parent-c03"
+    }
+
+
+def test_cli_repository_selection_requires_clean_tracked_authority(
+    tmp_path, monkeypatch
+):
+    spec = importlib.util.spec_from_file_location(
+        "select_development_candidate_script_clean_authority",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    observed = []
+
+    class Report:
+        def to_dict(self):
+            return {"trigger": "freeze_candidate"}
+
+    monkeypatch.setattr(
+        script,
+        "_select_for_repository",
+        lambda payload, repository, *, require_clean: observed.append(
+            (payload, repository, require_clean)
+        )
+        or Report(),
+    )
+    payload = {"schema_version": 2}
+
+    assert script._report(payload, tmp_path) == {"trigger": "freeze_candidate"}
+    assert observed == [(payload, tmp_path, True)]
+
+
 def test_cli_loaded_schema2_reaches_real_consumer_and_binds_manifest(
     tmp_path, monkeypatch
 ):
@@ -958,6 +1026,19 @@ def test_cli_loaded_schema2_reaches_real_consumer_and_binds_manifest(
     script = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(script)
     repository, _calibration_sha = _ready_repository(tmp_path)
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.email", "test@example.org"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repository), "config", "user.name", "Selection Test"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(repository), "add", "study"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repository), "commit", "-qm", "authority"], check=True
+    )
     authority = selection._load_selection_authority(repository, require_clean=False)
     status, payload = _status_and_payload(authority)
     payload = _attach_evaluation_manifest(

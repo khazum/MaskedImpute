@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import threading
@@ -837,7 +838,11 @@ def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environmen
     )
     unavailable = dispatcher(missing_request)
     assert unavailable.status == "unavailable"
-    assert unavailable.reason == "environment_executable_unavailable:magic"
+    assert unavailable.reason is not None
+    assert re.fullmatch(
+        r"environment_executable_unavailable_magic_detail_[0-9a-f]{64}",
+        unavailable.reason,
+    )
     assert environments.executable_for("scvi") == scvi_python.absolute()
 
 
@@ -1754,7 +1759,7 @@ def test_evaluator_conversion_failure_retains_only_stable_hashed_detail() -> Non
     detail_sha256 = hashlib.sha256(
         b"maskimpute-evaluator-conversion-detail-v1\0" + unsafe_detail.encode()
     ).hexdigest()
-    expected = f"evaluator_conversion:ValueError:detail_sha256={detail_sha256}"
+    expected = f"evaluator_conversion_valueerror_detail_{detail_sha256}"
     assert evaluated.run.status == "unavailable"
     assert evaluated.run.reason == expected
     assert unsafe_detail not in evaluated.run.reason

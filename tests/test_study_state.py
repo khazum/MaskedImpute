@@ -426,6 +426,62 @@ def test_freeze_rejects_ignored_executable_state(clean_repo: Path) -> None:
         freeze_fixture(clean_repo)
 
 
+def test_operational_root_is_receipt_bound_across_final_lifecycle(
+    clean_repo: Path,
+) -> None:
+    environment_root = clean_repo / "artifacts/envs/magic-python"
+    executable = environment_root / "bin/python"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"fixed runtime bytes\n")
+    executable.chmod(0o755)
+    source_root = clean_repo / "artifacts/method-sources/magic"
+    source_root.mkdir(parents=True)
+    source = source_root / "magic.py"
+    source.write_bytes(b"fixed source bytes\n")
+    round_dir = clean_repo / "artifacts/study/round-001"
+
+    frozen = freeze_round(
+        clean_repo,
+        round_dir,
+        clean_repo / "config.json",
+        clean_repo / "protocol.json",
+        environment_path=clean_repo / "environment.lock",
+        operational_artifact_roots=(environment_root.parent, source_root.parent),
+    )
+
+    assert [
+        row["path"] for row in frozen["operational_artifact_roots"]
+    ] == ["artifacts/envs", "artifacts/method-sources"]
+    assert all(
+        row["entry_count"] > 0 and len(row["tree_sha256"]) == 64
+        for row in frozen["operational_artifact_roots"]
+    )
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    source.write_bytes(b"mutated source bytes\n")
+
+    with pytest.raises(StudyStateError, match="clean frozen commit"):
+        assert_final_runnable(clean_repo, round_dir)
+
+
+def test_operational_root_rejects_symlink_to_mutable_outside_content(
+    clean_repo: Path,
+) -> None:
+    operational_root = clean_repo / "artifacts/envs"
+    operational_root.mkdir(parents=True)
+    outside = clean_repo / "config.json"
+    os.symlink(outside, operational_root / "python")
+
+    with pytest.raises(StudyStateError, match="symlink.*outside|closed"):
+        freeze_round(
+            clean_repo,
+            clean_repo / "artifacts/study/round-001",
+            clean_repo / "config.json",
+            clean_repo / "protocol.json",
+            environment_path=clean_repo / "environment.lock",
+            operational_artifact_roots=(operational_root,),
+        )
+
+
 @pytest.mark.parametrize("kind", ["fifo", "empty_directory"])
 def test_freeze_rejects_ignored_paths_git_does_not_list(
     clean_repo: Path, kind: str
@@ -516,6 +572,47 @@ def test_freeze_records_commit_relative_inputs_hashes_and_utc_time(
     assert record["registry_dir_inode"] > 0
     frozen_at = datetime.fromisoformat(record["frozen_at"].replace("Z", "+00:00"))
     assert frozen_at.tzinfo == timezone.utc
+
+
+def test_freeze_rejects_mismatched_validated_hash_handoff(clean_repo: Path) -> None:
+    round_dir = clean_repo / "artifacts/study/round-001"
+
+    with pytest.raises(StudyStateError, match="validated config checksum"):
+        freeze_round(
+            clean_repo,
+            round_dir,
+            clean_repo / "config.json",
+            clean_repo / "protocol.json",
+            environment_path=clean_repo / "environment.lock",
+            expected_config_sha256="0" * 64,
+            expected_protocol_sha256=file_sha256(clean_repo / "protocol.json"),
+            expected_environment_sha256=file_sha256(
+                clean_repo / "environment.lock"
+            ),
+        )
+
+    assert not (round_dir / "freeze.json").exists()
+
+
+def test_freeze_rejects_mismatched_validated_commit_handoff(clean_repo: Path) -> None:
+    round_dir = clean_repo / "artifacts/study/round-001"
+
+    with pytest.raises(StudyStateError, match="validated method commit"):
+        freeze_round(
+            clean_repo,
+            round_dir,
+            clean_repo / "config.json",
+            clean_repo / "protocol.json",
+            environment_path=clean_repo / "environment.lock",
+            expected_config_sha256=file_sha256(clean_repo / "config.json"),
+            expected_protocol_sha256=file_sha256(clean_repo / "protocol.json"),
+            expected_environment_sha256=file_sha256(
+                clean_repo / "environment.lock"
+            ),
+            expected_method_commit="0" * 40,
+        )
+
+    assert not (round_dir / "freeze.json").exists()
 
 
 @pytest.mark.parametrize("authority", ["state_root", "locks", "registry"])

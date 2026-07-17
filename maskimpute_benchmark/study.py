@@ -8,7 +8,7 @@ matches.  A failed claimed run must be superseded rather than silently retried.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,7 +16,7 @@ import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import stat as stat_module
@@ -702,6 +702,9 @@ def _binding_fields(freeze: Mapping[str, Any]) -> dict[str, Any]:
         "config_sha256": freeze.get("config_sha256"),
         "protocol_sha256": freeze.get("protocol_sha256"),
         "environment_sha256": freeze.get("environment_sha256"),
+        "operational_artifact_roots_sha256": freeze.get(
+            "operational_artifact_roots_sha256"
+        ),
     }
 
 
@@ -753,6 +756,10 @@ def _validate_freeze(round_dir: Path, repo: Path | None = None) -> dict[str, Any
         ):
             raise StudyStateError(f"invalid frozen {label} path")
         _require_sha256(freeze.get(f"{label}_sha256"), f"frozen {label} hash")
+    _validated_operational_root_receipts(
+        freeze.get("operational_artifact_roots"),
+        freeze.get("operational_artifact_roots_sha256"),
+    )
     return freeze
 
 
@@ -1022,8 +1029,272 @@ def _raw_tracked_files_match_index(repo: Path) -> bool:
     return True
 
 
+def _path_is_within_roots(relative: str, roots: frozenset[str]) -> bool:
+    return any(relative == root or relative.startswith(root + "/") for root in roots)
+
+
+def _operational_file_entry(path: Path, relative: str) -> dict[str, Any]:
+    descriptor = -1
+    try:
+        named_before = path.lstat()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened_before = os.fstat(descriptor)
+        identity = lambda value: (  # noqa: E731 - compact stable-stat projection
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_uid,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+        if (
+            not stat_module.S_ISREG(opened_before.st_mode)
+            or identity(named_before) != identity(opened_before)
+        ):
+            raise StudyStateError("operational artifact is not a stable regular file")
+        digest = hashlib.sha256()
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        opened_after = os.fstat(descriptor)
+        named_after = path.lstat()
+        if (
+            identity(opened_before) != identity(opened_after)
+            or identity(opened_before) != identity(named_after)
+        ):
+            raise StudyStateError("operational artifact changed while being hashed")
+        return {
+            "path": relative,
+            "kind": "file",
+            "mode": stat_module.S_IMODE(opened_before.st_mode),
+            "size_bytes": opened_before.st_size,
+            "sha256": digest.hexdigest(),
+        }
+    except StudyStateError:
+        raise
+    except OSError as error:
+        raise StudyStateError("operational artifact cannot be hashed") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _operational_tree_snapshot(root: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    try:
+        closed_root = root.resolve(strict=True)
+    except OSError as error:
+        raise StudyStateError("operational artifact root is unavailable") from error
+
+    def visit(directory: Path, relative: str) -> None:
+        try:
+            metadata = directory.lstat()
+            if not stat_module.S_ISDIR(metadata.st_mode):
+                raise StudyStateError(
+                    "operational artifact root contains an unsafe directory"
+                )
+            entries.append(
+                {
+                    "path": relative or ".",
+                    "kind": "directory",
+                    "mode": stat_module.S_IMODE(metadata.st_mode),
+                }
+            )
+            children = sorted(os.scandir(directory), key=lambda value: value.name)
+        except StudyStateError:
+            raise
+        except OSError as error:
+            raise StudyStateError(
+                "operational artifact directory cannot be enumerated"
+            ) from error
+        for child in children:
+            child_relative = f"{relative}/{child.name}" if relative else child.name
+            if "\n" in child_relative or "\x00" in child_relative:
+                raise StudyStateError("operational artifact path is unsupported")
+            path = Path(child.path)
+            try:
+                child_metadata = path.lstat()
+            except OSError as error:
+                raise StudyStateError("operational artifact path changed") from error
+            if stat_module.S_ISDIR(child_metadata.st_mode):
+                visit(path, child_relative)
+            elif stat_module.S_ISREG(child_metadata.st_mode):
+                entries.append(_operational_file_entry(path, child_relative))
+            elif stat_module.S_ISLNK(child_metadata.st_mode):
+                try:
+                    target_before = os.readlink(path)
+                    resolved_before = path.resolve(strict=True)
+                    resolved_before.relative_to(closed_root)
+                    metadata_after = path.lstat()
+                    target_after = os.readlink(path)
+                    resolved_after = path.resolve(strict=True)
+                    resolved_after.relative_to(closed_root)
+                except ValueError as error:
+                    raise StudyStateError(
+                        "operational artifact symlink resolves outside its closed root"
+                    ) from error
+                except OSError as error:
+                    raise StudyStateError(
+                        "operational artifact symlink target is unavailable"
+                    ) from error
+                if (
+                    target_before != target_after
+                    or resolved_before != resolved_after
+                    or (
+                        child_metadata.st_dev,
+                        child_metadata.st_ino,
+                        child_metadata.st_mode,
+                        child_metadata.st_mtime_ns,
+                        child_metadata.st_ctime_ns,
+                    )
+                    != (
+                        metadata_after.st_dev,
+                        metadata_after.st_ino,
+                        metadata_after.st_mode,
+                        metadata_after.st_mtime_ns,
+                        metadata_after.st_ctime_ns,
+                    )
+                ):
+                    raise StudyStateError("operational artifact symlink changed")
+                entries.append(
+                    {
+                        "path": child_relative,
+                        "kind": "symlink",
+                        "mode": stat_module.S_IMODE(child_metadata.st_mode),
+                        "target": target_before,
+                    }
+                )
+            else:
+                raise StudyStateError(
+                    "operational artifact root contains a special file"
+                )
+
+    visit(root, "")
+    return entries
+
+
+def _operational_tree_receipt(repo: Path, relative: str) -> dict[str, Any]:
+    path_value = PurePosixPath(relative)
+    if (
+        path_value.is_absolute()
+        or not path_value.parts
+        or any(part in {"", ".", ".."} for part in path_value.parts)
+        or path_value.parts[0] == ".git"
+    ):
+        raise StudyStateError("operational artifact root path is invalid")
+    root = repo.joinpath(*path_value.parts)
+    try:
+        metadata = root.lstat()
+        if stat_module.S_ISLNK(metadata.st_mode) or not stat_module.S_ISDIR(
+            metadata.st_mode
+        ):
+            raise StudyStateError(
+                "operational artifact root must be a non-symlink directory"
+            )
+        if root.resolve(strict=True) != root:
+            raise StudyStateError(
+                "operational artifact root contains a symlinked ancestor"
+            )
+    except StudyStateError:
+        raise
+    except OSError as error:
+        raise StudyStateError("operational artifact root is unavailable") from error
+    first = _operational_tree_snapshot(root)
+    second = _operational_tree_snapshot(root)
+    if first != second:
+        raise StudyStateError("operational artifact root changed while being hashed")
+    return {
+        "path": path_value.as_posix(),
+        "entry_count": len(first),
+        "tree_sha256": canonical_sha256(first),
+    }
+
+
+def _operational_root_receipts(
+    repo: Path,
+    roots: Sequence[Path],
+) -> list[dict[str, Any]]:
+    if isinstance(roots, (str, bytes)) or not isinstance(roots, Sequence):
+        raise StudyStateError("operational artifact roots must be a path sequence")
+    relatives: list[str] = []
+    for value in roots:
+        if not isinstance(value, Path):
+            raise StudyStateError("operational artifact roots must be pathlib paths")
+        candidate = value if value.is_absolute() else repo / value
+        absolute = candidate.absolute()
+        try:
+            relative = absolute.relative_to(repo).as_posix()
+        except ValueError as error:
+            raise StudyStateError(
+                "operational artifact root must be inside the repository"
+            ) from error
+        relatives.append(relative)
+    if relatives != sorted(set(relatives)):
+        raise StudyStateError("operational artifact roots must be unique and sorted")
+    for index, first in enumerate(relatives):
+        if any(
+            second.startswith(first + "/") or first.startswith(second + "/")
+            for second in relatives[index + 1 :]
+        ):
+            raise StudyStateError("operational artifact roots must not overlap")
+    return [_operational_tree_receipt(repo, relative) for relative in relatives]
+
+
+def _validated_operational_root_receipts(
+    value: object,
+    expected_sha256: object,
+) -> list[dict[str, Any]]:
+    if type(value) is not list:
+        raise StudyStateError("frozen operational artifact roots are invalid")
+    observed_paths: list[str] = []
+    for row in value:
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != {"path", "entry_count", "tree_sha256"}
+            or not isinstance(row.get("path"), str)
+            or type(row.get("entry_count")) is not int
+            or row["entry_count"] < 1
+        ):
+            raise StudyStateError("frozen operational artifact receipt is invalid")
+        path = PurePosixPath(row["path"])
+        if (
+            path.is_absolute()
+            or not path.parts
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or path.parts[0] == ".git"
+        ):
+            raise StudyStateError("frozen operational artifact path is invalid")
+        _require_sha256(row.get("tree_sha256"), "operational artifact tree hash")
+        observed_paths.append(path.as_posix())
+    if observed_paths != sorted(set(observed_paths)):
+        raise StudyStateError("frozen operational artifact paths are invalid")
+    for index, first in enumerate(observed_paths):
+        if any(
+            second.startswith(first + "/") or first.startswith(second + "/")
+            for second in observed_paths[index + 1 :]
+        ):
+            raise StudyStateError("frozen operational artifact roots overlap")
+    digest = _require_sha256(
+        expected_sha256, "frozen operational artifact roots hash"
+    )
+    if canonical_sha256(value) != digest:
+        raise StudyStateError("frozen operational artifact roots hash differs")
+    return [dict(row) for row in value]
+
+
 def _untracked_files_are_allowed(
-    repo: Path, allowed_untracked: frozenset[str]
+    repo: Path,
+    allowed_untracked: frozenset[str],
+    allowed_untracked_roots: frozenset[str],
 ) -> bool:
     """Account for both ordinary and ignored untracked files without quoting."""
 
@@ -1036,11 +1307,17 @@ def _untracked_files_are_allowed(
         if completed.returncode != 0:
             return False
         observed.update(path for path in completed.stdout.split("\0") if path)
-    return observed.issubset(allowed_untracked)
+    return all(
+        path in allowed_untracked
+        or _path_is_within_roots(path, allowed_untracked_roots)
+        for path in observed
+    )
 
 
 def _worktree_paths_are_allowed(
-    repo: Path, allowed_untracked: frozenset[str]
+    repo: Path,
+    allowed_untracked: frozenset[str],
+    allowed_untracked_roots: frozenset[str],
 ) -> bool:
     """Walk raw directory entries so Git-invisible special paths cannot escape."""
 
@@ -1052,7 +1329,7 @@ def _worktree_paths_are_allowed(
     gitlinks = {relative for mode, _, relative in entries if mode == "160000"}
     permitted = tracked.union(allowed_untracked)
     directory_prefixes: set[str] = set()
-    for relative in permitted:
+    for relative in permitted.union(allowed_untracked_roots):
         for parent in Path(relative).parents:
             value = parent.as_posix()
             if value == ".":
@@ -1081,11 +1358,15 @@ def _worktree_paths_are_allowed(
                     return False
                 continue
             if is_directory:
-                if relative not in directory_prefixes:
+                if relative not in directory_prefixes and not _path_is_within_roots(
+                    relative, allowed_untracked_roots
+                ):
                     return False
                 if not visit(Path(child.path), relative):
                     return False
-            elif relative not in permitted:
+            elif relative not in permitted and not _path_is_within_roots(
+                relative, allowed_untracked_roots
+            ):
                 return False
         return True
 
@@ -1109,6 +1390,7 @@ def _repository_is_clean_at(
     commit: str,
     *,
     allowed_untracked: frozenset[str] = frozenset(),
+    allowed_untracked_roots: frozenset[str] = frozenset(),
     _visited: set[Path] | None = None,
 ) -> bool:
     visited = set() if _visited is None else _visited
@@ -1134,9 +1416,13 @@ def _repository_is_clean_at(
         return False
     if not _raw_tracked_files_match_index(repo):
         return False
-    if not _untracked_files_are_allowed(repo, allowed_untracked):
+    if not _untracked_files_are_allowed(
+        repo, allowed_untracked, allowed_untracked_roots
+    ):
         return False
-    if not _worktree_paths_are_allowed(repo, allowed_untracked):
+    if not _worktree_paths_are_allowed(
+        repo, allowed_untracked, allowed_untracked_roots
+    ):
         return False
     if _git(
         repo,
@@ -1170,6 +1456,7 @@ def _repository_is_clean_at(
                 submodule,
                 expected_object,
                 allowed_untracked=frozenset(),
+                allowed_untracked_roots=frozenset(),
                 _visited=visited,
             ):
                 return False
@@ -1193,6 +1480,13 @@ def _verify_frozen_repository(
         protocol = _recorded_path(repo, freeze.get("protocol_path"), "protocol")
         environment = _recorded_path(
             repo, freeze.get("environment_path"), "environment"
+        )
+        operational_receipts = _validated_operational_root_receipts(
+            freeze.get("operational_artifact_roots"),
+            freeze.get("operational_artifact_roots_sha256"),
+        )
+        operational_roots = frozenset(
+            str(row["path"]) for row in operational_receipts
         )
         allowed_untracked = _round_state_untracked_paths(repo, round_dir).union(
             allowed_result_paths
@@ -1220,7 +1514,12 @@ def _verify_frozen_repository(
                 repo,
                 freeze["method_commit"],
                 allowed_untracked=frozenset(allowed_untracked),
+                allowed_untracked_roots=operational_roots,
             )
+            and _operational_root_receipts(
+                repo, tuple(repo / root for root in sorted(operational_roots))
+            )
+            == operational_receipts
             and file_sha256(config) == freeze["config_sha256"]
             and file_sha256(protocol) == freeze["protocol_sha256"]
             and file_sha256(environment) == freeze["environment_sha256"]
@@ -1975,15 +2274,71 @@ def freeze_round(
     protocol_path: Path,
     *,
     environment_path: Path,
+    expected_config_sha256: str | None = None,
+    expected_protocol_sha256: str | None = None,
+    expected_environment_sha256: str | None = None,
+    expected_method_commit: str | None = None,
+    operational_artifact_roots: Sequence[Path] = (),
+    expected_operational_artifact_roots_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Freeze a clean commit and tracked config, protocol, and environment lock."""
 
+    expected_hashes = (
+        expected_config_sha256,
+        expected_protocol_sha256,
+        expected_environment_sha256,
+    )
+    if any(value is not None for value in expected_hashes) and not all(
+        value is not None for value in expected_hashes
+    ):
+        raise StudyStateError("validated input checksums must be supplied together")
+    if expected_config_sha256 is not None:
+        _require_sha256(expected_config_sha256, "validated config checksum")
+        _require_sha256(expected_protocol_sha256, "validated protocol checksum")
+        _require_sha256(expected_environment_sha256, "validated environment checksum")
+    if expected_method_commit is not None and (
+        not isinstance(expected_method_commit, str)
+        or not _GIT_OID_RE.fullmatch(expected_method_commit)
+    ):
+        raise StudyStateError("validated method commit is not a Git object ID")
+    if expected_operational_artifact_roots_sha256 is not None:
+        _require_sha256(
+            expected_operational_artifact_roots_sha256,
+            "validated operational artifact roots checksum",
+        )
+
     repository = _repo_path(repo)
     destination = _round_path(repository, round_dir)
+    operational_receipts = _operational_root_receipts(
+        repository, operational_artifact_roots
+    )
+    if (
+        expected_operational_artifact_roots_sha256 is not None
+        and canonical_sha256(operational_receipts)
+        != expected_operational_artifact_roots_sha256
+    ):
+        raise StudyStateError(
+            "validated operational artifact roots changed before freeze"
+        )
+    operational_roots = frozenset(str(row["path"]) for row in operational_receipts)
+    destination_relative = _round_relative_path(repository, destination)
+    if any(
+        destination_relative == root
+        or destination_relative.startswith(root + "/")
+        or root.startswith(destination_relative + "/")
+        for root in operational_roots
+    ):
+        raise StudyStateError("operational artifact roots overlap the final round")
     with _round_lock(repository, destination.name) as lock_identity:
         repository_instance_id = _repository_instance_id(repository, create=True)
         commit = _git(repository, "rev-parse", "HEAD")
-        if not _repository_is_clean_at(repository, commit):
+        if expected_method_commit is not None and commit != expected_method_commit:
+            raise StudyStateError("validated method commit changed before freeze")
+        if not _repository_is_clean_at(
+            repository,
+            commit,
+            allowed_untracked_roots=operational_roots,
+        ):
             raise StudyStateError("repository must be clean before freezing a round")
         if _current_state(destination) is not None or any(destination.glob("*.json")):
             raise StudyStateError("round already has a state record")
@@ -2001,6 +2356,29 @@ def freeze_round(
             load_protocol(protocol)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise StudyStateError(f"protocol is invalid: {exc}") from exc
+        config_sha256 = file_sha256(config)
+        protocol_sha256 = file_sha256(protocol)
+        environment_sha256 = file_sha256(environment)
+        if (
+            expected_config_sha256 is not None
+            and config_sha256 != expected_config_sha256
+        ):
+            raise StudyStateError("validated config checksum changed before freeze")
+        if (
+            expected_protocol_sha256 is not None
+            and protocol_sha256 != expected_protocol_sha256
+        ):
+            raise StudyStateError("validated protocol checksum changed before freeze")
+        if (
+            expected_environment_sha256 is not None
+            and environment_sha256 != expected_environment_sha256
+        ):
+            raise StudyStateError("validated environment checksum changed before freeze")
+        final_operational_receipts = _operational_root_receipts(
+            repository, operational_artifact_roots
+        )
+        if final_operational_receipts != operational_receipts:
+            raise StudyStateError("operational artifact roots changed during freeze")
 
         common_device, common_inode = _git_common_dir_identity(repository)
         record: dict[str, Any] = {
@@ -2020,11 +2398,15 @@ def freeze_round(
             "frozen_at": _utc_now(),
             "method_commit": commit,
             "config_path": config_relative,
-            "config_sha256": file_sha256(config),
+            "config_sha256": config_sha256,
             "protocol_path": protocol_relative,
-            "protocol_sha256": file_sha256(protocol),
+            "protocol_sha256": protocol_sha256,
             "environment_path": environment_relative,
-            "environment_sha256": file_sha256(environment),
+            "environment_sha256": environment_sha256,
+            "operational_artifact_roots": operational_receipts,
+            "operational_artifact_roots_sha256": canonical_sha256(
+                operational_receipts
+            ),
         }
         first_entry = _registry_entry(
             state="frozen",
@@ -2051,6 +2433,18 @@ def freeze_round(
         }
         # The registry is the authoritative reservation.  Publishing it first
         # makes any partial freeze fail closed rather than reusable.
+        if _git(repository, "rev-parse", "HEAD") != commit:
+            raise StudyStateError("method commit changed during freeze validation")
+        if (
+            _operational_root_receipts(
+                repository,
+                tuple(repository / root for root in sorted(operational_roots)),
+            )
+            != operational_receipts
+        ):
+            raise StudyStateError(
+                "operational artifact roots changed during freeze validation"
+            )
         _assert_round_lock_identity(repository, destination.name, lock_identity)
         _atomic_write_json(
             _registry_path(repository, destination.name), registry, exclusive=True
@@ -2061,6 +2455,7 @@ def freeze_round(
         _validate_registry(
             repository, destination, record, expected_state="frozen"
         )
+        _verify_frozen_repository(repository, destination)
         _assert_round_lock_identity(repository, destination.name, lock_identity)
         return record
 

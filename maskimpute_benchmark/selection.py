@@ -2785,11 +2785,11 @@ def _select_for_repository(
         )
     if _file_sha256(count_score_path) != count_score_sha:
         raise SelectionAuthorityError("count-score manifest checksum mismatch")
-
     result_sha = _authority_sha(data["result_sha256"], "development result checksum")
     result_core = {key: value for key, value in data.items() if key != "result_sha256"}
     if _canonical_sha256(result_core) != result_sha:
         raise SelectionAuthorityError("development result checksum mismatch")
+
     status = _validate_development_dataset_status(repository)
     if not isinstance(status, Mapping):
         raise SelectionAuthorityError("validated development status is not a mapping")

@@ -2851,25 +2851,9 @@ def _long_form_unavailable(
     )
 
 
-def _evaluator_conversion_failure_reason(error: Exception) -> str:
-    from .methods import AdapterUnavailableError
-
-    if isinstance(error, AdapterUnavailableError) and re.fullmatch(
-        r"[a-z][a-z0-9_]*", error.reason_code
-    ):
-        return f"evaluator_conversion:{error.reason_code}"
-    error_name = next(
-        name
-        for error_type, name in (
-            (TypeError, "TypeError"),
-            (ValueError, "ValueError"),
-            (OverflowError, "OverflowError"),
-            (AdapterUnavailableError, "AdapterUnavailableError"),
-        )
-        if isinstance(error, error_type)
-    )
+def _stable_exception_detail_sha256(error: Exception, domain: bytes) -> str:
     digest = hashlib.sha256()
-    digest.update(b"maskimpute-evaluator-conversion-detail-v1\0")
+    digest.update(domain)
     if len(error.args) == 1 and type(error.args[0]) is str:
         digest.update(error.args[0].encode("utf-8", errors="surrogatepass"))
     else:
@@ -2897,7 +2881,77 @@ def _evaluator_conversion_failure_reason(error: Exception) -> str:
                 )
             digest.update(struct.pack("<Q", len(payload)))
             digest.update(payload)
-    return f"evaluator_conversion:{error_name}:detail_sha256={digest.hexdigest()}"
+    return digest.hexdigest()
+
+
+def _terminal_reason_component(value: str, fallback: str) -> str:
+    normalized = value.replace("-", "_").lower()
+    if (
+        re.fullmatch(r"[a-z][a-z0-9_]*", normalized)
+        and not any(marker in normalized for marker in ("pending", "not_yet", "unverified"))
+    ):
+        return normalized
+    return fallback
+
+
+def _evaluator_conversion_failure_reason(error: Exception) -> str:
+    from .methods import AdapterUnavailableError
+
+    if isinstance(error, AdapterUnavailableError):
+        error_name = _terminal_reason_component(
+            error.reason_code, "adapter_unavailable"
+        )
+    else:
+        error_name = next(
+            name
+            for error_type, name in (
+                (TypeError, "typeerror"),
+                (ValueError, "valueerror"),
+                (OverflowError, "overflowerror"),
+            )
+            if isinstance(error, error_type)
+        )
+    detail_sha256 = _stable_exception_detail_sha256(
+        error, b"maskimpute-evaluator-conversion-detail-v1\0"
+    )
+    return f"evaluator_conversion_{error_name}_detail_{detail_sha256}"
+
+
+def _adapter_failure_reason(
+    error: Exception,
+    method_id: str,
+    *,
+    unavailable: bool,
+) -> str:
+    from .methods import AdapterUnavailableError
+
+    method = _terminal_reason_component(method_id, "method")
+    if unavailable and isinstance(error, AdapterUnavailableError):
+        category = _terminal_reason_component(
+            error.reason_code, "adapter_unavailable"
+        )
+    else:
+        error_type = f"{type(error).__module__}.{type(error).__qualname__}"
+        category = "adapter_exception_" + _terminal_reason_component(
+            type(error).__name__, "exception"
+        )
+        # Bind the qualified type even when two exception classes share a name.
+        error = RuntimeError(error_type, *error.args)
+    detail_sha256 = _stable_exception_detail_sha256(
+        error, b"maskimpute-adapter-failure-detail-v1\0"
+    )
+    return f"{category}_{method}_detail_{detail_sha256}"
+
+
+def _declared_failure_reason(category: str, method_id: str) -> str:
+    safe_category = _terminal_reason_component(category, "adapter_unavailable")
+    safe_method = _terminal_reason_component(method_id, "method")
+    digest = hashlib.sha256()
+    digest.update(b"maskimpute-declared-adapter-disposition-v1\0")
+    digest.update(safe_category.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(safe_method.encode("ascii"))
+    return f"{safe_category}_{safe_method}_detail_{digest.hexdigest()}"
 
 
 def evaluate_adapter_outcome(
@@ -4512,27 +4566,35 @@ class RepositoryAdapterDispatcher:
                 return self._in_tree(request)
             elif method_id == "d3impute":
                 return AdapterOutcome.unavailable(
-                    "external_reference_input_not_prepared:d3impute"
+                    _declared_failure_reason(
+                        "external_reference_input_not_prepared", method_id
+                    )
                 )
             elif method_id not in self.supported_method_ids:
                 return AdapterOutcome.unavailable(
-                    f"adapter_not_implemented:{method_id}"
+                    _declared_failure_reason("adapter_not_implemented", method_id)
                 )
             else:
                 executable = self.environments.executable_for(method_id)
                 if executable is None:
                     return AdapterOutcome.unavailable(
-                        f"environment_executable_unavailable:{method_id}"
+                        _declared_failure_reason(
+                            "environment_executable_unavailable", method_id
+                        )
                     )
                 source = request.method_spec.source.cache_path
                 if source is None:
                     return AdapterOutcome.unavailable(
-                        f"pinned_source_path_unavailable:{method_id}"
+                        _declared_failure_reason(
+                            "pinned_source_path_unavailable", method_id
+                        )
                     )
                 source_dir = self.repository_root / source
                 seed = request.model_seed
                 if seed is None:
-                    return AdapterOutcome.failed(f"stochastic_seed_missing:{method_id}")
+                    return AdapterOutcome.failed(
+                        _declared_failure_reason("stochastic_seed_missing", method_id)
+                    )
                 if method_id == "alra":
                     from .methods import run_alra
 
@@ -4603,12 +4665,12 @@ class RepositoryAdapterDispatcher:
 
             if isinstance(error, AdapterUnavailableError):
                 return AdapterOutcome.unavailable(
-                    f"{error.reason_code}:{method_id}",
+                    _adapter_failure_reason(error, method_id, unavailable=True),
                     stdout=error.stdout,
                     stderr=error.stderr,
                 )
             return AdapterOutcome.failed(
-                f"adapter_exception:{method_id}:{type(error).__name__}",
+                _adapter_failure_reason(error, method_id, unavailable=False),
                 stderr=str(error).encode("utf-8", errors="replace"),
             )
 

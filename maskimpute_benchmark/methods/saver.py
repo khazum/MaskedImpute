@@ -28,20 +28,21 @@ from .observed import (
 
 _SAVER_DRIVER = r"""
 args <- commandArgs(trailingOnly=TRUE)
-if (length(args) != 13) stop("adapter expected thirteen arguments")
+if (length(args) != 14) stop("adapter expected fourteen arguments")
 source_dir <- normalizePath(args[[1]], mustWork=TRUE)
 input_file <- args[[2]]
 output_file <- args[[3]]
 receipt_file <- args[[4]]
 library_dir <- normalizePath(args[[5]], mustWork=TRUE)
 manifest_sha256 <- args[[6]]
-build_receipt_sha256 <- args[[7]]
-installed_library_sha256 <- args[[8]]
-n_obs <- as.integer(args[[9]])
-n_vars <- as.integer(args[[10]])
-ncores <- as.integer(args[[11]])
-do_fast <- identical(args[[12]], "TRUE")
-seed <- as.integer(args[[13]])
+qualification_sha256 <- args[[7]]
+build_receipt_sha256 <- args[[8]]
+installed_library_sha256 <- args[[9]]
+n_obs <- as.integer(args[[10]])
+n_vars <- as.integer(args[[11]])
+ncores <- as.integer(args[[12]])
+do_fast <- identical(args[[13]], "TRUE")
+seed <- as.integer(args[[14]])
 required_packages <- c(
   "Matrix", "Rcpp", "RcppEigen", "SAVER", "codetools", "doParallel",
   "foreach", "glmnet", "iterators", "lattice", "shape", "survival"
@@ -87,6 +88,7 @@ writeBin(as.double(t(output)), output_connection, size=8, endian="little")
 close(output_connection)
 receipt <- c(
   paste("manifest_sha256", manifest_sha256, sep="\t"),
+  paste("qualification_sha256", qualification_sha256, sep="\t"),
   paste("build_receipt_sha256", build_receipt_sha256, sep="\t"),
   paste("installed_library_sha256", installed_library_sha256, sep="\t"),
   paste("r_version", paste(R.version$major, R.version$minor, sep="."), sep="\t"),
@@ -124,11 +126,104 @@ _SAVER_PACKAGE_KEYS = {
     "SAVER": "saver_version",
 }
 
+_SAVER_QUALIFICATION_NAME = "saver-r.qualification.json"
+_SAVER_LOCK_RELATIVE = "environments/saver-r.lock.json"
+_SAVER_BUILD_RECEIPT_RELATIVE = "environments/saver-r.build-receipt.json"
+
+
+def _load_saver_qualification(
+    spec: MethodSpec,
+    lock_manifest: Path,
+    *,
+    lock_sha256: str,
+    installed_library_sha256: str,
+    build_receipt_sha256: str,
+) -> str:
+    qualification = lock_manifest.with_name(_SAVER_QUALIFICATION_NAME)
+    try:
+        if qualification.is_symlink() or not qualification.is_file():
+            raise OSError("qualification receipt is not a regular file")
+        payload = qualification.read_bytes()
+        data = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise AdapterUnavailableError(
+            "environment_qualification_missing",
+            f"could not read SAVER qualification receipt: {qualification}",
+        ) from error
+    digest = hashlib.sha256(payload).hexdigest()
+    if not isinstance(data, dict) or set(data) != {
+        "schema_version",
+        "environment_id",
+        "package_lock",
+        "build_receipt",
+        "installed_library_sha256",
+        "source",
+    }:
+        raise AdapterUnavailableError(
+            "environment_qualification_malformed",
+            "SAVER qualification receipt root is not closed",
+        )
+    package_binding = data["package_lock"]
+    build_binding = data["build_receipt"]
+    source_binding = data["source"]
+    if (
+        not isinstance(package_binding, dict)
+        or set(package_binding) != {"path", "sha256"}
+        or not isinstance(build_binding, dict)
+        or set(build_binding) != {"path", "sha256"}
+        or not isinstance(source_binding, dict)
+        or set(source_binding) != {"url", "revision", "tree"}
+    ):
+        raise AdapterUnavailableError(
+            "environment_qualification_malformed",
+            "SAVER qualification bindings are not closed",
+        )
+    repository = qualification.absolute().parent.parent
+    expected_lock = repository / _SAVER_LOCK_RELATIVE
+    expected_build_receipt = repository / _SAVER_BUILD_RECEIPT_RELATIVE
+    try:
+        if (
+            expected_build_receipt.is_symlink()
+            or not expected_build_receipt.is_file()
+        ):
+            raise OSError("build receipt is not a regular file")
+        observed_build_sha256 = hashlib.sha256(
+            expected_build_receipt.read_bytes()
+        ).hexdigest()
+    except OSError as error:
+        raise AdapterUnavailableError(
+            "environment_qualification_missing",
+            "SAVER qualification build receipt is unavailable",
+        ) from error
+    expected_source = {
+        "url": spec.source.url,
+        "revision": spec.source.revision,
+        "tree": spec.source.tree,
+    }
+    if (
+        data["schema_version"] != 1
+        or data["environment_id"] != spec.environment.id
+        or spec.environment.status != "ready"
+        or package_binding.get("path") != _SAVER_LOCK_RELATIVE
+        or package_binding.get("sha256") != lock_sha256
+        or lock_manifest.absolute() != expected_lock
+        or build_binding.get("path") != _SAVER_BUILD_RECEIPT_RELATIVE
+        or build_binding.get("sha256") != build_receipt_sha256
+        or observed_build_sha256 != build_receipt_sha256
+        or data["installed_library_sha256"] != installed_library_sha256
+        or source_binding != expected_source
+    ):
+        raise AdapterUnavailableError(
+            "environment_qualification_mismatch",
+            "SAVER package authority differs from its tracked qualification receipt",
+        )
+    return digest
+
 
 def _load_saver_environment_lock(
     spec: MethodSpec,
     lock_manifest: Path,
-) -> tuple[str, str, dict[str, str], str, str]:
+) -> tuple[str, str, dict[str, str], str, str, str]:
     if not isinstance(lock_manifest, Path):
         raise TypeError("lock_manifest must be a pathlib.Path")
     try:
@@ -142,10 +237,10 @@ def _load_saver_environment_lock(
             f"could not read SAVER environment lock: {lock_manifest}",
         ) from error
     digest = hashlib.sha256(payload).hexdigest()
-    if spec.environment.status != "ready" or spec.environment.lock_sha256 != digest:
+    if spec.environment.status != "ready":
         raise AdapterUnavailableError(
             "environment_lock_mismatch",
-            "SAVER registry environment is not bound to the selected lock manifest",
+            "SAVER registry environment is not ready",
         )
     if not isinstance(data, dict) or set(data) != {
         "schema_version",
@@ -228,12 +323,20 @@ def _load_saver_environment_lock(
             "environment_lock_malformed",
             "SAVER installed-library bindings are invalid",
         )
+    qualification_sha256 = _load_saver_qualification(
+        spec,
+        lock_manifest,
+        lock_sha256=digest,
+        installed_library_sha256=installed_library_sha256,
+        build_receipt_sha256=build_receipt_sha256,
+    )
     return (
         digest,
         r_version,
         versions,
         installed_library_sha256,
         build_receipt_sha256,
+        qualification_sha256,
     )
 
 
@@ -502,6 +605,7 @@ def run_saver(
         locked_versions,
         installed_library_sha256,
         expected_build_receipt_sha256,
+        qualification_sha256,
     ) = _load_saver_environment_lock(spec, lock_manifest)
     build_receipt_sha256 = _load_saver_build_receipt(
         spec,
@@ -541,7 +645,7 @@ def run_saver(
         ),
         CompatibilityEvent(
             "environment_lock",
-            f"prebuilt isolated R library content sha256={installed_library_sha256} and qualification receipt sha256={build_receipt_sha256} are bound by manifest sha256={manifest_sha256}; no package installation occurs during method execution",
+            f"prebuilt isolated R library content sha256={installed_library_sha256}, build receipt sha256={build_receipt_sha256}, and package manifest sha256={manifest_sha256} are independently bound by qualification receipt sha256={qualification_sha256}; no package installation occurs during method execution",
         ),
         CompatibilityEvent("compatibility_shims", "none"),
     )
@@ -564,6 +668,7 @@ def run_saver(
             str(receipt_path),
             str(selected_library),
             manifest_sha256,
+            qualification_sha256,
             build_receipt_sha256,
             installed_library_sha256,
             str(method_input.shape[0]),
@@ -591,6 +696,7 @@ def run_saver(
                 {
                     "r_version",
                     "manifest_sha256",
+                    "qualification_sha256",
                     "build_receipt_sha256",
                     "installed_library_sha256",
                     "saver_library_dir",
@@ -613,6 +719,7 @@ def run_saver(
         receipt_values = dict(receipt)
         if (
             receipt_values["manifest_sha256"] != manifest_sha256
+            or receipt_values["qualification_sha256"] != qualification_sha256
             or receipt_values["build_receipt_sha256"] != build_receipt_sha256
             or receipt_values["installed_library_sha256"]
             != installed_library_sha256

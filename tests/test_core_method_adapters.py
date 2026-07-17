@@ -65,6 +65,7 @@ SOURCE_ROOT = Path("artifacts/method-sources")
 SOURCE_SHA = "d" * 64
 SAVER_LOCK_PATH = Path("environments/saver-r.lock.json")
 SAVER_BUILD_RECEIPT_PATH = Path("environments/saver-r.build-receipt.json")
+SAVER_QUALIFICATION_PATH = Path("environments/saver-r.qualification.json")
 SAVER_LIBRARY_PATH = Path("/tmp/maskimpute-saver-r461/library")
 SAVER_PACKAGE_VERSIONS = {
     "Matrix": "1.7-5",
@@ -80,6 +81,59 @@ SAVER_PACKAGE_VERSIONS = {
     "survival": "3.8-9",
     "SAVER": "1.1.3",
 }
+
+
+def test_saver_registry_runtime_lock_is_independent_from_package_qualification() -> (
+    None
+):
+    runtime_bound_spec = replace(
+        _registry().by_id("saver"),
+        environment=EnvironmentSpec(
+            id="saver-r",
+            status="ready",
+            lock_sha256="a" * 64,
+        ),
+    )
+
+    manifest_sha256, *_rest = saver_adapter._load_saver_environment_lock(
+        runtime_bound_spec,
+        SAVER_LOCK_PATH,
+    )
+
+    assert manifest_sha256 == hashlib.sha256(SAVER_LOCK_PATH.read_bytes()).hexdigest()
+
+
+def test_saver_rejects_package_lock_not_bound_by_tracked_qualification(
+    tmp_path: Path,
+) -> None:
+    environment_dir = tmp_path / "environments"
+    environment_dir.mkdir()
+    for source in (
+        SAVER_LOCK_PATH,
+        SAVER_BUILD_RECEIPT_PATH,
+        SAVER_QUALIFICATION_PATH,
+    ):
+        shutil.copyfile(source, environment_dir / source.name)
+    qualification_path = environment_dir / SAVER_QUALIFICATION_PATH.name
+    qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
+    qualification["package_lock"]["sha256"] = "0" * 64
+    qualification_path.write_text(json.dumps(qualification), encoding="utf-8")
+    runtime_bound_spec = replace(
+        _registry().by_id("saver"),
+        environment=EnvironmentSpec(
+            id="saver-r",
+            status="ready",
+            lock_sha256="a" * 64,
+        ),
+    )
+
+    with pytest.raises(AdapterUnavailableError) as captured:
+        saver_adapter._load_saver_environment_lock(
+            runtime_bound_spec,
+            environment_dir / SAVER_LOCK_PATH.name,
+        )
+
+    assert captured.value.reason_code == "environment_qualification_mismatch"
 
 
 def _method_input(
@@ -1082,17 +1136,17 @@ def test_real_pinned_saver_fixed_seed_is_reproducible_when_dependencies_exist(
         pytest.skip("SAVER dependency environment is unavailable")
     method_input = _method_input(cells=8, genes=6)
     manifest_sha256 = hashlib.sha256(SAVER_LOCK_PATH.read_bytes()).hexdigest()
-    qualification_spec = replace(
+    runtime_bound_spec = replace(
         _registry().by_id("saver"),
         environment=EnvironmentSpec(
             id="saver-r",
             status="ready",
-            lock_sha256=manifest_sha256,
+            lock_sha256="a" * 64,
         ),
     )
     runs = [
         run_saver(
-            qualification_spec,
+            runtime_bound_spec,
             method_input,
             source_dir=_cached_source("saver"),
             rscript=Path(rscript_value),
@@ -1110,6 +1164,9 @@ def test_real_pinned_saver_fixed_seed_is_reproducible_when_dependencies_exist(
     _assert_evaluator_scales(runs[0], method_input)
     receipt = dict(runs[0].environment_receipt)
     assert receipt["manifest_sha256"] == manifest_sha256
+    assert receipt["qualification_sha256"] == hashlib.sha256(
+        SAVER_QUALIFICATION_PATH.read_bytes()
+    ).hexdigest()
     assert receipt["installed_library_sha256"] == json.loads(
         SAVER_LOCK_PATH.read_text(encoding="utf-8")
     )["installed_library_sha256"]

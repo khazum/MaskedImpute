@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "environment_id": "saver-r",
+  "package_lock": {
+    "path": "environments/saver-r.lock.json",
+    "sha256": "5b9f895083297b78f4f718214a50db498e485c9cc63a6936e723d2637a95116e"
+  },
+  "build_receipt": {
+    "path": "environments/saver-r.build-receipt.json",
+    "sha256": "4b2a8a1dee6465801a800bece066bd0d34ea6c737d5d8b641a824ee187d2e6a9"
+  },
+  "installed_library_sha256": "322f92768dc7a9df5f347965cffb19a87541abe7cae9aa39efa7416f9a2da2f3",
+  "source": {
+    "url": "https://github.com/mohuangx/SAVER.git",
+    "revision": "ad9bde51bffaa1413e57d88f15d2b452c6331253",
+    "tree": "76884afc63ef27d78ce929bd608b29dad2b0a0be"
+  }
+}
