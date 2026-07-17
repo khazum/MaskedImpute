@@ -116,6 +116,15 @@ def _source_plan(*, include_failed: bool = True):
         final_execution_manifest_payload_sha256="f" * 64,
         execution_validation_sha256="1" * 64,
         storage_preflight_sha256="2" * 64,
+        scaling_evidence_sha256="3" * 64,
+        scaling_plan_sha256="4" * 64,
+        scaling_checkpoint_path=("results/scaling/checkpoints/00000024.json"),
+        scaling_checkpoint_file_sha256="5" * 64,
+        scaling_checkpoint_payload_sha256="6" * 64,
+        scaling_checkpoint_history_sha256="7" * 64,
+        scaling_checkpoint_history_count=24,
+        scaling_result_files_sha256="8" * 64,
+        scaling_result_file_count=100,
     )
     plan = DownstreamEvidencePlan(
         source_root=str(Path(evaluated.round_root) / "results/final/execution"),

@@ -165,9 +165,44 @@ _FINAL_RESULT_MANIFEST_FIELDS = frozenset(
         "final_execution_payload_sha256",
         "execution_validation",
         "storage_preflight",
+        "scaling_evidence",
         "result_files",
     }
 )
+_SCALING_EVIDENCE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "plan",
+        "checkpoint_path",
+        "checkpoint_file_sha256",
+        "checkpoint_payload",
+        "result_files",
+        "evidence_sha256",
+    }
+)
+_SCALING_PLAN_PAYLOAD_FIELDS = frozenset(
+    {
+        "schema_version",
+        "input_hashes",
+        "entries",
+        "configurations",
+        "plan_sha256",
+    }
+)
+_SCALING_CHECKPOINT_PAYLOAD_FIELDS = frozenset(
+    {
+        "schema_version",
+        "plan_sha256",
+        "input_hashes",
+        "planned_run_count",
+        "status",
+        "datasets",
+        "records",
+        "checkpoint_sha256",
+    }
+)
+_SCALING_CHECKPOINT_PATH = re.compile(r"results/scaling/checkpoints/([0-9]{8})\.json\Z")
 _FINAL_EXECUTION_VALIDATION_FIELDS = frozenset(
     {
         "schema_version",
@@ -1057,6 +1092,15 @@ class EvaluatedRoundBinding:
     final_execution_manifest_payload_sha256: str
     execution_validation_sha256: str
     storage_preflight_sha256: str
+    scaling_evidence_sha256: str
+    scaling_plan_sha256: str
+    scaling_checkpoint_path: str
+    scaling_checkpoint_file_sha256: str
+    scaling_checkpoint_payload_sha256: str
+    scaling_checkpoint_history_sha256: str
+    scaling_checkpoint_history_count: int
+    scaling_result_files_sha256: str
+    scaling_result_file_count: int
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -1079,6 +1123,19 @@ class EvaluatedRoundBinding:
             ),
             "execution_validation_sha256": self.execution_validation_sha256,
             "storage_preflight_sha256": self.storage_preflight_sha256,
+            "scaling_evidence_sha256": self.scaling_evidence_sha256,
+            "scaling_plan_sha256": self.scaling_plan_sha256,
+            "scaling_checkpoint_path": self.scaling_checkpoint_path,
+            "scaling_checkpoint_file_sha256": (self.scaling_checkpoint_file_sha256),
+            "scaling_checkpoint_payload_sha256": (
+                self.scaling_checkpoint_payload_sha256
+            ),
+            "scaling_checkpoint_history_sha256": (
+                self.scaling_checkpoint_history_sha256
+            ),
+            "scaling_checkpoint_history_count": (self.scaling_checkpoint_history_count),
+            "scaling_result_files_sha256": self.scaling_result_files_sha256,
+            "scaling_result_file_count": self.scaling_result_file_count,
         }
 
     @property
@@ -1101,6 +1158,15 @@ _EVALUATED_ROUND_BINDING_FIELDS = frozenset(
         "final_execution_manifest_payload_sha256",
         "execution_validation_sha256",
         "storage_preflight_sha256",
+        "scaling_evidence_sha256",
+        "scaling_plan_sha256",
+        "scaling_checkpoint_path",
+        "scaling_checkpoint_file_sha256",
+        "scaling_checkpoint_payload_sha256",
+        "scaling_checkpoint_history_sha256",
+        "scaling_checkpoint_history_count",
+        "scaling_result_files_sha256",
+        "scaling_result_file_count",
     }
 )
 
@@ -1376,6 +1442,222 @@ def _validated_evaluated_round_receipt(
     return dict(receipt)
 
 
+def _scaling_result_file_rows(
+    value: object,
+    name: str,
+    *,
+    scaling_only: bool,
+) -> tuple[dict[str, str], ...]:
+    """Return one exact, ordered scaling inventory without accepting aliases."""
+
+    if not isinstance(value, list):
+        raise DownstreamEvidenceError(f"{name} must be an array")
+    rows: list[dict[str, str]] = []
+    observed: set[str] = set()
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != {"path", "sha256"}:
+            raise DownstreamEvidenceError(f"{name} row schema differs")
+        path = _text(item.get("path"), f"{name} path")
+        relative = PurePosixPath(path)
+        if (
+            relative.is_absolute()
+            or path != relative.as_posix()
+            or ".." in relative.parts
+            or not relative.parts
+        ):
+            raise DownstreamEvidenceError(f"{name} path is unsafe")
+        if scaling_only and not path.startswith("results/scaling/"):
+            continue
+        if not path.startswith("results/scaling/") or path in observed:
+            raise DownstreamEvidenceError(f"{name} path set differs")
+        observed.add(path)
+        rows.append(
+            {
+                "path": path,
+                "sha256": _digest(item.get("sha256"), f"{name} file checksum"),
+            }
+        )
+    if not rows or rows != sorted(rows, key=lambda item: item["path"]):
+        raise DownstreamEvidenceError(f"{name} ordering differs")
+    return tuple(rows)
+
+
+def _validated_scaling_binding_fields(
+    repository_root: Path,
+    round_root: Path,
+    result_manifest: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate and independently replay the receipt's exact scaling evidence."""
+
+    evidence_value = result_manifest.get("scaling_evidence")
+    if (
+        not isinstance(evidence_value, Mapping)
+        or set(evidence_value) != _SCALING_EVIDENCE_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated scaling evidence schema differs")
+    evidence = dict(evidence_value)
+    evidence_sha256 = _digest(
+        evidence.get("evidence_sha256"), "evaluated scaling evidence checksum"
+    )
+    evidence_body = {
+        key: value for key, value in evidence.items() if key != "evidence_sha256"
+    }
+    if (
+        evidence.get("schema_version") != 1
+        or evidence.get("status") != "completed"
+        or canonical_sha256(evidence_body) != evidence_sha256
+    ):
+        raise DownstreamEvidenceError("evaluated scaling evidence binding differs")
+
+    plan_value = evidence.get("plan")
+    if (
+        not isinstance(plan_value, Mapping)
+        or set(plan_value) != _SCALING_PLAN_PAYLOAD_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated scaling plan schema differs")
+    plan = dict(plan_value)
+    plan_sha256 = _digest(plan.get("plan_sha256"), "evaluated scaling plan checksum")
+    plan_body = {key: value for key, value in plan.items() if key != "plan_sha256"}
+    if (
+        plan.get("schema_version") != 1
+        or not isinstance(plan.get("input_hashes"), Mapping)
+        or not isinstance(plan.get("entries"), list)
+        or not isinstance(plan.get("configurations"), list)
+        or canonical_sha256(plan_body) != plan_sha256
+    ):
+        raise DownstreamEvidenceError("evaluated scaling plan payload differs")
+
+    checkpoint_value = evidence.get("checkpoint_payload")
+    if (
+        not isinstance(checkpoint_value, Mapping)
+        or set(checkpoint_value) != _SCALING_CHECKPOINT_PAYLOAD_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated scaling checkpoint schema differs")
+    checkpoint = dict(checkpoint_value)
+    checkpoint_sha256 = _digest(
+        checkpoint.get("checkpoint_sha256"),
+        "evaluated scaling checkpoint checksum",
+    )
+    checkpoint_body = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    planned = checkpoint.get("planned_run_count")
+    datasets = checkpoint.get("datasets")
+    records = checkpoint.get("records")
+    if (
+        checkpoint.get("schema_version") != 1
+        or checkpoint.get("status") != "completed"
+        or checkpoint.get("plan_sha256") != plan_sha256
+        or checkpoint.get("input_hashes") != plan.get("input_hashes")
+        or type(planned) is not int
+        or planned <= 0
+        or not isinstance(datasets, list)
+        or not isinstance(records, list)
+        or len(records) != planned
+        or canonical_sha256(checkpoint_body) != checkpoint_sha256
+    ):
+        raise DownstreamEvidenceError("evaluated scaling checkpoint payload differs")
+    checkpoint_payload_sha256 = canonical_sha256(checkpoint)
+
+    checkpoint_relative = _text(
+        evidence.get("checkpoint_path"), "evaluated scaling checkpoint"
+    )
+    if _SCALING_CHECKPOINT_PATH.fullmatch(checkpoint_relative) is None:
+        raise DownstreamEvidenceError("evaluated scaling checkpoint path differs")
+    checkpoint_path = _safe_relative(
+        round_root,
+        checkpoint_relative,
+        "evaluated scaling checkpoint",
+    )
+    checkpoint_file, _checkpoint_raw, checkpoint_file_sha256 = _strict_json(
+        checkpoint_path,
+        "evaluated scaling checkpoint",
+    )
+    if checkpoint_file != checkpoint or checkpoint_file_sha256 != _digest(
+        evidence.get("checkpoint_file_sha256"),
+        "evaluated scaling checkpoint file checksum",
+    ):
+        raise DownstreamEvidenceError("evaluated scaling checkpoint file differs")
+
+    evidence_rows = _scaling_result_file_rows(
+        evidence.get("result_files"),
+        "evaluated scaling result inventory",
+        scaling_only=False,
+    )
+    cumulative_rows = _scaling_result_file_rows(
+        result_manifest.get("result_files"),
+        "evaluated cumulative scaling result inventory",
+        scaling_only=True,
+    )
+    if evidence_rows != cumulative_rows:
+        raise DownstreamEvidenceError(
+            "evaluated scaling result inventory differs from cumulative receipt"
+        )
+    checkpoint_history: list[dict[str, str]] = []
+    for row in evidence_rows:
+        path = row["path"]
+        if path.startswith("results/scaling/checkpoints/"):
+            if _SCALING_CHECKPOINT_PATH.fullmatch(path) is None:
+                raise DownstreamEvidenceError(
+                    "evaluated scaling checkpoint history path differs"
+                )
+            checkpoint_history.append(row)
+    expected_history = [
+        f"results/scaling/checkpoints/{index:08d}.json"
+        for index in range(1, len(checkpoint_history) + 1)
+    ]
+    if (
+        not checkpoint_history
+        or [row["path"] for row in checkpoint_history] != expected_history
+        or checkpoint_history[-1]["path"] != checkpoint_relative
+        or checkpoint_history[-1]["sha256"] != checkpoint_file_sha256
+    ):
+        raise DownstreamEvidenceError("evaluated scaling checkpoint history differs")
+
+    try:
+        from .scaling import (
+            ScalingContractError,
+            load_publication_scaling_evidence,
+            scaling_checkpoint_payload,
+        )
+
+        replayed = load_publication_scaling_evidence(repository_root, round_root)
+        replayed_payload = scaling_checkpoint_payload(replayed)
+    except (ScalingContractError, TypeError, ValueError) as error:
+        raise DownstreamEvidenceError(
+            "evaluated scaling publication replay failed"
+        ) from error
+    if replayed_payload != checkpoint:
+        raise DownstreamEvidenceError(
+            "evaluated scaling publication replay differs from receipt"
+        )
+    checkpoint_after, _checkpoint_raw_after, checkpoint_file_sha256_after = (
+        _strict_json(
+            checkpoint_path,
+            "evaluated scaling checkpoint after publication replay",
+        )
+    )
+    if (
+        checkpoint_after != checkpoint
+        or checkpoint_file_sha256_after != checkpoint_file_sha256
+    ):
+        raise DownstreamEvidenceError(
+            "evaluated scaling checkpoint changed during publication replay"
+        )
+
+    return {
+        "scaling_evidence_sha256": evidence_sha256,
+        "scaling_plan_sha256": plan_sha256,
+        "scaling_checkpoint_path": checkpoint_relative,
+        "scaling_checkpoint_file_sha256": checkpoint_file_sha256,
+        "scaling_checkpoint_payload_sha256": checkpoint_payload_sha256,
+        "scaling_checkpoint_history_sha256": canonical_sha256(checkpoint_history),
+        "scaling_checkpoint_history_count": len(checkpoint_history),
+        "scaling_result_files_sha256": canonical_sha256(evidence_rows),
+        "scaling_result_file_count": len(evidence_rows),
+    }
+
+
 def _read_verified_evaluated_round_binding(
     repository: str | Path,
     round_directory: str | Path,
@@ -1593,6 +1875,19 @@ def _read_verified_evaluated_round_binding(
     storage_preflight = result_manifest.get("storage_preflight")
     if not isinstance(storage_preflight, Mapping):
         raise DownstreamEvidenceError("final storage preflight is invalid")
+    scaling_binding_fields = _validated_scaling_binding_fields(
+        repository_root,
+        round_root,
+        result_manifest,
+    )
+    receipt_after, _receipt_raw_after, receipt_file_sha256_after = _strict_json(
+        receipt_path,
+        "evaluated final receipt after scaling replay",
+    )
+    if receipt_after != receipt or receipt_file_sha256_after != receipt_file_sha256:
+        raise DownstreamEvidenceError(
+            "evaluated final receipt changed during scaling replay"
+        )
     return EvaluatedRoundBinding(
         repository_root=str(repository_root),
         round_root=str(round_root),
@@ -1607,6 +1902,27 @@ def _read_verified_evaluated_round_binding(
         final_execution_manifest_payload_sha256=final_manifest_payload_sha256,
         execution_validation_sha256=validation_sha256,
         storage_preflight_sha256=canonical_sha256(dict(storage_preflight)),
+        scaling_evidence_sha256=str(scaling_binding_fields["scaling_evidence_sha256"]),
+        scaling_plan_sha256=str(scaling_binding_fields["scaling_plan_sha256"]),
+        scaling_checkpoint_path=str(scaling_binding_fields["scaling_checkpoint_path"]),
+        scaling_checkpoint_file_sha256=str(
+            scaling_binding_fields["scaling_checkpoint_file_sha256"]
+        ),
+        scaling_checkpoint_payload_sha256=str(
+            scaling_binding_fields["scaling_checkpoint_payload_sha256"]
+        ),
+        scaling_checkpoint_history_sha256=str(
+            scaling_binding_fields["scaling_checkpoint_history_sha256"]
+        ),
+        scaling_checkpoint_history_count=int(
+            scaling_binding_fields["scaling_checkpoint_history_count"]
+        ),
+        scaling_result_files_sha256=str(
+            scaling_binding_fields["scaling_result_files_sha256"]
+        ),
+        scaling_result_file_count=int(
+            scaling_binding_fields["scaling_result_file_count"]
+        ),
     )
 
 
@@ -1678,12 +1994,47 @@ def _evaluated_round_binding_from_payload(
             value.get("storage_preflight_sha256"),
             "storage preflight checksum",
         ),
+        scaling_evidence_sha256=_digest(
+            value.get("scaling_evidence_sha256"),
+            "scaling evidence checksum",
+        ),
+        scaling_plan_sha256=_digest(
+            value.get("scaling_plan_sha256"),
+            "scaling plan checksum",
+        ),
+        scaling_checkpoint_path=_text(
+            value.get("scaling_checkpoint_path"),
+            "scaling checkpoint path",
+        ),
+        scaling_checkpoint_file_sha256=_digest(
+            value.get("scaling_checkpoint_file_sha256"),
+            "scaling checkpoint file checksum",
+        ),
+        scaling_checkpoint_payload_sha256=_digest(
+            value.get("scaling_checkpoint_payload_sha256"),
+            "scaling checkpoint payload checksum",
+        ),
+        scaling_checkpoint_history_sha256=_digest(
+            value.get("scaling_checkpoint_history_sha256"),
+            "scaling checkpoint history checksum",
+        ),
+        scaling_checkpoint_history_count=value.get("scaling_checkpoint_history_count"),
+        scaling_result_files_sha256=_digest(
+            value.get("scaling_result_files_sha256"),
+            "scaling result inventory checksum",
+        ),
+        scaling_result_file_count=value.get("scaling_result_file_count"),
     )
     if (
         binding.evaluation_receipt_path != "evaluation_receipt.json"
         or binding.final_execution_manifest_path
         != "results/final/execution/execution_manifest.json"
         or Path(binding.round_root).name != binding.round_id
+        or _SCALING_CHECKPOINT_PATH.fullmatch(binding.scaling_checkpoint_path) is None
+        or type(binding.scaling_checkpoint_history_count) is not int
+        or binding.scaling_checkpoint_history_count <= 0
+        or type(binding.scaling_result_file_count) is not int
+        or binding.scaling_result_file_count < binding.scaling_checkpoint_history_count
     ):
         raise DownstreamEvidenceError(
             "persisted evaluated-round binding identity differs"
