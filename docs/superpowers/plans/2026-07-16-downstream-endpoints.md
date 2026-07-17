@@ -44,7 +44,7 @@
 
 - [ ] Add hand-calculated and permutation-invariance tests, including an assertion that the BH family size is exactly groups times genes.
 - [ ] Run each new test and verify its expected feature-missing failure.
-- [ ] Implement log1p-CP10k group contrasts, tie-aware ranks, one-sided Welch p-values, and global BH adjustment.
+- [x] Consume the persisted `log2(CP10k + 1)` evaluator scale without a second normalization; implement group contrasts, tie-aware ranks, one-sided Welch p-values, and global BH adjustment.
 - [ ] Run the focused tests and verify green.
 
 ### Task 3: Deterministic clustering endpoints
@@ -89,3 +89,19 @@
 - [ ] Implement deterministic diffusion distance and the fixed-order eight-row assembler.
 - [ ] Run focused tests, relevant existing suites, lint, byte compilation, and `git diff --check`.
 - [ ] Commit the verified implementation.
+
+### Independent-review remediation
+
+- [x] Replace label-derived cluster count with a truth-free fixed 2--10 grid
+  and deterministic minimum Davies--Bouldin selection.
+- [x] Cache one full-SVD representation per denominator for clustering and
+  trajectory.
+- [x] Replace the dense trajectory distance matrix with blockwise exact sparse
+  kNN construction and test the 2,700-cell bound.
+- [x] Register and hash-bind a separate exact-latent synthetic trajectory panel.
+- [x] Convert expected numerical failures to the complete eight-row terminal
+  schema.
+- [x] Add a hash-bound, resumable development/final evidence stage over the
+  persisted evaluator-output contracts from `f6d19e8`.
+- [x] Add schema-4 selection completeness so a bound eight-row record is
+  required for every reconstruction-selection denominator.

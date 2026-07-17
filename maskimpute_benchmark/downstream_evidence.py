@@ -47,6 +47,34 @@ _RUN_STATUSES = frozenset(
         "budget_exhausted",
     }
 )
+_DEVELOPMENT_CHECKPOINT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "plan_sha256",
+        "input_hashes",
+        "planned_run_count",
+        "status",
+        "evaluation_scope",
+        "selection_complete",
+        "selection_blockers",
+        "records",
+        "budget",
+        "checkpoint_sha256",
+    }
+)
+_FINAL_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "plan_sha256",
+        "input_hashes",
+        "planned_run_count",
+        "recorded_run_count",
+        "records",
+        "artifact_storage",
+        "manifest_sha256",
+    }
+)
 
 
 class DownstreamEvidenceError(ValueError):
@@ -90,7 +118,18 @@ def _text(value: object, name: str) -> str:
     return value
 
 
+def _reject_symlink_chain(path: Path, name: str) -> None:
+    for component in (path, *path.parents):
+        try:
+            metadata = component.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(metadata.st_mode):
+            raise DownstreamEvidenceError(f"{name} path contains a symlink")
+
+
 def _regular_file(path: Path, name: str) -> os.stat_result:
+    _reject_symlink_chain(path, name)
     try:
         metadata = path.lstat()
     except OSError as error:
@@ -204,6 +243,25 @@ class DatasetEvidenceBinding:
     gene_ids: tuple[str, ...]
     trajectory_root_cell_id: str | None = None
     trajectory_source_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _text(self.dataset_id, "dataset_id")
+        if not Path(self.path).is_absolute():
+            raise ValueError("dataset binding path must be absolute")
+        _digest(self.file_sha256, "dataset file checksum")
+        _digest(self.dataset_sha256, "dataset semantic checksum")
+        cells = _stable_ids(self.retained_cell_ids, "retained_cell_ids")
+        genes = _stable_ids(self.gene_ids, "gene_ids")
+        if (self.trajectory_root_cell_id is None) != (
+            self.trajectory_source_id is None
+        ):
+            raise ValueError("trajectory root and source must be paired")
+        if self.trajectory_root_cell_id is not None:
+            if self.trajectory_root_cell_id not in cells:
+                raise ValueError("trajectory root must be retained")
+            _text(self.trajectory_source_id, "trajectory_source_id")
+        object.__setattr__(self, "retained_cell_ids", cells)
+        object.__setattr__(self, "gene_ids", genes)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -383,6 +441,77 @@ class DownstreamEvidencePlan:
         return {**self.body(), "plan_sha256": self.plan_sha256}
 
 
+_PLAN_FIELDS = frozenset(
+    {
+        "schema_version",
+        "source_root",
+        "source_kind",
+        "source_manifest_path",
+        "source_manifest_file_sha256",
+        "source_manifest_payload_sha256",
+        "datasets",
+        "entries",
+        "planned_denominator_count",
+        "plan_sha256",
+    }
+)
+_DATASET_BINDING_FIELDS = frozenset(
+    {
+        "dataset_id",
+        "path",
+        "file_sha256",
+        "dataset_sha256",
+        "retained_cell_ids",
+        "gene_ids",
+        "trajectory_root_cell_id",
+        "trajectory_source_id",
+    }
+)
+
+
+def _dataset_binding_from_payload(value: object) -> DatasetEvidenceBinding:
+    if not isinstance(value, Mapping) or set(value) != _DATASET_BINDING_FIELDS:
+        raise DownstreamEvidenceError("persisted dataset binding schema differs")
+    retained = value.get("retained_cell_ids")
+    genes = value.get("gene_ids")
+    string_fields = ("dataset_id", "path", "file_sha256", "dataset_sha256")
+    if (
+        not isinstance(retained, list)
+        or not isinstance(genes, list)
+        or any(not isinstance(value.get(field), str) for field in string_fields)
+        or (
+            value.get("trajectory_root_cell_id") is not None
+            and not isinstance(value.get("trajectory_root_cell_id"), str)
+        )
+        or (
+            value.get("trajectory_source_id") is not None
+            and not isinstance(value.get("trajectory_source_id"), str)
+        )
+    ):
+        raise DownstreamEvidenceError("persisted dataset IDs are invalid")
+    try:
+        return DatasetEvidenceBinding(
+            dataset_id=value["dataset_id"],
+            path=value["path"],
+            file_sha256=value["file_sha256"],
+            dataset_sha256=value["dataset_sha256"],
+            retained_cell_ids=tuple(retained),
+            gene_ids=tuple(genes),
+            trajectory_root_cell_id=(
+                None
+                if value["trajectory_root_cell_id"] is None
+                else value["trajectory_root_cell_id"]
+            ),
+            trajectory_source_id=(
+                None
+                if value["trajectory_source_id"] is None
+                else value["trajectory_source_id"]
+            ),
+        )
+    except (TypeError, ValueError) as error:
+        raise DownstreamEvidenceError("persisted dataset binding is invalid") from error
+
+
 @dataclass(frozen=True, slots=True)
 class _SourceRecord:
     ordinal: int
@@ -396,6 +525,8 @@ def _development_source(
 ) -> tuple[str, str, str, tuple[_SourceRecord, ...]]:
     path = root / "checkpoint.json"
     payload, _raw, file_sha = _strict_json(path, "development checkpoint")
+    if set(payload) != _DEVELOPMENT_CHECKPOINT_FIELDS:
+        raise DownstreamEvidenceError("development checkpoint schema differs")
     checksum = _digest(payload.get("checkpoint_sha256"), "checkpoint checksum")
     unsigned = {
         key: value for key, value in payload.items() if key != "checkpoint_sha256"
@@ -412,7 +543,11 @@ def _development_source(
         raise DownstreamEvidenceError("development checkpoint is incomplete")
     result: list[_SourceRecord] = []
     for index, record in enumerate(records, start=1):
-        if not isinstance(record, dict):
+        if not isinstance(record, dict) or set(record) != {
+            "run",
+            "metrics",
+            "p_pre_zero_evidence",
+        }:
             raise DownstreamEvidenceError("development source record is malformed")
         result.append(
             _SourceRecord(
@@ -428,6 +563,8 @@ def _development_source(
 def _final_source(root: Path) -> tuple[str, str, str, tuple[_SourceRecord, ...]]:
     path = root / "execution_manifest.json"
     payload, _raw, file_sha = _strict_json(path, "final execution manifest")
+    if set(payload) != _FINAL_MANIFEST_FIELDS:
+        raise DownstreamEvidenceError("final execution manifest schema differs")
     checksum = _digest(payload.get("manifest_sha256"), "final manifest checksum")
     unsigned = {
         key: value for key, value in payload.items() if key != "manifest_sha256"
@@ -435,17 +572,25 @@ def _final_source(root: Path) -> tuple[str, str, str, tuple[_SourceRecord, ...]]
     if canonical_sha256(unsigned) != checksum:
         raise DownstreamEvidenceError("final execution manifest checksum differs")
     references = payload.get("records")
+    storage = payload.get("artifact_storage")
     if (
         payload.get("schema_version") != 1
         or payload.get("status") != "completed"
         or not isinstance(references, list)
         or payload.get("planned_run_count") != len(references)
         or payload.get("recorded_run_count") != len(references)
+        or not isinstance(storage, Mapping)
+        or storage.get("evaluator_output_encoding") != _FINAL_OUTPUT_ENCODING
     ):
         raise DownstreamEvidenceError("final execution manifest is incomplete")
     result: list[_SourceRecord] = []
     for expected_ordinal, reference in enumerate(references, start=1):
-        if not isinstance(reference, Mapping):
+        if not isinstance(reference, Mapping) or set(reference) != {
+            "ordinal",
+            "run_id",
+            "path",
+            "sha256",
+        }:
             raise DownstreamEvidenceError("final source reference is malformed")
         ordinal = reference.get("ordinal")
         if ordinal != expected_ordinal:
@@ -454,6 +599,13 @@ def _final_source(root: Path) -> tuple[str, str, str, tuple[_SourceRecord, ...]]
         record, _record_raw, record_file_sha = _strict_json(
             record_path, "final execution record"
         )
+        if set(record) != {
+            "run",
+            "metrics",
+            "p_pre_zero_evidence",
+            "execution_request",
+        }:
+            raise DownstreamEvidenceError("final source record schema differs")
         if record_file_sha != _digest(reference.get("sha256"), "final record checksum"):
             raise DownstreamEvidenceError("final record raw checksum differs")
         run = record.get("run")
@@ -676,6 +828,7 @@ def build_downstream_evidence_plan(
     if source_kind not in _SOURCE_KINDS:
         raise ValueError("source_kind must be development or final")
     root = Path(source_root).absolute()
+    _reject_symlink_chain(root, "source root")
     try:
         root_metadata = root.lstat()
     except OSError as error:
@@ -967,6 +1120,7 @@ def _load_targets(binding: DatasetEvidenceBinding) -> EvaluatorTargets:
 def _ensure_directory(path: Path, name: str) -> None:
     try:
         path.mkdir(parents=True, exist_ok=True)
+        _reject_symlink_chain(path, name)
         metadata = path.lstat()
     except OSError as error:
         raise DownstreamEvidenceError(f"{name} cannot be created") from error
@@ -1223,6 +1377,12 @@ def run_downstream_evidence(
     plan_raw = _canonical_bytes(plan.to_dict()) + b"\n"
     _publish_immutable(output_root / "plan.json", plan_raw, "downstream plan")
     records = list(_load_record_prefix(output_root, plan))
+    if os.path.lexists(output_root / "downstream_manifest.json") and len(
+        records
+    ) != len(plan.entries):
+        raise DownstreamEvidenceError(
+            "downstream manifest exists before its denominator is complete"
+        )
     remaining = len(plan.entries) - len(records)
     count = remaining if max_denominators is None else min(remaining, max_denominators)
     bindings = {value.dataset_id: value for value in plan.datasets}
@@ -1280,12 +1440,27 @@ def load_downstream_evidence_manifest(
     plan_payload, _plan_raw, plan_file_sha = _strict_json(
         output_root / "plan.json", "downstream plan"
     )
+    if set(plan_payload) != _PLAN_FIELDS or plan_payload.get("schema_version") != 1:
+        raise DownstreamEvidenceError("persisted downstream plan schema differs")
     plan_sha = _digest(plan_payload.get("plan_sha256"), "downstream plan checksum")
     plan_body = {
         key: value for key, value in plan_payload.items() if key != "plan_sha256"
     }
     if canonical_sha256(plan_body) != plan_sha:
         raise DownstreamEvidenceError("downstream plan checksum differs")
+    raw_datasets = plan_payload.get("datasets")
+    if not isinstance(raw_datasets, list):
+        raise DownstreamEvidenceError("persisted downstream datasets are invalid")
+    persisted_datasets = tuple(
+        _dataset_binding_from_payload(value) for value in raw_datasets
+    )
+    rebuilt = build_downstream_evidence_plan(
+        _text(plan_payload.get("source_root"), "persisted source root"),
+        source_kind=_text(plan_payload.get("source_kind"), "persisted source kind"),
+        datasets=persisted_datasets,
+    )
+    if rebuilt.to_dict() != plan_payload:
+        raise DownstreamEvidenceError("persisted downstream plan sources changed")
     manifest, _manifest_raw, _manifest_file_sha = _strict_json(
         output_root / "downstream_manifest.json", "downstream manifest"
     )
@@ -1304,6 +1479,11 @@ def load_downstream_evidence_manifest(
         or manifest.get("status") != "completed"
         or manifest.get("plan_sha256") != plan_sha
         or manifest.get("plan_file_sha256") != plan_file_sha
+        or manifest.get("source_kind") != rebuilt.source_kind
+        or manifest.get("source_manifest_file_sha256")
+        != rebuilt.source_manifest_file_sha256
+        or manifest.get("source_manifest_payload_sha256")
+        != rebuilt.source_manifest_payload_sha256
         or type(planned) is not int
         or planned <= 0
         or manifest.get("recorded_denominator_count") != planned
@@ -1314,13 +1494,26 @@ def load_downstream_evidence_manifest(
     ):
         raise DownstreamEvidenceError("downstream manifest completeness differs")
     records: list[Mapping[str, object]] = []
+    bindings = {value.dataset_id: value for value in rebuilt.datasets}
     for ordinal, reference in enumerate(references, start=1):
-        if not isinstance(reference, Mapping) or reference.get("ordinal") != ordinal:
+        if (
+            not isinstance(reference, Mapping)
+            or set(reference)
+            != {"ordinal", "run_id", "path", "sha256", "record_sha256"}
+            or reference.get("ordinal") != ordinal
+        ):
             raise DownstreamEvidenceError(
                 "downstream manifest references are unordered"
             )
+        entry = rebuilt.entries[ordinal - 1]
         path = _safe_relative(output_root, reference.get("path"), "downstream record")
-        record, _record_raw, record_file_sha = _strict_json(path, "downstream record")
+        record = _load_record(
+            path,
+            rebuilt,
+            entry,
+            bindings[entry.dataset_id],
+        )
+        _record_raw, record_file_sha = _stable_file_bytes(path, "downstream record")
         if (
             record_file_sha
             != _digest(reference.get("sha256"), "downstream record file checksum")
@@ -1332,20 +1525,6 @@ def load_downstream_evidence_manifest(
             or record.get("ordinal") != ordinal
         ):
             raise DownstreamEvidenceError("downstream manifest record binding differs")
-        body = {key: value for key, value in record.items() if key != "record_sha256"}
-        if record.get("record_sha256") != canonical_sha256(body):
-            raise DownstreamEvidenceError("downstream record checksum differs")
-        rows = record.get("endpoints")
-        if (
-            not isinstance(rows, list)
-            or len(rows) != len(DOWNSTREAM_ENDPOINT_NAMES)
-            or tuple(
-                row.get("endpoint") if isinstance(row, Mapping) else None
-                for row in rows
-            )
-            != DOWNSTREAM_ENDPOINT_NAMES
-        ):
-            raise DownstreamEvidenceError("downstream record endpoint schema differs")
         records.append(MappingProxyType(record))
     return DownstreamEvidenceManifest(
         plan_sha256=plan_sha,

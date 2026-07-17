@@ -5,9 +5,10 @@
 ## Boundary
 
 Downstream evaluation starts only after a method has returned an imputed
-cell-by-gene matrix. `MethodOutput` contains only the matrix and stable cell
-and gene identifiers. Group labels, group-specific marker truth, held-out
-counts, pseudotime, and the trajectory root live in a separate
+cell-by-gene matrix on the persisted evaluator scale, `log2(CP10k + 1)`.
+`MethodOutput` contains only that matrix and stable cell and gene identifiers;
+the evaluator does not renormalize it. Group labels, group-specific marker
+truth, held-out counts, pseudotime, and the trajectory root live in a separate
 `EvaluatorTargets` object. The evaluator aligns these objects by stable IDs;
 it never invokes a method and cannot add evaluator fields to method input.
 
@@ -33,10 +34,13 @@ hypothesis counts are descriptive denominators, never independent replicates.
 
 - Marker rank loss is the macro-average over groups of the mean normalized,
   tie-aware rank of that group's true markers. Genes are ranked by the
-  one-vs-rest difference in mean log1p-CP10k expression. Zero is best.
-- Clustering uses stable-ID ordering, log1p-CP10k, deterministic full-SVD PCA,
-  and deterministic k-means with seed `20260716`. It returns `1 - ARI` and
-  `1 - NMI`; group labels are used only to score the completed clustering.
+  one-vs-rest difference in mean `log2(CP10k + 1)` expression. Zero is best.
+- Clustering uses stable-ID ordering, deterministic full-SVD PCA, and
+  deterministic k-means with seed `20260716`. Candidate cluster counts are
+  the truth-free fixed grid 2--10, restricted only by cell and distinct-profile
+  counts; minimum Davies--Bouldin index selects the model with smaller `k` as
+  the tie-break. It returns `1 - ARI` and `1 - NMI`; group labels are accepted
+  only after model selection and are used only for scoring.
 - Positive-control differential expression uses one-sided Welch tests for
   every group-by-gene hypothesis. Equal constants receive p=1 and separated
   constants p=0. Benjamini-Hochberg correction is one global family containing
@@ -50,9 +54,12 @@ hypothesis counts are descriptive denominators, never independent replicates.
   correlation zero instead of becoming outcome-dependently unavailable.
 - Trajectory loss is `1 - Spearman rho` between genuine evaluator pseudotime
   and a root-oriented multiscale diffusion distance. The deterministic graph
-  is built from stable-ID-ordered log1p-CP10k and full-SVD coordinates. A
-  validated evaluator-known root must be the unique minimum of genuine
-  pseudotime. Group labels are never converted into pseudotime.
+  is built from stable-ID-ordered common-scale full-SVD coordinates. Exact
+  k-nearest-neighbor distances are computed in fixed row blocks and retained
+  only as a sparse symmetric graph, so the 2,700-cell panel never constructs
+  a dense cell-by-cell matrix. A validated evaluator-known root must be the
+  unique minimum of genuine pseudotime. Group labels are never converted into
+  pseudotime. Clustering and trajectory share the same within-denominator SVD.
 
 ## Simulator adapter audit
 
@@ -62,12 +69,36 @@ SymSim, SERGIO, and SPARSim contain group-specific Boolean marker columns;
 semisynthetic outputs do not. Only semisynthetic outputs contain
 `layers["heldout_counts"]`. None of the four outputs contains genuine
 `obs.pseudotime`, so trajectory evaluation must be unavailable with
-`genuine_pseudotime_not_available_in_simulator_output`. A separate validated
-trajectory-truth constructor covers future genuine trajectory datasets.
+`genuine_pseudotime_not_available_in_simulator_output`. The separately tracked
+`study/trajectory_panel.json` registers a 2,700-cell deterministic synthetic
+panel with exact latent pseudotime, a prespecified unique root, a mechanism
+outside the four reconstruction mechanisms, and bound authority and semantic
+dataset hashes. Its pseudotime and group fields are absent from method views.
+
+## Production evidence
+
+`downstream_evidence.py` consumes the sealed development checkpoint or final
+execution manifest introduced by the score-evidence stage. It validates raw
+little-endian development outputs and bounded `zlib_raw_f64_v1` final outputs,
+including file, uncompressed, and runner content receipts. A plan binds every
+source record, evaluator artifact, raw and semantic dataset hash, retained cell
+identity, gene identity, biological draw, technical view, and model seed.
+
+Each source denominator produces one immutable canonical record containing
+exactly eight endpoint rows. Noncompleted upstream runs retain their original
+status and reason on all eight rows and use the fixed
+`upstream_run_not_completed` reason code. Record prefixes are resumable;
+resume and completed-manifest validation re-read all source and dataset
+bindings. Development selection schema 4 requires the resulting manifest to
+cover exactly the reconstruction-selection denominator before selection can
+proceed; schemas 2 and 3 remain readable as pre-downstream legacy artifacts.
 
 ## Verification
 
 Focused tests cover hand-calculated values, stable-ID permutation invariance,
-determinism, every missing/degenerate reason path, fixed-schema completeness,
-the global BH denominator, method collapse, genuine trajectory validation,
-and structural separation of method output from evaluator-only truth.
+truth-free clustering model selection under changed truth labels and group
+counts, deterministic single-SVD reuse, the 2,700-cell block bound, every
+missing/degenerate reason path, numerical terminal rows, global BH,
+method collapse, genuine trajectory authority, development/final storage
+contracts, tamper detection, resume, fixed eight-row failure preservation, and
+schema-4 selection completeness.

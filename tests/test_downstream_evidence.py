@@ -397,6 +397,36 @@ def test_final_zlib_source_contract_is_consumed_with_bounded_receipts(
     assert loaded.records[0]["source_kind"] == "final"
 
 
+def test_complete_manifest_revalidates_bound_source_and_dataset_bytes(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+        load_downstream_evidence_manifest,
+        run_downstream_evidence,
+    )
+
+    source, dataset_path, cells, output_path = _development_source(tmp_path)
+    plan = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(_dataset_binding(dataset_path, cells),),
+    )
+    destination = tmp_path / "downstream"
+    run_downstream_evidence(plan, destination)
+    source_raw = output_path.read_bytes()
+    output_path.write_bytes(source_raw + b"tamper")
+    with pytest.raises(DownstreamEvidenceError, match="evaluator output.*checksum"):
+        load_downstream_evidence_manifest(destination)
+    output_path.write_bytes(source_raw)
+
+    dataset_raw = dataset_path.read_bytes()
+    dataset_path.write_bytes(dataset_raw + b"tamper")
+    with pytest.raises(DownstreamEvidenceError, match="dataset raw file checksum"):
+        load_downstream_evidence_manifest(destination)
+
+
 def test_selection_schema_four_requires_bound_downstream_completeness(
     tmp_path: Path,
 ) -> None:
