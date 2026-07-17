@@ -160,7 +160,7 @@ def _execution_evidence(
             "artifact": (
                 "external_reference_checkpoint"
                 if external
-                else "reconstruction_checkpoint"
+                else "base_reconstruction_checkpoint"
             ),
             "execution_track": "external_reference" if external else "same_input",
             "checkpoint_payload_sha256": hashlib.sha256(
@@ -1128,16 +1128,6 @@ def _repository_fixture(
         "schema_version": 1,
         "required_comparator_ids": ["observed", "magic"],
     }
-    configuration = _configuration()
-    v28 = {
-        "schema_version": 1,
-        "status": "conditional_on_v28_trigger",
-        "trigger": "v28",
-        "parent_configuration_id": "v27-parent",
-        "parent_configuration_sha256": "c" * 64,
-        **configuration,
-        "reason_code": "prespecified_decoder_only_revision",
-    }
     paths = {
         "selection_input": (
             "artifacts/study/development/evaluation/"
@@ -1172,9 +1162,9 @@ def _repository_fixture(
         elif name == "selection_contract":
             payload = selection_contract
         elif name == "development_search":
-            payload = {"schema_version": 1, "configurations": []}
-        elif name == "v28_revision":
-            payload = v28
+            payload = json.loads(
+                Path("study/development_search.json").read_text(encoding="utf-8")
+            )
         elif name == "runtime_lock":
             payload = runtime_lock
         elif name == "reconstruction_checkpoint":
@@ -1194,6 +1184,7 @@ def _repository_fixture(
                 Path("study/protocol.json").read_text(encoding="utf-8")
             )
         elif name in {
+            "v28_revision",
             "saver_qualification",
             "saver_package_lock",
             "saver_build_receipt",
@@ -2813,3 +2804,222 @@ def test_stage_receipt_rejects_any_inventory_or_chain_mutation(
 
     with pytest.raises(PublicationFreezeError, match="stage receipt|inventory|activation"):
         _validate_development_stage_receipt(changed, layout, bindings)
+
+
+def test_v29_configuration_is_loaded_from_exact_tracked_revision_authority() -> None:
+    from maskimpute_benchmark.publication_freeze import _candidate_configuration
+
+    repository = Path.cwd()
+    development_search = json.loads(
+        (repository / "study/development_search.json").read_text(encoding="utf-8")
+    )
+    v29 = json.loads(
+        (repository / "study/v29_revision.json").read_text(encoding="utf-8")
+    )
+
+    selected = _candidate_configuration(
+        repository,
+        v29["configuration_id"],
+        development_search,
+        ("v28", "v29"),
+    )
+
+    assert selected == {
+        "configuration_id": v29["configuration_id"],
+        "version": "v29",
+        "configuration": v29["configuration"],
+        "configuration_sha256": v29["configuration_sha256"],
+    }
+
+
+def test_v29_configuration_rejects_parent_drift_or_duplicate_selected_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+    from dataclasses import replace
+
+    from maskimpute_benchmark.publication_freeze import _candidate_configuration
+    from maskimpute_benchmark.revisions import load_revision_spec
+
+    repository = Path.cwd()
+    development_search = json.loads(
+        (repository / "study/development_search.json").read_text(encoding="utf-8")
+    )
+    v28 = load_revision_spec(repository, "v28")
+    v29 = load_revision_spec(repository, "v29")
+
+    monkeypatch.setattr(
+        freeze_module,
+        "load_revision_spec",
+        lambda _repository, version, *, require_clean=True: (
+            v28
+            if version == "v28"
+            else replace(v29, parent_configuration_sha256="0" * 64)
+        ),
+    )
+    with pytest.raises(PublicationFreezeError, match="parent.*binding"):
+        _candidate_configuration(
+            repository,
+            v29.configuration_id,
+            development_search,
+            ("v28", "v29"),
+        )
+
+    monkeypatch.setattr(freeze_module, "load_revision_spec", load_revision_spec)
+    duplicated = deepcopy(development_search)
+    duplicate_row = deepcopy(duplicated["configurations"][0])
+    duplicate_row["configuration_id"] = v29.configuration_id
+    duplicate_row["version"] = "v29"
+    duplicated["configurations"].append(duplicate_row)
+    with pytest.raises(PublicationFreezeError, match="uniquely present|collides"):
+        _candidate_configuration(
+            repository,
+            v29.configuration_id,
+            duplicated,
+            ("v28", "v29"),
+        )
+
+
+def _selected_stage_checkpoint(
+    rows: list[tuple[str, str, str]],
+) -> dict[str, object]:
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "planned_run_count": len(rows),
+        "status": "completed",
+        "records": [
+            {
+                "run": {
+                    "method_id": method_id,
+                    "dataset_id": "dataset-001",
+                    "configuration_id": configuration_id,
+                    "configuration_sha256": configuration_sha256,
+                    "status": "completed",
+                    "reason": None,
+                },
+                "metrics": [],
+            }
+            for method_id, configuration_id, configuration_sha256 in rows
+        ],
+    }
+    return {**body, "checkpoint_sha256": canonical_sha256(body)}
+
+
+def test_selected_stage_execution_swaps_only_maskimpute_evidence() -> None:
+    from maskimpute_benchmark.publication_freeze import _active_execution_evidence
+
+    base = _selected_stage_checkpoint(
+        [
+            ("observed", "registry-default", "1" * 64),
+            ("capacity-matched-ae", "registry-default", "2" * 64),
+            ("maskimpute", "v27-c03-calibrated-r1-g1", "3" * 64),
+            ("magic", "registry-default", "4" * 64),
+        ]
+    )
+    selected_configuration = {
+        "configuration_id": "v29-c01-structure-parent-v28-c01",
+        "version": "v29",
+        "configuration": {"method_version": "v29"},
+        "configuration_sha256": "5" * 64,
+    }
+    revision = _selected_stage_checkpoint(
+        [
+            (
+                "maskimpute",
+                selected_configuration["configuration_id"],
+                selected_configuration["configuration_sha256"],
+            )
+        ]
+    )
+
+    evidence = _active_execution_evidence(
+        base,
+        active_stage="v29",
+        selected_stage_checkpoint=revision,
+        selected_configuration=selected_configuration,
+        eligible_dataset_ids=("dataset-001",),
+    )
+
+    assert evidence["maskimpute"]["artifact"] == "v29_reconstruction_checkpoint"
+    assert evidence["maskimpute"]["checkpoint_payload_sha256"] == revision[
+        "checkpoint_sha256"
+    ]
+    for method_id in ("observed", "capacity-matched-ae", "magic"):
+        assert evidence[method_id]["artifact"] == "base_reconstruction_checkpoint"
+        assert evidence[method_id]["checkpoint_payload_sha256"] == base[
+            "checkpoint_sha256"
+        ]
+
+
+@pytest.mark.parametrize(
+    "revision_rows",
+    (
+        [("maskimpute", "v28-other", "5" * 64)],
+        [
+            ("maskimpute", "v28-selected", "5" * 64),
+            ("maskimpute", "v28-other", "5" * 64),
+        ],
+        [("maskimpute", "v28-selected", "0" * 64)],
+        [("magic", "v28-selected", "5" * 64)],
+    ),
+)
+def test_selected_stage_execution_rejects_ambiguous_or_comparator_rows(
+    revision_rows: list[tuple[str, str, str]],
+) -> None:
+    from maskimpute_benchmark.publication_freeze import _active_execution_evidence
+
+    base = _selected_stage_checkpoint(
+        [
+            ("observed", "registry-default", "1" * 64),
+            ("maskimpute", "v27-selected", "2" * 64),
+            ("magic", "registry-default", "3" * 64),
+        ]
+    )
+    selected_configuration = {
+        "configuration_id": "v28-selected",
+        "version": "v28",
+        "configuration": {"method_version": "v28"},
+        "configuration_sha256": "5" * 64,
+    }
+    revision = _selected_stage_checkpoint(revision_rows)
+
+    with pytest.raises(
+        PublicationFreezeError,
+        match="selected.*configuration|only.*[Mm]ask[Ii]mpute|unique",
+    ):
+        _active_execution_evidence(
+            base,
+            active_stage="v28",
+            selected_stage_checkpoint=revision,
+            selected_configuration=selected_configuration,
+            eligible_dataset_ids=("dataset-001",),
+        )
+
+
+def test_base_comparator_denominator_remains_unchanged_for_base_selection() -> None:
+    from maskimpute_benchmark.publication_freeze import _active_execution_evidence
+
+    base = _selected_stage_checkpoint(
+        [
+            ("observed", "registry-default", "1" * 64),
+            ("maskimpute", "v27-selected", "2" * 64),
+            ("magic", "registry-default", "3" * 64),
+        ]
+    )
+    evidence = _active_execution_evidence(
+        base,
+        active_stage="base",
+        selected_stage_checkpoint=None,
+        selected_configuration={
+            "configuration_id": "v27-selected",
+            "version": "v27",
+            "configuration": {"method_version": "v27"},
+            "configuration_sha256": "2" * 64,
+        },
+        eligible_dataset_ids=("dataset-001",),
+    )
+
+    assert set(evidence) == {"observed", "maskimpute", "magic"}
+    assert {
+        row["artifact"] for row in evidence.values()
+    } == {"base_reconstruction_checkpoint"}

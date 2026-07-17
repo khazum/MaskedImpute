@@ -30,7 +30,9 @@ from .revisions import (
     RevisionActivation,
     RevisionAuthorityError,
     development_selection_stage_paths,
+    load_revision_spec,
     revision_stage_paths,
+    thaw_revision_configuration,
     validate_revision_activation,
 )
 from .selection import (
@@ -1933,10 +1935,21 @@ def _development_execution_evidence(
     execution_track: str,
     eligible_dataset_ids: Sequence[str],
 ) -> dict[str, dict[str, object]]:
-    if artifact not in {"reconstruction_checkpoint", "external_reference_checkpoint"}:
+    stage_artifacts = {
+        "base_reconstruction_checkpoint",
+        "v28_reconstruction_checkpoint",
+        "v29_reconstruction_checkpoint",
+    }
+    if artifact not in stage_artifacts | {"external_reference_checkpoint"}:
         raise PublicationFreezeError("development execution artifact is invalid")
     if execution_track not in {"same_input", "external_reference"}:
         raise PublicationFreezeError("development execution track is invalid")
+    if (artifact == "external_reference_checkpoint") != (
+        execution_track == "external_reference"
+    ):
+        raise PublicationFreezeError(
+            "development execution artifact and track are inconsistent"
+        )
     eligible_ids = tuple(eligible_dataset_ids)
     if (
         not eligible_ids
@@ -2045,6 +2058,89 @@ def _development_execution_evidence(
     return result
 
 
+def _active_execution_evidence(
+    base_checkpoint: Mapping[str, object],
+    *,
+    active_stage: str,
+    selected_stage_checkpoint: Mapping[str, object] | None,
+    selected_configuration: Mapping[str, object],
+    eligible_dataset_ids: Sequence[str],
+) -> dict[str, dict[str, object]]:
+    """Retain base comparators and replace only selected revision MaskImpute."""
+
+    if active_stage not in {"base", "v28", "v29"}:
+        raise PublicationFreezeError("active execution stage is invalid")
+    if not isinstance(selected_configuration, Mapping):
+        raise PublicationFreezeError("selected execution configuration is invalid")
+    selected_id = selected_configuration.get("configuration_id")
+    selected_version = selected_configuration.get("version")
+    selected_sha256 = selected_configuration.get("configuration_sha256")
+    if (
+        not isinstance(selected_id, str)
+        or _SAFE_ID.fullmatch(selected_id) is None
+        or not isinstance(selected_sha256, str)
+        or _SHA256.fullmatch(selected_sha256) is None
+        or selected_version != ("v27" if active_stage == "base" else active_stage)
+    ):
+        raise PublicationFreezeError(
+            "selected execution configuration differs from the active stage"
+        )
+    base = _development_execution_evidence(
+        base_checkpoint,
+        artifact="base_reconstruction_checkpoint",
+        execution_track="same_input",
+        eligible_dataset_ids=eligible_dataset_ids,
+    )
+    if "maskimpute" not in base:
+        raise PublicationFreezeError(
+            "base comparator denominator lacks MaskImpute evidence"
+        )
+    if active_stage == "base":
+        if selected_stage_checkpoint is not None:
+            raise PublicationFreezeError(
+                "base selection cannot consume a revision checkpoint"
+            )
+        return base
+    if not isinstance(selected_stage_checkpoint, Mapping):
+        raise PublicationFreezeError(
+            "selected-stage execution checkpoint is absent"
+        )
+    records = selected_stage_checkpoint.get("records")
+    if type(records) is not list or not records:
+        raise PublicationFreezeError(
+            "selected-stage execution lacks a unique selected configuration"
+        )
+    identities: set[tuple[object, object]] = set()
+    for record in records:
+        run = record.get("run") if isinstance(record, Mapping) else None
+        if not isinstance(run, Mapping):
+            raise PublicationFreezeError(
+                "selected-stage execution record is invalid"
+            )
+        if run.get("method_id") != "maskimpute":
+            raise PublicationFreezeError(
+                "selected-stage execution may contain only MaskImpute rows"
+            )
+        identities.add(
+            (run.get("configuration_id"), run.get("configuration_sha256"))
+        )
+    if identities != {(selected_id, selected_sha256)}:
+        raise PublicationFreezeError(
+            "selected-stage execution does not contain one unique selected configuration"
+        )
+    revision = _development_execution_evidence(
+        selected_stage_checkpoint,
+        artifact=f"{active_stage}_reconstruction_checkpoint",
+        execution_track="same_input",
+        eligible_dataset_ids=eligible_dataset_ids,
+    )
+    if set(revision) != {"maskimpute"}:
+        raise PublicationFreezeError(
+            "selected-stage execution may replace only MaskImpute evidence"
+        )
+    return {**base, "maskimpute": revision["maskimpute"]}
+
+
 def _validated_execution_evidence(
     value: object, method_id: str
 ) -> dict[str, object] | None:
@@ -2081,8 +2177,17 @@ def _validated_execution_evidence(
     eligible_datasets = value.get("eligible_dataset_count")
     if (
         value.get("artifact")
-        not in {"reconstruction_checkpoint", "external_reference_checkpoint"}
+        not in {
+            "base_reconstruction_checkpoint",
+            "v28_reconstruction_checkpoint",
+            "v29_reconstruction_checkpoint",
+            "external_reference_checkpoint",
+        }
         or value.get("execution_track") not in {"same_input", "external_reference"}
+        or (
+            (value.get("artifact") == "external_reference_checkpoint")
+            != (value.get("execution_track") == "external_reference")
+        )
         or type(eligible_datasets) is not int
         or eligible_datasets < 1
         or type(attempted) is not int
@@ -2474,14 +2579,22 @@ def _method_panel(
             if execution_scope == "external_reference_only"
             else "same_input"
         )
-        expected_execution_artifact = (
-            "external_reference_checkpoint"
+        allowed_execution_artifacts = (
+            {"external_reference_checkpoint"}
             if execution_scope == "external_reference_only"
-            else "reconstruction_checkpoint"
+            else (
+                {
+                    "base_reconstruction_checkpoint",
+                    "v28_reconstruction_checkpoint",
+                    "v29_reconstruction_checkpoint",
+                }
+                if method_id == "maskimpute"
+                else {"base_reconstruction_checkpoint"}
+            )
         )
         if evidence is not None and (
             evidence["execution_track"] != expected_execution_track
-            or evidence["artifact"] != expected_execution_artifact
+            or evidence["artifact"] not in allowed_execution_artifacts
         ):
             raise PublicationFreezeError(
                 f"method {method_id} execution evidence uses the wrong track"
@@ -2806,16 +2919,44 @@ def _recompute_selection_report(
 
 
 def _candidate_configuration(
+    repository: Path,
     selected: str,
     development_search: Mapping[str, object],
-    v28_revision: Mapping[str, object],
+    revision_versions: Sequence[str],
 ) -> dict[str, object]:
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    if not isinstance(selected, str) or _SAFE_ID.fullmatch(selected) is None:
+        raise PublicationFreezeError("selected configuration identity is invalid")
+    versions = tuple(revision_versions)
+    if versions not in {(), ("v28",), ("v28", "v29")}:
+        raise PublicationFreezeError(
+            "selected configuration revision prefix is incomplete or reordered"
+        )
     candidates: list[dict[str, object]] = []
     rows = development_search.get("configurations")
     if type(rows) is not list:
         raise PublicationFreezeError("development search configurations are invalid")
+    authority_bindings: dict[str, str] = {}
     for row in rows:
-        if isinstance(row, Mapping) and row.get("configuration_id") == selected:
+        if not isinstance(row, Mapping):
+            raise PublicationFreezeError(
+                "development search configuration row is invalid"
+            )
+        configuration_id = row.get("configuration_id")
+        configuration_sha256 = row.get("configuration_sha256")
+        if (
+            not isinstance(configuration_id, str)
+            or _SAFE_ID.fullmatch(configuration_id) is None
+            or not isinstance(configuration_sha256, str)
+            or _SHA256.fullmatch(configuration_sha256) is None
+            or configuration_id in authority_bindings
+        ):
+            raise PublicationFreezeError(
+                "development search configuration identities are invalid or duplicated"
+            )
+        authority_bindings[configuration_id] = configuration_sha256
+        if configuration_id == selected:
             candidates.append(
                 {
                     key: _json_copy(row[key], f"selected configuration {key}")
@@ -2827,18 +2968,34 @@ def _candidate_configuration(
                     )
                 }
             )
-    if v28_revision.get("configuration_id") == selected:
-        candidates.append(
-            {
-                key: _json_copy(v28_revision[key], f"selected configuration {key}")
-                for key in (
-                    "configuration_id",
-                    "configuration",
-                    "configuration_sha256",
+    try:
+        for version in versions:
+            spec = load_revision_spec(repository, version, require_clean=True)
+            if (
+                authority_bindings.get(spec.parent_configuration_id)
+                != spec.parent_configuration_sha256
+            ):
+                raise PublicationFreezeError(
+                    f"{version} revision parent binding differs"
                 )
-            }
-            | {"version": "v28"}
-        )
+            if spec.configuration_id in authority_bindings:
+                raise PublicationFreezeError(
+                    "revision configuration identity collides with tracked authority"
+                )
+            authority_bindings[spec.configuration_id] = spec.configuration_sha256
+            if spec.configuration_id == selected:
+                candidates.append(
+                    {
+                        "configuration_id": spec.configuration_id,
+                        "version": spec.version,
+                        "configuration": thaw_revision_configuration(spec),
+                        "configuration_sha256": spec.configuration_sha256,
+                    }
+                )
+    except RevisionAuthorityError as error:
+        raise PublicationFreezeError(
+            f"tracked revision configuration is invalid: {error}"
+        ) from error
     if len(candidates) != 1:
         raise PublicationFreezeError(
             "selected configuration is not uniquely present in tracked authority"
@@ -2911,9 +3068,10 @@ def _expected_frozen_method(
     if not isinstance(selected, str):
         raise PublicationFreezeError("selection report has no selected configuration")
     configuration = _candidate_configuration(
+        repository,
         selected,
         payloads["development_search"],
-        payloads["v28_revision"],
+        ("v28",),
     )
     required = payloads["selection_contract"].get("required_comparator_ids")
     if type(required) is not list:
@@ -2926,7 +3084,7 @@ def _expected_frozen_method(
     development_dataset_ids = _development_dataset_ids(payloads["dataset_status"])
     execution_evidence = _development_execution_evidence(
         payloads["reconstruction_checkpoint"],
-        artifact="reconstruction_checkpoint",
+        artifact="base_reconstruction_checkpoint",
         execution_track="same_input",
         eligible_dataset_ids=development_dataset_ids,
     )
@@ -3134,9 +3292,10 @@ def _validate_clean_frozen_method(
     if not isinstance(selected, str):
         raise PublicationFreezeError("frozen method selection is invalid")
     configuration = _candidate_configuration(
+        repository,
         selected,
         tracked_payloads["development_search"],
-        tracked_payloads["v28_revision"],
+        ("v28",),
     )
     required = tracked_payloads["selection_contract"].get("required_comparator_ids")
     if type(required) is not list:
