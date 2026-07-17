@@ -2,9 +2,19 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make scaling checkpoints independently replayable, resource-authorized, and efficient to resume.
+**Goal:** Make scaling evidence independently replayable, resource-authorized,
+efficient to resume, and inseparable from the claimed final-round receipt.
 
-**Architecture:** A fresh `ScalingResultStore` performs one full checkpoint validation. Existing retained H5ADs are compared with a fresh deterministic SymSim regeneration. Completed native and evaluator matrices are decoded from bounded zlib artifacts, native-to-evaluator conversion and all metric rows are replayed, and executor receipts are checked against plan-bound resource ceilings and telemetry labels. Appends use compare-before-replace checkpoint authority, validate an isolated per-run directory, and advance a detached in-memory snapshot; terminal publication forces one final full validation.
+**Architecture:** A fresh `ScalingResultStore` performs one full checkpoint
+validation. Existing retained H5ADs are compared with a fresh deterministic
+SymSim regeneration. Completed native and evaluator matrices are decoded from
+bounded zlib artifacts, native-to-evaluator conversion and all metric rows are
+replayed, and executor receipts are checked against plan-bound resource
+ceilings and telemetry labels. Appends validate an isolated per-run directory,
+compare the complete on-disk history with cached authority, and publish a new
+immutable numbered snapshot under a stable directory-descriptor lock. The
+claimed final runner journals every snapshot, requires the complete denominator,
+and binds all scaling bytes into its sole final-evaluation receipt.
 
 **Tech Stack:** Python 3.11, NumPy, AnnData, zlib, canonical JSON/SHA-256, pytest, Ruff.
 
@@ -17,7 +27,7 @@
 
 ---
 
-### Task 1: RED attack and performance tests
+### Task 1: RED integrity and performance tests
 
 **Files:**
 - Modify: `tests/test_scaling_panel.py`
@@ -60,7 +70,7 @@
 - `load(force_validate=False)` returns the already validated in-memory snapshot after its first call; `force_validate=True` reopens all evidence.
 
 - [x] Regenerate each retained dataset once per fresh validation and compare the independently produced generator receipt fields.
-- [x] Cache an isolated checkpoint snapshot, return detached copies, and require unchanged on-disk bytes before an append.
+- [x] Cache an isolated checkpoint snapshot, return detached copies, and require unchanged on-disk checkpoint history before an append.
 - [x] Make `_write` construct and cache the immutable snapshot directly instead of recursively loading it.
 - [x] Publish each validated run as one atomic directory transaction and make closed crash orphans retryable.
 - [x] Reject symbolic links in every run/checkpoint path component on append and fresh validation.
@@ -80,3 +90,43 @@
 - [x] Run the full scaling test file, diagnose its four stale-regex failures, and rerun the affected parameterized cases under `-W error`.
 - [x] Run Ruff and bytecode compilation over all changed Python files.
 - [x] Review `git diff --check`, the complete diff, and worktree status; prepare one focused hardening commit.
+
+### Task 5: Bind scaling to the final-round publication lifecycle
+
+**Files:**
+- Modify: `maskimpute_benchmark/final_runner.py`
+- Modify: `maskimpute_benchmark/final_analysis.py`
+- Modify: `maskimpute_benchmark/scaling.py`
+- Modify: `scripts/run_scaling_panel.py`
+- Modify: `tests/test_final_runner.py`
+- Modify: `tests/test_final_analysis.py`
+- Modify: `tests/test_scaling_panel.py`
+
+**Interfaces:**
+- The scaling CLI consumes only a claimed canonical round and writes beneath
+  `<round>/results/scaling`.
+- The sole evaluation manifest carries canonical `scaling_evidence` and an
+  exact cumulative inventory; the publication loader requires that evaluated
+  receipt.
+- `scaling_storage_preflight(authority)` returns a pure, receipted storage bound
+  for later composition with primary and trajectory preflights.
+
+- [x] Move scaling into the supplementary pre-receipt final-runner phase while
+  preserving the planned trajectory insertion seam.
+- [x] Require a complete, replay-valid scaling denominator before recording the
+  sole evaluation receipt.
+- [x] Replace the mutable checkpoint with contiguous immutable numbered
+  snapshots and journal every cleaned dataset and attempt snapshot.
+- [x] Bind the full plan, latest checkpoint payload, all checkpoint history, and
+  every dataset/run/receipt byte into the final cumulative inventory.
+- [x] Require canonical evaluated lifecycle and exact inventory in the
+  publication scaling loader.
+- [x] Serialize writers with a stable directory-descriptor lock and recover only
+  validated, unreferenced closed transactions.
+- [x] Enforce plan-derived H5AD size ceilings, bounded metadata validation before
+  AnnData deserialization, and file-identity revalidation after it.
+- [x] Add the pure scaling storage preflight and its authority-derived receipt.
+- [x] Cover receipt replacement, wrong-round, incomplete-denominator,
+  two-writer, immutable-history, H5AD, loader, and journal regressions.
+- [x] Run warning-strict integration tests, Ruff, bytecode compilation, and
+  `git diff --check`; then create the focused commit.

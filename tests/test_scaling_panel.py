@@ -77,6 +77,25 @@ def _plan():
     )
 
 
+def _single_entry_plan():
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    full = _plan()
+    body = {
+        "schema_version": 1,
+        "input_hashes": dict(full.input_hashes),
+        "entries": [full.entries[0].to_dict()],
+        "configurations": [value.to_dict() for value in full.configurations],
+    }
+    return full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256=canonical_sha256(body),
+    )
+
+
 def test_tracked_scaling_contract_is_exact_and_prespecified() -> None:
     from maskimpute_benchmark.scaling import load_scaling_contract
 
@@ -194,6 +213,36 @@ def test_scaling_plan_closes_full_method_by_size_denominator() -> None:
     assert plan.entries[1].max_gpu_bytes == 14 * 1024**3
     assert plan.entries[1].gpu_measurement == "nvidia_smi_process_tree_used_memory"
     assert len({entry.run_id for entry in plan.entries}) == len(plan.entries)
+
+
+def test_scaling_storage_preflight_is_pure_and_authority_derived() -> None:
+    from types import SimpleNamespace
+
+    import maskimpute_benchmark.scaling as scaling
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    plan = _plan()
+    receipt = scaling.scaling_storage_preflight(SimpleNamespace(plan=plan))
+
+    assert receipt["schema"] == "maskimpute-scaling-storage-preflight-v1"
+    assert receipt["plan_sha256"] == plan.plan_sha256
+    assert receipt["planned_run_count"] == len(plan.entries)
+    assert receipt["cell_counts"] == [10_000, 25_000, 50_000, 100_000]
+    assert receipt["genes"] == 500
+    assert receipt["required_free_bytes"] == max(
+        receipt["peak_materialization_bound_bytes"],
+        receipt["retained_completion_bound_bytes"],
+    )
+    assert receipt["required_free_bytes"] > max(
+        entry.cells * entry.genes * 96 + 2 * 1024**3 for entry in plan.entries
+    )
+    assert receipt["receipt_sha256"] == canonical_sha256(
+        {
+            key: value
+            for key, value in receipt.items()
+            if key != "receipt_sha256"
+        }
+    )
 
 
 def test_scaling_plan_rejects_registry_default_for_candidate() -> None:
@@ -598,6 +647,38 @@ def test_scaling_store_resumes_exact_prefix_with_compressed_evaluator_output(
     assert run["native_output_path"].endswith(".native-f64.zlib")
     assert run["executor_receipt_path"].endswith(".executor-receipt.json")
     assert store.load() == report
+
+
+def test_scaling_checkpoints_are_immutable_append_only_snapshots(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.scaling import (
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    first_path = store.checkpoint_path
+    first_raw = first_path.read_bytes()
+
+    store.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+
+    assert store.checkpoint_path != first_path
+    assert first_path.read_bytes() == first_raw
+    assert tuple(path.name for path in sorted(first_path.parent.iterdir())) == (
+        "00000001.json",
+        "00000002.json",
+    )
 
 
 def test_scaling_store_rejects_log_tampering(tmp_path: Path) -> None:
@@ -1076,6 +1157,9 @@ def test_scaling_store_recovers_complete_orphan_run_transaction(
     monkeypatch.setattr(store, "_write", original_write)
 
     resumed = ScalingResultStore(tmp_path, plan)
+    assert resumed.recover_unreferenced_transactions() == (
+        plan.entries[0].run_id,
+    )
     report = resumed.append_attempt(
         plan.entries[0],
         scaling_attempt_record(
@@ -1085,6 +1169,75 @@ def test_scaling_store_recovers_complete_orphan_run_transaction(
         ),
     )
     assert len(report.records) == 1
+
+
+def test_scaling_store_serializes_two_cached_writers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    plan = _plan()
+    first_store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    first_store.append_dataset(receipt)
+    second_store = ScalingResultStore(tmp_path, plan)
+    assert second_store.load() is not None
+    first_record = scaling_attempt_record(
+        _first_attempt(plan, tmp_path, receipt, stdout=b"first writer"),
+        cells=10_000,
+        accuracy_enabled=True,
+    )
+    second_record = scaling_attempt_record(
+        _first_attempt(plan, tmp_path, receipt, stdout=b"second writer"),
+        cells=10_000,
+        accuracy_enabled=True,
+    )
+    first_staged = Event()
+    release_first = Event()
+    second_entered_transaction = Event()
+    first_prepare = first_store._prepare_run_transaction
+    second_prepare = second_store._prepare_run_transaction
+
+    def hold_first(entry):
+        transaction = first_prepare(entry)
+        first_staged.set()
+        if not release_first.wait(timeout=10):
+            raise AssertionError("first writer was not released")
+        return transaction
+
+    def observe_second(entry):
+        second_entered_transaction.set()
+        return second_prepare(entry)
+
+    monkeypatch.setattr(first_store, "_prepare_run_transaction", hold_first)
+    monkeypatch.setattr(second_store, "_prepare_run_transaction", observe_second)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(
+            first_store.append_attempt, plan.entries[0], first_record
+        )
+        assert first_staged.wait(timeout=10)
+        second_future = pool.submit(
+            second_store.append_attempt, plan.entries[0], second_record
+        )
+        entered_while_first_active = second_entered_transaction.wait(timeout=0.5)
+        release_first.set()
+        first_report = first_future.result(timeout=20)
+        with pytest.raises(ScalingContractError, match="checkpoint.*changed|prefix"):
+            second_future.result(timeout=20)
+
+    assert entered_while_first_active is False
+    assert len(first_report.records) == 1
+    resumed = ScalingResultStore(tmp_path, plan).load()
+    assert resumed is not None
+    assert len(resumed.records) == 1
 
 
 def test_scaling_store_rejects_symlinked_run_component_before_write(
@@ -1154,6 +1307,422 @@ def test_scaling_store_hashes_each_retained_h5ad_once_per_fresh_validation(
     resumed.load()
     resumed.load()
     assert retained_hash_passes == 2
+
+
+def test_final_result_inventory_owns_every_scaling_checkpoint_reference(
+    tmp_path: Path,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+    from maskimpute_benchmark.scaling import (
+        ScalingResultStore,
+        _cleanup_discarded_scaling_inputs,
+        scaling_attempt_record,
+    )
+
+    round_dir = tmp_path / "round-001"
+    output = round_dir / "results/scaling"
+    plan = _plan()
+    store = ScalingResultStore(output, plan)
+    receipt = _dataset_receipt(output)
+    store.append_dataset(receipt)
+    _cleanup_discarded_scaling_inputs(output, 10_000, receipt)
+    store.append_attempt(
+        plan.entries[0],
+        scaling_attempt_record(
+            _first_attempt(plan, output, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+
+    manifest = final_runner._owned_final_result_file_manifest(round_dir)
+    paths = {row["path"] for row in manifest["result_files"]}
+
+    assert paths == {
+        "results/scaling/checkpoints/00000001.json",
+        "results/scaling/checkpoints/00000002.json",
+        f"results/scaling/{receipt['moderate_output_path']}",
+        f"results/scaling/runs/{plan.entries[0].run_id}/run.stdout",
+        f"results/scaling/runs/{plan.entries[0].run_id}/run.stderr",
+        f"results/scaling/runs/{plan.entries[0].run_id}/run.executor-receipt.json",
+        f"results/scaling/runs/{plan.entries[0].run_id}/run.native-f64.zlib",
+        f"results/scaling/runs/{plan.entries[0].run_id}/run.log2-cp10k-f64.zlib",
+    }
+
+
+def test_public_scaling_run_requires_a_claimed_canonical_round(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.scaling as scaling
+
+    execution_called = False
+
+    monkeypatch.setattr(
+        scaling,
+        "load_scaling_execution_authority",
+        lambda _repository: object(),
+    )
+
+    def execute(*_args, **_kwargs):
+        nonlocal execution_called
+        execution_called = True
+        return object()
+
+    monkeypatch.setattr(scaling, "execute_scaling_plan", execute)
+
+    with pytest.raises(
+        scaling.ScalingContractError,
+        match="claimed.*round|canonical.*round",
+    ):
+        scaling.run_scaling_panel(REPOSITORY, tmp_path)
+
+    assert execution_called is False
+
+
+def test_claimed_scaling_run_journals_each_immutable_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.scaling as scaling
+    import maskimpute_benchmark.simulators.base as simulator_base
+    import maskimpute_benchmark.study as study
+
+    round_dir = tmp_path / "artifacts/study/round-001"
+    round_dir.mkdir(parents=True)
+    authority = object()
+    checkpoint = object()
+    publications: list[tuple[Path, Path, object]] = []
+    monkeypatch.setattr(
+        simulator_base,
+        "load_final_manifest_claim",
+        lambda _repository, _round_dir: SimpleNamespace(round_dir=round_dir),
+    )
+    monkeypatch.setattr(
+        scaling,
+        "load_scaling_execution_authority",
+        lambda _repository: authority,
+    )
+
+    def record(repository, selected_round, recorder):
+        publications.append((repository, selected_round, recorder))
+        return None
+
+    monkeypatch.setattr(
+        final_runner,
+        "_record_incremental_results_if_changed",
+        record,
+    )
+
+    def execute(selected_authority, output_dir, *, on_checkpoint_published):
+        assert selected_authority is authority
+        assert output_dir == round_dir / "results/scaling"
+        on_checkpoint_published()
+        on_checkpoint_published()
+        return checkpoint
+
+    monkeypatch.setattr(scaling, "execute_scaling_plan", execute)
+
+    assert scaling.run_scaling_panel(tmp_path, round_dir) is checkpoint
+    assert publications == [
+        (tmp_path, round_dir, study.record_incremental_results),
+        (tmp_path, round_dir, study.record_incremental_results),
+    ]
+
+
+def test_publication_scaling_loader_requires_evaluated_receipt_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.scaling as scaling
+    import maskimpute_benchmark.study as study
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/round-001"
+    output = round_dir / "results/scaling"
+    plan = _single_entry_plan()
+    store = scaling.ScalingResultStore(output, plan)
+    dataset_receipt = _dataset_receipt(output)
+    store.append_dataset(dataset_receipt)
+    scaling._cleanup_discarded_scaling_inputs(output, 10_000, dataset_receipt)
+    checkpoint = store.append_attempt(
+        plan.entries[0],
+        scaling.scaling_attempt_record(
+            _first_attempt(plan, output, dataset_receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+    result_files = final_runner._owned_final_result_file_manifest(round_dir)[
+        "result_files"
+    ]
+    monkeypatch.setattr(
+        scaling,
+        "load_scaling_execution_authority",
+        lambda _repository: SimpleNamespace(plan=plan),
+    )
+    evidence = final_runner._scaling_evaluation_evidence(
+        repository,
+        round_dir,
+        checkpoint,
+        result_files,
+    )
+    evaluation = {
+        "schema_version": 1,
+        "status": "completed",
+        "final_plan_sha256": "a" * 64,
+        "final_execution_manifest_path": (
+            "results/final/execution/execution_manifest.json"
+        ),
+        "final_execution_manifest_sha256": "b" * 64,
+        "final_execution_payload_sha256": "c" * 64,
+        "execution_validation": {},
+        "storage_preflight": {},
+        "scaling_evidence": evidence,
+        "result_files": result_files,
+    }
+    lifecycle_receipt = {
+        "result_manifest": evaluation,
+        "result_manifest_sha256": canonical_sha256(evaluation),
+    }
+    monkeypatch.setattr(
+        final_runner,
+        "_canonical_round",
+        lambda _repository, _round_dir: (repository, round_dir),
+    )
+    monkeypatch.setattr(study, "_validate_freeze", lambda _round, _repo: {})
+    monkeypatch.setattr(
+        study,
+        "_validate_registry",
+        lambda _repo, _round, _freeze, *, expected_state: {
+            "state": expected_state
+        },
+    )
+    monkeypatch.setattr(
+        study,
+        "_validate_state_record_chain",
+        lambda _round, _freeze, *, expected_state: (
+            {"state": "materialized"},
+            {"state": "running"},
+            lifecycle_receipt,
+        ),
+    )
+    monkeypatch.setattr(
+        study,
+        "_verify_frozen_repository",
+        lambda _repo, _round, *, allowed_result_paths: {},
+    )
+
+    loaded = scaling.load_publication_scaling_evidence(repository, round_dir)
+    assert loaded.status == "completed"
+    assert loaded.checkpoint_sha256 == checkpoint.checkpoint_sha256
+
+    checkpoint_path = store.checkpoint_path
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    run = payload["records"][0]["run"]
+    stdout_path = output / run["stdout_path"]
+    stdout_path.write_bytes(b"coherent replacement\n")
+    stdout_sha256 = hashlib.sha256(stdout_path.read_bytes()).hexdigest()
+    run["stdout_sha256"] = stdout_sha256
+    run["stdout_file_sha256"] = stdout_sha256
+    run["stdout_size_bytes"] = stdout_path.stat().st_size
+    record = payload["records"][0]
+    record_unsigned = {
+        key: value for key, value in record.items() if key != "record_sha256"
+    }
+    record["record_sha256"] = canonical_sha256(record_unsigned)
+    checkpoint_unsigned = {
+        key: value for key, value in payload.items() if key != "checkpoint_sha256"
+    }
+    payload["checkpoint_sha256"] = canonical_sha256(checkpoint_unsigned)
+    checkpoint_path.write_text(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        scaling.ScalingContractError,
+        match="evaluated.*receipt|result.*inventory|result file hash",
+    ):
+        scaling.load_publication_scaling_evidence(repository, round_dir)
+
+
+def _rehashed_dataset_receipt(
+    receipt: dict[str, object], retained: Path
+) -> dict[str, object]:
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    changed = json.loads(json.dumps(receipt))
+    changed["moderate_output_file_sha256"] = hashlib.sha256(
+        retained.read_bytes()
+    ).hexdigest()
+    changed["moderate_output_size_bytes"] = retained.stat().st_size
+    unsigned = {
+        key: value for key, value in changed.items() if key != "receipt_sha256"
+    }
+    changed["receipt_sha256"] = canonical_sha256(unsigned)
+    return changed
+
+
+def test_scaling_h5ad_preflight_rejects_extra_rehashed_payload_before_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import anndata as ad
+    import h5py
+    import numpy as np
+
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+    )
+
+    plan = _plan()
+    receipt = _dataset_receipt(tmp_path)
+    retained = tmp_path / str(receipt["moderate_output_path"])
+    with h5py.File(retained, "a") as handle:
+        handle.create_dataset("unreferenced_payload", data=np.ones(1))
+    changed = _rehashed_dataset_receipt(receipt, retained)
+    original_read = ad.read_h5ad
+    read_called = False
+
+    def observe_read(*args, **kwargs):
+        nonlocal read_called
+        read_called = True
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(ad, "read_h5ad", observe_read)
+
+    with pytest.raises(ScalingContractError, match="HDF5.*structure|H5AD.*structure"):
+        ScalingResultStore(tmp_path, plan).append_dataset(changed)
+
+    assert read_called is False
+
+
+def test_scaling_h5ad_preflight_rejects_oversized_file_before_hash_or_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import anndata as ad
+    import maskimpute_benchmark.scaling as scaling
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    plan = _plan()
+    receipt = _dataset_receipt(tmp_path)
+    retained = tmp_path / str(receipt["moderate_output_path"])
+    ceiling = scaling._scaling_h5ad_size_ceiling(10_000, 500)
+    with retained.open("r+b") as stream:
+        stream.truncate(ceiling + 1)
+    changed = json.loads(json.dumps(receipt))
+    changed["moderate_output_size_bytes"] = ceiling + 1
+    unsigned = {
+        key: value for key, value in changed.items() if key != "receipt_sha256"
+    }
+    changed["receipt_sha256"] = canonical_sha256(unsigned)
+    original_hash = scaling._file_sha256
+    original_read = ad.read_h5ad
+    hash_called = False
+    read_called = False
+
+    def observe_hash(path: Path) -> str:
+        nonlocal hash_called
+        if path == retained:
+            hash_called = True
+        return original_hash(path)
+
+    def observe_read(*args, **kwargs):
+        nonlocal read_called
+        read_called = True
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(scaling, "_file_sha256", observe_hash)
+    monkeypatch.setattr(ad, "read_h5ad", observe_read)
+
+    with pytest.raises(
+        scaling.ScalingContractError,
+        match="H5AD.*size|dataset.*size.*bound",
+    ):
+        scaling.ScalingResultStore(tmp_path, plan).append_dataset(changed)
+
+    assert hash_called is False
+    assert read_called is False
+
+
+def test_scaling_h5ad_preflight_rejects_malformed_matrix_before_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import anndata as ad
+    import h5py
+    import numpy as np
+
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+    )
+
+    plan = _plan()
+    receipt = _dataset_receipt(tmp_path)
+    retained = tmp_path / str(receipt["moderate_output_path"])
+    with h5py.File(retained, "r+") as handle:
+        handle["X"].attrs["shape"] = np.asarray([9_999, 500], dtype=np.int64)
+    changed = _rehashed_dataset_receipt(receipt, retained)
+    original_read = ad.read_h5ad
+    read_called = False
+
+    def observe_read(*args, **kwargs):
+        nonlocal read_called
+        read_called = True
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(ad, "read_h5ad", observe_read)
+
+    with pytest.raises(ScalingContractError, match="HDF5.*structure|H5AD.*structure"):
+        ScalingResultStore(tmp_path, plan).append_dataset(changed)
+
+    assert read_called is False
+
+
+def test_scaling_h5ad_validation_rejects_file_identity_change_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import anndata as ad
+
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+    )
+
+    plan = _plan()
+    receipt = _dataset_receipt(tmp_path)
+    retained = tmp_path / str(receipt["moderate_output_path"])
+    original_read = ad.read_h5ad
+
+    def change_identity_after_read(*args, **kwargs):
+        dataset = original_read(*args, **kwargs)
+        retained.touch()
+        return dataset
+
+    monkeypatch.setattr(ad, "read_h5ad", change_identity_after_read)
+
+    with pytest.raises(ScalingContractError, match="identity.*changed|changed.*read"):
+        ScalingResultStore(tmp_path, plan).append_dataset(receipt)
+
+
+def test_scaling_cli_requires_only_the_canonical_round_locator() -> None:
+    import subprocess
+    import sys
+
+    completed = subprocess.run(
+        [sys.executable, "scripts/run_scaling_panel.py", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "round_dir" in completed.stdout
+    assert "--output-dir" not in completed.stdout
 
 
 def test_scaling_accuracy_matches_canonical_metrics_without_cell_quadratic_work(
