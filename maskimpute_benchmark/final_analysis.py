@@ -71,6 +71,13 @@ _STRUCTURAL_METRIC_UNAVAILABILITY = {
         "orthogonal_only": "truth_unavailable",
     }
 }
+_CLAIM_RANK_METRICS = ("mse", "mse_dropout", "gnrmse")
+_CLAIM_PARETO_METRICS = (
+    "mse_dropout",
+    "mse_pre_dropout_zero",
+    "corr_err",
+    "mse_non_dropout_nonzero",
+)
 _SCORE_IDENTITY_FIELDS = frozenset(
     {
         "run_id",
@@ -1741,6 +1748,431 @@ def _pareto_report(
     return {**base, "reason": None, "status": "ok"}
 
 
+def _unavailable_reconstruction_claim_gate(
+    *,
+    candidate: str,
+    primary_metrics: Sequence[str],
+    required_comparators: Sequence[str],
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "status": "unavailable",
+        "reason": reason,
+        "candidate_method_id": candidate,
+        "required_comparator_ids": list(required_comparators),
+        "denominator": {
+            "status": "unavailable",
+            "reason": reason,
+            "method_ids": [candidate, *required_comparators],
+            "metric_ids": list(
+                dict.fromkeys((*_CLAIM_RANK_METRICS, *_CLAIM_PARETO_METRICS))
+            ),
+            "view_collapse": "seed_mean_then_paired_view_mean",
+        },
+        "rank_gates": [
+            {
+                "metric": metric,
+                "status": "unavailable",
+                "reason": reason,
+                "threshold": 2.0,
+                "median_biological_draw_rank": None,
+                "n_biological_draws": 0,
+                "mechanism_median_ranks": [],
+            }
+            for metric in _CLAIM_RANK_METRICS
+        ],
+        "pareto_gate": {
+            "status": "unavailable",
+            "reason": "incomplete_metric_denominator",
+            "dimensions": list(_CLAIM_PARETO_METRICS),
+            "complete_method_ids": [],
+            "non_dominated": None,
+            "dominated_by": [],
+        },
+        "draw_collapsed_method_summaries": [],
+        "strongest_applicable_comparators": [
+            {
+                "metric": metric,
+                "status": "unavailable",
+                "reason": reason,
+                "method_id": None,
+                "tied_method_ids": [],
+                "median": None,
+                "n_biological_draws": 0,
+            }
+            for metric in primary_metrics
+        ],
+    }
+
+
+def _claim_structural_reason(row: _NormalizedMetric) -> str | None:
+    return _STRUCTURAL_METRIC_UNAVAILABILITY.get(row.metric, {}).get(
+        row.truth_kind
+    )
+
+
+def _collapse_final_claim_draws(
+    evidence: _NormalizedEvidence,
+    *,
+    method_ids: Sequence[str],
+    metric_ids: Sequence[str],
+) -> tuple[
+    dict[tuple[str, str, str, str], float],
+    list[dict[str, object]],
+] | None:
+    methods = tuple(method_ids)
+    metrics = tuple(metric_ids)
+    expected_seeds: dict[str, frozenset[int | None]] = {}
+    for method in methods:
+        seeds = frozenset(
+            row.source_model_seed for row in evidence.rows if row.method == method
+        )
+        if not seeds:
+            return None
+        expected_seeds[method] = seeds
+
+    grouped: dict[
+        tuple[str, str, str, str, str, str], list[_NormalizedMetric]
+    ] = {}
+    for row in evidence.rows:
+        if row.method not in methods or row.metric not in metrics:
+            continue
+        key = (
+            row.method,
+            row.metric,
+            row.mechanism,
+            row.biological_id,
+            row.technical_view,
+            row.dataset_id,
+        )
+        grouped.setdefault(key, []).append(row)
+
+    draw_values: dict[tuple[str, str, str, str], float] = {}
+    for metric in metrics:
+        expected_all_views: set[tuple[str, str, str, str]] | None = None
+        expected_applicable_views: set[tuple[str, str, str, str]] | None = None
+        expected_draws: set[tuple[str, str]] | None = None
+        for method in methods:
+            method_groups = {
+                (mechanism, biological_id, technical_view, dataset_id): rows
+                for (
+                    grouped_method,
+                    grouped_metric,
+                    mechanism,
+                    biological_id,
+                    technical_view,
+                    dataset_id,
+                ), rows in grouped.items()
+                if grouped_method == method and grouped_metric == metric
+            }
+            if not method_groups:
+                return None
+            all_views = set(method_groups)
+            if expected_all_views is None:
+                expected_all_views = all_views
+            elif all_views != expected_all_views:
+                return None
+
+            view_values: dict[tuple[str, str, str, str], float] = {}
+            for view_key, rows in method_groups.items():
+                if frozenset(row.source_model_seed for row in rows) != (
+                    expected_seeds[method]
+                ):
+                    return None
+                structural_reasons = tuple(
+                    _claim_structural_reason(row) for row in rows
+                )
+                if all(reason is not None for reason in structural_reasons):
+                    if any(
+                        row.status != "unavailable"
+                        or row.reason != structural_reason
+                        for row, structural_reason in zip(
+                            rows, structural_reasons, strict=True
+                        )
+                    ):
+                        return None
+                    continue
+                if any(reason is not None for reason in structural_reasons):
+                    return None
+                if any(
+                    row.status != "ok" or row.value is None for row in rows
+                ):
+                    return None
+                view_values[view_key] = _finite_mean(
+                    [float(row.value) for row in rows if row.value is not None]
+                )
+
+            applicable_views = set(view_values)
+            if not applicable_views:
+                return None
+            if expected_applicable_views is None:
+                expected_applicable_views = applicable_views
+            elif applicable_views != expected_applicable_views:
+                return None
+
+            views_by_draw: dict[tuple[str, str], dict[str, float]] = {}
+            for (
+                mechanism,
+                biological_id,
+                technical_view,
+                _dataset_id,
+            ), value in sorted(view_values.items()):
+                draw = (mechanism, biological_id)
+                by_view = views_by_draw.setdefault(draw, {})
+                if technical_view in by_view:
+                    return None
+                by_view[technical_view] = value
+            if any(set(values) != {"moderate", "severe"} for values in views_by_draw.values()):
+                return None
+            draw_keys = set(views_by_draw)
+            if expected_draws is None:
+                expected_draws = draw_keys
+            elif draw_keys != expected_draws:
+                return None
+            for (mechanism, biological_id), values in views_by_draw.items():
+                draw_values[(method, metric, mechanism, biological_id)] = (
+                    _finite_mean([values["moderate"], values["severe"]])
+                )
+
+    summaries: list[dict[str, object]] = []
+    for method in methods:
+        for metric in metrics:
+            values = [
+                value
+                for (
+                    observed_method,
+                    observed_metric,
+                    _mechanism,
+                    _biological_id,
+                ), value in draw_values.items()
+                if observed_method == method and observed_metric == metric
+            ]
+            if not values:
+                return None
+            summaries.append(
+                {
+                    "status": "complete",
+                    "method_id": method,
+                    "metric": metric,
+                    "median": _finite_median(values),
+                    "n_biological_draws": len(values),
+                }
+            )
+    return draw_values, summaries
+
+
+def _claim_average_rank(target: float, comparators: Sequence[float]) -> float:
+    below = sum(value < target for value in comparators)
+    tied = sum(value == target for value in comparators)
+    return 1.0 + below + tied / 2.0
+
+
+def _reconstruction_claim_gate(
+    evidence: _NormalizedEvidence,
+    *,
+    candidate: str,
+    primary_metrics: Sequence[str],
+    selection_contract: Mapping[str, object],
+    metric_direction_contract: Mapping[str, object],
+) -> dict[str, object]:
+    raw_comparators = selection_contract.get("required_comparator_ids")
+    if raw_comparators is None:
+        return _unavailable_reconstruction_claim_gate(
+            candidate=candidate,
+            primary_metrics=primary_metrics,
+            required_comparators=(),
+            reason="required_comparator_authority_unavailable",
+        )
+    if (
+        not isinstance(raw_comparators, list)
+        or not raw_comparators
+        or any(not isinstance(value, str) or not value for value in raw_comparators)
+        or len(set(raw_comparators)) != len(raw_comparators)
+        or candidate in raw_comparators
+    ):
+        raise FinalAnalysisContractError(
+            "selection contract required comparator authority is invalid"
+        )
+    comparators = tuple(raw_comparators)
+
+    authority = metric_direction_contract.get("authority")
+    if (
+        metric_direction_contract.get("status") != "validated"
+        or not isinstance(authority, Mapping)
+        or authority.get("rank_metrics") is None
+        or authority.get("pareto_metrics") is None
+    ):
+        return _unavailable_reconstruction_claim_gate(
+            candidate=candidate,
+            primary_metrics=primary_metrics,
+            required_comparators=comparators,
+            reason="frozen_claim_metric_authority_unavailable",
+        )
+    if tuple(authority.get("rank_metrics", ())) != _CLAIM_RANK_METRICS or tuple(
+        authority.get("pareto_metrics", ())
+    ) != _CLAIM_PARETO_METRICS:
+        raise FinalAnalysisContractError(
+            "frozen final claim metrics differ from selection authority"
+        )
+
+    methods = (candidate, *comparators)
+    required_metrics = tuple(
+        dict.fromkeys(
+            (*_CLAIM_RANK_METRICS, *_CLAIM_PARETO_METRICS, *primary_metrics)
+        )
+    )
+    if any(method not in evidence.methods for method in methods) or any(
+        metric not in evidence.metric_names for metric in required_metrics
+    ):
+        return _unavailable_reconstruction_claim_gate(
+            candidate=candidate,
+            primary_metrics=primary_metrics,
+            required_comparators=comparators,
+            reason="incomplete_final_claim_denominator",
+        )
+    collapsed = _collapse_final_claim_draws(
+        evidence,
+        method_ids=methods,
+        metric_ids=required_metrics,
+    )
+    if collapsed is None:
+        return _unavailable_reconstruction_claim_gate(
+            candidate=candidate,
+            primary_metrics=primary_metrics,
+            required_comparators=comparators,
+            reason="incomplete_final_claim_denominator",
+        )
+    draw_values, summaries = collapsed
+
+    rank_gates: list[dict[str, object]] = []
+    for metric in _CLAIM_RANK_METRICS:
+        candidate_draws = sorted(
+            (
+                mechanism,
+                biological_id,
+                value,
+            )
+            for (
+                method,
+                observed_metric,
+                mechanism,
+                biological_id,
+            ), value in draw_values.items()
+            if method == candidate and observed_metric == metric
+        )
+        ranks: list[float] = []
+        by_mechanism: dict[str, list[float]] = {}
+        for mechanism, biological_id, value in candidate_draws:
+            comparator_values = [
+                draw_values[(method, metric, mechanism, biological_id)]
+                for method in comparators
+            ]
+            rank = _claim_average_rank(value, comparator_values)
+            ranks.append(rank)
+            by_mechanism.setdefault(mechanism, []).append(rank)
+        median_rank = _finite_median(ranks)
+        passed = median_rank <= 2.0
+        rank_gates.append(
+            {
+                "metric": metric,
+                "status": "passed" if passed else "failed",
+                "reason": None if passed else "median_rank_exceeds_two",
+                "threshold": 2.0,
+                "median_biological_draw_rank": median_rank,
+                "n_biological_draws": len(ranks),
+                "mechanism_median_ranks": [
+                    {
+                        "mechanism": mechanism,
+                        "median_biological_draw_rank": _finite_median(values),
+                        "n_biological_draws": len(values),
+                    }
+                    for mechanism, values in sorted(by_mechanism.items())
+                ],
+            }
+        )
+
+    summary_lookup = {
+        (str(row["method_id"]), str(row["metric"])): row for row in summaries
+    }
+    candidate_vector = tuple(
+        float(summary_lookup[(candidate, metric)]["median"])
+        for metric in _CLAIM_PARETO_METRICS
+    )
+    dominators = []
+    for comparator in comparators:
+        vector = tuple(
+            float(summary_lookup[(comparator, metric)]["median"])
+            for metric in _CLAIM_PARETO_METRICS
+        )
+        if all(
+            left <= right
+            for left, right in zip(vector, candidate_vector, strict=True)
+        ) and any(
+            left < right
+            for left, right in zip(vector, candidate_vector, strict=True)
+        ):
+            dominators.append(comparator)
+    dominators.sort()
+    pareto_passed = not dominators
+    pareto_gate: dict[str, object] = {
+        "status": "passed" if pareto_passed else "failed",
+        "reason": None if pareto_passed else "candidate_is_pareto_dominated",
+        "dimensions": list(_CLAIM_PARETO_METRICS),
+        "complete_method_ids": list(methods),
+        "non_dominated": pareto_passed,
+        "dominated_by": dominators,
+    }
+
+    strongest: list[dict[str, object]] = []
+    for metric in primary_metrics:
+        candidates = sorted(
+            (
+                float(summary_lookup[(method, metric)]["median"]),
+                method,
+                int(summary_lookup[(method, metric)]["n_biological_draws"]),
+            )
+            for method in comparators
+        )
+        best_median = candidates[0][0]
+        tied = sorted(method for median, method, _count in candidates if median == best_median)
+        selected = tied[0]
+        selected_count = next(
+            count for median, method, count in candidates if median == best_median and method == selected
+        )
+        strongest.append(
+            {
+                "metric": metric,
+                "status": "ok",
+                "reason": None,
+                "method_id": selected,
+                "tied_method_ids": tied,
+                "median": best_median,
+                "n_biological_draws": selected_count,
+            }
+        )
+
+    failed = any(row["status"] == "failed" for row in rank_gates) or not (
+        pareto_passed
+    )
+    return {
+        "status": "failed" if failed else "passed",
+        "reason": "final_reconstruction_gate_failed" if failed else None,
+        "candidate_method_id": candidate,
+        "required_comparator_ids": list(comparators),
+        "denominator": {
+            "status": "complete",
+            "reason": None,
+            "method_ids": list(methods),
+            "metric_ids": list(required_metrics),
+            "view_collapse": "seed_mean_then_paired_view_mean",
+        },
+        "rank_gates": rank_gates,
+        "pareto_gate": pareto_gate,
+        "draw_collapsed_method_summaries": summaries,
+        "strongest_applicable_comparators": strongest,
+    }
+
+
 def build_final_analysis(
     records: Sequence[Mapping[str, object]],
     *,
@@ -1831,6 +2263,13 @@ def build_final_analysis(
             execution_action_denominator=input_bindings.get(
                 "execution_action_denominator"
             ),
+        ),
+        "reconstruction_claim_gate": _reconstruction_claim_gate(
+            evidence,
+            candidate=candidate,
+            primary_metrics=primary,
+            selection_contract=selection_contract,
+            metric_direction_contract=metric_direction_contract,
         ),
         "descriptive_summaries": summaries,
         "paired_comparisons": _paired_comparisons(

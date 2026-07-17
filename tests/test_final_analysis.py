@@ -23,6 +23,28 @@ from maskimpute_benchmark.protocol import canonical_sha256
 
 
 PRIMARY_METRICS = ("mse", "corr_err")
+CLAIM_RANK_METRICS = ("mse", "mse_dropout", "gnrmse")
+CLAIM_PARETO_METRICS = (
+    "mse_dropout",
+    "mse_pre_dropout_zero",
+    "corr_err",
+    "mse_non_dropout_nonzero",
+)
+CLAIM_METRICS = (
+    "mse",
+    "mse_dropout",
+    "gnrmse",
+    "mse_pre_dropout_zero",
+    "corr_err",
+    "mse_non_dropout_nonzero",
+)
+CLAIM_PRIMARY_METRICS = (
+    "mse",
+    "mse_dropout",
+    "mse_pre_dropout_zero",
+    "gnrmse",
+    "corr_err",
+)
 
 
 def _metric_row(
@@ -329,6 +351,142 @@ def _analysis(
         selection_contract={
             "schema_version": 1,
             "candidate_method_id": "maskimpute",
+        },
+        input_bindings={
+            "planned_run_count": len(records),
+            "metric_direction_contract": {
+                **direction_body,
+                "contract_sha256": canonical_sha256(direction_body),
+            },
+        },
+    )
+
+
+def _claim_panel(
+    *,
+    candidate_mse: float = 1.0,
+    candidate_pareto: float = 1.0,
+    failed_method: str | None = None,
+    structural_reason: str = "undefined_for_continuous_truth",
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    ordinal = 0
+    method_specs = (
+        ("maskimpute", (42, 43, 44), candidate_mse, candidate_pareto),
+        ("dca", (None,), 1.5, 1.5),
+        ("observed", (None,), 1.5, 1.5),
+    )
+    for mechanism, truth_kind in (
+        ("symsim", "exact_pre_capture"),
+        ("sergio", "exact_continuous"),
+    ):
+        for draw_index in (1, 2):
+            biological_id = f"{mechanism}-draw-{draw_index:02d}"
+            for technical_view, view_offset in (
+                ("moderate", -0.2),
+                ("severe", 0.2),
+            ):
+                for method, seeds, rank_value, pareto_value in method_specs:
+                    for seed_index, model_seed in enumerate(seeds):
+                        ordinal += 1
+                        seed_offset = (
+                            0.0
+                            if model_seed is None
+                            else (-0.3, 0.0, 0.3)[seed_index]
+                        )
+                        record = _record(
+                            method,
+                            "completed",
+                            ordinal=ordinal,
+                            mechanism=mechanism,
+                            biological_id=biological_id,
+                            technical_view=technical_view,
+                            model_seed=model_seed,
+                        )
+                        record["run"]["truth_kind"] = truth_kind
+                        values = {
+                            "mse": rank_value + view_offset + seed_offset,
+                            "mse_dropout": pareto_value + view_offset + seed_offset,
+                            "gnrmse": rank_value + view_offset + seed_offset,
+                            "mse_pre_dropout_zero": (
+                                pareto_value + view_offset + seed_offset
+                            ),
+                            "corr_err": pareto_value + view_offset + seed_offset,
+                            "mse_non_dropout_nonzero": (
+                                pareto_value + view_offset + seed_offset
+                            ),
+                        }
+                        record["metrics"] = [
+                            _metric_row(
+                                method=method,
+                                mechanism=mechanism,
+                                biological_id=biological_id,
+                                technical_view=technical_view,
+                                dataset_id=record["run"]["dataset_id"],
+                                model_seed=model_seed,
+                                metric=metric,
+                                value=(
+                                    None
+                                    if metric == "mse_pre_dropout_zero"
+                                    and truth_kind == "exact_continuous"
+                                    else values[metric]
+                                ),
+                                status=(
+                                    "unavailable"
+                                    if metric == "mse_pre_dropout_zero"
+                                    and truth_kind == "exact_continuous"
+                                    else "completed"
+                                ),
+                                reason=(
+                                    structural_reason
+                                    if metric == "mse_pre_dropout_zero"
+                                    and truth_kind == "exact_continuous"
+                                    else None
+                                ),
+                            )
+                            for metric in CLAIM_METRICS
+                        ]
+                        records.append(record)
+    if failed_method is not None:
+        failed = next(
+            record
+            for record in records
+            if record["run"]["method_id"] == failed_method
+        )
+        failed["run"]["status"] = "failed"
+        failed["run"]["reason"] = "algorithm_failure"
+        for metric in failed["metrics"]:
+            metric["value"] = None
+            metric["n"] = 0
+            metric["status"] = "failed"
+            metric["reason"] = "algorithm_failure"
+    return records
+
+
+def _claim_analysis(records: list[dict[str, Any]]) -> dict[str, object]:
+    direction_body = {
+        "schema_version": 1,
+        "status": "validated",
+        "reason": None,
+        "favorable_direction": "lower",
+        "metrics": sorted(set(CLAIM_METRICS)),
+        "authority": {
+            "source": "synthetic_frozen_selection_gate_fixture",
+            "method_commit": "f" * 40,
+            "rank_metrics": list(CLAIM_RANK_METRICS),
+            "pareto_metrics": list(CLAIM_PARETO_METRICS),
+        },
+    }
+    return build_final_analysis(
+        records,
+        protocol={
+            "schema_version": 1,
+            "primary_metrics": list(CLAIM_PRIMARY_METRICS),
+        },
+        selection_contract={
+            "schema_version": 1,
+            "candidate_method_id": "maskimpute",
+            "required_comparator_ids": ["observed", "dca"],
         },
         input_bindings={
             "planned_run_count": len(records),
@@ -1947,6 +2105,129 @@ def test_direction_source_lookup_disables_git_replace_objects(tmp_path: Path) ->
 
     assert observed_blob == original_blob
     assert observed_raw == original_raw
+
+
+def test_reconstruction_claim_gate_collapses_seeds_then_views_and_uses_exact_authority() -> None:
+    report = _claim_analysis(_claim_panel())
+
+    gate = report["reconstruction_claim_gate"]
+    assert gate["status"] == "passed"
+    assert gate["reason"] is None
+    assert gate["candidate_method_id"] == "maskimpute"
+    assert gate["required_comparator_ids"] == ["observed", "dca"]
+    assert [row["metric"] for row in gate["rank_gates"]] == list(
+        CLAIM_RANK_METRICS
+    )
+    assert all(row["status"] == "passed" for row in gate["rank_gates"])
+    assert all(
+        row["median_biological_draw_rank"] == pytest.approx(1.0)
+        for row in gate["rank_gates"]
+    )
+    assert all(row["n_biological_draws"] == 4 for row in gate["rank_gates"])
+    assert gate["pareto_gate"] == {
+        "complete_method_ids": ["maskimpute", "observed", "dca"],
+        "dimensions": list(CLAIM_PARETO_METRICS),
+        "dominated_by": [],
+        "non_dominated": True,
+        "reason": None,
+        "status": "passed",
+    }
+    candidate_mse = _matching(
+        gate["draw_collapsed_method_summaries"],
+        method_id="maskimpute",
+        metric="mse",
+    )
+    assert candidate_mse == {
+        "median": pytest.approx(1.0),
+        "method_id": "maskimpute",
+        "metric": "mse",
+        "n_biological_draws": 4,
+        "status": "complete",
+    }
+    strongest = _matching(
+        gate["strongest_applicable_comparators"], metric="mse"
+    )
+    assert strongest == {
+        "median": pytest.approx(1.5),
+        "method_id": "dca",
+        "metric": "mse",
+        "n_biological_draws": 4,
+        "reason": None,
+        "status": "ok",
+        "tied_method_ids": ["dca", "observed"],
+    }
+
+
+def test_reconstruction_claim_gate_marks_complete_rank_and_pareto_failures_failed() -> None:
+    rank_report = _claim_analysis(_claim_panel(candidate_mse=3.0))
+    rank_gate = rank_report["reconstruction_claim_gate"]
+    assert rank_gate["status"] == "failed"
+    assert _matching(rank_gate["rank_gates"], metric="mse")["status"] == "failed"
+    assert _matching(rank_gate["rank_gates"], metric="gnrmse")["status"] == (
+        "failed"
+    )
+
+    pareto_report = _claim_analysis(_claim_panel(candidate_pareto=3.0))
+    pareto_gate = pareto_report["reconstruction_claim_gate"]
+    assert pareto_gate["status"] == "failed"
+    assert pareto_gate["pareto_gate"]["status"] == "failed"
+    assert pareto_gate["pareto_gate"]["non_dominated"] is False
+    assert pareto_gate["pareto_gate"]["dominated_by"] == ["dca", "observed"]
+
+
+def test_reconstruction_claim_gate_marks_required_comparator_failure_unavailable() -> None:
+    report = _claim_analysis(_claim_panel(failed_method="dca"))
+
+    gate = report["reconstruction_claim_gate"]
+    assert gate["status"] == "unavailable"
+    assert gate["reason"] == "incomplete_final_claim_denominator"
+    assert all(row["status"] == "unavailable" for row in gate["rank_gates"])
+    assert gate["pareto_gate"]["status"] == "unavailable"
+    assert gate["pareto_gate"]["reason"] == "incomplete_metric_denominator"
+
+
+def test_reconstruction_claim_gate_rejects_a_missing_candidate_seed_view() -> None:
+    records = _claim_panel()
+    missing_index = next(
+        index
+        for index, record in enumerate(records)
+        if record["run"]["method_id"] == "maskimpute"
+        and record["run"]["mechanism"] == "symsim"
+        and record["run"]["biological_id"] == "symsim-draw-01"
+        and record["run"]["technical_view"] == "moderate"
+        and record["run"]["model_seed"] == 44
+    )
+    del records[missing_index]
+
+    gate = _claim_analysis(records)["reconstruction_claim_gate"]
+
+    assert gate["status"] == "unavailable"
+    assert gate["reason"] == "incomplete_final_claim_denominator"
+
+
+def test_reconstruction_claim_gate_uses_tie_aware_average_rank() -> None:
+    report = _claim_analysis(
+        _claim_panel(candidate_mse=1.5, candidate_pareto=1.5)
+    )
+
+    gate = report["reconstruction_claim_gate"]
+    assert gate["status"] == "passed"
+    assert all(
+        row["median_biological_draw_rank"] == pytest.approx(2.0)
+        for row in gate["rank_gates"]
+    )
+    assert all(row["status"] == "passed" for row in gate["rank_gates"])
+
+
+def test_reconstruction_claim_gate_accepts_only_exact_structural_reason() -> None:
+    report = _claim_analysis(
+        _claim_panel(structural_reason="truth_unavailable")
+    )
+
+    gate = report["reconstruction_claim_gate"]
+    assert gate["status"] == "unavailable"
+    assert gate["reason"] == "incomplete_final_claim_denominator"
+    assert gate["pareto_gate"]["status"] == "unavailable"
 
 
 def test_prezero_score_evidence_is_a_separate_complete_descriptive_family() -> None:
