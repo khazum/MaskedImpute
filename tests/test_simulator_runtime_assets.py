@@ -43,8 +43,34 @@ SOURCE_RECEIPTS = tuple(
     {
         "schema_version": 1,
         "source_id": source_id,
+        "role": (
+            "semisynthetic_source" if source_id == "baron-pancreas-umi" else "mechanism"
+        ),
+        "source_type": "data" if source_id == "baron-pancreas-umi" else "git",
+        "source_url": f"https://example.invalid/{source_id}",
+        "revision": f"fixture-{source_id}",
+        "license": "MIT",
+        "citation_doi": "10.0000/fixture",
+        "ledger_sha256": SOURCE_LEDGER_SHA256,
         "resolved_revision": f"fixture-{source_id}",
-        "verified_checksum": {"algorithm": "fixture", "value": "a" * 64},
+        "verified_checksum": (
+            None
+            if source_id == "baron-pancreas-umi"
+            else {"algorithm": "fixture", "value": "a" * 64}
+        ),
+        **(
+            {
+                "artifacts": [
+                    {
+                        "name": "fixture-data.tar",
+                        "sha256": "a" * 64,
+                        "size_bytes": 128,
+                    }
+                ]
+            }
+            if source_id == "baron-pancreas-umi"
+            else {}
+        ),
     }
     for source_id in ("symsim", "sergio", "sparsim", "baron-pancreas-umi")
 )
@@ -139,6 +165,36 @@ def test_semantic_receipt_excludes_machine_specific_paths(
     assert str(first_paths[0]) not in encoded
     assert str(first_paths[1]) not in encoded
     assert first.semantic_sha256 == canonical_sha256(first.semantic_receipt)
+    baron = next(
+        receipt
+        for receipt in first.semantic_receipt["source_receipts"]
+        if receipt["source_id"] == "baron-pancreas-umi"
+    )
+    assert baron["artifacts"] == [{"name": "fixture-data.tar", "sha256": "a" * 64}]
+
+
+def test_runtime_assets_context_releases_the_private_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _repository(tmp_path)
+    external_root, r_environment = _external_assets(tmp_path, "context")
+    _mock_semantics(monkeypatch)
+
+    with load_simulator_runtime_assets(
+        repository,
+        external_root=external_root,
+        r_environment=r_environment,
+        require_outside_repository=True,
+    ) as assets:
+        snapshot_root = Path(assets._snapshot_owner.name)
+        assert snapshot_root.is_dir()
+        assert assets.semantic_sha256 == canonical_sha256(assets.semantic_receipt)
+
+    assert not snapshot_root.exists()
+    assets.close()
+    with pytest.raises(SimulatorRuntimeAssetsError, match="unavailable|invalid|path"):
+        revalidate_simulator_runtime_assets(assets)
 
 
 def test_final_runtime_paths_reject_repository_defaults_and_symlink_components(

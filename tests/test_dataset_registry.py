@@ -18,6 +18,7 @@ from maskimpute_benchmark.datasets import (
     generate_dataset_panel,
     load_development_panel,
     validate_dataset_status,
+    validate_evaluated_final_dataset_status,
 )
 from maskimpute_benchmark.protocol import canonical_sha256, file_sha256, load_protocol
 from maskimpute_benchmark.schema import benchmark_dataset_sha256
@@ -31,10 +32,12 @@ from maskimpute_benchmark.simulators import (
     simulation_scientific_identity,
     validate_paired_simulation_requests,
 )
+from maskimpute_benchmark.sources import load_source_ledger
 from maskimpute_benchmark.study import (
     assert_final_runnable,
     freeze_round,
     materialize_final,
+    record_final_evaluation,
     record_incremental_results,
 )
 
@@ -89,7 +92,11 @@ def panel_repo(tmp_path: Path) -> Path:
         json.dumps(_panel_payload(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    for name in ("sources.json", "simulator_runtime_assets.json"):
+    for name in (
+        "sources.json",
+        "simulator_runtime_assets.json",
+        "simulator_r_environment.lock.json",
+    ):
         (repo / f"study/{name}").write_bytes(Path(f"study/{name}").read_bytes())
     _git(repo, "init")
     _git(repo, "config", "user.name", "Dataset Registry Test")
@@ -199,6 +206,46 @@ def _install_fake_adapters(monkeypatch: pytest.MonkeyPatch, adapter) -> None:
     )
 
 
+def _path_free_runtime_source_receipts(repo: Path) -> tuple[dict[str, object], ...]:
+    ledger = load_source_ledger(repo / "study/sources.json")
+    selected = {
+        source.id: source
+        for source in ledger.sources
+        if source.id in datasets_module._RUNTIME_SOURCE_IDS
+    }
+    receipts: list[dict[str, object]] = []
+    for source_id in datasets_module._RUNTIME_SOURCE_IDS:
+        source = selected[source_id]
+        receipt: dict[str, object] = {
+            "schema_version": 1,
+            "source_id": source.id,
+            "role": source.role,
+            "source_type": source.source_type,
+            "source_url": source.url,
+            "revision": source.revision,
+            "license": source.license,
+            "citation_doi": source.citation_doi,
+            "ledger_sha256": ledger.sha256,
+            "resolved_revision": source.revision,
+            "verified_checksum": (
+                None
+                if source.expected_checksum is None
+                else source.expected_checksum.as_dict()
+            ),
+        }
+        if source.source_type == "data":
+            receipt["artifacts"] = [
+                {
+                    "name": artifact.name,
+                    "sha256": artifact.expected_checksum.value,
+                    "size_bytes": 1,
+                }
+                for artifact in source.artifacts
+            ]
+        receipts.append(receipt)
+    return tuple(receipts)
+
+
 def _fake_final_runtime_paths(
     repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> dict[str, Path]:
@@ -211,8 +258,8 @@ def _fake_final_runtime_paths(
         runtime_assets_module,
         "_collect_source_receipts",
         lambda _ledger, _root: (
-            "5a6f60c5de980a20eb118d0b82913112650f1956562aec4c92d37d8314c9f29e",
-            ({"source_id": "fixture", "sha256": "a" * 64},),
+            load_source_ledger(repo / "study/sources.json").sha256,
+            _path_free_runtime_source_receipts(repo),
         ),
     )
     authority = json.loads(
@@ -223,7 +270,11 @@ def _fake_final_runtime_paths(
         "_r_environment_receipt",
         lambda _repository, _path, _authority: {
             "environment_id": "simulator-r",
-            "inventory_sha256": "e" * 64,
+            "inventory_sha256": json.loads(
+                (repo / authority["r_environment"]["lock_path"]).read_text(
+                    encoding="utf-8"
+                )
+            )["environments"][0]["inventory_sha256"],
             "lock_file_sha256": authority["r_environment"]["lock_file_sha256"],
             "schema": "maskimpute-simulator-r-runtime-receipt-v1",
         },
@@ -505,6 +556,143 @@ def test_final_generation_consumes_only_claimed_seeds_and_writes_under_results(
     assert not (panel_repo / "artifacts/external").exists()
     assert not (panel_repo / "artifacts/envs").exists()
     load_final_manifest_claim(panel_repo, round_dir)
+
+
+def test_evaluated_final_status_revalidates_path_free_runtime_and_source_authority(
+    panel_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    round_dir = _prepare_final_round(panel_repo)
+    assert_final_runnable(panel_repo, round_dir)
+    calls: list[tuple[tuple[SimulationRequest, ...], object]] = []
+    _install_fake_adapters(monkeypatch, _fake_adapter_factory(calls))
+    runtime_paths = _fake_final_runtime_paths(panel_repo, tmp_path, monkeypatch)
+    status = generate_dataset_panel(
+        repo=panel_repo,
+        namespace="final",
+        round_dir=round_dir,
+        **runtime_paths,
+    )
+    assert len(calls) == 20
+
+    freeze = study_module._validate_freeze(round_dir, panel_repo)
+    materialization, seed_manifest = study_module._validate_seed_manifest(
+        round_dir,
+        freeze,
+    )
+    execution_claim = study_module._validate_execution_claim_record(
+        round_dir,
+        freeze,
+        materialization,
+    )
+    journal = study_module._validate_result_journal(
+        panel_repo,
+        round_dir,
+        freeze,
+        materialization,
+        execution_claim,
+    )
+    cumulative = journal["cumulative_result_files"]
+    assert isinstance(cumulative, list)
+    record_final_evaluation(
+        round_dir,
+        {"result_files": cumulative},
+        repo=panel_repo,
+    )
+    _materialization, evaluated_claim, _receipt = (
+        study_module._validate_state_record_chain(
+            round_dir,
+            freeze,
+            expected_state="evaluated",
+        )
+    )
+    assert evaluated_claim == execution_claim
+    status_path = round_dir / "results/dataset_status.json"
+
+    observed = validate_evaluated_final_dataset_status(
+        status_path,
+        repo=panel_repo,
+        round_dir=round_dir,
+        protocol_path=panel_repo / str(freeze["protocol_path"]),
+        execution_claim=execution_claim,
+        seed_manifest=seed_manifest,
+    )
+
+    assert observed == status
+    assert all(
+        "size_bytes" not in artifact
+        for receipt in status["runtime_assets_receipt"]["source_receipts"]
+        for artifact in receipt.get("artifacts", [])
+    )
+    size_tampered = json.loads(json.dumps(status))
+    data_receipt = next(
+        receipt
+        for receipt in size_tampered["runtime_assets_receipt"]["source_receipts"]
+        if receipt["source_type"] == "data"
+    )
+    data_receipt["artifacts"][0]["size_bytes"] = 999_999_999
+    size_tampered["runtime_assets_sha256"] = canonical_sha256(
+        size_tampered["runtime_assets_receipt"]
+    )
+    frozen_protocol = load_protocol(panel_repo / "study/protocol.json")
+    development_panel = load_development_panel(
+        panel_repo / "study/development_panel.json",
+        frozen_protocol,
+    )
+    size_tampered["design_sha256"] = canonical_sha256(
+        {
+            "schema": "maskimpute-dataset-panel-design-v1",
+            "namespace": "final",
+            "protocol_sha256": size_tampered["protocol_sha256"],
+            "development_panel_sha256": development_panel.file_sha256,
+            "seed_source_sha256": size_tampered["seed_source_sha256"],
+            "execution_claim_id": size_tampered["execution_claim_id"],
+            "round_id": size_tampered["round_id"],
+            "runtime_assets_sha256": size_tampered["runtime_assets_sha256"],
+        }
+    )
+    size_tampered["manifest_sha256"] = canonical_sha256(
+        {key: value for key, value in size_tampered.items() if key != "manifest_sha256"}
+    )
+    status_path.write_text(
+        json.dumps(size_tampered, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DatasetRegistryError, match="source receipt|artifact"):
+        validate_evaluated_final_dataset_status(
+            status_path,
+            repo=panel_repo,
+            round_dir=round_dir,
+            protocol_path=panel_repo / str(freeze["protocol_path"]),
+            execution_claim=execution_claim,
+            seed_manifest=seed_manifest,
+        )
+
+    tampered = json.loads(json.dumps(status))
+    source_receipt = tampered["runtime_assets_receipt"]["source_receipts"][0]
+    source_receipt["revision"] = "coherently-rehashed-runtime-source"
+    source_receipt["resolved_revision"] = "coherently-rehashed-runtime-source"
+    tampered["runtime_assets_sha256"] = canonical_sha256(
+        tampered["runtime_assets_receipt"]
+    )
+    tampered["manifest_sha256"] = canonical_sha256(
+        {key: value for key, value in tampered.items() if key != "manifest_sha256"}
+    )
+    status_path.write_text(
+        json.dumps(tampered, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DatasetRegistryError, match="source receipt differs"):
+        validate_evaluated_final_dataset_status(
+            status_path,
+            repo=panel_repo,
+            round_dir=round_dir,
+            protocol_path=panel_repo / str(freeze["protocol_path"]),
+            execution_claim=execution_claim,
+            seed_manifest=seed_manifest,
+        )
 
 
 def test_final_generation_requires_explicit_runtime_asset_paths(

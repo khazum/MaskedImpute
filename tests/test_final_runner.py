@@ -4,7 +4,9 @@ from dataclasses import asdict
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
@@ -21,6 +23,34 @@ MECHANISMS = ("symsim", "sergio", "sparsim", "semisynthetic")
 VIEWS = ("moderate", "severe")
 
 
+def _read_only_tree_snapshot(root: Path) -> tuple[tuple[object, ...], ...]:
+    rows: list[tuple[object, ...]] = []
+    for path in sorted(root.rglob("*")):
+        metadata = path.lstat()
+        relative = path.relative_to(root).as_posix()
+        payload_sha256 = (
+            hashlib.sha256(path.read_bytes()).hexdigest()
+            if stat.S_ISREG(metadata.st_mode)
+            else None
+        )
+        symlink_target = os.readlink(path) if stat.S_ISLNK(metadata.st_mode) else None
+        rows.append(
+            (
+                relative,
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_nlink,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+                payload_sha256,
+                symlink_target,
+            )
+        )
+    return tuple(rows)
+
+
 def _git(repository: Path, *arguments: str) -> None:
     subprocess.run(
         ("git", *arguments),
@@ -31,7 +61,11 @@ def _git(repository: Path, *arguments: str) -> None:
     )
 
 
-def _claimed_lifecycle_round(tmp_path: Path) -> tuple[Path, Path]:
+def _claimed_lifecycle_round(
+    tmp_path: Path,
+    *,
+    seed_count: int = 4,
+) -> tuple[Path, Path]:
     from maskimpute_benchmark.study import (
         assert_final_runnable,
         freeze_round,
@@ -66,6 +100,9 @@ def _claimed_lifecycle_round(tmp_path: Path) -> tuple[Path, Path]:
     (study / "trajectory_panel.json").write_bytes(
         default_trajectory_authority_path().read_bytes()
     )
+    (study / "development_panel.json").write_bytes(
+        Path("study/development_panel.json").read_bytes()
+    )
     _git(repository, "add", ".")
     _git(repository, "commit", "-m", "freeze final runner lifecycle fixture")
     round_dir = repository / "artifacts/study/round-001"
@@ -76,7 +113,7 @@ def _claimed_lifecycle_round(tmp_path: Path) -> tuple[Path, Path]:
         repository / "protocol.json",
         environment_path=repository / "environment.lock",
     )
-    materialize_final(round_dir, seed_count=4, repo=repository)
+    materialize_final(round_dir, seed_count=seed_count, repo=repository)
     assert_final_runnable(repository, round_dir)
     (round_dir / "results").mkdir()
     return repository, round_dir
@@ -126,6 +163,11 @@ def _registry() -> MethodRegistry:
             for method_id in ("observed", "maskimpute", "magic", "scimpute")
         ),
     )
+
+
+def _observed_only_registry() -> MethodRegistry:
+    source = load_method_registry(METHODS)
+    return MethodRegistry(schema_version=1, methods=(source.by_id("observed"),))
 
 
 def _receipt(registry: MethodRegistry) -> dict[str, object]:
@@ -202,6 +244,7 @@ def _receipt(registry: MethodRegistry) -> dict[str, object]:
 def _final_authority_receipt(
     repository: Path,
     monkeypatch: pytest.MonkeyPatch,
+    registry: MethodRegistry | None = None,
 ) -> dict[str, object]:
     from maskimpute import calibration as calibration_module
 
@@ -223,7 +266,7 @@ def _final_authority_receipt(
         "CalibrationArtifact",
         FakeCalibrationArtifact,
     )
-    frozen = _receipt(_registry())
+    frozen = _receipt(_registry() if registry is None else registry)
     frozen["artifact_bindings"] = {
         "selection_contract": {
             "path": "study/selection_contract.json",
@@ -502,6 +545,156 @@ def test_registered_trajectory_dataset_publication_crash_rebuilds_and_resumes(
     dataset.unlink()
     with pytest.raises(FinalRunnerContractError, match="dataset.*unavailable"):
         materialize_prepared_trajectory_dataset(repository, round_dir)
+
+
+def test_load_prepared_trajectory_dataset_is_strictly_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    expected = final_runner.materialize_prepared_trajectory_dataset(
+        repository,
+        round_dir,
+    )
+    before = _read_only_tree_snapshot(repository)
+
+    def forbid_mutation(*_args, **_kwargs):
+        raise AssertionError("read-only trajectory load attempted mutation")
+
+    monkeypatch.setattr(
+        final_runner,
+        "generate_registered_trajectory_dataset",
+        forbid_mutation,
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_remove_unreceipted_trajectory_dataset",
+        forbid_mutation,
+    )
+    monkeypatch.setattr(
+        final_runner.CheckpointStore,
+        "_publish_immutable",
+        forbid_mutation,
+    )
+
+    observed = final_runner.load_prepared_trajectory_dataset(repository, round_dir)
+
+    assert observed.binding == expected.binding
+    assert observed.receipt == expected.receipt
+    assert observed.prepared.method_input == expected.prepared.method_input
+    assert _read_only_tree_snapshot(repository) == before
+
+
+@pytest.mark.parametrize(
+    "missing_relative",
+    (
+        "results/trajectory/dataset/evaluator.h5ad",
+        "results/trajectory/dataset/dataset_receipt.json",
+    ),
+)
+def test_load_prepared_trajectory_dataset_never_recovers_a_missing_half(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_relative: str,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    final_runner.materialize_prepared_trajectory_dataset(repository, round_dir)
+    missing = round_dir / missing_relative
+    missing.unlink()
+    before = _read_only_tree_snapshot(repository)
+
+    def forbid_mutation(*_args, **_kwargs):
+        raise AssertionError("missing trajectory half was regenerated")
+
+    monkeypatch.setattr(
+        final_runner,
+        "generate_registered_trajectory_dataset",
+        forbid_mutation,
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_remove_unreceipted_trajectory_dataset",
+        forbid_mutation,
+    )
+    monkeypatch.setattr(
+        final_runner.CheckpointStore,
+        "_publish_immutable",
+        forbid_mutation,
+    )
+
+    with pytest.raises(final_runner.FinalRunnerContractError, match="dataset.*pair"):
+        final_runner.load_prepared_trajectory_dataset(repository, round_dir)
+
+    assert not missing.exists()
+    assert _read_only_tree_snapshot(repository) == before
+
+
+def test_load_prepared_trajectory_dataset_rejects_a_receipt_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    final_runner.materialize_prepared_trajectory_dataset(repository, round_dir)
+    receipt_path = round_dir / "results/trajectory/dataset/dataset_receipt.json"
+    raced_raw = b'{"raced":true}\n'
+    real_read = final_runner._read_unique_file
+    raced = False
+
+    def replace_after_first_receipt_read(path, name, **kwargs):
+        nonlocal raced
+        raw = real_read(path, name, **kwargs)
+        if path == receipt_path and not raced:
+            raced = True
+            replacement = receipt_path.with_name("raced-receipt.json")
+            replacement.write_bytes(raced_raw)
+            os.replace(replacement, receipt_path)
+        return raw
+
+    monkeypatch.setattr(
+        final_runner, "_read_unique_file", replace_after_first_receipt_read
+    )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="changed|receipt",
+    ):
+        final_runner.load_prepared_trajectory_dataset(repository, round_dir)
+
+    assert raced
+    assert receipt_path.read_bytes() == raced_raw
 
 
 def test_registered_trajectory_dataset_before_journal_reconciles_and_resumes(
@@ -963,8 +1156,7 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import maskimpute_benchmark.methods as methods
-    import maskimpute_benchmark.publication_freeze as publication_freeze
+    import maskimpute_benchmark.final_runner as final_runner
     from maskimpute_benchmark.final_runner import (
         FinalResultStore,
         _owned_final_result_file_manifest,
@@ -976,9 +1168,16 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
     )
     from maskimpute_benchmark.runner import AdapterOutcome
 
-    repository, round_dir, registered, authority, plan = _trajectory_store_inputs(
-        tmp_path
-    )
+    fixture = _exact_primary_trajectory_chain_inputs(tmp_path, monkeypatch)
+    repository = fixture["repository"]
+    round_dir = fixture["round_dir"]
+    registered = fixture["registered"]
+    authority = fixture["trajectory"]
+    plan = fixture["trajectory_plan"]
+    registry = fixture["registry"]
+    primary_plan = fixture["primary_plan"]
+    assert isinstance(repository, Path)
+    assert isinstance(round_dir, Path)
     prepared = {registered.binding.dataset_id: registered.prepared}
     store = FinalResultStore(
         round_dir / "results/trajectory/execution",
@@ -1000,7 +1199,7 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
 
     manifest = execute_trajectory_plan(
         plan,
-        _registry(),
+        registry,
         prepared,
         authority,
         executor,
@@ -1036,15 +1235,15 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
         for row in cumulative
         if row["path"].startswith("results/trajectory/")
     }
+    before_replay = _read_only_tree_snapshot(repository)
+
+    def forbid_materialization(*_args, **_kwargs):
+        raise AssertionError("trajectory evidence replay attempted materialization")
+
     monkeypatch.setattr(
-        publication_freeze,
-        "validate_frozen_method",
-        lambda _repository: _receipt(_registry()),
-    )
-    monkeypatch.setattr(
-        methods,
-        "load_method_registry",
-        lambda _path: _registry(),
+        final_runner,
+        "materialize_prepared_trajectory_dataset",
+        forbid_materialization,
     )
     assert (
         _rederive_trajectory_evidence_before_receipt(
@@ -1052,10 +1251,11 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
             round_dir,
             evidence,
             cumulative,
-            primary_final_plan_sha256="a" * 64,
+            primary_final_plan_sha256=primary_plan.plan_sha256,
         )
         == evidence
     )
+    assert _read_only_tree_snapshot(repository) == before_replay
     stdout = next(
         round_dir / row["path"]
         for row in evidence["result_files"]
@@ -1069,7 +1269,7 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
             round_dir,
             evidence,
             fresh_files,
-            primary_final_plan_sha256="a" * 64,
+            primary_final_plan_sha256=primary_plan.plan_sha256,
         )
 
 
@@ -3127,6 +3327,151 @@ def test_load_prepared_final_panel_rejects_round_outside_repository(
         load_prepared_final_panel(repository, outside)
 
 
+def test_load_prepared_final_panel_supports_validated_evaluated_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.datasets as datasets
+    import maskimpute_benchmark.final_runner as final_runner
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    round_dir.mkdir(parents=True)
+    bindings = _bindings()
+    prepared = {binding.dataset_id: object() for binding in bindings}
+    snapshots: list[str] = []
+
+    def running_only(*_args, **_kwargs):
+        raise RuntimeError("running claim is unavailable after evaluation")
+
+    def evaluated_snapshot(_repository, _round):
+        snapshots.append("stable-evaluated-snapshot")
+        return "stable-evaluated-snapshot"
+
+    monkeypatch.setattr(datasets, "validate_dataset_status", running_only)
+    monkeypatch.setattr(
+        final_runner,
+        "_validated_evaluated_final_round_snapshot",
+        evaluated_snapshot,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_load_unclaimed_prepared_final_panel",
+        lambda _repository, _round: (bindings, prepared),
+    )
+
+    observed = final_runner.load_prepared_final_panel(
+        repository,
+        round_dir,
+        allow_evaluated=True,
+    )
+
+    assert observed == (bindings, prepared)
+    assert snapshots == [
+        "stable-evaluated-snapshot",
+        "stable-evaluated-snapshot",
+    ]
+
+
+def test_evaluated_final_panel_rejects_journaled_status_for_another_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.datasets import (
+        DatasetRegistryError,
+        validate_evaluated_final_dataset_status,
+    )
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.study as study
+    from maskimpute_benchmark.study import record_final_evaluation
+
+    repository, round_dir = _claimed_lifecycle_round(tmp_path, seed_count=60)
+    claim = json.loads((round_dir / "execution_claim.json").read_text(encoding="utf-8"))
+    bindings = _bindings()
+    rows = [
+        {
+            **asdict(binding),
+            "status": "completed",
+        }
+        for binding in bindings
+    ]
+    body = {
+        "schema_version": 1,
+        "namespace": "final",
+        "status": "completed",
+        "protocol_sha256": claim["protocol_sha256"],
+        "design_sha256": "3" * 64,
+        "seed_source_sha256": claim["seed_manifest_sha256"],
+        "execution_claim_id": "coherently-rehashed-other-claim",
+        "round_id": round_dir.name,
+        "independent_unit_count": 20,
+        "completed_count": 40,
+        "failed_count": 0,
+        "runtime_assets_sha256": "5" * 64,
+        "runtime_assets_receipt": {"forged": "but-journaled"},
+        "rows": rows,
+    }
+    status = {**body, "manifest_sha256": canonical_sha256(body)}
+    status_path = round_dir / "results/dataset_status.json"
+    status_path.write_text(
+        json.dumps(status, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    record_final_evaluation(
+        round_dir,
+        {
+            "result_files": [
+                {
+                    "path": "results/dataset_status.json",
+                    "sha256": hashlib.sha256(status_path.read_bytes()).hexdigest(),
+                }
+            ]
+        },
+        repo=repository,
+    )
+    prepared = {binding.dataset_id: object() for binding in bindings}
+    monkeypatch.setattr(
+        final_runner,
+        "_prepare_final_panel_bindings",
+        lambda _round, observed: prepared
+        if tuple(item.dataset_id for item in observed) == tuple(prepared)
+        else {},
+    )
+    freeze = study._validate_freeze(round_dir, repository)
+    materialization, execution_claim, _receipt = study._validate_state_record_chain(
+        round_dir,
+        freeze,
+        expected_state="evaluated",
+    )
+    repeated_materialization, seed_manifest = study._validate_seed_manifest(
+        round_dir,
+        freeze,
+    )
+    assert materialization == repeated_materialization
+    assert execution_claim is not None
+
+    with pytest.raises(DatasetRegistryError, match="claim or round"):
+        validate_evaluated_final_dataset_status(
+            status_path,
+            repo=repository,
+            round_dir=round_dir,
+            protocol_path=repository / str(freeze["protocol_path"]),
+            execution_claim=execution_claim,
+            seed_manifest=seed_manifest,
+        )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="claim|design|dataset status",
+    ):
+        final_runner.load_prepared_final_panel(
+            repository,
+            round_dir,
+            allow_evaluated=True,
+        )
+
+
 def test_materialize_final_execution_authority_is_frozen_and_resumable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3389,18 +3734,26 @@ def test_trajectory_authority_before_journal_reconciles_and_resumes(
     assert load_final_manifest_claim(repository, round_dir).round_id == "round-001"
 
 
-def test_trajectory_authority_chain_rejects_coordinated_primary_identity_drift(
+def _exact_primary_trajectory_chain_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+) -> dict[str, object]:
+    from types import SimpleNamespace
+
     import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.methods as methods
+    import maskimpute_benchmark.publication_freeze as publication_freeze
 
     repository, round_dir = _claimed_lifecycle_round(tmp_path)
-    frozen = _final_authority_receipt(repository, monkeypatch)
+    registry = _observed_only_registry()
+    frozen = _final_authority_receipt(repository, monkeypatch, registry)
     claim = json.loads((round_dir / "execution_claim.json").read_text(encoding="utf-8"))
     claim_sha256 = canonical_sha256(claim)
     environment_sha256 = "8" * 64
-    primary_plan_sha256 = "a" * 64
+    registered = final_runner.materialize_prepared_trajectory_dataset(
+        repository,
+        round_dir,
+    )
     primary = final_runner.materialize_final_execution_authority(
         repository,
         round_dir,
@@ -3409,49 +3762,32 @@ def test_trajectory_authority_chain_rejects_coordinated_primary_identity_drift(
         execution_environment_sha256=environment_sha256,
         dataset_manifest_sha256="1" * 64,
     )
-    primary_manifest_body = {
-        "schema_version": 1,
-        "status": "completed",
-        "plan_sha256": primary_plan_sha256,
-        "input_hashes": {
-            "frozen_method_sha256": frozen["payload_sha256"],
-            "method_registry_sha256": "2" * 64,
-            "runtime_lock_sha256": frozen["runtime_lock_sha256"],
-            "dataset_manifest_sha256": "1" * 64,
-            "dataset_design_sha256": "3" * 64,
-            "dataset_seed_source_sha256": "4" * 64,
-            "protocol_sha256": "5" * 64,
-            "execution_claim_sha256": claim_sha256,
-            "execution_environment_sha256": environment_sha256,
-            "execution_authority_sha256": primary.authority_sha256,
-        },
-        "planned_run_count": 0,
-        "recorded_run_count": 0,
-        "records": [],
-        "artifact_storage": {
-            "evaluator_output_compression_level": 6,
-            "evaluator_output_encoding": "zlib_raw_f64_v1",
-            "native_output_retention": "omitted_redundant_final_output",
-            "p_pre_zero_compression_level": 6,
-            "p_pre_zero_encoding": "zlib_raw_f64_v1",
-        },
-    }
-    primary_manifest = {
-        **primary_manifest_body,
-        "manifest_sha256": canonical_sha256(primary_manifest_body),
-    }
-    primary_manifest_path = (
-        round_dir / "results/final/execution/execution_manifest.json"
+    bindings = _bindings()
+    primary_plan = final_runner.build_final_execution_plan(
+        frozen,
+        registry,
+        bindings,
+        execution_claim_sha256=claim_sha256,
+        execution_environment_sha256=environment_sha256,
+        execution_authority_sha256=primary.authority_sha256,
     )
-    primary_manifest_path.parent.mkdir(parents=True)
-    primary_manifest_path.write_text(
-        json.dumps(primary_manifest, separators=(",", ":"), sort_keys=True) + "\n",
-        encoding="utf-8",
+    prepared = _prepared_for_plan(primary_plan)
+    primary_store = final_runner.FinalResultStore(
+        round_dir / "results/final/execution",
+        primary_plan,
+        prepared,
+        primary,
+        authority_repository=repository,
     )
-    registered = final_runner.materialize_prepared_trajectory_dataset(
-        repository,
-        round_dir,
-    )
+    for entry in primary_plan.entries:
+        primary_store.append(
+            entry,
+            _unavailable_attempt(
+                entry,
+                prepared=prepared[entry.run.dataset_id],
+            ),
+        )
+    primary_manifest = primary_store.finalize()
     trajectory = final_runner.materialize_trajectory_execution_authority(
         repository,
         round_dir,
@@ -3460,21 +3796,247 @@ def test_trajectory_authority_chain_rejects_coordinated_primary_identity_drift(
         primary,
         execution_claim_sha256=claim_sha256,
         execution_environment_sha256=environment_sha256,
-        primary_final_plan_sha256=primary_plan_sha256,
+        primary_final_plan_sha256=primary_plan.plan_sha256,
     )
+    trajectory_plan = final_runner.build_trajectory_execution_plan(
+        frozen,
+        registry,
+        registered,
+        execution_claim_sha256=claim_sha256,
+        execution_environment_sha256=environment_sha256,
+        execution_authority_sha256=trajectory.authority_sha256,
+        primary_final_plan_sha256=primary_plan.plan_sha256,
+    )
+
+    environment = SimpleNamespace(
+        registry_sha256=environment_sha256,
+        runtime_lock_sha256=frozen["runtime_lock_sha256"],
+        full_revalidate=lambda: None,
+    )
+    monkeypatch.setattr(
+        publication_freeze,
+        "validate_frozen_method",
+        lambda selected: frozen if selected == repository else None,
+    )
+    monkeypatch.setattr(
+        methods,
+        "load_method_registry",
+        lambda path: registry if path == repository / "study/methods.json" else None,
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "load_prepared_final_panel",
+        lambda selected, destination, **_kwargs: (
+            (bindings, prepared)
+            if (selected, destination) == (repository, round_dir)
+            else ((), {})
+        ),
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_load_final_execution_environment_registry",
+        lambda selected: environment if selected == repository else None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_validate_final_runtime_lock",
+        lambda selected_frozen, selected_environment: (
+            str(frozen["runtime_lock_sha256"])
+            if (selected_frozen, selected_environment) == (frozen, environment)
+            else None
+        ),
+    )
+    return {
+        "repository": repository,
+        "round_dir": round_dir,
+        "registry": registry,
+        "frozen": frozen,
+        "claim_sha256": claim_sha256,
+        "environment_sha256": environment_sha256,
+        "bindings": bindings,
+        "prepared": prepared,
+        "primary": primary,
+        "primary_plan": primary_plan,
+        "primary_manifest": primary_manifest,
+        "registered": registered,
+        "trajectory": trajectory,
+        "trajectory_plan": trajectory_plan,
+    }
+
+
+def test_trajectory_authority_chain_requires_a_nonzero_exact_primary_denominator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+
+    fixture = _exact_primary_trajectory_chain_inputs(tmp_path, monkeypatch)
+    repository = fixture["repository"]
+    round_dir = fixture["round_dir"]
+    primary = fixture["primary"]
+    primary_plan = fixture["primary_plan"]
+    primary_manifest = fixture["primary_manifest"]
+    assert isinstance(repository, Path)
+    assert isinstance(round_dir, Path)
+    assert len(primary_plan.entries) == 40
+    assert primary_manifest["planned_run_count"] == 40
     assert (
         final_runner._validate_trajectory_primary_authority_chain(
             repository,
             round_dir,
-            primary_final_plan_sha256=primary_plan_sha256,
+            primary_final_plan_sha256=primary_plan.plan_sha256,
         )["primary_execution_authority_sha256"]
         == primary.authority_sha256
     )
 
-    replacement_primary_sha256 = "f" * 64
+    manifest_path = round_dir / "results/final/execution/execution_manifest.json"
+    zero = dict(primary_manifest)
+    zero["planned_run_count"] = 0
+    zero["recorded_run_count"] = 0
+    zero["records"] = []
+    zero_body = {key: value for key, value in zero.items() if key != "manifest_sha256"}
+    zero["manifest_sha256"] = canonical_sha256(zero_body)
+    manifest_path.write_text(
+        json.dumps(zero, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="denominator|manifest|records|incomplete",
+    ):
+        final_runner._validate_trajectory_primary_authority_chain(
+            repository,
+            round_dir,
+            primary_final_plan_sha256=primary_plan.plan_sha256,
+        )
+
+
+def test_trajectory_authority_chain_rechecks_the_exact_panel_after_store_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+
+    import maskimpute_benchmark.final_runner as final_runner
+
+    fixture = _exact_primary_trajectory_chain_inputs(tmp_path, monkeypatch)
+    repository = fixture["repository"]
+    round_dir = fixture["round_dir"]
+    primary_plan = fixture["primary_plan"]
+    assert isinstance(repository, Path)
+    assert isinstance(round_dir, Path)
+    original_loader = final_runner.load_prepared_final_panel
+    calls = 0
+
+    def drifting_panel(selected: Path, destination: Path, **kwargs):
+        nonlocal calls
+        calls += 1
+        bindings, prepared = original_loader(selected, destination, **kwargs)
+        if calls == 1:
+            return bindings, prepared
+        return (
+            (
+                replace(bindings[0], manifest_sha256="9" * 64),
+                *bindings[1:],
+            ),
+            prepared,
+        )
+
+    monkeypatch.setattr(
+        final_runner,
+        "load_prepared_final_panel",
+        drifting_panel,
+    )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="changed|frozen|rederivation|authority",
+    ):
+        final_runner._validate_trajectory_primary_authority_chain(
+            repository,
+            round_dir,
+            primary_final_plan_sha256=primary_plan.plan_sha256,
+        )
+    assert calls == 2
+
+
+def test_trajectory_authority_chain_rejects_coordinated_primary_identity_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+
+    fixture = _exact_primary_trajectory_chain_inputs(tmp_path, monkeypatch)
+    repository = fixture["repository"]
+    round_dir = fixture["round_dir"]
+    frozen = fixture["frozen"]
+    registry = fixture["registry"]
+    bindings = fixture["bindings"]
+    claim_sha256 = fixture["claim_sha256"]
+    environment_sha256 = fixture["environment_sha256"]
+    primary_plan = fixture["primary_plan"]
+    trajectory = fixture["trajectory"]
+    assert isinstance(repository, Path)
+    assert isinstance(round_dir, Path)
+    assert (
+        final_runner._validate_trajectory_primary_authority_chain(
+            repository,
+            round_dir,
+            primary_final_plan_sha256=primary_plan.plan_sha256,
+        )["primary_execution_authority_sha256"]
+        == fixture["primary"].authority_sha256
+    )
+
+    primary_authority_path = (
+        round_dir / "results/final/execution_authority/authority.json"
+    )
+    primary_authority = json.loads(primary_authority_path.read_text(encoding="utf-8"))
+    replacement_base = {"latent_dim": 999}
+    primary_authority["base_configuration"] = replacement_base
+    primary_authority["base_configuration_sha256"] = canonical_sha256(replacement_base)
+    primary_authority_body = {
+        key: value
+        for key, value in primary_authority.items()
+        if key != "authority_sha256"
+    }
+    primary_authority["authority_sha256"] = canonical_sha256(primary_authority_body)
+    primary_authority_path.write_text(
+        json.dumps(primary_authority, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    replacement_primary_sha256 = primary_authority["authority_sha256"]
+    forged_plan = final_runner.build_final_execution_plan(
+        frozen,
+        registry,
+        bindings,
+        execution_claim_sha256=claim_sha256,
+        execution_environment_sha256=environment_sha256,
+        execution_authority_sha256=replacement_primary_sha256,
+    )
+
+    primary_manifest_path = (
+        round_dir / "results/final/execution/execution_manifest.json"
+    )
+    primary_manifest = json.loads(primary_manifest_path.read_text(encoding="utf-8"))
+    primary_manifest["plan_sha256"] = forged_plan.plan_sha256
+    primary_manifest["input_hashes"] = dict(forged_plan.input_hashes)
+    primary_manifest_body = {
+        key: value
+        for key, value in primary_manifest.items()
+        if key != "manifest_sha256"
+    }
+    primary_manifest["manifest_sha256"] = canonical_sha256(primary_manifest_body)
+    primary_manifest_path.write_text(
+        json.dumps(primary_manifest, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
     score_path = repository / trajectory.count_score_manifest_path
     score = json.loads(score_path.read_text(encoding="utf-8"))
     score["primary_execution_authority_sha256"] = replacement_primary_sha256
+    score["primary_final_plan_sha256"] = forged_plan.plan_sha256
     score_body = {key: value for key, value in score.items() if key != "payload_sha256"}
     score["payload_sha256"] = canonical_sha256(score_body)
     score_path.write_text(
@@ -3486,6 +4048,9 @@ def test_trajectory_authority_chain_rejects_coordinated_primary_identity_drift(
     )
     authority = json.loads(trajectory_authority_path.read_text(encoding="utf-8"))
     authority["primary_execution_authority_sha256"] = replacement_primary_sha256
+    authority["primary_final_plan_sha256"] = forged_plan.plan_sha256
+    authority["base_configuration"] = replacement_base
+    authority["base_configuration_sha256"] = canonical_sha256(replacement_base)
     authority["count_score_authority_sha256"] = hashlib.sha256(
         score_path.read_bytes()
     ).hexdigest()
@@ -3500,12 +4065,12 @@ def test_trajectory_authority_chain_rejects_coordinated_primary_identity_drift(
 
     with pytest.raises(
         final_runner.FinalRunnerContractError,
-        match="derived from the primary|primary authority",
+        match="derived from the primary|primary authority|frozen",
     ):
         final_runner._validate_trajectory_primary_authority_chain(
             repository,
             round_dir,
-            primary_final_plan_sha256=primary_plan_sha256,
+            primary_final_plan_sha256=forged_plan.plan_sha256,
         )
 
 

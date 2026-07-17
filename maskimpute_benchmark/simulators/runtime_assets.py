@@ -63,6 +63,38 @@ class SimulatorRuntimeAssets:
         assert isinstance(value, dict)
         return value
 
+    def close(self) -> None:
+        """Release the private immutable runtime snapshot deterministically."""
+
+        if getattr(self, "_token", None) is not _TOKEN:
+            raise SimulatorRuntimeAssetsError(
+                "runtime assets must come from the authoritative loader"
+            )
+        self._snapshot_owner.cleanup()
+
+    def __enter__(self) -> SimulatorRuntimeAssets:
+        """Keep the validated snapshot alive for one explicit execution scope."""
+
+        simulator_runtime_asset_values(self)
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        """Release the validated snapshot when its execution scope ends."""
+
+        self.close()
+
+    def __del__(self) -> None:
+        """Defensively clean up snapshots owned by legacy non-context callers."""
+
+        owner = getattr(self, "_snapshot_owner", None)
+        if owner is not None:
+            try:
+                owner.cleanup()
+            except Exception:
+                # Destructors cannot report cleanup failures safely. Production
+                # call sites use close()/the context protocol instead.
+                pass
+
 
 def _reject_constant(value: str) -> None:
     raise SimulatorRuntimeAssetsError(f"invalid JSON constant {value!r}")
@@ -714,6 +746,69 @@ def _collect_source_receipts(
     return ledger.sha256, ordered
 
 
+def _semantic_source_receipts(
+    receipts: tuple[dict[str, object], ...],
+) -> tuple[dict[str, object], ...]:
+    """Normalize verified receipts to fields independently fixed by the ledger."""
+
+    normalized: list[dict[str, object]] = []
+    base_keys = {
+        "schema_version",
+        "source_id",
+        "role",
+        "source_type",
+        "source_url",
+        "revision",
+        "license",
+        "citation_doi",
+        "ledger_sha256",
+        "resolved_revision",
+        "verified_checksum",
+    }
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            raise SimulatorRuntimeAssetsError("runtime source receipt is invalid")
+        source_type = receipt.get("source_type")
+        expected_keys = base_keys | ({"artifacts"} if source_type == "data" else set())
+        if set(receipt) != expected_keys:
+            raise SimulatorRuntimeAssetsError(
+                "runtime source receipt has unsupported authority fields"
+            )
+        value = {key: receipt[key] for key in sorted(base_keys)}
+        if source_type == "data":
+            artifacts = receipt.get("artifacts")
+            if not isinstance(artifacts, list) or not artifacts:
+                raise SimulatorRuntimeAssetsError(
+                    "runtime data receipt artifacts are invalid"
+                )
+            normalized_artifacts: list[dict[str, object]] = []
+            for artifact in artifacts:
+                if (
+                    not isinstance(artifact, dict)
+                    or set(artifact) != {"name", "sha256", "size_bytes"}
+                    or not isinstance(artifact.get("name"), str)
+                    or not artifact["name"]
+                    or not isinstance(artifact.get("sha256"), str)
+                    or _SHA256.fullmatch(artifact["sha256"]) is None
+                    or type(artifact.get("size_bytes")) is not int
+                    or artifact["size_bytes"] < 0
+                ):
+                    raise SimulatorRuntimeAssetsError(
+                        "runtime data receipt artifact is invalid"
+                    )
+                normalized_artifacts.append(
+                    {"name": artifact["name"], "sha256": artifact["sha256"]}
+                )
+            value["artifacts"] = normalized_artifacts
+        normalized.append(value)
+    ordered = tuple(sorted(normalized, key=lambda value: str(value["source_id"])))
+    if tuple(value.get("source_id") for value in ordered) != _SOURCE_IDS:
+        raise SimulatorRuntimeAssetsError(
+            "runtime semantic source receipt set is incomplete"
+        )
+    return ordered
+
+
 def load_simulator_runtime_assets(
     repo: Path,
     *,
@@ -766,7 +861,7 @@ def load_simulator_runtime_assets(
         "schema": _RECEIPT_SCHEMA,
         "authority_sha256": authority_sha256,
         "source_ledger_sha256": ledger_sha256,
-        "source_receipts": list(source_receipts),
+        "source_receipts": list(_semantic_source_receipts(source_receipts)),
         "source_snapshot": dict(source_snapshot_authority),
         "r_environment": environment_receipt,
     }
@@ -828,6 +923,7 @@ def revalidate_simulator_runtime_assets(
         raise SimulatorRuntimeAssetsError(
             "runtime assets must come from the authoritative loader"
         )
+    simulator_runtime_asset_values(assets)
     current = load_simulator_runtime_assets(
         assets._repository,
         external_root=assets._authority_external_root,
@@ -838,6 +934,7 @@ def revalidate_simulator_runtime_assets(
         current.semantic_sha256 != assets.semantic_sha256
         or current._semantic_json != assets._semantic_json
     ):
+        current.close()
         raise SimulatorRuntimeAssetsError(
             "simulator runtime asset paths or semantics drifted"
         )

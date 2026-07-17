@@ -305,8 +305,123 @@ def _read_bound_h5ad(
             os.close(descriptor)
 
 
+def _validated_evaluated_final_round_snapshot(
+    repository: Path,
+    round_dir: Path,
+) -> str:
+    """Return one read-only commitment to exact evaluated lifecycle inputs."""
+
+    from .datasets import validate_evaluated_final_dataset_status
+    from .study import (
+        _validate_freeze,
+        _validate_registry,
+        _validate_result_files,
+        _validate_result_journal,
+        _validate_seed_manifest,
+        _validate_state_record_chain,
+        _verify_frozen_repository,
+    )
+
+    selected_repository, destination = _canonical_round(repository, round_dir)
+    try:
+        freeze = _validate_freeze(destination, selected_repository)
+        registry = _validate_registry(
+            selected_repository,
+            destination,
+            freeze,
+            expected_state="evaluated",
+        )
+        materialization, claim, receipt = _validate_state_record_chain(
+            destination,
+            freeze,
+            expected_state="evaluated",
+        )
+        repeated_materialization, seed_manifest = _validate_seed_manifest(
+            destination,
+            freeze,
+        )
+        if (
+            not isinstance(materialization, Mapping)
+            or not isinstance(claim, Mapping)
+            or not isinstance(receipt, Mapping)
+            or repeated_materialization != materialization
+        ):
+            raise FinalRunnerContractError(
+                "evaluated final lifecycle records are unavailable"
+            )
+        evaluation = receipt.get("result_manifest")
+        if not isinstance(evaluation, Mapping):
+            raise FinalRunnerContractError(
+                "evaluated final result manifest is unavailable"
+            )
+        allowed_paths = _validate_result_files(
+            selected_repository,
+            destination,
+            evaluation,
+        )
+        journal = _validate_result_journal(
+            selected_repository,
+            destination,
+            freeze,
+            materialization,
+            claim,
+        )
+        evaluation_files = evaluation.get("result_files", [])
+        if (
+            not isinstance(evaluation_files, list)
+            or journal.get("cumulative_result_files") != evaluation_files
+            or journal.get("allowed_result_paths") != allowed_paths
+        ):
+            raise FinalRunnerContractError(
+                "evaluated final result journal differs from its receipt"
+            )
+        status = validate_evaluated_final_dataset_status(
+            destination / "results/dataset_status.json",
+            repo=selected_repository,
+            round_dir=destination,
+            protocol_path=selected_repository / str(freeze["protocol_path"]),
+            execution_claim=claim,
+            seed_manifest=seed_manifest,
+        )
+        verified_freeze = _verify_frozen_repository(
+            selected_repository,
+            destination,
+            allowed_result_paths=allowed_paths,
+        )
+    except FinalRunnerContractError:
+        raise
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "evaluated final round failed read-only validation"
+        ) from error
+    if dict(verified_freeze) != dict(freeze):
+        raise FinalRunnerContractError(
+            "evaluated final freeze changed during validation"
+        )
+    return canonical_sha256(
+        {
+            "freeze": dict(freeze),
+            "registry": dict(registry),
+            "materialization": dict(materialization),
+            "seed_manifest": dict(seed_manifest),
+            "execution_claim": dict(claim),
+            "evaluation_receipt": dict(receipt),
+            "allowed_result_paths": sorted(allowed_paths),
+            "result_journal": {
+                "sequence": journal.get("sequence"),
+                "head_sha256": journal.get("head_sha256"),
+                "cumulative_result_files": journal.get("cumulative_result_files"),
+            },
+            "dataset_status_sha256": status.get("manifest_sha256"),
+        }
+    )
+
+
 def load_prepared_final_panel(
-    repository: Path, round_dir: Path
+    repository: Path,
+    round_dir: Path,
+    *,
+    allow_evaluated: bool = False,
 ) -> tuple[tuple[DatasetBinding, ...], Mapping[str, PreparedDataset]]:
     """Byte-revalidate and pair-union-QC the exact unseen final panel."""
 
@@ -314,6 +429,8 @@ def load_prepared_final_panel(
 
     if not isinstance(repository, Path) or not isinstance(round_dir, Path):
         raise TypeError("repository and round_dir must be pathlib.Path values")
+    if type(allow_evaluated) is not bool:
+        raise TypeError("allow_evaluated must be a boolean")
     try:
         selected_repository = repository.resolve(strict=True)
         destination = round_dir.resolve(strict=True)
@@ -335,6 +452,31 @@ def load_prepared_final_panel(
         )
         bindings = validate_final_manifest_payload(status)
     except Exception as error:
+        if allow_evaluated:
+            try:
+                snapshot = _validated_evaluated_final_round_snapshot(
+                    selected_repository,
+                    destination,
+                )
+                direct = _load_unclaimed_prepared_final_panel(
+                    selected_repository,
+                    destination,
+                )
+                if (
+                    _validated_evaluated_final_round_snapshot(
+                        selected_repository,
+                        destination,
+                    )
+                    != snapshot
+                ):
+                    raise FinalRunnerContractError(
+                        "evaluated final round changed during panel preparation"
+                    )
+                return direct
+            except Exception as evaluated_error:
+                raise FinalRunnerContractError(
+                    "final dataset status failed running and evaluated revalidation"
+                ) from evaluated_error
         raise FinalRunnerContractError(
             "final dataset status failed byte-level revalidation"
         ) from error
@@ -411,7 +553,15 @@ def _load_unclaimed_prepared_final_panel(
     status_path = destination / "results/dataset_status.json"
     raw = _read_unique_file(status_path, "final dataset status")
     status = _strict_json(raw, "final dataset status")
-    if raw != _canonical_bytes(status) + b"\n":
+    try:
+        canonical_status = (
+            json.dumps(status, allow_nan=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise FinalRunnerContractError(
+            "final dataset status is not canonical"
+        ) from error
+    if raw != canonical_status:
         raise FinalRunnerContractError("final dataset status is not canonical")
     try:
         bindings = validate_final_manifest_payload(status)
@@ -645,6 +795,150 @@ def _remove_unreceipted_trajectory_dataset(round_dir: Path) -> bool:
     return True
 
 
+def load_prepared_trajectory_dataset(
+    repository: Path,
+    round_dir: Path,
+) -> TrajectoryPreparedDataset:
+    """Load an existing registered trajectory dataset without mutating its tree."""
+
+    from .scaling import _scaling_h5ad_size_ceiling
+
+    selected_repository, destination = _canonical_round(repository, round_dir)
+    authority_path = selected_repository / "study/trajectory_panel.json"
+    dataset_relative = "results/trajectory/dataset/evaluator.h5ad"
+    receipt_relative = "results/trajectory/dataset/dataset_receipt.json"
+    dataset_path = destination / dataset_relative
+    receipt_path = destination / receipt_relative
+    if not os.path.lexists(dataset_path) or not os.path.lexists(receipt_path):
+        raise FinalRunnerContractError(
+            "registered trajectory dataset pair is incomplete and unavailable"
+        )
+    try:
+        initial_identities = {
+            authority_path: _stable_file_identity(authority_path.lstat()),
+            dataset_path: _stable_file_identity(dataset_path.lstat()),
+            receipt_path: _stable_file_identity(receipt_path.lstat()),
+        }
+    except OSError as error:
+        raise FinalRunnerContractError(
+            "registered trajectory dataset pair is unavailable"
+        ) from error
+
+    authority_raw = _read_unique_file(
+        authority_path,
+        "registered trajectory authority",
+        max_bytes=1024 * 1024,
+    )
+    authority_payload = _strict_json(authority_raw, "registered trajectory authority")
+    exact_authority_raw = (
+        json.dumps(
+            authority_payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    if authority_raw != exact_authority_raw:
+        raise FinalRunnerContractError(
+            "registered trajectory authority is not canonical"
+        )
+    authority_file_sha256 = hashlib.sha256(authority_raw).hexdigest()
+    try:
+        authority = load_trajectory_authority(authority_path)
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "registered trajectory dataset authority is invalid"
+        ) from error
+
+    receipt_raw = _read_unique_file(
+        receipt_path,
+        "registered trajectory dataset receipt",
+        max_bytes=1024 * 1024,
+    )
+    receipt = _strict_json(receipt_raw, "registered trajectory dataset receipt")
+    if receipt_raw != _canonical_bytes(receipt) + b"\n":
+        raise FinalRunnerContractError(
+            "registered trajectory dataset receipt is not canonical"
+        )
+    binding_payload = receipt.get("binding")
+    try:
+        if not isinstance(binding_payload, Mapping):
+            raise TypeError("binding is not a mapping")
+        binding = RegisteredTrajectoryBinding(**dict(binding_payload))
+    except (TypeError, ValueError) as error:
+        raise FinalRunnerContractError(
+            "registered trajectory dataset receipt binding is invalid"
+        ) from error
+    expected_binding = _trajectory_binding(
+        authority,
+        authority_file_sha256=authority_file_sha256,
+        dataset_file_sha256=binding.dataset_file_sha256,
+    )
+    if binding != expected_binding:
+        raise FinalRunnerContractError(
+            "registered trajectory dataset receipt identity differs"
+        )
+
+    size_ceiling = _scaling_h5ad_size_ceiling(authority.cells, authority.genes)
+    try:
+        evaluator_dataset = _read_bound_h5ad(
+            dataset_path,
+            binding,
+            max_bytes=size_ceiling,
+            structure_validator=_validate_trajectory_h5ad_structure,
+        )
+        prepared = _prepare_registered_trajectory_dataset(
+            evaluator_dataset,
+            binding,
+        )
+    except FinalRunnerContractError:
+        raise
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "registered trajectory evaluator dataset failed preparation"
+        ) from error
+    if _trajectory_dataset_receipt(binding, prepared) != receipt:
+        raise FinalRunnerContractError(
+            "registered trajectory prepared input differs from its receipt"
+        )
+    try:
+        final_identities = {
+            path: _stable_file_identity(path.lstat()) for path in initial_identities
+        }
+    except OSError as error:
+        raise FinalRunnerContractError(
+            "registered trajectory dataset pair changed during preparation"
+        ) from error
+    if (
+        final_identities != initial_identities
+        or _read_unique_file(
+            authority_path,
+            "registered trajectory authority",
+            max_bytes=1024 * 1024,
+        )
+        != authority_raw
+        or _read_unique_file(
+            receipt_path,
+            "registered trajectory dataset receipt",
+            max_bytes=1024 * 1024,
+        )
+        != receipt_raw
+    ):
+        raise FinalRunnerContractError(
+            "registered trajectory dataset pair changed during preparation"
+        )
+    return TrajectoryPreparedDataset(
+        authority=authority,
+        binding=binding,
+        prepared=prepared,
+        receipt=MappingProxyType(receipt),
+        receipt_file_path=receipt_relative,
+        receipt_file_sha256=hashlib.sha256(receipt_raw).hexdigest(),
+    )
+
+
 def materialize_prepared_trajectory_dataset(
     repository: Path,
     round_dir: Path,
@@ -655,6 +949,11 @@ def materialize_prepared_trajectory_dataset(
 
     selected_repository, destination = _canonical_round(repository, round_dir)
     authority_path = selected_repository / "study/trajectory_panel.json"
+    dataset_relative = "results/trajectory/dataset/evaluator.h5ad"
+    receipt_relative = "results/trajectory/dataset/dataset_receipt.json"
+    receipt_path = destination / receipt_relative
+    if os.path.lexists(receipt_path):
+        return load_prepared_trajectory_dataset(selected_repository, destination)
     authority_raw = _read_unique_file(
         authority_path,
         "registered trajectory authority",
@@ -699,117 +998,44 @@ def materialize_prepared_trajectory_dataset(
         destination,
         authority_repository=selected_repository,
     )
-    dataset_relative = "results/trajectory/dataset/evaluator.h5ad"
-    receipt_relative = "results/trajectory/dataset/dataset_receipt.json"
-    dataset_path = destination / dataset_relative
-    receipt_path = destination / receipt_relative
     size_ceiling = _scaling_h5ad_size_ceiling(authority.cells, authority.genes)
-
-    if os.path.lexists(receipt_path):
-        receipt_raw = _read_unique_file(
-            receipt_path,
-            "registered trajectory dataset receipt",
-            max_bytes=1024 * 1024,
-        )
-        receipt = _strict_json(receipt_raw, "registered trajectory dataset receipt")
-        if receipt_raw != _canonical_bytes(receipt) + b"\n":
-            raise FinalRunnerContractError(
-                "registered trajectory dataset receipt is not canonical"
-            )
-        binding_payload = receipt.get("binding")
-        try:
-            if not isinstance(binding_payload, Mapping):
-                raise TypeError("binding is not a mapping")
-            binding = RegisteredTrajectoryBinding(**dict(binding_payload))
-        except (TypeError, ValueError) as error:
-            raise FinalRunnerContractError(
-                "registered trajectory dataset receipt binding is invalid"
-            ) from error
-        expected_binding = _trajectory_binding(
-            authority,
-            authority_file_sha256=authority_file_sha256,
-            dataset_file_sha256=binding.dataset_file_sha256,
-        )
-        if binding != expected_binding:
-            raise FinalRunnerContractError(
-                "registered trajectory dataset receipt identity differs"
-            )
-        expected_prepared = _prepare_registered_trajectory_dataset(generated, binding)
-        expected_receipt = _trajectory_dataset_receipt(binding, expected_prepared)
-        if receipt != expected_receipt:
-            raise FinalRunnerContractError(
-                "registered trajectory dataset receipt differs from regeneration"
-            )
-        if not os.path.lexists(dataset_path):
-            raise FinalRunnerContractError(
-                "registered trajectory evaluator dataset is unavailable"
-            )
-    else:
-        try:
-            with tempfile.TemporaryDirectory(
-                prefix="maskimpute-trajectory-dataset-stage-"
-            ) as staging_name:
-                staged_path = Path(staging_name) / "evaluator.h5ad"
-                generated.write_h5ad(staged_path)
-                _validate_trajectory_h5ad_structure(staged_path)
-                raw = _read_unique_file(
-                    staged_path,
-                    "staged registered trajectory dataset",
-                    max_bytes=size_ceiling,
-                )
-            _remove_unreceipted_trajectory_dataset(destination)
-            artifacts._publish_immutable(dataset_relative, raw)
-        except FinalRunnerContractError:
-            raise
-        except (OSError, RunnerContractError, ValueError) as error:
-            raise FinalRunnerContractError(
-                "registered trajectory evaluator dataset cannot be persisted"
-            ) from error
-        binding = _trajectory_binding(
-            authority,
-            authority_file_sha256=authority_file_sha256,
-            dataset_file_sha256=hashlib.sha256(raw).hexdigest(),
-        )
-        expected_prepared = _prepare_registered_trajectory_dataset(generated, binding)
-        receipt = _trajectory_dataset_receipt(binding, expected_prepared)
-        receipt_raw = _canonical_bytes(receipt) + b"\n"
-        try:
-            artifacts._publish_immutable(receipt_relative, receipt_raw)
-        except (OSError, RunnerContractError) as error:
-            raise FinalRunnerContractError(
-                "registered trajectory dataset receipt cannot be persisted"
-            ) from error
-
     try:
-        evaluator_dataset = _read_bound_h5ad(
-            dataset_path,
-            binding,
-            max_bytes=size_ceiling,
-            structure_validator=_validate_trajectory_h5ad_structure,
-        )
-        prepared = _prepare_registered_trajectory_dataset(
-            evaluator_dataset,
-            binding,
-        )
+        with tempfile.TemporaryDirectory(
+            prefix="maskimpute-trajectory-dataset-stage-"
+        ) as staging_name:
+            staged_path = Path(staging_name) / "evaluator.h5ad"
+            generated.write_h5ad(staged_path)
+            _validate_trajectory_h5ad_structure(staged_path)
+            raw = _read_unique_file(
+                staged_path,
+                "staged registered trajectory dataset",
+                max_bytes=size_ceiling,
+            )
+        _remove_unreceipted_trajectory_dataset(destination)
+        artifacts._publish_immutable(dataset_relative, raw)
     except FinalRunnerContractError:
         raise
-    except Exception as error:
+    except (OSError, RunnerContractError, ValueError) as error:
         raise FinalRunnerContractError(
-            "registered trajectory evaluator dataset failed preparation"
+            "registered trajectory evaluator dataset cannot be persisted"
         ) from error
-    if _trajectory_dataset_receipt(binding, prepared) != receipt:
-        raise FinalRunnerContractError(
-            "registered trajectory prepared input differs from its receipt"
-        )
-    receipt_file_sha256 = hashlib.sha256(receipt_raw).hexdigest()
-    return TrajectoryPreparedDataset(
-        authority=authority,
-        binding=binding,
-        prepared=prepared,
-        receipt=MappingProxyType(receipt),
-        receipt_file_path=receipt_relative,
-        receipt_file_sha256=receipt_file_sha256,
+    binding = _trajectory_binding(
+        authority,
+        authority_file_sha256=authority_file_sha256,
+        dataset_file_sha256=hashlib.sha256(raw).hexdigest(),
     )
+    expected_prepared = _prepare_registered_trajectory_dataset(generated, binding)
+    receipt = _trajectory_dataset_receipt(binding, expected_prepared)
+    try:
+        artifacts._publish_immutable(
+            receipt_relative,
+            _canonical_bytes(receipt) + b"\n",
+        )
+    except (OSError, RunnerContractError) as error:
+        raise FinalRunnerContractError(
+            "registered trajectory dataset receipt cannot be persisted"
+        ) from error
+    return load_prepared_trajectory_dataset(selected_repository, destination)
 
 
 @dataclass(frozen=True, slots=True)
@@ -992,6 +1218,26 @@ def _validate_final_runtime_lock(
     return expected
 
 
+def _load_final_execution_environment_registry(
+    repository: Path,
+) -> ExecutionEnvironmentRegistry:
+    """Rebuild the exact executable/runtime registry used by final execution."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    selected_repository = repository.resolve(strict=True)
+    return ExecutionEnvironmentRegistry.fixed(
+        selected_repository,
+        runtime_lock_path=(
+            selected_repository / "environments/development-runtime.lock.json"
+        ),
+        benchmark_python=Path(sys.executable),
+        r_library_paths={
+            "saver": (selected_repository / "artifacts/envs/saver-r/library",)
+        },
+    )
+
+
 def _validate_final_storage_capacity(
     plan: FinalExecutionPlan,
     round_dir: Path,
@@ -1163,7 +1409,20 @@ def _validate_combined_storage_capacity(
     }
 
 
-def materialize_final_execution_authority(
+@dataclass(frozen=True, slots=True)
+class _DerivedFinalExecutionAuthority:
+    """Deterministic primary authority bytes before immutable publication."""
+
+    context: ExecutionAuthorityContext
+    calibration_relative_path: str
+    calibration_raw: bytes
+    score_relative_path: str
+    score_raw: bytes
+    authority_relative_path: str
+    authority_raw: bytes
+
+
+def _derive_final_execution_authority(
     repository: Path,
     round_dir: Path,
     frozen_method: Mapping[str, object],
@@ -1171,8 +1430,8 @@ def materialize_final_execution_authority(
     execution_claim_sha256: str,
     execution_environment_sha256: str,
     dataset_manifest_sha256: str,
-) -> ExecutionAuthorityContext:
-    """Publish the exact embedded calibrator and truth-free final score authority."""
+) -> _DerivedFinalExecutionAuthority:
+    """Purely derive the exact primary execution authority and immutable bytes."""
 
     from maskimpute.calibration import CalibrationArtifact
 
@@ -1274,15 +1533,8 @@ def materialize_final_execution_authority(
             "materialized calibration bytes differ from frozen evidence"
         )
 
-    results_store = CheckpointStore(destination / "results")
-    calibration_relative, calibration_file_sha256 = results_store._publish_immutable(
-        "final/execution_authority/retained_calibration.json",
-        calibration_raw,
-    )
-    if calibration_file_sha256 != expected_calibration_file_sha256:
-        raise FinalRunnerContractError(
-            "materialized calibration bytes differ from frozen evidence"
-        )
+    calibration_relative = "final/execution_authority/retained_calibration.json"
+    calibration_file_sha256 = hashlib.sha256(calibration_raw).hexdigest()
 
     score_body: dict[str, object] = {
         "schema_version": 1,
@@ -1301,10 +1553,9 @@ def materialize_final_execution_authority(
         **score_body,
         "payload_sha256": canonical_sha256(score_body),
     }
-    score_relative, score_file_sha256 = results_store._publish_immutable(
-        "final/execution_authority/count_score_authority.json",
-        _canonical_bytes(score_payload) + b"\n",
-    )
+    score_relative = "final/execution_authority/count_score_authority.json"
+    score_raw = _canonical_bytes(score_payload) + b"\n"
+    score_file_sha256 = hashlib.sha256(score_raw).hexdigest()
     calibration_repo_path = (
         (destination / "results" / calibration_relative)
         .relative_to(selected_repository)
@@ -1338,21 +1589,75 @@ def materialize_final_execution_authority(
         **authority_body,
         "authority_sha256": authority_sha256,
     }
-    results_store._publish_immutable(
-        "final/execution_authority/authority.json",
-        _canonical_bytes(authority_payload) + b"\n",
+    authority_relative = "final/execution_authority/authority.json"
+    return _DerivedFinalExecutionAuthority(
+        context=ExecutionAuthorityContext(
+            authority_sha256=authority_sha256,
+            base_configuration_json=_canonical_bytes(dict(base_configuration)).decode(),
+            base_configuration_sha256=base_configuration_sha256,
+            count_model_config_json=_canonical_bytes(dict(count_config)).decode(),
+            count_model_config_sha256=str(count_config_sha256),
+            count_score_manifest_path=score_repo_path,
+            count_score_manifest_sha256=score_file_sha256,
+            retained_calibration_path=calibration_repo_path,
+            retained_calibration_sha256=calibration_file_sha256,
+        ),
+        calibration_relative_path=calibration_relative,
+        calibration_raw=calibration_raw,
+        score_relative_path=score_relative,
+        score_raw=score_raw,
+        authority_relative_path=authority_relative,
+        authority_raw=_canonical_bytes(authority_payload) + b"\n",
     )
-    return ExecutionAuthorityContext(
-        authority_sha256=authority_sha256,
-        base_configuration_json=_canonical_bytes(dict(base_configuration)).decode(),
-        base_configuration_sha256=base_configuration_sha256,
-        count_model_config_json=_canonical_bytes(dict(count_config)).decode(),
-        count_model_config_sha256=str(count_config_sha256),
-        count_score_manifest_path=score_repo_path,
-        count_score_manifest_sha256=score_file_sha256,
-        retained_calibration_path=calibration_repo_path,
-        retained_calibration_sha256=calibration_file_sha256,
+
+
+def materialize_final_execution_authority(
+    repository: Path,
+    round_dir: Path,
+    frozen_method: Mapping[str, object],
+    *,
+    execution_claim_sha256: str,
+    execution_environment_sha256: str,
+    dataset_manifest_sha256: str,
+) -> ExecutionAuthorityContext:
+    """Publish the exact embedded calibrator and truth-free final score authority."""
+
+    selected_repository, destination = _canonical_round(repository, round_dir)
+    derived = _derive_final_execution_authority(
+        selected_repository,
+        destination,
+        frozen_method,
+        execution_claim_sha256=execution_claim_sha256,
+        execution_environment_sha256=execution_environment_sha256,
+        dataset_manifest_sha256=dataset_manifest_sha256,
     )
+    results_store = CheckpointStore(destination / "results")
+    for relative_path, raw, expected_sha256 in (
+        (
+            derived.calibration_relative_path,
+            derived.calibration_raw,
+            derived.context.retained_calibration_sha256,
+        ),
+        (
+            derived.score_relative_path,
+            derived.score_raw,
+            derived.context.count_score_manifest_sha256,
+        ),
+        (
+            derived.authority_relative_path,
+            derived.authority_raw,
+            hashlib.sha256(derived.authority_raw).hexdigest(),
+        ),
+    ):
+        observed_relative, observed_sha256 = results_store._publish_immutable(
+            relative_path,
+            raw,
+        )
+        if observed_relative != relative_path or observed_sha256 != expected_sha256:
+            raise FinalRunnerContractError(
+                "materialized final execution authority bytes differ"
+            )
+    return derived.context
 
 
 def _read_repository_authority_file(
@@ -2536,16 +2841,7 @@ def _reconcile_interrupted_final_publications(
         destination,
     )
     registry = load_method_registry(selected_repository / "study/methods.json")
-    environments = ExecutionEnvironmentRegistry.fixed(
-        selected_repository,
-        runtime_lock_path=(
-            selected_repository / "environments/development-runtime.lock.json"
-        ),
-        benchmark_python=Path(sys.executable),
-        r_library_paths={
-            "saver": (selected_repository / "artifacts/envs/saver-r/library",)
-        },
-    )
+    environments = _load_final_execution_environment_registry(selected_repository)
     _validate_final_runtime_lock(frozen_method, environments)
     (
         registered,
@@ -4426,173 +4722,217 @@ def _validate_trajectory_primary_authority_chain(
 ) -> Mapping[str, str]:
     """Purely validate trajectory provenance back to the claimed primary run."""
 
+    from .methods import load_method_registry
+    from .publication_freeze import validate_frozen_method
+
     selected_repository, destination = _canonical_round(repository, round_dir)
     primary_plan_sha256 = _sha256(
         primary_final_plan_sha256,
         "primary final plan",
     )
-    claim = _strict_json(
-        _read_unique_file(
-            destination / "execution_claim.json",
-            "final execution claim",
-            max_bytes=1024 * 1024,
-        ),
+    claim_path = destination / "execution_claim.json"
+    claim_raw = _read_unique_file(
+        claim_path,
         "final execution claim",
+        max_bytes=1024 * 1024,
     )
+    claim = _strict_json(claim_raw, "final execution claim")
     claim_sha256 = canonical_sha256(claim)
+    try:
+        frozen_method = validate_frozen_method(selected_repository)
+        registry = load_method_registry(selected_repository / "study/methods.json")
+        environments = _load_final_execution_environment_registry(selected_repository)
+        _validate_final_runtime_lock(frozen_method, environments)
+        environment_sha256 = _sha256(
+            environments.registry_sha256,
+            "primary execution environment",
+        )
+        bindings, prepared = load_prepared_final_panel(
+            selected_repository,
+            destination,
+            allow_evaluated=True,
+        )
+        derived_primary = _derive_final_execution_authority(
+            selected_repository,
+            destination,
+            frozen_method,
+            execution_claim_sha256=claim_sha256,
+            execution_environment_sha256=environment_sha256,
+            dataset_manifest_sha256=bindings[0].manifest_sha256,
+        )
+    except FinalRunnerContractError:
+        raise
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "primary frozen execution inputs cannot be rederived"
+        ) from error
 
-    primary_path = destination / "results/final/execution_authority/authority.json"
+    primary_context = derived_primary.context
+    primary_authority_sha256 = primary_context.authority_sha256
+    primary_path = destination / "results" / derived_primary.authority_relative_path
     primary_raw = _read_unique_file(
         primary_path,
         "primary execution authority",
         max_bytes=1024 * 1024,
     )
-    primary = _strict_json(primary_raw, "primary execution authority")
-    primary_fields = {
-        "schema_version",
-        "authority_type",
-        "frozen_method_sha256",
-        "runtime_lock_sha256",
-        "execution_claim_sha256",
-        "execution_environment_sha256",
-        "dataset_manifest_sha256",
-        "base_configuration",
-        "base_configuration_sha256",
-        "count_model_config",
-        "count_model_config_sha256",
-        "count_score_authority_path",
-        "count_score_authority_sha256",
-        "retained_calibration_path",
-        "retained_calibration_sha256",
-        "calibration_usage",
-        "authority_sha256",
-    }
-    primary_body = {
-        key: value for key, value in primary.items() if key != "authority_sha256"
-    }
-    if (
-        set(primary) != primary_fields
-        or primary_raw != _canonical_bytes(primary) + b"\n"
-        or type(primary.get("schema_version")) is not int
-        or primary.get("schema_version") != 1
-        or primary.get("authority_type") != "maskimpute_frozen_final_execution"
-        or primary.get("execution_claim_sha256") != claim_sha256
-        or primary.get("authority_sha256") != canonical_sha256(primary_body)
-        or not isinstance(primary.get("base_configuration"), Mapping)
-        or primary.get("base_configuration_sha256")
-        != canonical_sha256(primary["base_configuration"])
-        or not isinstance(primary.get("count_model_config"), Mapping)
-        or primary.get("count_model_config_sha256")
-        != canonical_sha256(primary["count_model_config"])
-    ):
-        raise FinalRunnerContractError(
-            "primary execution authority cannot anchor trajectory evidence"
-        )
-    primary_authority_sha256 = _sha256(
-        primary.get("authority_sha256"),
-        "primary execution authority",
-    )
-    environment_sha256 = _sha256(
-        primary.get("execution_environment_sha256"),
-        "primary execution environment",
-    )
-    for name in (
-        "frozen_method_sha256",
-        "runtime_lock_sha256",
-        "dataset_manifest_sha256",
-        "base_configuration_sha256",
-        "count_model_config_sha256",
-        "count_score_authority_sha256",
-        "retained_calibration_sha256",
-    ):
-        _sha256(primary.get(name), f"primary authority {name}")
-
-    primary_manifest_raw = _read_unique_file(
-        destination / "results/final/execution/execution_manifest.json",
-        "primary execution manifest",
-        max_bytes=32 * 1024 * 1024,
-    )
-    primary_manifest = _strict_json(
-        primary_manifest_raw,
-        "primary execution manifest",
-    )
-    primary_manifest_fields = {
-        "schema_version",
-        "status",
-        "plan_sha256",
-        "input_hashes",
-        "planned_run_count",
-        "recorded_run_count",
-        "records",
-        "artifact_storage",
-        "manifest_sha256",
-    }
-    primary_manifest_body = {
-        key: value
-        for key, value in primary_manifest.items()
-        if key != "manifest_sha256"
-    }
-    primary_inputs = primary_manifest.get("input_hashes")
-    primary_input_fields = {
-        "frozen_method_sha256",
-        "method_registry_sha256",
-        "runtime_lock_sha256",
-        "dataset_manifest_sha256",
-        "dataset_design_sha256",
-        "dataset_seed_source_sha256",
-        "protocol_sha256",
-        "execution_claim_sha256",
-        "execution_environment_sha256",
-        "execution_authority_sha256",
-    }
-    primary_records = primary_manifest.get("records")
-    if (
-        set(primary_manifest) != primary_manifest_fields
-        or primary_manifest_raw != _canonical_bytes(primary_manifest) + b"\n"
-        or type(primary_manifest.get("schema_version")) is not int
-        or primary_manifest.get("schema_version") != 1
-        or primary_manifest.get("status") != "completed"
-        or primary_manifest.get("plan_sha256") != primary_plan_sha256
-        or primary_manifest.get("manifest_sha256")
-        != canonical_sha256(primary_manifest_body)
-        or not isinstance(primary_inputs, Mapping)
-        or set(primary_inputs) != primary_input_fields
-        or any(
-            not isinstance(digest, str) or _SHA256.fullmatch(digest) is None
-            for digest in primary_inputs.values()
-        )
-        or type(primary_manifest.get("planned_run_count")) is not int
-        or type(primary_manifest.get("recorded_run_count")) is not int
-        or not isinstance(primary_records, list)
-        or primary_manifest.get("planned_run_count") != len(primary_records)
-        or primary_manifest.get("recorded_run_count") != len(primary_records)
-        or primary_manifest.get("artifact_storage") != _FINAL_STORAGE_POLICY
-        or primary_inputs.get("execution_claim_sha256") != claim_sha256
-        or primary_inputs.get("execution_environment_sha256") != environment_sha256
-        or primary_inputs.get("execution_authority_sha256") != primary_authority_sha256
-        or primary_inputs.get("frozen_method_sha256")
-        != primary.get("frozen_method_sha256")
-        or primary_inputs.get("runtime_lock_sha256")
-        != primary.get("runtime_lock_sha256")
-        or primary_inputs.get("dataset_manifest_sha256")
-        != primary.get("dataset_manifest_sha256")
-    ):
-        raise FinalRunnerContractError(
-            "primary execution manifest cannot anchor trajectory evidence"
-        )
-
     primary_score_raw = _read_repository_authority_file(
         selected_repository,
-        str(primary.get("count_score_authority_path")),
-        str(primary.get("count_score_authority_sha256")),
+        primary_context.count_score_manifest_path,
+        primary_context.count_score_manifest_sha256,
         "primary count-score authority",
     )
     primary_calibration_raw = _read_repository_authority_file(
         selected_repository,
-        str(primary.get("retained_calibration_path")),
-        str(primary.get("retained_calibration_sha256")),
+        primary_context.retained_calibration_path,
+        primary_context.retained_calibration_sha256,
         "primary retained calibration authority",
     )
+    if (
+        primary_raw != derived_primary.authority_raw
+        or primary_score_raw != derived_primary.score_raw
+        or primary_calibration_raw != derived_primary.calibration_raw
+    ):
+        raise FinalRunnerContractError(
+            "primary execution authority differs from frozen rederivation"
+        )
+    primary = _strict_json(primary_raw, "primary execution authority")
+
+    try:
+        primary_plan = build_final_execution_plan(
+            frozen_method,
+            registry,
+            bindings,
+            execution_claim_sha256=claim_sha256,
+            execution_environment_sha256=environment_sha256,
+            execution_authority_sha256=primary_authority_sha256,
+        )
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "primary final execution plan cannot be rederived"
+        ) from error
+    if not primary_plan.entries or primary_plan.plan_sha256 != primary_plan_sha256:
+        raise FinalRunnerContractError(
+            "primary final plan digest or denominator differs from frozen rederivation"
+        )
+    primary_store = FinalResultStore(
+        destination / "results/final/execution",
+        primary_plan,
+        prepared,
+        primary_context,
+        authority_repository=selected_repository,
+    )
+    primary_records = primary_store.load_records()
+    primary_store._records_cache = primary_records
+    primary_manifest = primary_store.load_manifest()
+    primary_validation = validate_final_execution_for_evaluation(
+        primary_plan,
+        primary_records,
+    )
+    if (
+        not primary_records
+        or primary_manifest.get("plan_sha256") != primary_plan_sha256
+        or primary_manifest.get("input_hashes") != dict(primary_plan.input_hashes)
+        or primary_manifest.get("planned_run_count") != len(primary_plan.entries)
+        or primary_manifest.get("recorded_run_count") != len(primary_records)
+        or primary_validation.get("final_plan_sha256") != primary_plan_sha256
+        or primary_validation.get("planned_run_count") != len(primary_records)
+    ):
+        raise FinalRunnerContractError(
+            "primary execution manifest or terminal denominator differs"
+        )
+    stable_records = primary_store.load_records()
+    primary_store._records_cache = stable_records
+    stable_manifest = primary_store.load_manifest()
+    stable_validation = validate_final_execution_for_evaluation(
+        primary_plan,
+        stable_records,
+    )
+    try:
+        environments.full_revalidate()
+        stable_frozen_method = validate_frozen_method(selected_repository)
+        stable_registry = load_method_registry(
+            selected_repository / "study/methods.json"
+        )
+        stable_environments = _load_final_execution_environment_registry(
+            selected_repository
+        )
+        _validate_final_runtime_lock(stable_frozen_method, stable_environments)
+        stable_environments.full_revalidate()
+        stable_environment_sha256 = _sha256(
+            stable_environments.registry_sha256,
+            "stable primary execution environment",
+        )
+        stable_bindings, _stable_prepared = load_prepared_final_panel(
+            selected_repository,
+            destination,
+            allow_evaluated=True,
+        )
+        stable_derived_primary = _derive_final_execution_authority(
+            selected_repository,
+            destination,
+            stable_frozen_method,
+            execution_claim_sha256=claim_sha256,
+            execution_environment_sha256=stable_environment_sha256,
+            dataset_manifest_sha256=stable_bindings[0].manifest_sha256,
+        )
+        stable_primary_plan = build_final_execution_plan(
+            stable_frozen_method,
+            stable_registry,
+            stable_bindings,
+            execution_claim_sha256=claim_sha256,
+            execution_environment_sha256=stable_environment_sha256,
+            execution_authority_sha256=(
+                stable_derived_primary.context.authority_sha256
+            ),
+        )
+    except FinalRunnerContractError:
+        raise
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "primary frozen execution cannot be revalidated after store replay"
+        ) from error
+    if (
+        stable_records != primary_records
+        or stable_manifest != primary_manifest
+        or stable_validation != primary_validation
+        or dict(stable_frozen_method) != dict(frozen_method)
+        or stable_registry != registry
+        or stable_environments.runtime_lock_sha256 != environments.runtime_lock_sha256
+        or stable_environment_sha256 != environment_sha256
+        or stable_bindings != bindings
+        or stable_derived_primary != derived_primary
+        or stable_primary_plan != primary_plan
+        or stable_primary_plan.plan_sha256 != primary_plan_sha256
+        or _read_unique_file(
+            claim_path,
+            "final execution claim",
+            max_bytes=1024 * 1024,
+        )
+        != claim_raw
+        or _read_unique_file(
+            primary_path,
+            "primary execution authority",
+            max_bytes=1024 * 1024,
+        )
+        != primary_raw
+        or _read_repository_authority_file(
+            selected_repository,
+            primary_context.count_score_manifest_path,
+            primary_context.count_score_manifest_sha256,
+            "primary count-score authority",
+        )
+        != primary_score_raw
+        or _read_repository_authority_file(
+            selected_repository,
+            primary_context.retained_calibration_path,
+            primary_context.retained_calibration_sha256,
+            "primary retained calibration authority",
+        )
+        != primary_calibration_raw
+    ):
+        raise FinalRunnerContractError(
+            "primary frozen execution changed during rederivation"
+        )
 
     trajectory_path = (
         destination / "results/trajectory/execution_authority/authority.json"
@@ -4810,7 +5150,7 @@ def _rederive_trajectory_evidence_before_receipt(
     try:
         frozen_method = validate_frozen_method(selected_repository)
         registry = load_method_registry(selected_repository / "study/methods.json")
-        registered = materialize_prepared_trajectory_dataset(
+        registered = load_prepared_trajectory_dataset(
             selected_repository,
             destination,
         )
@@ -5218,16 +5558,7 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
         )
 
     registry = load_method_registry(selected_repository / "study/methods.json")
-    environments = ExecutionEnvironmentRegistry.fixed(
-        selected_repository,
-        runtime_lock_path=(
-            selected_repository / "environments/development-runtime.lock.json"
-        ),
-        benchmark_python=Path(sys.executable),
-        r_library_paths={
-            "saver": (selected_repository / "artifacts/envs/saver-r/library",)
-        },
-    )
+    environments = _load_final_execution_environment_registry(selected_repository)
     _validate_final_runtime_lock(frozen_method, environments)
 
     def publish_results() -> object:
@@ -5368,6 +5699,7 @@ __all__ = [
     "execute_trajectory_plan",
     "final_result_file_manifest",
     "load_prepared_final_panel",
+    "load_prepared_trajectory_dataset",
     "materialize_final_execution_authority",
     "materialize_prepared_trajectory_dataset",
     "materialize_trajectory_execution_authority",
