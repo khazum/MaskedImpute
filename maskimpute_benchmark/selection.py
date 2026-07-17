@@ -1962,8 +1962,7 @@ def _load_selection_authority(
                 f"method {method_id} same-input execution scope is inconsistent"
             )
         if execution_scope == "external_reference_only" and (
-            row["track"] != "external_reference"
-            or applicability_reason is not None
+            row["track"] != "external_reference" or applicability_reason is not None
         ):
             raise SelectionAuthorityError(
                 f"method {method_id} external-reference execution scope is inconsistent"
@@ -2715,6 +2714,391 @@ def _load_selection_authority(
     )
 
 
+_DOWNSTREAM_SELECTION_BINDING_FIELDS = frozenset(
+    {
+        "path",
+        "manifest_file_sha256",
+        "manifest_sha256",
+        "plan_sha256",
+        "planned_denominator_count",
+        "endpoint_row_count",
+        "source_checkpoint_path",
+        "source_checkpoint_file_sha256",
+        "source_checkpoint_payload_sha256",
+        "source_plan_sha256",
+        "source_input_hashes_sha256",
+        "source_statuses_sha256",
+        "source_plan_authority",
+        "revision_versions",
+        "sources",
+    }
+)
+
+
+def _selection_downstream_denominators(
+    records: object,
+) -> tuple[tuple[object, ...], ...]:
+    if isinstance(records, (str, bytes)) or not isinstance(records, Sequence):
+        raise SelectionAuthorityError("selection records are invalid")
+    result: set[tuple[object, ...]] = set()
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping):
+            raise SelectionAuthorityError(f"selection record {index} is invalid")
+        key = (
+            record.get("mechanism"),
+            record.get("biological_id"),
+            record.get("technical_view"),
+            record.get("dataset_id"),
+            record.get("dataset_sha256"),
+            record.get("method"),
+            record.get("method_sha256"),
+            record.get("model_seed"),
+        )
+        if (
+            any(not isinstance(value, str) or not value for value in key[:7])
+            or not _SHA256.fullmatch(str(key[4]))
+            or not _SHA256.fullmatch(str(key[6]))
+            or (
+                key[7] is not None
+                and (isinstance(key[7], bool) or type(key[7]) is not int)
+            )
+        ):
+            raise SelectionAuthorityError(
+                f"selection record {index} denominator identity is invalid"
+            )
+        result.add(key)
+    if not result:
+        raise SelectionAuthorityError("selection denominator set is empty")
+    return tuple(sorted(result, key=lambda value: tuple(str(item) for item in value)))
+
+
+def _selection_downstream_statuses(
+    records: object,
+) -> Mapping[tuple[object, ...], frozenset[str]]:
+    if isinstance(records, (str, bytes)) or not isinstance(records, Sequence):
+        raise SelectionAuthorityError("selection records are invalid")
+    result: dict[tuple[object, ...], set[str]] = {}
+    for index, record in enumerate(records):
+        if not isinstance(record, Mapping):
+            raise SelectionAuthorityError(f"selection record {index} is invalid")
+        key = (
+            record.get("mechanism"),
+            record.get("biological_id"),
+            record.get("technical_view"),
+            record.get("dataset_id"),
+            record.get("dataset_sha256"),
+            record.get("method"),
+            record.get("method_sha256"),
+            record.get("model_seed"),
+        )
+        status = record.get("status")
+        if not isinstance(status, str) or not status:
+            raise SelectionAuthorityError(f"selection record {index} status is invalid")
+        result.setdefault(key, set()).add(status)
+    return MappingProxyType(
+        {key: frozenset(statuses) for key, statuses in result.items()}
+    )
+
+
+def _downstream_selection_status(value: object) -> str:
+    if value in {"infrastructure_error", "blocked_authority", "budget_exhausted"}:
+        return "failed"
+    if value in {"completed", "failed", "timeout", "unavailable", "resource_exceeded"}:
+        return str(value)
+    raise SelectionAuthorityError("downstream source status is invalid")
+
+
+def _downstream_output_directory(repository: Path, value: object) -> Path:
+    if not isinstance(value, str) or not value:
+        raise SelectionAuthorityError("downstream evidence path is invalid")
+    relative = PurePosixPath(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise SelectionAuthorityError("downstream evidence path is unsafe")
+    path = repository.joinpath(*relative.parts)
+    for component in (path, *path.parents):
+        if component == repository.parent:
+            break
+        if component.is_symlink():
+            raise SelectionAuthorityError("downstream evidence path contains a symlink")
+    if not path.is_dir():
+        raise SelectionAuthorityError("downstream evidence directory is absent")
+    return path
+
+
+def validate_downstream_selection_completeness(
+    repository: Path,
+    records: object,
+    binding: object,
+) -> Mapping[str, str]:
+    """Require bound eight-row downstream evidence for every selection denominator."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    row = _exact_authority_mapping(
+        binding,
+        _DOWNSTREAM_SELECTION_BINDING_FIELDS,
+        "downstream evidence binding",
+    )
+    directory = _downstream_output_directory(repository, row["path"])
+    manifest_path = directory / "downstream_manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise SelectionAuthorityError("downstream evidence manifest is absent")
+    manifest_file_sha = _authority_sha(
+        row["manifest_file_sha256"], "downstream manifest file checksum"
+    )
+    if _file_sha256(manifest_path) != manifest_file_sha:
+        raise SelectionAuthorityError("downstream manifest file checksum mismatch")
+    try:
+        from .downstream_evidence import (
+            DownstreamEvidenceError,
+            downstream_source_statuses,
+            validate_downstream_evidence_completeness,
+        )
+
+        evidence = validate_downstream_evidence_completeness(
+            directory,
+            expected_denominators=_selection_downstream_denominators(records),
+        )
+        source_statuses = downstream_source_statuses(directory)
+    except DownstreamEvidenceError as error:
+        raise SelectionAuthorityError(
+            f"downstream evidence completeness failed: {error}"
+        ) from error
+    if evidence.payload.get("source_kind") != "development":
+        raise SelectionAuthorityError("selection downstream source is not development")
+    downstream_statuses = {
+        (
+            record.get("mechanism"),
+            record.get("biological_id"),
+            record.get("technical_view"),
+            record.get("dataset_id"),
+            record.get("dataset_sha256"),
+            record.get("method"),
+            record.get("method_artifact_sha256"),
+            record.get("model_seed"),
+        ): _downstream_selection_status(record.get("run_status"))
+        for record in evidence.records
+    }
+    normalized_source_statuses = {
+        key: _downstream_selection_status(status)
+        for key, status in source_statuses.items()
+    }
+    if normalized_source_statuses != downstream_statuses:
+        raise SelectionAuthorityError(
+            "downstream run status differs from independently validated source"
+        )
+    selection_statuses = _selection_downstream_statuses(records)
+    if set(selection_statuses) != set(normalized_source_statuses):
+        raise SelectionAuthorityError("downstream source status differs from selection")
+    for key, statuses in selection_statuses.items():
+        source_status = normalized_source_statuses[key]
+        allowed = (
+            frozenset({"completed", "unavailable"})
+            if source_status == "completed"
+            else frozenset({source_status})
+        )
+        if not statuses or not statuses <= allowed:
+            raise SelectionAuthorityError(
+                "downstream source status differs from selection"
+            )
+    expected_count = row["planned_denominator_count"]
+    expected_rows = row["endpoint_row_count"]
+    revision_versions = evidence.payload.get("development_revision_versions")
+    sources = evidence.payload.get("development_sources")
+    if (
+        row["manifest_sha256"] != evidence.manifest_sha256
+        or row["plan_sha256"] != evidence.plan_sha256
+        or isinstance(expected_count, bool)
+        or type(expected_count) is not int
+        or expected_count != evidence.planned_denominator_count
+        or isinstance(expected_rows, bool)
+        or type(expected_rows) is not int
+        or expected_rows != evidence.endpoint_row_count
+        or row["source_checkpoint_path"] != evidence.payload.get("source_manifest_path")
+        or row["source_checkpoint_file_sha256"]
+        != evidence.payload.get("source_manifest_file_sha256")
+        or row["source_checkpoint_payload_sha256"]
+        != evidence.payload.get("source_manifest_payload_sha256")
+        or row["source_plan_sha256"] != evidence.payload.get("source_plan_sha256")
+        or row["source_input_hashes_sha256"]
+        != evidence.payload.get("source_input_hashes_sha256")
+        or row["source_statuses_sha256"]
+        != evidence.payload.get("source_statuses_sha256")
+        or row["source_plan_authority"] != "independent"
+        or evidence.payload.get("source_plan_authority") != "independent"
+        or not isinstance(revision_versions, list)
+        or not isinstance(sources, list)
+        or row["revision_versions"] != revision_versions
+        or row["sources"] != sources
+    ):
+        raise SelectionAuthorityError("downstream evidence binding differs")
+    result = {
+        "downstream_manifest_file_sha256": manifest_file_sha,
+        "downstream_manifest_sha256": evidence.manifest_sha256,
+        "downstream_plan_sha256": evidence.plan_sha256,
+        "downstream_source_checkpoint_path": row["source_checkpoint_path"],
+        "downstream_source_checkpoint_file_sha256": row[
+            "source_checkpoint_file_sha256"
+        ],
+        "downstream_source_checkpoint_payload_sha256": row[
+            "source_checkpoint_payload_sha256"
+        ],
+        "downstream_source_plan_sha256": row["source_plan_sha256"],
+        "downstream_source_input_hashes_sha256": row["source_input_hashes_sha256"],
+        "downstream_source_statuses_sha256": row["source_statuses_sha256"],
+    }
+    for source in sources:
+        if not isinstance(source, Mapping):
+            raise SelectionAuthorityError(
+                "downstream development source binding is invalid"
+            )
+        source_id = source.get("source_id")
+        if source_id not in {"base", "v28", "v29"}:
+            raise SelectionAuthorityError(
+                "downstream development source identity is invalid"
+            )
+        prefix = f"downstream_{source_id}"
+        for output_name, source_name in (
+            ("checkpoint_path", "manifest_path"),
+            ("checkpoint_file_sha256", "manifest_file_sha256"),
+            ("checkpoint_payload_sha256", "manifest_payload_sha256"),
+            ("plan_sha256", "plan_sha256"),
+            ("input_hashes_sha256", "input_hashes_sha256"),
+            ("statuses_sha256", "statuses_sha256"),
+            ("denominator_sha256", "denominator_sha256"),
+            ("evaluation_manifest_path", "evaluation_manifest_path"),
+            (
+                "evaluation_manifest_file_sha256",
+                "evaluation_manifest_file_sha256",
+            ),
+            (
+                "evaluation_manifest_payload_sha256",
+                "evaluation_manifest_payload_sha256",
+            ),
+            ("evaluation_source_sha256", "evaluation_source_sha256"),
+        ):
+            value = source.get(source_name)
+            if not isinstance(value, str) or not value:
+                raise SelectionAuthorityError(
+                    "downstream development source binding is invalid"
+                )
+            result[f"{prefix}_{output_name}"] = value
+    return MappingProxyType(result)
+
+
+def attach_downstream_evidence_to_selection_result(
+    payload: object,
+    repository: Path,
+    relative_directory: str,
+) -> dict[str, object]:
+    """Upgrade a schema-2/3 result to selection-complete schema 4."""
+
+    if type(payload) is not dict or payload.get("schema_version") not in {2, 3}:
+        raise SelectionAuthorityError("downstream attachment requires schema 2 or 3")
+    original_sha = _authority_sha(
+        payload.get("result_sha256"), "development result checksum"
+    )
+    original_core = {
+        key: value for key, value in payload.items() if key != "result_sha256"
+    }
+    if _canonical_sha256(original_core) != original_sha:
+        raise SelectionAuthorityError("development result checksum mismatch")
+    directory = _downstream_output_directory(repository, relative_directory)
+    try:
+        from .downstream_evidence import load_downstream_evidence_manifest
+
+        evidence = load_downstream_evidence_manifest(directory)
+    except Exception as error:
+        raise SelectionAuthorityError(
+            "downstream evidence cannot be attached"
+        ) from error
+    manifest_path = directory / "downstream_manifest.json"
+    binding: dict[str, object] = {
+        "path": relative_directory,
+        "manifest_file_sha256": _file_sha256(manifest_path),
+        "manifest_sha256": evidence.manifest_sha256,
+        "plan_sha256": evidence.plan_sha256,
+        "planned_denominator_count": evidence.planned_denominator_count,
+        "endpoint_row_count": evidence.endpoint_row_count,
+        "source_checkpoint_path": evidence.payload["source_manifest_path"],
+        "source_checkpoint_file_sha256": evidence.payload[
+            "source_manifest_file_sha256"
+        ],
+        "source_checkpoint_payload_sha256": evidence.payload[
+            "source_manifest_payload_sha256"
+        ],
+        "source_plan_sha256": evidence.payload["source_plan_sha256"],
+        "source_input_hashes_sha256": evidence.payload["source_input_hashes_sha256"],
+        "source_statuses_sha256": evidence.payload["source_statuses_sha256"],
+        "source_plan_authority": evidence.payload["source_plan_authority"],
+        "revision_versions": list(evidence.payload["development_revision_versions"]),
+        "sources": list(evidence.payload["development_sources"]),
+    }
+    revision_versions = (
+        [] if payload["schema_version"] == 2 else list(payload["revision_versions"])
+    )
+    if revision_versions != binding["revision_versions"]:
+        raise SelectionAuthorityError(
+            "downstream revision sources differ from selection input"
+        )
+    upgraded_core = {
+        **original_core,
+        "schema_version": 4,
+        "revision_versions": revision_versions,
+        "downstream_evidence": binding,
+    }
+    upgraded = {
+        **upgraded_core,
+        "result_sha256": _canonical_sha256(upgraded_core),
+    }
+    validate_downstream_selection_completeness(repository, upgraded["records"], binding)
+    return upgraded
+
+
+def _validate_revision_downstream_source_bindings(
+    downstream: Mapping[str, str],
+    evaluation: Mapping[str, str],
+    revision_versions: Sequence[str],
+) -> None:
+    """Cross-bind every schema-4 source to independently rebuilt evaluation evidence."""
+
+    versions = tuple(revision_versions)
+    if versions not in {("v28",), ("v28", "v29")}:
+        raise SelectionAuthorityError(
+            "revision downstream source versions are incomplete or reordered"
+        )
+    names = (
+        ("checkpoint_path", "reconstruction_checkpoint_path"),
+        ("checkpoint_file_sha256", "reconstruction_checkpoint_file_sha256"),
+        (
+            "checkpoint_payload_sha256",
+            "reconstruction_checkpoint_payload_sha256",
+        ),
+        ("plan_sha256", "reconstruction_plan_sha256"),
+        ("input_hashes_sha256", "reconstruction_input_hashes_sha256"),
+        ("statuses_sha256", "reconstruction_statuses_sha256"),
+        ("evaluation_manifest_path", "evaluation_manifest_path"),
+        (
+            "evaluation_manifest_file_sha256",
+            "evaluation_manifest_file_sha256",
+        ),
+        (
+            "evaluation_manifest_payload_sha256",
+            "evaluation_manifest_payload_sha256",
+        ),
+        ("evaluation_source_sha256", "evaluation_source_sha256"),
+    )
+    for source_id in ("base", *versions):
+        if any(
+            downstream.get(f"downstream_{source_id}_{downstream_name}")
+            != evaluation.get(f"{source_id}_{evaluation_name}")
+            for downstream_name, evaluation_name in names
+        ):
+            raise SelectionAuthorityError(
+                f"{source_id} downstream source differs from revision evaluation authority"
+            )
+
+
 def _select_for_repository(
     payload: object,
     repository: Path,
@@ -2741,6 +3125,8 @@ def _select_for_repository(
         if schema_version == 2
         else {*base_fields, "revision_versions"}
         if schema_version == 3
+        else {*base_fields, "revision_versions", "downstream_evidence"}
+        if schema_version == 4
         else base_fields
     )
     data = _exact_authority_mapping(
@@ -2748,13 +3134,18 @@ def _select_for_repository(
         expected_fields,
         "development result payload",
     )
-    if schema_version not in {2, 3} or type(schema_version) is not int:
+    if schema_version not in {2, 3, 4} or type(schema_version) is not int:
         raise SelectionAuthorityError(
-            "development result schema_version must equal 2 or 3"
+            "development result schema_version must equal 2, 3, or 4"
         )
-    if schema_version == 3:
+    if schema_version in {3, 4}:
         revision_versions = data["revision_versions"]
-        if revision_versions not in (["v28"], ["v28", "v29"]):
+        allowed_versions = (
+            ([], ["v28"], ["v28", "v29"])
+            if schema_version == 4
+            else (["v28"], ["v28", "v29"])
+        )
+        if revision_versions not in allowed_versions:
             raise SelectionAuthorityError(
                 "development revision versions are incomplete or reordered"
             )
@@ -2865,15 +3256,39 @@ def _select_for_repository(
         status,
         MappingProxyType(dataset_bindings),
     )
-    if schema_version == 2:
+    downstream_bindings: Mapping[str, str] = MappingProxyType({})
+    if schema_version == 4:
+        downstream_bindings = validate_downstream_selection_completeness(
+            repository,
+            data["records"],
+            data["downstream_evidence"],
+        )
+    if schema_version == 2 or (schema_version == 4 and data["revision_versions"] == []):
         try:
             from .evaluation_manifest import (
                 EvaluationManifestError,
                 validate_selection_evaluation_manifest,
             )
 
+            evaluation_data = data
+            if schema_version == 4:
+                evaluation_core = {
+                    key: value
+                    for key, value in data.items()
+                    if key
+                    not in {
+                        "downstream_evidence",
+                        "revision_versions",
+                        "result_sha256",
+                    }
+                }
+                evaluation_core["schema_version"] = 2
+                evaluation_data = {
+                    **evaluation_core,
+                    "result_sha256": _canonical_sha256(evaluation_core),
+                }
             evaluation_evidence = validate_selection_evaluation_manifest(
-                repository, data, authority, status
+                repository, evaluation_data, authority, status
             )
         except EvaluationManifestError as error:
             raise SelectionAuthorityError(
@@ -2887,9 +3302,21 @@ def _select_for_repository(
                 validate_revision_selection_evaluation,
             )
 
+            revision_data = data
+            if schema_version == 4:
+                revision_core = {
+                    key: value
+                    for key, value in data.items()
+                    if key not in {"downstream_evidence", "result_sha256"}
+                }
+                revision_core["schema_version"] = 3
+                revision_data = {
+                    **revision_core,
+                    "result_sha256": _canonical_sha256(revision_core),
+                }
             evaluation_evidence = validate_revision_selection_evaluation(
                 repository,
-                data,
+                revision_data,
                 data["revision_versions"][-1],
                 require_clean=require_clean,
             )
@@ -2902,6 +3329,35 @@ def _select_for_repository(
             raise SelectionAuthorityError(
                 "development revision evaluation returned invalid authority"
             )
+
+    if schema_version == 4 and data["revision_versions"] == []:
+        expected_checkpoint_binding = {
+            "downstream_source_checkpoint_path": "reconstruction_checkpoint_path",
+            "downstream_source_checkpoint_file_sha256": (
+                "reconstruction_checkpoint_file_sha256"
+            ),
+            "downstream_source_checkpoint_payload_sha256": (
+                "reconstruction_checkpoint_payload_sha256"
+            ),
+            "downstream_source_plan_sha256": "reconstruction_plan_sha256",
+            "downstream_source_input_hashes_sha256": (
+                "reconstruction_input_hashes_sha256"
+            ),
+        }
+        if any(
+            downstream_bindings.get(downstream_name)
+            != evaluation_evidence.bindings.get(evaluation_name)
+            for downstream_name, evaluation_name in expected_checkpoint_binding.items()
+        ):
+            raise SelectionAuthorityError(
+                "downstream source checkpoint differs from evaluation authority"
+            )
+    elif schema_version == 4:
+        _validate_revision_downstream_source_bindings(
+            downstream_bindings,
+            evaluation_evidence.bindings,
+            tuple(data["revision_versions"]),
+        )
 
     report = _evaluate_development_candidates(
         data["records"],
@@ -2932,6 +3388,7 @@ def _select_for_repository(
             "retained_calibration_artifact_sha256": calibration_sha,
             "count_score_manifest_sha256": count_score_sha,
             **artifact_bindings,
+            **dict(downstream_bindings),
             **dict(evaluation_evidence.bindings),
         }
     )
@@ -3417,7 +3874,9 @@ __all__ = [
     "SelectionAuthority",
     "SelectionAuthorityError",
     "SelectionReport",
+    "attach_downstream_evidence_to_selection_result",
     "finalize_development_artifact_bindings",
     "load_publication_execution_authority",
     "select_development_candidate",
+    "validate_downstream_selection_completeness",
 ]

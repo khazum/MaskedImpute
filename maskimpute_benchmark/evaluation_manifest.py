@@ -436,9 +436,13 @@ def _validate_reconstruction_evidence(
         )
     return MappingProxyType(
         {
+            "reconstruction_checkpoint_path": evidence.checkpoint_path,
             "reconstruction_checkpoint_file_sha256": (evidence.checkpoint_file_sha256),
             "reconstruction_checkpoint_payload_sha256": (evidence.checkpoint_sha256),
             "reconstruction_plan_sha256": evidence.plan_sha256,
+            "reconstruction_input_hashes_sha256": _canonical_sha256(
+                dict(evidence.input_hashes)
+            ),
             "reconstruction_raw_artifacts_sha256": _canonical_sha256(
                 expected_raw_artifacts
             ),

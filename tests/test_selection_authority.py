@@ -402,9 +402,7 @@ def _attach_evaluation_manifest(
         "orthogonal": {} if orthogonal is None else orthogonal,
         "sources": {} if sources is None else sources,
         "null_de_audits": [] if null_de_audits is None else null_de_audits,
-        "orthogonal_audits": (
-            [] if orthogonal_audits is None else orthogonal_audits
-        ),
+        "orthogonal_audits": ([] if orthogonal_audits is None else orthogonal_audits),
         "combined_score": None,
     }
     evaluation = {
@@ -810,6 +808,137 @@ def test_ready_public_selection_binds_results_to_all_repository_authorities(
         )
 
 
+def test_schema_four_selection_requires_downstream_and_revalidates_legacy_envelope(
+    tmp_path, monkeypatch
+):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    core = {key: value for key, value in payload.items() if key != "result_sha256"}
+    core.update(
+        {
+            "schema_version": 4,
+            "revision_versions": [],
+            "downstream_evidence": {
+                "path": "artifacts/downstream",
+                "manifest_file_sha256": "1" * 64,
+                "manifest_sha256": "2" * 64,
+                "plan_sha256": "3" * 64,
+                "planned_denominator_count": 1,
+                "endpoint_row_count": 8,
+            },
+        }
+    )
+    schema_four = {**core, "result_sha256": selection._canonical_sha256(core)}
+    observed_evaluation_data = []
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+    monkeypatch.setattr(
+        selection,
+        "validate_downstream_selection_completeness",
+        lambda *_args: {
+            "downstream_manifest_sha256": "2" * 64,
+            "downstream_plan_sha256": "3" * 64,
+        },
+    )
+
+    def validate_legacy(_repository, data, _authority, _status):
+        observed_evaluation_data.append(data)
+        return SimpleNamespace(bindings={})
+
+    monkeypatch.setattr(
+        evaluation,
+        "validate_selection_evaluation_manifest",
+        validate_legacy,
+    )
+
+    report = selection._select_for_repository(
+        schema_four,
+        repository,
+        require_clean=False,
+    )
+
+    assert report.selected_configuration == "v27-c01-direct-r1-g1"
+    assert report.authority_bindings["downstream_plan_sha256"] == "3" * 64
+    assert len(observed_evaluation_data) == 1
+    projected = observed_evaluation_data[0]
+    assert projected["schema_version"] == 2
+    assert "downstream_evidence" not in projected
+    assert "revision_versions" not in projected
+    projected_core = {
+        key: value for key, value in projected.items() if key != "result_sha256"
+    }
+    assert projected["result_sha256"] == selection._canonical_sha256(projected_core)
+
+
+def test_revision_downstream_sources_crosscheck_each_evaluation_checkpoint() -> None:
+    import maskimpute_benchmark.selection as selection
+
+    downstream: dict[str, str] = {}
+    evaluation: dict[str, str] = {}
+    for source_id in ("base", "v28", "v29"):
+        for downstream_name, evaluation_name in (
+            ("checkpoint_path", "reconstruction_checkpoint_path"),
+            ("checkpoint_file_sha256", "reconstruction_checkpoint_file_sha256"),
+            (
+                "checkpoint_payload_sha256",
+                "reconstruction_checkpoint_payload_sha256",
+            ),
+            ("plan_sha256", "reconstruction_plan_sha256"),
+            ("input_hashes_sha256", "reconstruction_input_hashes_sha256"),
+            ("statuses_sha256", "reconstruction_statuses_sha256"),
+            ("evaluation_manifest_path", "evaluation_manifest_path"),
+            (
+                "evaluation_manifest_file_sha256",
+                "evaluation_manifest_file_sha256",
+            ),
+            (
+                "evaluation_manifest_payload_sha256",
+                "evaluation_manifest_payload_sha256",
+            ),
+            ("evaluation_source_sha256", "evaluation_source_sha256"),
+        ):
+            value = f"{source_id}-{downstream_name}"
+            downstream[f"downstream_{source_id}_{downstream_name}"] = value
+            evaluation[f"{source_id}_{evaluation_name}"] = value
+
+    selection._validate_revision_downstream_source_bindings(
+        downstream,
+        evaluation,
+        ("v28", "v29"),
+    )
+
+    forged = dict(downstream)
+    forged["downstream_v28_checkpoint_file_sha256"] = "forged"
+    with pytest.raises(
+        selection.SelectionAuthorityError,
+        match="v28 downstream source differs",
+    ):
+        selection._validate_revision_downstream_source_bindings(
+            forged,
+            evaluation,
+            ("v28", "v29"),
+        )
+
+    incomplete = dict(downstream)
+    del incomplete["downstream_v29_statuses_sha256"]
+    with pytest.raises(
+        selection.SelectionAuthorityError,
+        match="v29 downstream source differs",
+    ):
+        selection._validate_revision_downstream_source_bindings(
+            incomplete,
+            evaluation,
+            ("v28", "v29"),
+        )
+
+
 def test_selection_blocks_if_count_score_manifest_binding_is_pending(tmp_path):
     import maskimpute_benchmark.selection as selection
 
@@ -1019,6 +1148,39 @@ def test_cli_repository_selection_requires_clean_tracked_authority(
 
     assert script._report(payload, tmp_path) == {"trigger": "freeze_candidate"}
     assert observed == [(payload, tmp_path, True)]
+
+
+def test_cli_accepts_selection_complete_schema_four(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "select_development_candidate_schema_four_script",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    sentinel = {
+        "schema_version": 4,
+        "dataset_manifest_sha256": "a" * 64,
+        "count_score_manifest_sha256": "b" * 64,
+        "retained_calibration_artifact_sha256": "c" * 64,
+        "evaluation_manifest_sha256": "e" * 64,
+        "records": [],
+        "orthogonal_intervals": [],
+        "revision_versions": [],
+        "downstream_evidence": {
+            "path": "artifacts/downstream",
+            "manifest_file_sha256": "1" * 64,
+            "manifest_sha256": "2" * 64,
+            "plan_sha256": "3" * 64,
+            "planned_denominator_count": 1,
+            "endpoint_row_count": 8,
+        },
+        "result_sha256": "d" * 64,
+    }
+    input_path = tmp_path / "selection-input-schema-four.json"
+    input_path.write_text(json.dumps(sentinel), encoding="utf-8")
+
+    assert script._load(input_path) == sentinel
 
 
 def test_cli_loaded_schema2_reaches_real_consumer_and_binds_manifest(
@@ -1367,14 +1529,10 @@ def test_schema2_rehash_all_cannot_change_reconstructed_efficacy_metric(
     authority = selection._load_selection_authority(repository, require_clean=False)
     status, payload = _status_and_payload(authority)
     independently_rebuilt_records = json.loads(json.dumps(payload["records"]))
-    efficacy = next(
-        row for row in payload["records"] if row["metric"] == "mse"
-    )
+    efficacy = next(row for row in payload["records"] if row["metric"] == "mse")
     efficacy["value"] = float(efficacy["value"]) + 0.25
     inputs = _reconstruction_inputs(authority, status, payload)
-    reconstruction = _minimal_reconstruction_evidence(
-        repository, input_hashes=inputs
-    )
+    reconstruction = _minimal_reconstruction_evidence(repository, input_hashes=inputs)
     payload = _attach_evaluation_manifest(
         repository,
         payload,
@@ -1391,7 +1549,9 @@ def test_schema2_rehash_all_cannot_change_reconstructed_efficacy_metric(
         input_hashes=inputs,
         raw_artifacts=(),
     )
-    monkeypatch.setattr(evaluation, "_validate_evaluation_source_evidence", lambda *_: {})
+    monkeypatch.setattr(
+        evaluation, "_validate_evaluation_source_evidence", lambda *_: {}
+    )
     monkeypatch.setattr(evaluation, "_validate_orthogonal_evidence", lambda *_: {})
     monkeypatch.setattr(evaluation, "_validate_evaluator_audits", lambda *_: {})
     monkeypatch.setattr(evaluation, "_rebuild_reconstruction_plan", lambda *_: plan)
@@ -1590,12 +1750,13 @@ def test_schema2_rehash_all_cannot_change_orthogonal_interval_and_audit(
     )
     orthogonal_path.parent.mkdir(parents=True, exist_ok=True)
     orthogonal_path.write_text(
-        json.dumps(orthogonal_manifest, sort_keys=True, separators=(",", ":"))
-        + "\n"
+        json.dumps(orthogonal_manifest, sort_keys=True, separators=(",", ":")) + "\n"
     )
     orthogonal = {
         "manifest_path": str(orthogonal_path.relative_to(repository)),
-        "manifest_file_sha256": hashlib.sha256(orthogonal_path.read_bytes()).hexdigest(),
+        "manifest_file_sha256": hashlib.sha256(
+            orthogonal_path.read_bytes()
+        ).hexdigest(),
         "manifest_sha256": orthogonal_manifest["manifest_sha256"],
         "records": [],
     }
@@ -1611,7 +1772,9 @@ def test_schema2_rehash_all_cannot_change_orthogonal_interval_and_audit(
         records=(),
     )
     panel = SimpleNamespace(method_inputs=(), cite=object(), tung=object())
-    monkeypatch.setattr(evaluation, "_validate_evaluation_source_evidence", lambda *_: {})
+    monkeypatch.setattr(
+        evaluation, "_validate_evaluation_source_evidence", lambda *_: {}
+    )
     monkeypatch.setattr(evaluation, "_validate_reconstruction_evidence", lambda *_: {})
     monkeypatch.setattr(evaluation, "_validate_evaluator_audits", lambda *_: {})
     monkeypatch.setattr(

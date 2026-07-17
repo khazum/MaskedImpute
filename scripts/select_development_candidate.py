@@ -47,22 +47,38 @@ def _load(path: Path) -> dict[str, Any]:
         parse_constant=_reject_constant,
         object_pairs_hook=_unique_object,
     )
+    if type(payload) is not dict:
+        raise ValueError("selection input must be an object")
+    schema_version = payload.get("schema_version")
+    base_fields = {
+        "schema_version",
+        "records",
+        "orthogonal_intervals",
+        "dataset_manifest_sha256",
+        "count_score_manifest_sha256",
+        "retained_calibration_artifact_sha256",
+        "evaluation_manifest_sha256",
+        "result_sha256",
+    }
+    expected_fields = (
+        base_fields
+        if schema_version == 2
+        else {*base_fields, "revision_versions"}
+        if schema_version == 3
+        else {*base_fields, "revision_versions", "downstream_evidence"}
+        if schema_version == 4
+        else base_fields
+    )
     root = _exact(
         payload,
-        {
-            "schema_version",
-            "records",
-            "orthogonal_intervals",
-            "dataset_manifest_sha256",
-            "count_score_manifest_sha256",
-            "retained_calibration_artifact_sha256",
-            "evaluation_manifest_sha256",
-            "result_sha256",
-        },
+        expected_fields,
         "selection input",
     )
-    if root["schema_version"] != 2 or type(root["schema_version"]) is not int:
-        raise ValueError("selection input schema_version must equal 2")
+    if (
+        root["schema_version"] not in {2, 3, 4}
+        or type(root["schema_version"]) is not int
+    ):
+        raise ValueError("selection input schema_version must equal 2, 3, or 4")
     return root
 
 
