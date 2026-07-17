@@ -85,7 +85,8 @@ _TRACKED_V29_REVISION_SHA256 = (
 )
 _V28_SELECTION_INPUT_PATH = (
     Path(__file__).resolve().parents[1]
-    / "artifacts/study/development/evaluation/development_selection_input.json"
+    / "artifacts/study/development/evaluation/"
+    "development_selection_input-downstream.json"
 )
 _V28_SELECTION_REPORT_PATH = (
     Path(__file__).resolve().parents[1]

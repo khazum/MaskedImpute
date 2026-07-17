@@ -133,7 +133,8 @@ def _parser() -> argparse.ArgumentParser:
         "--input",
         type=Path,
         default=REPOSITORY_ROOT
-        / "artifacts/study/development/evaluation/development_selection_input.json",
+        / "artifacts/study/development/evaluation/"
+        "development_selection_input-downstream.json",
     )
     parser.add_argument(
         "--output",

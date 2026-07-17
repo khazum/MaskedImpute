@@ -150,11 +150,25 @@ def test_extended_authority_rejects_unbounded_revision_denominators() -> None:
 
 
 def test_revision_stage_paths_are_fixed_and_version_separated() -> None:
-    from maskimpute_benchmark.revisions import revision_stage_paths
+    from maskimpute_benchmark.revisions import (
+        development_selection_stage_paths,
+        revision_stage_paths,
+    )
 
+    base = development_selection_stage_paths(None)
     v28 = revision_stage_paths("v28")
     v29 = revision_stage_paths("v29")
 
+    assert base.source_selection_input == (
+        "artifacts/study/development/evaluation/development_selection_input.json"
+    )
+    assert base.selection_complete_input == (
+        "artifacts/study/development/evaluation/"
+        "development_selection_input-downstream.json"
+    )
+    assert base.downstream_directory == (
+        "artifacts/study/development/evaluation/downstream"
+    )
     assert v28.reconstruction_directory == (
         "artifacts/study/development/competition-v28-revision"
     )
@@ -164,7 +178,16 @@ def test_revision_stage_paths_are_fixed_and_version_separated() -> None:
     assert v28.selection_input == (
         "artifacts/study/development/evaluation/development_selection_input-v28.json"
     )
-    assert v29.activation_selection_input == v28.selection_input
+    assert v28.selection_complete_input == (
+        "artifacts/study/development/evaluation/"
+        "development_selection_input-v28-downstream.json"
+    )
+    assert v29.selection_complete_input == (
+        "artifacts/study/development/evaluation/"
+        "development_selection_input-v29-downstream.json"
+    )
+    assert v28.activation_selection_input == base.selection_complete_input
+    assert v29.activation_selection_input == v28.selection_complete_input
     assert v29.activation_selection_report == v28.selection_report
     assert len(
         {

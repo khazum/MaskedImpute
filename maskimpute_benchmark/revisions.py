@@ -39,7 +39,19 @@ class RevisionStagePaths:
     orthogonal_directory: str
     evaluation_manifest: str
     selection_input: str
+    selection_complete_input: str
     selection_report: str
+
+
+@dataclass(frozen=True, slots=True)
+class DevelopmentSelectionStagePaths:
+    """Fixed source, downstream, and selection-complete paths for one stage."""
+
+    through_version: str | None
+    source_selection_input: str
+    selection_complete_input: str
+    selection_report: str
+    downstream_directory: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,24 +137,45 @@ def revision_stage_paths(version: str) -> RevisionStagePaths:
     if version not in _VERSIONS:
         raise ValueError("revision version must be v28 or v29")
     prior = None if version == "v28" else "v28"
-    activation_suffix = "" if prior is None else f"-{prior}"
     suffix = f"-{version}"
+    activation = development_selection_stage_paths(prior)
+    selection = development_selection_stage_paths(version)
     return RevisionStagePaths(
         version=version,
         revision_authority=f"study/{version}_revision.json",
-        activation_selection_input=(
-            f"{_EVALUATION_ROOT}/development_selection_input{activation_suffix}.json"
-        ),
-        activation_selection_report=(
-            f"{_EVALUATION_ROOT}/development_selection_report{activation_suffix}.json"
-        ),
+        activation_selection_input=activation.selection_complete_input,
+        activation_selection_report=activation.selection_report,
         reconstruction_directory=(
             f"artifacts/study/development/competition-{version}-revision"
         ),
         orthogonal_directory=f"{_EVALUATION_ROOT}/orthogonal-{version}-revision",
         evaluation_manifest=f"{_EVALUATION_ROOT}/evaluation_manifest{suffix}.json",
-        selection_input=f"{_EVALUATION_ROOT}/development_selection_input{suffix}.json",
-        selection_report=f"{_EVALUATION_ROOT}/development_selection_report{suffix}.json",
+        selection_input=selection.source_selection_input,
+        selection_complete_input=selection.selection_complete_input,
+        selection_report=selection.selection_report,
+    )
+
+
+def development_selection_stage_paths(
+    through_version: str | None,
+) -> DevelopmentSelectionStagePaths:
+    """Return the closed production evidence paths through one development stage."""
+
+    if through_version not in {None, "v28", "v29"}:
+        raise ValueError("through_version must be null, v28, or v29")
+    suffix = "" if through_version is None else f"-{through_version}"
+    return DevelopmentSelectionStagePaths(
+        through_version=through_version,
+        source_selection_input=(
+            f"{_EVALUATION_ROOT}/development_selection_input{suffix}.json"
+        ),
+        selection_complete_input=(
+            f"{_EVALUATION_ROOT}/development_selection_input{suffix}-downstream.json"
+        ),
+        selection_report=(
+            f"{_EVALUATION_ROOT}/development_selection_report{suffix}.json"
+        ),
+        downstream_directory=f"{_EVALUATION_ROOT}/downstream{suffix}",
     )
 
 
@@ -632,11 +665,13 @@ def validate_revision_activation(
 
 
 __all__ = [
+    "DevelopmentSelectionStagePaths",
     "RevisionActivation",
     "RevisionAuthorityError",
     "RevisionSpec",
     "RevisionStagePaths",
     "derive_extended_selection_authority",
+    "development_selection_stage_paths",
     "load_revision_spec",
     "revision_stage_paths",
     "thaw_revision_configuration",
