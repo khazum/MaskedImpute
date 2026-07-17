@@ -709,7 +709,7 @@ def test_repository_authority_derives_design_methods_and_pending_artifacts():
         tuple(inspect.signature(load_publication_execution_authority).parameters) == ()
     )
     assert authority.file_sha256["study/methods.json"] == (
-        "f0b3731e9b6f4b4583d0be80c8449d03f67a703fb94fbe80c76972bb04df044f"
+        "d71197d5d94d5009c807c57b393372fefa56f0f48327558bae334ab68875588d"
     )
     assert authority.file_sha256["study/ablations.json"] == (
         "dd4da34e0ebe5e7eb349fac3ed89063781bcddf640b01601b9a3c82a2e43b26f"

@@ -15,7 +15,7 @@
       "source": {"kind": "in_tree", "url": null, "revision": null, "tree": null, "cache_path": null, "freeze_binding": "study_freeze_commit"},
       "license": {"status": "pending", "spdx": null, "notice": "MaskImpute project license must be supplied before publication freeze."},
       "citation": {"status": "pending", "doi": null, "url": null},
-      "environment": {"id": "benchmark-python", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "benchmark-python", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 1, "gpu_required": false, "max_rss_gib": 48, "max_gpu_gib": 0},
       "preserves_observed_positives": true,
       "source_policy": "study_freeze_bound_in_tree",
@@ -36,12 +36,12 @@
       "source": {"kind": "in_tree", "url": null, "revision": null, "tree": null, "cache_path": null, "freeze_binding": "study_freeze_commit"},
       "license": {"status": "pending", "spdx": null, "notice": "MaskImpute project license must be supplied before publication freeze."},
       "citation": {"status": "pending", "doi": null, "url": null},
-      "environment": {"id": "maskimpute-torch", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "maskimpute-torch", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": true, "max_rss_gib": 48, "max_gpu_gib": 14},
       "preserves_observed_positives": false,
       "source_policy": "study_freeze_bound_in_tree",
-      "integration_status": "pending",
-      "integration_reason": "ablation_adapter_not_yet_verified"
+      "integration_status": "implemented",
+      "integration_reason": null
     },
     {
       "id": "maskimpute",
@@ -57,7 +57,7 @@
       "source": {"kind": "in_tree", "url": null, "revision": null, "tree": null, "cache_path": null, "freeze_binding": "study_freeze_commit"},
       "license": {"status": "pending", "spdx": null, "notice": "MaskImpute project license must be supplied before publication freeze."},
       "citation": {"status": "pending", "doi": null, "url": null},
-      "environment": {"id": "maskimpute-torch", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "maskimpute-torch", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": true, "max_rss_gib": 48, "max_gpu_gib": 14},
       "preserves_observed_positives": true,
       "source_policy": "study_freeze_bound_in_tree",
@@ -78,12 +78,12 @@
       "source": {"kind": "git", "url": "https://github.com/KlugerLab/ALRA.git", "revision": "7636de81d66daa93972a81fa516cf459f9384b15", "tree": "ecb2a725fcfde7df352b9210d3142c64b1a520e1", "cache_path": "artifacts/method-sources/alra", "freeze_binding": null},
       "license": {"status": "declared", "spdx": "MIT", "notice": null},
       "citation": {"status": "verified", "doi": "10.1038/s41467-021-27729-z", "url": "https://www.nature.com/articles/s41467-021-27729-z"},
-      "environment": {"id": "alra-r", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "alra-r", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": false, "max_rss_gib": 48, "max_gpu_gib": 0},
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
-      "integration_status": "pending",
-      "integration_reason": "pinned_adapter_tiny_smoke_passed_with_rank_override_environment_lock_pending"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "magic",
@@ -99,12 +99,12 @@
       "source": {"kind": "git", "url": "https://github.com/KrishnaswamyLab/MAGIC.git", "revision": "3a4ffdbe435716bb3b2fbe78f434c6cdc8dd8d78", "tree": "438dd149656a51b7f9f80251b5cf5300954a1c28", "cache_path": "artifacts/method-sources/core-magic", "freeze_binding": null},
       "license": {"status": "declared", "spdx": "GPL-2.0-only", "notice": null},
       "citation": {"status": "verified", "doi": "10.1016/j.cell.2018.05.061", "url": "https://doi.org/10.1016/j.cell.2018.05.061"},
-      "environment": {"id": "magic-python", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "magic-python", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": false, "max_rss_gib": 48, "max_gpu_gib": 0},
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
-      "integration_status": "pending",
-      "integration_reason": "pinned_adapter_smoke_passed_environment_lock_pending"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "dca",
@@ -120,12 +120,12 @@
       "source": {"kind": "git", "url": "https://github.com/theislab/dca.git", "revision": "04c5cc17e9deed27db6ce501214c69d27870366a", "tree": "4a093c03af34acad79c63270c655b6421da32615", "cache_path": "artifacts/method-sources/core-dca", "freeze_binding": null},
       "license": {"status": "declared", "spdx": "Apache-2.0", "notice": null},
       "citation": {"status": "verified", "doi": "10.1038/s41467-018-07931-2", "url": "https://doi.org/10.1038/s41467-018-07931-2"},
-      "environment": {"id": "dca-legacy-python", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "dca-legacy-python", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": true, "max_rss_gib": 48, "max_gpu_gib": 14},
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
-      "integration_status": "pending",
-      "integration_reason": "pinned_adapter_tiny_smoke_passed_with_training_override_environment_lock_pending"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "scvi",
@@ -141,12 +141,12 @@
       "source": {"kind": "git", "url": "https://github.com/scverse/scvi-tools.git", "revision": "d4b2bbe6616afcc006d22e09e49ba25a0fa3a238", "tree": "4faa88b24c0d74f53f28916363ac8612b03c3f66", "cache_path": "artifacts/method-sources/scvi", "freeze_binding": null},
       "license": {"status": "declared", "spdx": "BSD-3-Clause", "notice": null},
       "citation": {"status": "verified", "doi": "10.1038/s41592-018-0229-2", "url": "https://doi.org/10.1038/s41592-018-0229-2"},
-      "environment": {"id": "scvi-python", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "scvi-py312", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": true, "max_rss_gib": 48, "max_gpu_gib": 14},
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
-      "integration_status": "pending",
-      "integration_reason": "adapter_contract_verified_pinned_source_requires_python_3_12_or_newer_dependency_environment_not_built"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "saver",
@@ -162,12 +162,12 @@
       "source": {"kind": "git", "url": "https://github.com/mohuangx/SAVER.git", "revision": "ad9bde51bffaa1413e57d88f15d2b452c6331253", "tree": "76884afc63ef27d78ce929bd608b29dad2b0a0be", "cache_path": "artifacts/method-sources/saver", "freeze_binding": null},
       "license": {"status": "declared", "spdx": "GPL-2.0-only", "notice": null},
       "citation": {"status": "verified", "doi": "10.1038/s41592-018-0033-z", "url": "https://doi.org/10.1038/s41592-018-0033-z"},
-      "environment": {"id": "saver-r", "status": "ready", "lock_sha256": "5b9f895083297b78f4f718214a50db498e485c9cc63a6936e723d2637a95116e"},
+      "environment": {"id": "saver-r", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": false, "max_rss_gib": 48, "max_gpu_gib": 0},
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
       "integration_status": "implemented",
-      "integration_reason": "locked_r461_real_tiny_smoke_passed"
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "scimpute",
@@ -187,8 +187,8 @@
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": false, "max_rss_gib": 48, "max_gpu_gib": 0},
       "preserves_observed_positives": false,
       "source_policy": "invoke_pristine_source_no_redistribution",
-      "integration_status": "pending",
-      "integration_reason": "adapter_environment_and_exact_license_not_yet_verified"
+      "integration_status": "historical",
+      "integration_reason": "historical_comparator_not_rerun_under_frozen_protocol"
     },
     {
       "id": "wedge",
@@ -208,8 +208,8 @@
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": false, "max_rss_gib": 48, "max_gpu_gib": 0},
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
-      "integration_status": "pending",
-      "integration_reason": "adapter_and_environment_not_yet_verified"
+      "integration_status": "historical",
+      "integration_reason": "historical_comparator_not_rerun_under_frozen_protocol"
     },
     {
       "id": "scziva",
@@ -225,12 +225,12 @@
       "source": {"kind": "git", "url": "https://github.com/tuanlvo293/scZiva.git", "revision": "e11e5677d9145e5359a6bbcdfd4b0a2f8f3efd60", "tree": "0391d50e6e640be5023b50d05a317bf05f453702", "cache_path": "artifacts/method-sources/scziva", "freeze_binding": null},
       "license": {"status": "NOASSERTION", "spdx": null, "notice": "No repository license is present; the pinned README asks users to contact the authors for appropriate permission."},
       "citation": {"status": "verified", "doi": "10.1186/s12859-026-06422-2", "url": "https://pubmed.ncbi.nlm.nih.gov/41857511/"},
-      "environment": {"id": "scziva-python", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "scziva-python", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": true, "max_rss_gib": 48, "max_gpu_gib": 14},
       "preserves_observed_positives": false,
       "source_policy": "invoke_pristine_source_no_redistribution",
-      "integration_status": "pending",
-      "integration_reason": "adapter_environment_and_permission_status_not_yet_verified"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "afmf",
@@ -246,12 +246,12 @@
       "source": {"kind": "git", "url": "https://github.com/GO3295/SCImputation.git", "revision": "fbbe74c3d92266576f3dc471be2f6d3be75788fd", "tree": "b9b7d153e1c62a3ecffce10f7fd513ea8f177af0", "cache_path": "artifacts/method-sources/afmf", "freeze_binding": null},
       "license": {"status": "declared", "spdx": "MIT", "notice": null},
       "citation": {"status": "verified", "doi": "10.1002/ctm2.70283", "url": "https://onlinelibrary.wiley.com/doi/10.1002/ctm2.70283"},
-      "environment": {"id": "afmf-python", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "afmf-python", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": false, "max_rss_gib": 48, "max_gpu_gib": 0},
       "preserves_observed_positives": false,
       "source_policy": "pinned_adapter_isolated_environment",
-      "integration_status": "pending",
-      "integration_reason": "adapter_and_environment_not_yet_verified"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "biaeimpute",
@@ -267,12 +267,12 @@
       "source": {"kind": "git", "url": "https://github.com/LiuXinyuan6/BiAEImpute.git", "revision": "66d9bb7419472b0c36922a2e843a0d0ecde4305a", "tree": "242fdf09beef69914c13b3f46bd2e047964601db", "cache_path": "artifacts/method-sources/biaeimpute", "freeze_binding": null},
       "license": {"status": "NOASSERTION", "spdx": null, "notice": "No repository license was found at the pinned revision."},
       "citation": {"status": "verified", "doi": "10.1186/s12864-025-11988-x", "url": "https://pubmed.ncbi.nlm.nih.gov/41013245/"},
-      "environment": {"id": "biaeimpute-python", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "biaeimpute-python", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": true, "max_rss_gib": 48, "max_gpu_gib": 14},
       "preserves_observed_positives": false,
       "source_policy": "invoke_pristine_source_no_redistribution",
-      "integration_status": "pending",
-      "integration_reason": "adapter_and_environment_not_yet_verified"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "sccr",
@@ -287,13 +287,13 @@
       "seed_policy": "required",
       "source": {"kind": "git", "url": "https://github.com/daehoum1/scCR.git", "revision": "f8ccf889bbdd7d22047716eb1d6ef793ce00260b", "tree": "41c18b893b5f652fd00b6f37e19f3ba50bde8ae8", "cache_path": "artifacts/method-sources/sccr", "freeze_binding": null},
       "license": {"status": "NOASSERTION", "spdx": null, "notice": "No repository license was found at the pinned revision."},
-      "citation": {"status": "pending", "doi": null, "url": "https://openreview.net/forum?id=gW0znG5JCG"},
-      "environment": {"id": "sccr-python", "status": "pending", "lock_sha256": null},
+      "citation": {"status": "verified", "doi": "10.52202/079017-0598", "url": "https://proceedings.neurips.cc/paper_files/paper/2024/hash/21b7e46991301ad2126c3e39384df6ed-Abstract-Conference.html"},
+      "environment": {"id": "sccr-python", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": true, "max_rss_gib": 48, "max_gpu_gib": 14},
       "preserves_observed_positives": false,
       "source_policy": "invoke_pristine_source_no_redistribution",
-      "integration_status": "pending",
-      "integration_reason": "adapter_environment_graph_utility_and_doi_not_yet_verified"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "scgacl",
@@ -372,12 +372,12 @@
       "source": {"kind": "git", "url": "https://github.com/klovbe/scSDAE.git", "revision": "fa7ded1080695e38e6193ef137dc8d635ae64ec9", "tree": "b6f13e3ef513ad6c1fe1afb702681f249c7cbca8", "cache_path": "artifacts/method-sources/scsdae", "freeze_binding": null},
       "license": {"status": "NOASSERTION", "spdx": null, "notice": "No repository license was found at the pinned revision."},
       "citation": {"status": "verified", "doi": "10.3390/genes11050532", "url": "https://pubmed.ncbi.nlm.nih.gov/32403260/"},
-      "environment": {"id": "scsdae-tensorflow1", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "scsdae-legacy-python", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": true, "max_rss_gib": 48, "max_gpu_gib": 14},
       "preserves_observed_positives": false,
       "source_policy": "invoke_pristine_source_no_redistribution",
-      "integration_status": "pending_legacy_attempt",
-      "integration_reason": "legacy_tensorflow_container_attempt_not_yet_completed"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "d3impute",
@@ -393,12 +393,12 @@
       "source": {"kind": "git", "url": "https://github.com/zhuyuan-cug/D3Impute.git", "revision": "f8f247a54a7ff1fcfca3232b9c0016b6929b5825", "tree": "30c91410626488ec021d92f5b243f8125cf0cb16", "cache_path": "artifacts/method-sources/d3impute", "freeze_binding": null},
       "license": {"status": "NOASSERTION", "spdx": null, "notice": "No repository license was found at the pinned revision."},
       "citation": {"status": "verified", "doi": "10.1371/journal.pcbi.1013744", "url": "https://doi.org/10.1371/journal.pcbi.1013744"},
-      "environment": {"id": "d3impute-python", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "d3impute-python", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": false, "max_rss_gib": 48, "max_gpu_gib": 0},
       "preserves_observed_positives": false,
       "source_policy": "invoke_pristine_source_no_redistribution",
-      "integration_status": "pending",
-      "integration_reason": "external_reference_adapter_and_environment_not_yet_verified"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     },
     {
       "id": "sctsi",
@@ -414,12 +414,12 @@
       "source": {"kind": "git", "url": "https://github.com/JGuan-lab/scTsI.git", "revision": "402cc9723696ede77d5864e51368c3d94be3a29c", "tree": "a897933047ad09985d0aa311dcae4a6e40e7db11", "cache_path": "artifacts/method-sources/sctsi", "freeze_binding": null},
       "license": {"status": "NOASSERTION", "spdx": null, "notice": "No repository license was found at the pinned revision."},
       "citation": {"status": "verified", "doi": "10.1093/bib/bbaf298", "url": "https://doi.org/10.1093/bib/bbaf298"},
-      "environment": {"id": "sctsi-r", "status": "pending", "lock_sha256": null},
+      "environment": {"id": "sctsi-r", "status": "ready", "lock_sha256": "e63691ef2ac36b632f5bcfcdb2f1119ca5b241523f2f8c2430a6e52da88c8e30"},
       "resources": {"timeout_seconds": 21600, "cpu_cores": 8, "gpu_required": false, "max_rss_gib": 48, "max_gpu_gib": 0},
       "preserves_observed_positives": false,
       "source_policy": "invoke_pristine_source_no_redistribution",
-      "integration_status": "pending",
-      "integration_reason": "external_reference_adapter_and_environment_not_yet_verified"
+      "integration_status": "implemented",
+      "integration_reason": "runtime_locked_adapter_smoke_passed"
     }
   ]
 }

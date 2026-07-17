@@ -66,6 +66,7 @@ SOURCE_SHA = "d" * 64
 SAVER_LOCK_PATH = Path("environments/saver-r.lock.json")
 SAVER_BUILD_RECEIPT_PATH = Path("environments/saver-r.build-receipt.json")
 SAVER_QUALIFICATION_PATH = Path("environments/saver-r.qualification.json")
+DEVELOPMENT_RUNTIME_LOCK_PATH = Path("environments/development-runtime.lock.json")
 SAVER_LIBRARY_PATH = Path("/tmp/maskimpute-saver-r461/library")
 SAVER_PACKAGE_VERSIONS = {
     "Matrix": "1.7-5",
@@ -529,28 +530,17 @@ def test_dca_binds_tensorflow_gpu_growth_and_receipts_it(
     assert "TF_FORCE_GPU_ALLOW_GROWTH=true" in compatibility["allocator_policy"]
 
 
-def test_core_adapter_registry_metadata_only_promotes_locked_saver_environment() -> (
-    None
-):
+def test_core_adapter_registry_metadata_binds_every_runtime_qualified_adapter() -> None:
     registry = _registry()
-    for method_id in ("alra", "magic", "dca", "scvi"):
-        spec = registry.by_id(method_id)
-        assert spec.integration_status == "pending"
-        assert spec.integration_reason is not None
-        assert spec.environment.status == "pending"
-        assert spec.environment.lock_sha256 is None
-
-    assert "environment_lock_pending" in registry.by_id("alra").integration_reason
-    assert "environment_lock_pending" in registry.by_id("magic").integration_reason
-    assert "environment_lock_pending" in registry.by_id("dca").integration_reason
-    assert "requires_python_3_12_or_newer" in registry.by_id("scvi").integration_reason
-    saver = registry.by_id("saver")
-    assert saver.integration_status == "implemented"
-    assert saver.integration_reason == "locked_r461_real_tiny_smoke_passed"
-    assert saver.environment.status == "ready"
-    assert saver.environment.lock_sha256 == hashlib.sha256(
-        SAVER_LOCK_PATH.read_bytes()
+    runtime_sha256 = hashlib.sha256(
+        DEVELOPMENT_RUNTIME_LOCK_PATH.read_bytes()
     ).hexdigest()
+    for method_id in ("alra", "magic", "dca", "scvi", "saver"):
+        spec = registry.by_id(method_id)
+        assert spec.integration_status == "implemented"
+        assert spec.integration_reason == "runtime_locked_adapter_smoke_passed"
+        assert spec.environment.status == "ready"
+        assert spec.environment.lock_sha256 == runtime_sha256
 
 
 def test_saver_lock_manifest_and_build_receipt_cover_complete_dependency_closure() -> (

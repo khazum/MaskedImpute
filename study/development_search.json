@@ -3,7 +3,7 @@
   "authority": {
     "protocol_sha256": "7cfa1b55458b5b2bc4c22e3a155086724586d95df40aa61c4b78b1a779794249",
     "development_panel_sha256": "97bb0dfb449dced7c43735830498ad58dcaf6503f40403d177d6e8d2e829d9d7",
-    "methods_sha256": "f0b3731e9b6f4b4583d0be80c8449d03f67a703fb94fbe80c76972bb04df044f",
+    "methods_sha256": "d71197d5d94d5009c807c57b393372fefa56f0f48327558bae334ab68875588d",
     "selection_contract_sha256": "08c1c4f82a7e2ffcef88e60a634d3e9874e1f27011771218c66f50b863d43d43",
     "ablations_sha256": "dd4da34e0ebe5e7eb349fac3ed89063781bcddf640b01601b9a3c82a2e43b26f",
     "calibration_contract_sha256": "180d85cc18e359970fff3c9cff37190c2b944b13b0883a46be2765c439a8a1b3"

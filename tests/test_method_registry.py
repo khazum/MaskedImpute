@@ -130,7 +130,9 @@ def test_tracked_registry_declares_complete_prespecified_denominator() -> None:
     assert registry.by_id("maskimpute").role == "candidate"
     assert registry.by_id("d3impute").track == "external_reference"
     assert registry.by_id("sctsi").track == "external_reference"
-    assert registry.by_id("scsdae").integration_status == "pending_legacy_attempt"
+    assert registry.by_id("scsdae").integration_status == "implemented"
+    assert registry.by_id("scimpute").integration_status == "historical"
+    assert registry.by_id("wedge").integration_status == "historical"
 
 
 def test_execution_plan_separates_required_external_historical_and_inapplicable() -> (
@@ -764,7 +766,7 @@ def test_run_record_enforces_deterministic_seed_policy_and_canonical_bytes() -> 
         validate_run_record(registry, observed_payload)
 
 
-def test_failed_and_pending_methods_are_retained_in_method_denominator() -> None:
+def test_failed_and_unexecuted_methods_are_retained_in_method_denominator() -> None:
     registry = load_method_registry(METHODS_PATH)
     failed_payload = _completed_record("maskimpute", seed=42)
     failed_payload.update(
@@ -783,5 +785,6 @@ def test_failed_and_pending_methods_are_retained_in_method_denominator() -> None
     by_id = {row.method_id: row for row in table}
     assert by_id["maskimpute"].status == "failed"
     assert by_id["maskimpute"].reason == "upstream_runtime_error"
-    assert by_id["scziva"].status == "pending"
-    assert by_id["scsdae"].status == "pending_legacy_attempt"
+    assert by_id["scziva"].status == "implemented"
+    assert by_id["scgacl"].status == "not_applicable"
+    assert by_id["scsdae"].status == "implemented"
