@@ -127,6 +127,60 @@ _FINAL_MANIFEST_FIELDS = frozenset(
         "manifest_sha256",
     }
 )
+_EVALUATION_RECEIPT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "round_id",
+        "state",
+        "evaluated_at",
+        "execution_claim_id",
+        "result_manifest",
+        "result_manifest_sha256",
+        "seed_manifest_sha256",
+        "round_path",
+        "round_token",
+        "repository_instance_id",
+        "worktree_path_sha256",
+        "git_common_dir_device",
+        "git_common_dir_inode",
+        "study_state_root_device",
+        "study_state_root_inode",
+        "registry_dir_device",
+        "registry_dir_inode",
+        "method_commit",
+        "config_sha256",
+        "protocol_sha256",
+        "environment_sha256",
+        "operational_artifact_roots_sha256",
+    }
+)
+_FINAL_RESULT_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "final_plan_sha256",
+        "final_execution_manifest_path",
+        "final_execution_manifest_sha256",
+        "final_execution_payload_sha256",
+        "execution_validation",
+        "storage_preflight",
+        "result_files",
+    }
+)
+_FINAL_EXECUTION_VALIDATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "status",
+        "final_plan_sha256",
+        "planned_run_count",
+        "executed_completed_count",
+        "executed_algorithmic_failure_count",
+        "executed_status_counts",
+        "not_applicable_count",
+        "record_payload_sha256s",
+        "validation_sha256",
+    }
+)
 _RAW_RUN_FIELDS = frozenset(
     {
         "run_id",
@@ -240,6 +294,7 @@ _DOWNSTREAM_MANIFEST_FIELDS = frozenset(
         "evaluator_source_sha256",
         "source_manifest_file_sha256",
         "source_manifest_payload_sha256",
+        "evaluated_round_binding_sha256",
         "planned_denominator_count",
         "recorded_denominator_count",
         "endpoint_row_count",
@@ -800,6 +855,73 @@ class DownstreamPlanEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class EvaluatedRoundBinding:
+    """Exact immutable lifecycle receipt binding for a frozen final source."""
+
+    repository_root: str
+    round_root: str
+    round_id: str
+    evaluation_receipt_path: str
+    evaluation_receipt_file_sha256: str
+    evaluation_receipt_payload_sha256: str
+    result_manifest_sha256: str
+    final_plan_sha256: str
+    final_execution_manifest_path: str
+    final_execution_manifest_file_sha256: str
+    final_execution_manifest_payload_sha256: str
+    execution_validation_sha256: str
+    storage_preflight_sha256: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "repository_root": self.repository_root,
+            "round_root": self.round_root,
+            "round_id": self.round_id,
+            "evaluation_receipt_path": self.evaluation_receipt_path,
+            "evaluation_receipt_file_sha256": (
+                self.evaluation_receipt_file_sha256
+            ),
+            "evaluation_receipt_payload_sha256": (
+                self.evaluation_receipt_payload_sha256
+            ),
+            "result_manifest_sha256": self.result_manifest_sha256,
+            "final_plan_sha256": self.final_plan_sha256,
+            "final_execution_manifest_path": self.final_execution_manifest_path,
+            "final_execution_manifest_file_sha256": (
+                self.final_execution_manifest_file_sha256
+            ),
+            "final_execution_manifest_payload_sha256": (
+                self.final_execution_manifest_payload_sha256
+            ),
+            "execution_validation_sha256": self.execution_validation_sha256,
+            "storage_preflight_sha256": self.storage_preflight_sha256,
+        }
+
+    @property
+    def binding_sha256(self) -> str:
+        return canonical_sha256(self.to_dict())
+
+
+_EVALUATED_ROUND_BINDING_FIELDS = frozenset(
+    {
+        "repository_root",
+        "round_root",
+        "round_id",
+        "evaluation_receipt_path",
+        "evaluation_receipt_file_sha256",
+        "evaluation_receipt_payload_sha256",
+        "result_manifest_sha256",
+        "final_plan_sha256",
+        "final_execution_manifest_path",
+        "final_execution_manifest_file_sha256",
+        "final_execution_manifest_payload_sha256",
+        "execution_validation_sha256",
+        "storage_preflight_sha256",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
 class DownstreamEvidencePlan:
     source_root: str
     source_kind: str
@@ -807,6 +929,7 @@ class DownstreamEvidencePlan:
     source_manifest_path: str
     source_manifest_file_sha256: str
     source_manifest_payload_sha256: str
+    evaluated_round_binding: EvaluatedRoundBinding | None
     datasets: tuple[DatasetEvidenceBinding, ...]
     configurations: tuple[AuthorizedConfiguration, ...]
     entries: tuple[DownstreamPlanEntry, ...]
@@ -814,13 +937,18 @@ class DownstreamEvidencePlan:
 
     def body(self) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "source_root": self.source_root,
             "source_kind": self.source_kind,
             "evaluator_source_sha256": self.evaluator_source_sha256,
             "source_manifest_path": self.source_manifest_path,
             "source_manifest_file_sha256": self.source_manifest_file_sha256,
             "source_manifest_payload_sha256": self.source_manifest_payload_sha256,
+            "evaluated_round_binding": (
+                None
+                if self.evaluated_round_binding is None
+                else self.evaluated_round_binding.to_dict()
+            ),
             "datasets": [value.to_dict() for value in self.datasets],
             "configurations": [value.to_dict() for value in self.configurations],
             "entries": [value.to_dict() for value in self.entries],
@@ -840,6 +968,7 @@ _PLAN_FIELDS = frozenset(
         "source_manifest_path",
         "source_manifest_file_sha256",
         "source_manifest_payload_sha256",
+        "evaluated_round_binding",
         "datasets",
         "configurations",
         "entries",
@@ -895,6 +1024,400 @@ def _method_artifact_sha256(configuration: AuthorizedConfiguration) -> str:
             "registry configuration method payload differs"
         )
     return canonical_sha256(dict(method))
+
+
+def _validated_evaluated_round_receipt(
+    repository: Path, round_root: Path
+) -> dict[str, object]:
+    """Reuse the frozen lifecycle's read-only evaluated-round validation."""
+
+    from .final_runner import FinalRunnerContractError, _canonical_round
+    from .study import (
+        StudyStateError,
+        _validate_freeze,
+        _validate_registry,
+        _validate_result_files,
+        _validate_state_record_chain,
+        _verify_frozen_repository,
+    )
+
+    try:
+        selected_repository, destination = _canonical_round(repository, round_root)
+        if selected_repository != repository or destination != round_root:
+            raise DownstreamEvidenceError(
+                "evaluated final round path differs from its lexical authority"
+            )
+        freeze = _validate_freeze(destination, selected_repository)
+        _validate_registry(
+            selected_repository,
+            destination,
+            freeze,
+            expected_state="evaluated",
+        )
+        _materialization, _claim, receipt = _validate_state_record_chain(
+            destination,
+            freeze,
+            expected_state="evaluated",
+        )
+        if not isinstance(receipt, Mapping):
+            raise DownstreamEvidenceError(
+                "evaluated final round receipt is absent"
+            )
+        result_manifest = receipt.get("result_manifest")
+        if not isinstance(result_manifest, Mapping):
+            raise DownstreamEvidenceError(
+                "evaluated final result manifest is absent"
+            )
+        allowed_paths = _validate_result_files(
+            selected_repository, destination, result_manifest
+        )
+        _verify_frozen_repository(
+            selected_repository,
+            destination,
+            allowed_result_paths=allowed_paths,
+        )
+    except DownstreamEvidenceError:
+        raise
+    except (FinalRunnerContractError, StudyStateError) as error:
+        raise DownstreamEvidenceError(
+            f"evaluated final round failed lifecycle validation: {error}"
+        ) from error
+    return dict(receipt)
+
+
+def _read_verified_evaluated_round_binding(
+    repository: str | Path,
+    round_directory: str | Path,
+) -> EvaluatedRoundBinding:
+    repository_root = _existing_directory(repository, "evaluated final repository")
+    round_root = _existing_directory(round_directory, "evaluated final round")
+    try:
+        round_root.relative_to(repository_root)
+    except ValueError as error:
+        raise DownstreamEvidenceError(
+            "evaluated final round must be inside its repository"
+        ) from error
+    validated_receipt = _validated_evaluated_round_receipt(
+        repository_root, round_root
+    )
+    receipt_path = round_root / "evaluation_receipt.json"
+    receipt, _receipt_raw, receipt_file_sha256 = _strict_json(
+        receipt_path, "evaluated final receipt"
+    )
+    if receipt != validated_receipt:
+        raise DownstreamEvidenceError(
+            "evaluated final receipt differs from lifecycle validation"
+        )
+    if set(receipt) != _EVALUATION_RECEIPT_FIELDS:
+        raise DownstreamEvidenceError("evaluated final receipt schema differs")
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("state") != "evaluated"
+        or receipt.get("round_id") != round_root.name
+    ):
+        raise DownstreamEvidenceError("evaluated final receipt identity differs")
+    _text(receipt.get("evaluated_at"), "final evaluation time")
+    _text(receipt.get("execution_claim_id"), "final execution claim")
+    _digest(receipt.get("seed_manifest_sha256"), "final seed manifest checksum")
+
+    result_manifest = receipt.get("result_manifest")
+    if (
+        not isinstance(result_manifest, Mapping)
+        or set(result_manifest) != _FINAL_RESULT_MANIFEST_FIELDS
+    ):
+        raise DownstreamEvidenceError("evaluated final result manifest schema differs")
+    result_manifest = dict(result_manifest)
+    result_manifest_sha256 = _digest(
+        receipt.get("result_manifest_sha256"), "final result manifest checksum"
+    )
+    if canonical_sha256(result_manifest) != result_manifest_sha256:
+        raise DownstreamEvidenceError("final result manifest checksum differs")
+    if (
+        result_manifest.get("schema_version") != 1
+        or result_manifest.get("status") != "completed"
+    ):
+        raise DownstreamEvidenceError("final result manifest is incomplete")
+    final_plan_sha256 = _digest(
+        result_manifest.get("final_plan_sha256"), "final execution plan checksum"
+    )
+
+    validation = result_manifest.get("execution_validation")
+    if (
+        not isinstance(validation, Mapping)
+        or set(validation) != _FINAL_EXECUTION_VALIDATION_FIELDS
+    ):
+        raise DownstreamEvidenceError("final execution validation schema differs")
+    validation = dict(validation)
+    validation_sha256 = _digest(
+        validation.get("validation_sha256"), "final execution validation checksum"
+    )
+    validation_body = {
+        key: value for key, value in validation.items() if key != "validation_sha256"
+    }
+    if (
+        canonical_sha256(validation_body) != validation_sha256
+        or validation.get("schema_version") != 1
+        or validation.get("status")
+        != "eligible_for_final_evaluation_complete_terminal_denominator"
+        or validation.get("final_plan_sha256") != final_plan_sha256
+    ):
+        raise DownstreamEvidenceError("final execution validation differs")
+    validation_planned = validation.get("planned_run_count")
+    completed_count = validation.get("executed_completed_count")
+    algorithmic_failure_count = validation.get(
+        "executed_algorithmic_failure_count"
+    )
+    not_applicable_count = validation.get("not_applicable_count")
+    status_counts = validation.get("executed_status_counts")
+    terminal_statuses = frozenset(
+        {"completed", "failed", "timeout", "resource_exceeded", "unavailable"}
+    )
+    if (
+        any(
+            isinstance(value, bool) or type(value) is not int or value < 0
+            for value in (
+                validation_planned,
+                completed_count,
+                algorithmic_failure_count,
+                not_applicable_count,
+            )
+        )
+        or not isinstance(status_counts, Mapping)
+        or any(
+            status not in terminal_statuses
+            or isinstance(count, bool)
+            or type(count) is not int
+            or count < 0
+            for status, count in status_counts.items()
+        )
+    ):
+        raise DownstreamEvidenceError(
+            "final execution validation denominator differs"
+        )
+    assert isinstance(validation_planned, int)
+    assert isinstance(completed_count, int)
+    assert isinstance(algorithmic_failure_count, int)
+    assert isinstance(not_applicable_count, int)
+    assert isinstance(status_counts, Mapping)
+    if (
+        sum(int(count) for count in status_counts.values())
+        + not_applicable_count
+        != validation_planned
+        or int(status_counts.get("completed", 0)) != completed_count
+        or sum(
+            int(status_counts.get(status, 0))
+            for status in terminal_statuses - {"completed"}
+        )
+        != algorithmic_failure_count
+    ):
+        raise DownstreamEvidenceError(
+            "final execution validation denominator differs"
+        )
+
+    final_manifest_relative = result_manifest.get(
+        "final_execution_manifest_path"
+    )
+    if final_manifest_relative != (
+        "results/final/execution/execution_manifest.json"
+    ):
+        raise DownstreamEvidenceError("final execution manifest path differs")
+    final_manifest_path = _safe_relative(
+        round_root, final_manifest_relative, "final execution manifest"
+    )
+    final_manifest, _manifest_raw, final_manifest_file_sha256 = _strict_json(
+        final_manifest_path, "final execution manifest"
+    )
+    if set(final_manifest) != _FINAL_MANIFEST_FIELDS:
+        raise DownstreamEvidenceError("final execution manifest schema differs")
+    final_manifest_payload_sha256 = _digest(
+        final_manifest.get("manifest_sha256"),
+        "final execution manifest payload checksum",
+    )
+    final_manifest_body = {
+        key: value
+        for key, value in final_manifest.items()
+        if key != "manifest_sha256"
+    }
+    if canonical_sha256(final_manifest_body) != final_manifest_payload_sha256:
+        raise DownstreamEvidenceError("final execution manifest checksum differs")
+    if (
+        result_manifest.get("final_execution_manifest_sha256")
+        != final_manifest_file_sha256
+        or result_manifest.get("final_execution_payload_sha256")
+        != final_manifest_payload_sha256
+        or final_manifest.get("plan_sha256") != final_plan_sha256
+    ):
+        raise DownstreamEvidenceError(
+            "final execution manifest differs from evaluation receipt"
+        )
+    references = final_manifest.get("records")
+    payload_sha256s = validation.get("record_payload_sha256s")
+    planned = validation_planned
+    if (
+        not isinstance(references, list)
+        or not isinstance(payload_sha256s, list)
+        or isinstance(planned, bool)
+        or type(planned) is not int
+        or planned != len(references)
+        or len(payload_sha256s) != len(references)
+        or final_manifest.get("planned_run_count") != planned
+        or final_manifest.get("recorded_run_count") != planned
+    ):
+        raise DownstreamEvidenceError(
+            "final execution validation denominator differs"
+        )
+    execution_root = final_manifest_path.parent
+    observed_status_counts: dict[str, int] = {}
+    observed_not_applicable_count = 0
+    for index, (reference, payload_sha256) in enumerate(
+        zip(references, payload_sha256s, strict=True), start=1
+    ):
+        if (
+            not isinstance(reference, Mapping)
+            or set(reference) != {"ordinal", "run_id", "path", "sha256"}
+            or reference.get("ordinal") != index
+        ):
+            raise DownstreamEvidenceError(
+                "final execution validation reference differs"
+            )
+        record_path = _safe_relative(
+            execution_root, reference.get("path"), "final execution record"
+        )
+        record, _record_raw, record_file_sha256 = _strict_json(
+            record_path, "final execution record"
+        )
+        if (
+            record_file_sha256
+            != _digest(reference.get("sha256"), "final record checksum")
+            or canonical_sha256(record)
+            != _digest(payload_sha256, "final record payload checksum")
+        ):
+            raise DownstreamEvidenceError(
+                "final execution validation record binding differs"
+            )
+        run = record.get("run")
+        if not isinstance(run, Mapping) or run.get("status") not in terminal_statuses:
+            raise DownstreamEvidenceError(
+                "final execution validation record status differs"
+            )
+        status = str(run["status"])
+        if record.get("execution_request") is None:
+            if status != "unavailable":
+                raise DownstreamEvidenceError(
+                    "final non-applicable record status differs"
+                )
+            observed_not_applicable_count += 1
+        else:
+            observed_status_counts[status] = (
+                observed_status_counts.get(status, 0) + 1
+            )
+    if (
+        observed_not_applicable_count != not_applicable_count
+        or observed_status_counts != dict(status_counts)
+    ):
+        raise DownstreamEvidenceError(
+            "final execution validation record denominator differs"
+        )
+
+    storage_preflight = result_manifest.get("storage_preflight")
+    if not isinstance(storage_preflight, Mapping):
+        raise DownstreamEvidenceError("final storage preflight is invalid")
+    return EvaluatedRoundBinding(
+        repository_root=str(repository_root),
+        round_root=str(round_root),
+        round_id=round_root.name,
+        evaluation_receipt_path="evaluation_receipt.json",
+        evaluation_receipt_file_sha256=receipt_file_sha256,
+        evaluation_receipt_payload_sha256=canonical_sha256(receipt),
+        result_manifest_sha256=result_manifest_sha256,
+        final_plan_sha256=final_plan_sha256,
+        final_execution_manifest_path=str(final_manifest_relative),
+        final_execution_manifest_file_sha256=final_manifest_file_sha256,
+        final_execution_manifest_payload_sha256=final_manifest_payload_sha256,
+        execution_validation_sha256=validation_sha256,
+        storage_preflight_sha256=canonical_sha256(dict(storage_preflight)),
+    )
+
+
+def _validate_evaluated_round_binding(binding: EvaluatedRoundBinding) -> None:
+    if not isinstance(binding, EvaluatedRoundBinding):
+        raise TypeError("binding must be an EvaluatedRoundBinding")
+    observed = _read_verified_evaluated_round_binding(
+        binding.repository_root, binding.round_root
+    )
+    if observed != binding:
+        raise DownstreamEvidenceError("evaluated final round binding changed")
+
+
+def _evaluated_round_binding_from_payload(
+    value: object,
+) -> EvaluatedRoundBinding | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or set(value) != _EVALUATED_ROUND_BINDING_FIELDS:
+        raise DownstreamEvidenceError(
+            "persisted evaluated-round binding schema differs"
+        )
+    repository_root = _text(
+        value.get("repository_root"), "evaluated-round repository root"
+    )
+    round_root = _text(value.get("round_root"), "evaluated-round root")
+    if not Path(repository_root).is_absolute() or not Path(round_root).is_absolute():
+        raise DownstreamEvidenceError(
+            "persisted evaluated-round paths are not absolute"
+        )
+    binding = EvaluatedRoundBinding(
+        repository_root=repository_root,
+        round_root=round_root,
+        round_id=_text(value.get("round_id"), "evaluated-round ID"),
+        evaluation_receipt_path=_text(
+            value.get("evaluation_receipt_path"), "evaluation receipt path"
+        ),
+        evaluation_receipt_file_sha256=_digest(
+            value.get("evaluation_receipt_file_sha256"),
+            "evaluation receipt file checksum",
+        ),
+        evaluation_receipt_payload_sha256=_digest(
+            value.get("evaluation_receipt_payload_sha256"),
+            "evaluation receipt payload checksum",
+        ),
+        result_manifest_sha256=_digest(
+            value.get("result_manifest_sha256"), "result manifest checksum"
+        ),
+        final_plan_sha256=_digest(
+            value.get("final_plan_sha256"), "final plan checksum"
+        ),
+        final_execution_manifest_path=_text(
+            value.get("final_execution_manifest_path"),
+            "final execution manifest path",
+        ),
+        final_execution_manifest_file_sha256=_digest(
+            value.get("final_execution_manifest_file_sha256"),
+            "final execution manifest file checksum",
+        ),
+        final_execution_manifest_payload_sha256=_digest(
+            value.get("final_execution_manifest_payload_sha256"),
+            "final execution manifest payload checksum",
+        ),
+        execution_validation_sha256=_digest(
+            value.get("execution_validation_sha256"),
+            "execution validation checksum",
+        ),
+        storage_preflight_sha256=_digest(
+            value.get("storage_preflight_sha256"),
+            "storage preflight checksum",
+        ),
+    )
+    if (
+        binding.evaluation_receipt_path != "evaluation_receipt.json"
+        or binding.final_execution_manifest_path
+        != "results/final/execution/execution_manifest.json"
+        or Path(binding.round_root).name != binding.round_id
+    ):
+        raise DownstreamEvidenceError(
+            "persisted evaluated-round binding identity differs"
+        )
+    return binding
 
 
 def _configuration_from_payload(value: object) -> AuthorizedConfiguration:
@@ -1362,12 +1885,31 @@ def build_downstream_evidence_plan(
     source_kind: str,
     datasets: Sequence[DatasetEvidenceBinding],
     configurations: Sequence[AuthorizedConfiguration],
+    evaluated_round_binding: EvaluatedRoundBinding | None = None,
 ) -> DownstreamEvidencePlan:
     """Bind a sealed development checkpoint or final execution manifest."""
 
     if source_kind not in _SOURCE_KINDS:
         raise ValueError("source_kind must be development or final")
     root = _existing_directory(source_root, "source root")
+    if evaluated_round_binding is not None:
+        if not isinstance(evaluated_round_binding, EvaluatedRoundBinding):
+            raise TypeError(
+                "evaluated_round_binding must be an EvaluatedRoundBinding or null"
+            )
+        if source_kind != "final":
+            raise DownstreamEvidenceError(
+                "development source cannot carry an evaluated-round binding"
+            )
+        expected_source_root = (
+            Path(evaluated_round_binding.round_root)
+            / "results/final/execution"
+        )
+        if root != expected_source_root:
+            raise DownstreamEvidenceError(
+                "final source root differs from evaluated-round binding"
+            )
+        _validate_evaluated_round_binding(evaluated_round_binding)
     dataset_values = tuple(datasets)
     if not dataset_values or any(
         not isinstance(value, DatasetEvidenceBinding) for value in dataset_values
@@ -1413,6 +1955,16 @@ def build_downstream_evidence_plan(
         if source_kind == "development"
         else _final_source(root)
     )
+    if evaluated_round_binding is not None and (
+        manifest_path != "execution_manifest.json"
+        or manifest_file_sha
+        != evaluated_round_binding.final_execution_manifest_file_sha256
+        or manifest_payload_sha
+        != evaluated_round_binding.final_execution_manifest_payload_sha256
+    ):
+        raise DownstreamEvidenceError(
+            "final source manifest differs from evaluated-round binding"
+        )
     entries = tuple(
         _validated_plan_entry(
             record,
@@ -1455,6 +2007,7 @@ def build_downstream_evidence_plan(
         source_manifest_path=manifest_path,
         source_manifest_file_sha256=manifest_file_sha,
         source_manifest_payload_sha256=manifest_payload_sha,
+        evaluated_round_binding=evaluated_round_binding,
         datasets=tuple(sorted(dataset_values, key=lambda value: value.dataset_id)),
         configurations=referenced_configurations,
         entries=entries,
@@ -1467,6 +2020,7 @@ def build_downstream_evidence_plan(
         source_manifest_path=provisional.source_manifest_path,
         source_manifest_file_sha256=provisional.source_manifest_file_sha256,
         source_manifest_payload_sha256=provisional.source_manifest_payload_sha256,
+        evaluated_round_binding=provisional.evaluated_round_binding,
         datasets=provisional.datasets,
         configurations=provisional.configurations,
         entries=provisional.entries,
@@ -1537,6 +2091,9 @@ def build_final_downstream_evidence_plan(
     from .methods import load_method_registry
     from .publication_freeze import validate_frozen_method
 
+    evaluated_round_binding = _read_verified_evaluated_round_binding(
+        root, round_root
+    )
     frozen_method = validate_frozen_method(root)
     registry = load_method_registry(root / "study/methods.json")
     configurations = tuple(
@@ -1554,6 +2111,7 @@ def build_final_downstream_evidence_plan(
         source_kind="final",
         datasets=datasets,
         configurations=configurations,
+        evaluated_round_binding=evaluated_round_binding,
     )
 
 
@@ -2106,7 +2664,7 @@ def _manifest_payload(
     )
     plan_payload = json.loads(plan_raw.decode("utf-8"))
     body: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "completed",
         "plan_sha256": plan.plan_sha256,
         "plan_file_sha256": plan_file_sha,
@@ -2114,6 +2672,11 @@ def _manifest_payload(
         "evaluator_source_sha256": plan.evaluator_source_sha256,
         "source_manifest_file_sha256": plan.source_manifest_file_sha256,
         "source_manifest_payload_sha256": plan.source_manifest_payload_sha256,
+        "evaluated_round_binding_sha256": (
+            None
+            if plan.evaluated_round_binding is None
+            else plan.evaluated_round_binding.binding_sha256
+        ),
         "planned_denominator_count": len(plan.entries),
         "recorded_denominator_count": len(records),
         "endpoint_row_count": len(records) * len(DOWNSTREAM_ENDPOINT_NAMES),
@@ -2122,6 +2685,22 @@ def _manifest_payload(
     if plan_payload.get("plan_sha256") != plan.plan_sha256:
         raise DownstreamEvidenceError("persisted downstream plan differs")
     return {**body, "manifest_sha256": canonical_sha256(body)}
+
+
+def _validate_downstream_output_location(
+    plan: DownstreamEvidencePlan, output_root: Path
+) -> None:
+    binding = plan.evaluated_round_binding
+    if binding is None:
+        return
+    repository_root = Path(binding.repository_root)
+    try:
+        output_root.relative_to(repository_root)
+    except ValueError:
+        return
+    raise DownstreamEvidenceError(
+        "receipt-bound final downstream output must be outside the frozen repository"
+    )
 
 
 def run_downstream_evidence(
@@ -2140,6 +2719,7 @@ def run_downstream_evidence(
         raise ValueError("max_denominators must be a nonnegative integer or null")
     _revalidate_plan(plan)
     output_root = Path(output_directory).absolute()
+    _validate_downstream_output_location(plan, output_root)
     _ensure_directory(output_root, "downstream output directory")
     manifest_path = output_root / "downstream_manifest.json"
     if os.path.lexists(manifest_path):
@@ -2182,6 +2762,7 @@ def run_downstream_evidence(
             "recorded_denominator_count": len(records),
             "endpoint_row_count": len(records) * len(DOWNSTREAM_ENDPOINT_NAMES),
         }
+    _revalidate_plan(plan)
     manifest = _manifest_payload(output_root, plan, records)
     _publish_immutable(
         manifest_path,
@@ -2207,7 +2788,7 @@ def _load_persisted_plan(
     plan_payload, _plan_raw, plan_file_sha = _strict_json(
         output_root / "plan.json", "downstream plan"
     )
-    if set(plan_payload) != _PLAN_FIELDS or plan_payload.get("schema_version") != 1:
+    if set(plan_payload) != _PLAN_FIELDS or plan_payload.get("schema_version") != 2:
         raise DownstreamEvidenceError("persisted downstream plan schema differs")
     plan_sha = _digest(plan_payload.get("plan_sha256"), "downstream plan checksum")
     plan_body = {
@@ -2229,12 +2810,16 @@ def _load_persisted_plan(
     persisted_configurations = tuple(
         _configuration_from_payload(value) for value in raw_configurations
     )
+    evaluated_round_binding = _evaluated_round_binding_from_payload(
+        plan_payload.get("evaluated_round_binding")
+    )
     try:
         rebuilt = build_downstream_evidence_plan(
             _text(plan_payload.get("source_root"), "persisted source root"),
             source_kind=_text(plan_payload.get("source_kind"), "persisted source kind"),
             datasets=persisted_datasets,
             configurations=persisted_configurations,
+            evaluated_round_binding=evaluated_round_binding,
         )
     except DownstreamEvidenceError:
         raise
@@ -2283,7 +2868,7 @@ def load_downstream_evidence_manifest(
     endpoint_rows = manifest.get("endpoint_row_count")
     if (
         canonical_sha256(manifest_body) != manifest_sha
-        or manifest.get("schema_version") != 1
+        or manifest.get("schema_version") != 2
         or manifest.get("status") != "completed"
         or manifest.get("plan_sha256") != plan_sha
         or manifest.get("plan_file_sha256") != plan_file_sha
@@ -2294,6 +2879,12 @@ def load_downstream_evidence_manifest(
         != rebuilt.source_manifest_file_sha256
         or manifest.get("source_manifest_payload_sha256")
         != rebuilt.source_manifest_payload_sha256
+        or manifest.get("evaluated_round_binding_sha256")
+        != (
+            None
+            if rebuilt.evaluated_round_binding is None
+            else rebuilt.evaluated_round_binding.binding_sha256
+        )
         or type(planned) is not int
         or planned <= 0
         or manifest.get("recorded_denominator_count") != planned
@@ -2395,6 +2986,7 @@ __all__ = [
     "DownstreamEvidenceError",
     "DownstreamEvidenceManifest",
     "DownstreamEvidencePlan",
+    "EvaluatedRoundBinding",
     "bind_evaluator_dataset",
     "bind_prepared_evaluator_panel",
     "build_development_downstream_evidence_plan",

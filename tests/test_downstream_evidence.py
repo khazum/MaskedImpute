@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import struct
+import sys
 import zlib
 from types import SimpleNamespace
 
@@ -1136,3 +1138,241 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
     changed_method[0]["method_sha256"] = "0" * 64
     with pytest.raises(SelectionAuthorityError, match="completeness"):
         validate_downstream_selection_completeness(tmp_path, changed_method, binding)
+
+
+def test_final_cli_uses_external_receipt_bound_archive_without_round_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    script_path = Path("scripts/run_final_downstream_evidence.py").absolute()
+    specification = importlib.util.spec_from_file_location(
+        "run_final_downstream_evidence_test", script_path
+    )
+    assert specification is not None and specification.loader is not None
+    script = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = script
+    specification.loader.exec_module(script)
+
+    repository = tmp_path / "repository"
+    round_directory = repository / "artifacts/study/final/rounds/round-1"
+    round_directory.mkdir(parents=True)
+    (round_directory / "evaluation_receipt.json").write_bytes(b"sealed-receipt\n")
+    before = {
+        path.relative_to(round_directory).as_posix(): path.read_bytes()
+        for path in round_directory.rglob("*")
+        if path.is_file()
+    }
+    receipt_sha256 = "a" * 64
+    plan = SimpleNamespace(
+        evaluated_round_binding=SimpleNamespace(
+            round_id="round-1",
+            evaluation_receipt_payload_sha256=receipt_sha256,
+        )
+    )
+    observed: dict[str, Path] = {}
+
+    monkeypatch.setattr(script, "REPOSITORY_ROOT", repository)
+    monkeypatch.setattr(
+        script,
+        "build_final_downstream_evidence_plan",
+        lambda selected_repository, selected_round: (
+            plan
+            if selected_repository == repository
+            and selected_round == round_directory
+            else pytest.fail("final plan received a different repository or round")
+        ),
+    )
+
+    def run_evidence(selected_plan: object, output_directory: Path):
+        assert selected_plan is plan
+        observed["output"] = output_directory
+        output_directory.mkdir(parents=True)
+        (output_directory / "proof.json").write_text("{}\n", encoding="utf-8")
+        return {"status": "completed"}
+
+    monkeypatch.setattr(script, "run_downstream_evidence", run_evidence)
+
+    different_working_directory = tmp_path / "different-working-directory"
+    different_working_directory.mkdir()
+    monkeypatch.chdir(different_working_directory)
+    repository_relative_round = round_directory.relative_to(repository)
+    assert (
+        script.main(["--round-dir", repository_relative_round.as_posix()]) == 0
+    )
+    assert json.loads(capsys.readouterr().out) == {"status": "completed"}
+    expected = (
+        repository.parent
+        / f"{repository.name}-final-analysis"
+        / "downstream"
+        / "round-1"
+        / receipt_sha256
+    )
+    assert observed["output"] == expected
+    assert not observed["output"].is_relative_to(repository)
+    after = {
+        path.relative_to(round_directory).as_posix(): path.read_bytes()
+        for path in round_directory.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_evaluated_round_binding_revalidates_exact_receipt_and_execution_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    repository = tmp_path / "repository"
+    round_directory = repository / "artifacts/study/final/rounds/round-1"
+    execution_directory = round_directory / "results/final/execution"
+    execution_directory.mkdir(parents=True)
+    execution_body = {
+        "schema_version": 1,
+        "status": "completed",
+        "plan_sha256": "1" * 64,
+        "input_hashes": {},
+        "planned_run_count": 0,
+        "recorded_run_count": 0,
+        "records": [],
+        "artifact_storage": {
+            "evaluator_output_encoding": "zlib_raw_f64_v1",
+            "evaluator_output_compression_level": 6,
+            "native_output_retention": "omitted_redundant_final_output",
+        },
+    }
+    execution_manifest = {
+        **execution_body,
+        "manifest_sha256": canonical_sha256(execution_body),
+    }
+    execution_file_sha256 = _write_canonical(
+        execution_directory / "execution_manifest.json", execution_manifest
+    )
+    validation_body = {
+        "schema_version": 1,
+        "status": "eligible_for_final_evaluation_complete_terminal_denominator",
+        "final_plan_sha256": "1" * 64,
+        "planned_run_count": 0,
+        "executed_completed_count": 0,
+        "executed_algorithmic_failure_count": 0,
+        "executed_status_counts": {},
+        "not_applicable_count": 0,
+        "record_payload_sha256s": [],
+    }
+    result_manifest = {
+        "schema_version": 1,
+        "status": "completed",
+        "final_plan_sha256": "1" * 64,
+        "final_execution_manifest_path": (
+            "results/final/execution/execution_manifest.json"
+        ),
+        "final_execution_manifest_sha256": execution_file_sha256,
+        "final_execution_payload_sha256": execution_manifest["manifest_sha256"],
+        "execution_validation": {
+            **validation_body,
+            "validation_sha256": canonical_sha256(validation_body),
+        },
+        "storage_preflight": {"schema": "test"},
+        "result_files": [],
+    }
+    receipt = {
+        "schema_version": 1,
+        "round_id": "round-1",
+        "state": "evaluated",
+        "evaluated_at": "2026-07-16T00:00:00Z",
+        "execution_claim_id": "claim-1",
+        "result_manifest": result_manifest,
+        "result_manifest_sha256": canonical_sha256(result_manifest),
+        "seed_manifest_sha256": "2" * 64,
+        "round_path": "artifacts/study/final/rounds/round-1",
+        "round_token": "round-token",
+        "repository_instance_id": "repository-instance",
+        "worktree_path_sha256": "3" * 64,
+        "git_common_dir_device": 1,
+        "git_common_dir_inode": 2,
+        "study_state_root_device": 1,
+        "study_state_root_inode": 3,
+        "registry_dir_device": 1,
+        "registry_dir_inode": 4,
+        "method_commit": "4" * 40,
+        "config_sha256": "5" * 64,
+        "protocol_sha256": "6" * 64,
+        "environment_sha256": "7" * 64,
+        "operational_artifact_roots_sha256": "8" * 64,
+    }
+    _write_canonical(round_directory / "evaluation_receipt.json", receipt)
+
+    def validated_receipt(_repository: Path, _round: Path):
+        return json.loads(
+            (round_directory / "evaluation_receipt.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    monkeypatch.setattr(
+        downstream,
+        "_validated_evaluated_round_receipt",
+        validated_receipt,
+        raising=False,
+    )
+    binding = downstream._read_verified_evaluated_round_binding(
+        repository, round_directory
+    )
+    assert binding.result_manifest_sha256 == canonical_sha256(result_manifest)
+    assert binding.final_execution_manifest_file_sha256 == execution_file_sha256
+    assert (
+        binding.final_execution_manifest_payload_sha256
+        == execution_manifest["manifest_sha256"]
+    )
+
+    receipt["evaluated_at"] = "2026-07-16T00:00:01Z"
+    _write_canonical(round_directory / "evaluation_receipt.json", receipt)
+    with pytest.raises(downstream.DownstreamEvidenceError, match="binding changed"):
+        downstream._validate_evaluated_round_binding(binding)
+
+    receipt["evaluated_at"] = "2026-07-16T00:00:00Z"
+    validation = result_manifest["execution_validation"]
+    assert isinstance(validation, dict)
+    validation["executed_completed_count"] = 1
+    changed_validation_body = {
+        key: value for key, value in validation.items() if key != "validation_sha256"
+    }
+    validation["validation_sha256"] = canonical_sha256(changed_validation_body)
+    receipt["result_manifest_sha256"] = canonical_sha256(result_manifest)
+    _write_canonical(round_directory / "evaluation_receipt.json", receipt)
+    with pytest.raises(
+        downstream.DownstreamEvidenceError,
+        match="validation denominator differs",
+    ):
+        downstream._read_verified_evaluated_round_binding(
+            repository, round_directory
+        )
+
+
+def test_receipt_bound_final_output_rejects_round_and_repository_containment(
+    tmp_path: Path,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+
+    repository = tmp_path / "repository"
+    round_directory = repository / "artifacts/study/final/rounds/round-1"
+    round_directory.mkdir(parents=True)
+    plan = SimpleNamespace(
+        source_kind="final",
+        evaluated_round_binding=SimpleNamespace(
+            repository_root=str(repository.absolute()),
+            round_root=str(round_directory.absolute()),
+        ),
+    )
+    forbidden = round_directory / "results/final/downstream"
+    with pytest.raises(
+        downstream.DownstreamEvidenceError,
+        match="outside the frozen repository",
+    ):
+        downstream._validate_downstream_output_location(plan, forbidden)
+    assert not forbidden.exists()
+
+    external = tmp_path / "repository-final-analysis/downstream"
+    downstream._validate_downstream_output_location(plan, external)
