@@ -505,6 +505,7 @@ def _validate_stored_completed_score(
         truth_kind="exact_pre_capture",
         expected_score_input_sha256=_score_input_sha256(prepared),
         expected_score_config_sha256="6" * 64,
+        expected_matrix_present=True,
         expected_probability=expected_probability,
         expected_policy=expected_policy,
     )
@@ -1001,7 +1002,7 @@ def test_score_authority_cache_returns_detached_matrix_and_policy(
         prepared,
         plan.execution_context,
         calibration_usage="development_holdout",
-        matrix_present=True,
+        expected_matrix_present=True,
     )
     assert probability is not None
     assert policy is not None
@@ -1015,7 +1016,7 @@ def test_score_authority_cache_returns_detached_matrix_and_policy(
         prepared,
         plan.execution_context,
         calibration_usage="development_holdout",
-        matrix_present=True,
+        expected_matrix_present=True,
     )
     np.testing.assert_array_equal(
         repeated_probability,
@@ -1083,6 +1084,185 @@ def test_development_append_validates_before_publishing_and_allows_retry(
     )
     assert report.status == "completed"
     assert len(report.records) == 1
+
+
+@pytest.mark.parametrize(
+    "artifact_suffix",
+    (
+        ".stdout",
+        ".stderr",
+        ".native-f64",
+        ".log2-cp10k-f64",
+        ".p-pre-zero-f64.zlib",
+    ),
+)
+def test_development_restart_recovers_every_interrupted_artifact_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_suffix: str,
+) -> None:
+    prepared = _prepared()
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
+    assert attempt.native_output is not None
+    assert attempt.evaluator_output is not None
+    assert attempt.p_pre_zero_evidence.raw_matrix_bytes is not None
+    prepared_datasets = _prepared_datasets(prepared)
+    original_publish = store._publish_immutable
+
+    def interrupt_after_closed_artifact(relative: str, data: bytes):
+        receipt = original_publish(relative, data)
+        if relative.endswith(artifact_suffix):
+            raise RuntimeError(f"interrupted after {artifact_suffix}")
+        return receipt
+
+    monkeypatch.setattr(store, "_publish_immutable", interrupt_after_closed_artifact)
+    with pytest.raises(RuntimeError, match="interrupted after"):
+        store.append(
+            plan,
+            None,
+            attempt,
+            DevelopmentBudget(),
+            prepared_datasets=prepared_datasets,
+        )
+    assert not store.checkpoint_path.exists()
+    assert (store.output_dir / "transactions/00000001.json").is_file()
+
+    retry_stdout = b"scientifically equivalent retry stdout\n"
+    retry_stderr = b"scientifically equivalent retry stderr\n"
+    retry = replace(
+        attempt,
+        run=replace(
+            attempt.run,
+            stdout_sha256=hashlib.sha256(retry_stdout).hexdigest(),
+            stderr_sha256=hashlib.sha256(retry_stderr).hexdigest(),
+        ),
+        stdout=retry_stdout,
+        stderr=retry_stderr,
+    )
+    restarted = CheckpointStore(
+        store.output_dir,
+        authority_repository=tmp_path,
+    )
+    report = restarted.append(
+        plan,
+        None,
+        retry,
+        DevelopmentBudget(),
+        prepared_datasets=prepared_datasets,
+    )
+
+    assert report.status == "completed"
+    assert not (store.output_dir / "transactions").exists()
+    record = report.records[0]
+    run = record["run"]
+    assert (store.output_dir / run["stdout_path"]).read_bytes() == retry_stdout
+    assert (store.output_dir / run["stderr_path"]).read_bytes() == retry_stderr
+    expected_files = {
+        "checkpoint.json",
+        run["stdout_path"],
+        run["stderr_path"],
+        run["native_output_path"],
+        run["evaluator_output_path"],
+        record["p_pre_zero_evidence"]["storage"]["path"],
+    }
+    observed_files = {
+        path.relative_to(store.output_dir).as_posix()
+        for path in store.output_dir.rglob("*")
+        if path.is_file()
+    }
+    assert observed_files == expected_files
+
+
+def test_development_restart_retains_committed_artifacts_and_closes_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared()
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
+    prepared_datasets = _prepared_datasets(prepared)
+    original_publish_checkpoint = store._publish_checkpoint
+
+    def interrupt_after_checkpoint(payload):
+        original_publish_checkpoint(payload)
+        raise RuntimeError("interrupted after checkpoint")
+
+    monkeypatch.setattr(store, "_publish_checkpoint", interrupt_after_checkpoint)
+    with pytest.raises(RuntimeError, match="interrupted after checkpoint"):
+        store.append(
+            plan,
+            None,
+            attempt,
+            DevelopmentBudget(),
+            prepared_datasets=prepared_datasets,
+        )
+    assert store.checkpoint_path.is_file()
+    assert (store.output_dir / "transactions/00000001.json").is_file()
+    before = {
+        path.relative_to(store.output_dir).as_posix(): path.read_bytes()
+        for path in (store.output_dir / "runs").iterdir()
+        if path.is_file()
+    }
+
+    restarted = CheckpointStore(store.output_dir, authority_repository=tmp_path)
+    report = restarted.load(plan, prepared_datasets=prepared_datasets)
+
+    assert report.status == "completed"
+    assert not (store.output_dir / "transactions").exists()
+    after = {
+        path.relative_to(store.output_dir).as_posix(): path.read_bytes()
+        for path in (store.output_dir / "runs").iterdir()
+        if path.is_file()
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize("replacement", ("hardlink", "symlink"))
+def test_development_recovery_refuses_nonunique_or_linked_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    prepared = _prepared()
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
+    prepared_datasets = _prepared_datasets(prepared)
+    original_publish = store._publish_immutable
+
+    def interrupt_after_stdout(relative: str, data: bytes):
+        receipt = original_publish(relative, data)
+        if relative.endswith(".stdout"):
+            raise RuntimeError("interrupted after stdout")
+        return receipt
+
+    monkeypatch.setattr(store, "_publish_immutable", interrupt_after_stdout)
+    with pytest.raises(RuntimeError, match="interrupted after stdout"):
+        store.append(
+            plan,
+            None,
+            attempt,
+            DevelopmentBudget(),
+            prepared_datasets=prepared_datasets,
+        )
+    artifact = store.output_dir / f"runs/{attempt.run.run_id}.stdout"
+    external = tmp_path / f"external-{replacement}"
+    if replacement == "hardlink":
+        external.hardlink_to(artifact)
+    else:
+        artifact.unlink()
+        external.write_bytes(b"must survive recovery")
+        artifact.symlink_to(external)
+
+    restarted = CheckpointStore(store.output_dir, authority_repository=tmp_path)
+    with pytest.raises(RunnerContractError, match="unique|symlink|unsafe"):
+        restarted.append(
+            plan,
+            None,
+            attempt,
+            DevelopmentBudget(),
+            prepared_datasets=prepared_datasets,
+        )
+
+    assert external.exists()
+    assert (store.output_dir / "transactions/00000001.json").is_file()
 
 
 @pytest.mark.parametrize("tamper", ("matrix", "policy", "report"))
@@ -1170,6 +1350,81 @@ def test_development_conversion_terminal_score_remains_exactly_authorized(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="p_pre_zero|matrix|policy|report"):
+        store.load(plan, prepared_datasets=prepared_datasets)
+
+
+def test_development_conversion_terminal_score_cannot_be_coordinately_removed(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.prezero_evidence import _score_report
+
+    prepared = _prepared()
+    plan, valid_attempt, store = _real_development_checkpoint_case(
+        tmp_path, prepared
+    )
+    policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
+    assert isinstance(policy, dict)
+
+    def reject_conversion(_method_input, _execution):
+        raise ValueError("deliberate evaluator conversion rejection")
+
+    conversion_attempt = _completed_maskimpute(
+        prepared,
+        execution=_maskimpute_execution(
+            prepared,
+            valid_attempt.p_pre_zero_evidence.matrix,
+            _diagnostics_from_persisted_policy(policy),
+        ),
+        calibration_file_sha256=plan.input_hashes[
+            "retained_calibration_sha256"
+        ],
+        output_converter=reject_conversion,
+    )
+    prepared_datasets = _prepared_datasets(prepared)
+    report = store.append(
+        plan,
+        None,
+        conversion_attempt,
+        DevelopmentBudget(),
+        prepared_datasets=prepared_datasets,
+    )
+    stored_evidence = report.records[0]["p_pre_zero_evidence"]
+    (store.output_dir / stored_evidence["storage"]["path"]).unlink()
+
+    def remove_score(payload: dict[str, object]) -> None:
+        evidence = payload["records"][0]["p_pre_zero_evidence"]
+        evidence["matrix"] = {
+            "shape": None,
+            "dtype": None,
+            "content_sha256": None,
+            "semantic_sha256": None,
+        }
+        evidence["policy"] = None
+        evidence["policy_sha256"] = None
+        evidence["storage"] = {
+            "encoding": None,
+            "compression_level": None,
+            "path": None,
+            "compressed_sha256": None,
+            "compressed_nbytes": None,
+            "uncompressed_sha256": None,
+            "uncompressed_nbytes": None,
+        }
+        evidence["overall"], evidence["strata"] = _score_report(
+            None,
+            np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+            np.asarray(
+                prepared.evaluator_dataset.layers["pre_capture_counts"],
+                dtype=np.float64,
+            ),
+            truth_kind="exact_pre_capture",
+            unavailable_status="unavailable",
+            unavailable_reason=evidence["reason"],
+        )
+        _rebind_score_payload(payload)
+
+    _rewrite_checkpoint(store, remove_score)
+    with pytest.raises(RunnerContractError, match="p_pre_zero|matrix|authority"):
         store.load(plan, prepared_datasets=prepared_datasets)
 
 

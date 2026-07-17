@@ -1203,7 +1203,7 @@ def test_final_result_store_refits_once_and_rejects_coordinated_score_replacemen
         prepared,
         context,
         calibration_usage="retained_all_development",
-        matrix_present=True,
+        expected_matrix_present=True,
     )
     np.testing.assert_array_equal(cached_probability, probability)
     assert cached_policy == policy
@@ -1489,6 +1489,124 @@ def test_final_conversion_terminal_score_remains_exactly_authorized(
         match="p_pre_zero|matrix|policy|report",
     ):
         store.load_records()
+
+
+def test_final_conversion_terminal_score_cannot_be_coordinately_removed(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.prezero_evidence import _score_report
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    source_entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    entry = replace(source_entry, run=replace(source_entry.run, ordinal=1))
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    prepared, context, valid_attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
+    )
+    policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
+    assert isinstance(policy, dict)
+
+    def reject_conversion(_method_input, _execution):
+        raise ValueError("deliberate evaluator conversion rejection")
+
+    conversion_attempt = _completed_attempt(
+        entry,
+        probability=valid_attempt.p_pre_zero_evidence.matrix,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+        output_converter=reject_conversion,
+    )
+    output = tmp_path / "execution"
+    store = _final_store(
+        output,
+        plan,
+        prepared={prepared.binding.dataset_id: prepared},
+        authority=context,
+        authority_repository=tmp_path,
+    )
+    record = store.append(entry, conversion_attempt, execution_request=request)
+    evidence = record["p_pre_zero_evidence"]
+    (output / evidence["storage"]["path"]).unlink()
+    evidence["matrix"] = {
+        "shape": None,
+        "dtype": None,
+        "content_sha256": None,
+        "semantic_sha256": None,
+    }
+    evidence["policy"] = None
+    evidence["policy_sha256"] = None
+    evidence["storage"] = {
+        "encoding": None,
+        "compression_level": None,
+        "path": None,
+        "compressed_sha256": None,
+        "compressed_nbytes": None,
+        "uncompressed_sha256": None,
+        "uncompressed_nbytes": None,
+    }
+    evidence["overall"], evidence["strata"] = _score_report(
+        None,
+        np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+        np.asarray(prepared.evaluator_dataset.layers["truth"], dtype=np.float64),
+        truth_kind="exact_pre_capture",
+        unavailable_status="unavailable",
+        unavailable_reason=evidence["reason"],
+    )
+    body = {
+        name: value
+        for name, value in evidence.items()
+        if name not in {"evidence_sha256", "storage"}
+    }
+    evidence["evidence_sha256"] = canonical_sha256(body)
+    record_path = output / "records/00000001.json"
+    record_path.write_text(
+        json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        FinalRunnerContractError,
+        match="p_pre_zero|matrix|authority",
+    ):
+        _final_store(
+            output,
+            plan,
+            prepared={prepared.binding.dataset_id: prepared},
+            authority=context,
+            authority_repository=tmp_path,
+        ).load_records()
 
 
 def test_final_result_store_append_does_not_rehash_the_whole_prefix(

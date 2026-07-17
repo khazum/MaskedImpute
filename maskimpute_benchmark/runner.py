@@ -94,6 +94,10 @@ _V28_SELECTION_REPORT_PATH = (
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
+_EVALUATOR_CONVERSION_REASON = re.compile(
+    r"evaluator_conversion_[a-z][a-z0-9_]*_detail_[0-9a-f]{64}\Z"
+)
+_DEVELOPMENT_TRANSACTION_FILE = re.compile(r"[0-9]{8}\.json\Z")
 _OUTCOME_STATUSES = frozenset(
     {
         "completed",
@@ -3658,12 +3662,12 @@ class CheckpointStore:
         execution_authority: ExecutionAuthorityContext | None,
         *,
         calibration_usage: str,
-        matrix_present: bool,
+        expected_matrix_present: bool,
     ) -> tuple[np.ndarray | None, dict[str, object] | None]:
         """Derive and cache authority whenever realized score bytes are present."""
 
         if (
-            not matrix_present
+            not expected_matrix_present
             or entry.method_id != "maskimpute"
             or not entry.requires_count_score
         ):
@@ -3718,6 +3722,35 @@ class CheckpointStore:
             raise RunnerContractError("cached p_pre_zero policy is invalid")
         return detached_probability, detached_policy
 
+    @staticmethod
+    def _expects_realized_prezero(
+        entry: RunPlanEntry,
+        run: Mapping[str, object],
+    ) -> bool:
+        """Derive score presence from plan and post-execution provenance."""
+
+        if entry.method_id != "maskimpute" or not entry.requires_count_score:
+            return False
+        status = run.get("status")
+        reason = run.get("reason")
+        native_provenance = any(
+            run.get(name) is not None
+            for name in (
+                "native_output_sha256",
+                "native_output_path",
+                "native_output_file_sha256",
+                "native_output_shape",
+                "native_output_dtype",
+                "native_output_scale",
+            )
+        )
+        conversion_terminal = (
+            status == "unavailable"
+            and isinstance(reason, str)
+            and _EVALUATOR_CONVERSION_REASON.fullmatch(reason) is not None
+        )
+        return status == "completed" or native_provenance or conversion_terminal
+
     def _ensure_root(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         metadata = self.output_dir.lstat()
@@ -3739,6 +3772,455 @@ class CheckpointStore:
             if os.path.lexists(component) and stat.S_ISLNK(component.lstat().st_mode):
                 raise RunnerContractError(f"{name} path contains a symlink")
         return path
+
+    @staticmethod
+    def _transaction_artifact_paths(
+        attempt: EvaluatedAttempt,
+    ) -> tuple[str, ...]:
+        base = f"runs/{attempt.run.run_id}"
+        paths = {
+            f"{base}.stdout",
+            f"{base}.stderr",
+            *(() if attempt.native_output is None else (f"{base}.native-f64",)),
+            *(
+                ()
+                if attempt.evaluator_output is None
+                else (f"{base}.log2-cp10k-f64",)
+            ),
+            *(
+                ()
+                if attempt.p_pre_zero_evidence.raw_matrix_bytes is None
+                else (f"{base}.p-pre-zero-f64.zlib",)
+            ),
+        }
+        return tuple(sorted(paths))
+
+    @staticmethod
+    def _allowed_transaction_artifact_paths(entry: RunPlanEntry) -> frozenset[str]:
+        base = f"runs/{entry.run_id}"
+        return frozenset(
+            {
+                f"{base}.stdout",
+                f"{base}.stderr",
+                f"{base}.native-f64",
+                f"{base}.log2-cp10k-f64",
+                f"{base}.p-pre-zero-f64.zlib",
+            }
+        )
+
+    @staticmethod
+    def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_nlink,
+            value.st_uid,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    def _read_owned_transaction_file(
+        self,
+        path: Path,
+        name: str,
+    ) -> tuple[bytes, tuple[int, ...]]:
+        descriptor = -1
+        try:
+            before = path.lstat()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or stat.S_ISLNK(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_uid != os.geteuid()
+                or before.st_size > 1024 * 1024
+            ):
+                raise RunnerContractError(
+                    f"{name} must be an owned bounded unique regular file"
+                )
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened = os.fstat(descriptor)
+            if self._stat_identity(before) != self._stat_identity(opened):
+                raise RunnerContractError(f"{name} changed while opening")
+            chunks: list[bytes] = []
+            consumed = 0
+            while True:
+                chunk = os.read(descriptor, min(1024 * 1024 + 1 - consumed, 65536))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                consumed += len(chunk)
+                if consumed > 1024 * 1024:
+                    raise RunnerContractError(f"{name} exceeds its byte bound")
+            after = os.fstat(descriptor)
+            after_path = path.lstat()
+            if self._stat_identity(opened) != self._stat_identity(
+                after
+            ) or self._stat_identity(opened) != self._stat_identity(after_path):
+                raise RunnerContractError(f"{name} changed while reading")
+            return b"".join(chunks), self._stat_identity(opened)
+        except RunnerContractError:
+            raise
+        except OSError as error:
+            raise RunnerContractError(f"{name} is unavailable") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _checkpoint_transaction_snapshot(
+        self,
+        plan: CompetitionPlan,
+    ) -> tuple[bytes | None, tuple[frozenset[str], ...]]:
+        if not os.path.lexists(self.checkpoint_path):
+            return None, ()
+        raw = self._read_checkpoint_bytes()
+        try:
+            payload = json.loads(
+                raw.decode("utf-8"),
+                parse_constant=_reject_json_constant,
+                object_pairs_hook=_unique_json_object,
+            )
+        except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+            raise RunnerContractError(
+                "checkpoint transaction prefix is invalid"
+            ) from error
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != self._CHECKPOINT_KEYS
+            or raw != _canonical_bytes(payload) + b"\n"
+            or payload.get("schema_version") != 1
+            or payload.get("plan_sha256") != plan.plan_sha256
+            or payload.get("input_hashes") != dict(plan.input_hashes)
+            or payload.get("planned_run_count") != len(plan.entries)
+        ):
+            raise RunnerContractError(
+                "checkpoint transaction prefix differs from its plan"
+            )
+        checksum_body = {
+            key: nested
+            for key, nested in payload.items()
+            if key != "checkpoint_sha256"
+        }
+        if payload.get("checkpoint_sha256") != canonical_sha256(checksum_body):
+            raise RunnerContractError(
+                "checkpoint transaction prefix checksum differs"
+            )
+        records = payload.get("records")
+        if not isinstance(records, list) or len(records) > len(plan.entries):
+            raise RunnerContractError(
+                "checkpoint transaction records are not a plan prefix"
+            )
+        expected_status = (
+            "completed" if len(records) == len(plan.entries) else "running"
+        )
+        if payload.get("status") != expected_status:
+            raise RunnerContractError(
+                "checkpoint transaction status contradicts its prefix"
+            )
+        references: list[frozenset[str]] = []
+        for record, entry in zip(records, plan.entries, strict=False):
+            if not isinstance(record, Mapping) or set(record) != {
+                "run",
+                "metrics",
+                "p_pre_zero_evidence",
+            }:
+                raise RunnerContractError(
+                    "checkpoint transaction record has wrong schema"
+                )
+            run = record.get("run")
+            evidence = record.get("p_pre_zero_evidence")
+            storage = (
+                evidence.get("storage")
+                if isinstance(evidence, Mapping)
+                else None
+            )
+            if (
+                not isinstance(run, Mapping)
+                or run.get("run_id") != entry.run_id
+                or not isinstance(storage, Mapping)
+            ):
+                raise RunnerContractError(
+                    "checkpoint transaction record differs from its plan"
+                )
+            observed: set[str] = set()
+            for prefix in ("stdout", "stderr", "native_output", "evaluator_output"):
+                relative = run.get(f"{prefix}_path")
+                if relative is not None:
+                    if not isinstance(relative, str):
+                        raise RunnerContractError(
+                            "checkpoint transaction artifact path is invalid"
+                        )
+                    observed.add(relative)
+            score_relative = storage.get("path")
+            if score_relative is not None:
+                if not isinstance(score_relative, str):
+                    raise RunnerContractError(
+                        "checkpoint transaction score path is invalid"
+                    )
+                observed.add(score_relative)
+            allowed = self._allowed_transaction_artifact_paths(entry)
+            required = {
+                f"runs/{entry.run_id}.stdout",
+                f"runs/{entry.run_id}.stderr",
+            }
+            if not required.issubset(observed) or not observed.issubset(allowed):
+                raise RunnerContractError(
+                    "checkpoint transaction artifact paths differ from their run"
+                )
+            references.append(frozenset(observed))
+        return raw, tuple(references)
+
+    def _assert_checkpoint_transaction_snapshot(
+        self,
+        snapshot: bytes | None,
+    ) -> None:
+        if snapshot is None:
+            if os.path.lexists(self.checkpoint_path):
+                raise RunnerContractError(
+                    "checkpoint prefix appeared during transaction recovery"
+                )
+            return
+        if not os.path.lexists(self.checkpoint_path):
+            raise RunnerContractError(
+                "checkpoint prefix disappeared during transaction recovery"
+            )
+        if self._read_checkpoint_bytes() != snapshot:
+            raise RunnerContractError(
+                "checkpoint prefix changed during transaction recovery"
+            )
+
+    def _unlink_closed_transaction_file(
+        self,
+        path: Path,
+        name: str,
+        *,
+        checkpoint_snapshot: bytes | None,
+        expected_identity: tuple[int, ...] | None = None,
+        missing_ok: bool = False,
+    ) -> bool:
+        descriptor = -1
+        try:
+            try:
+                before = path.lstat()
+            except FileNotFoundError:
+                if missing_ok:
+                    return False
+                raise
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or stat.S_ISLNK(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_uid != os.geteuid()
+                or (
+                    expected_identity is not None
+                    and self._stat_identity(before) != expected_identity
+                )
+            ):
+                raise RunnerContractError(
+                    f"{name} is not an owned unique closed file"
+                )
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened = os.fstat(descriptor)
+            if self._stat_identity(before) != self._stat_identity(opened):
+                raise RunnerContractError(f"{name} changed while opening")
+            self._assert_checkpoint_transaction_snapshot(checkpoint_snapshot)
+            after_path = path.lstat()
+            if self._stat_identity(opened) != self._stat_identity(after_path):
+                raise RunnerContractError(f"{name} changed before removal")
+            path.unlink()
+            if os.fstat(descriptor).st_nlink != 0 or os.path.lexists(path):
+                raise RunnerContractError(f"{name} survived removal")
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            return True
+        except RunnerContractError:
+            raise
+        except OSError as error:
+            raise RunnerContractError(f"{name} could not be removed safely") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _recover_interrupted_transactions(
+        self,
+        plan: CompetitionPlan,
+    ) -> tuple[int, ...]:
+        """Close committed intents and roll back only uncommitted artifacts."""
+
+        transactions = self.output_dir / "transactions"
+        if not os.path.lexists(transactions):
+            return ()
+        try:
+            metadata = transactions.lstat()
+            names = tuple(sorted(path.name for path in transactions.iterdir()))
+        except OSError as error:
+            raise RunnerContractError(
+                "development transaction directory cannot be enumerated"
+            ) from error
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+        ):
+            raise RunnerContractError("development transaction directory is invalid")
+        checkpoint_snapshot, committed = self._checkpoint_transaction_snapshot(plan)
+        committed_all = frozenset().union(*committed)
+        recovered: list[int] = []
+        for name in names:
+            if _DEVELOPMENT_TRANSACTION_FILE.fullmatch(name) is None:
+                raise RunnerContractError("development transaction name is invalid")
+            position = int(name.removesuffix(".json")) - 1
+            if position < 0 or position >= len(plan.entries):
+                raise RunnerContractError("development transaction position is invalid")
+            entry = plan.entries[position]
+            intent_path = transactions / name
+            raw, identity = self._read_owned_transaction_file(
+                intent_path,
+                "development transaction intent",
+            )
+            try:
+                intent = json.loads(
+                    raw.decode("utf-8"),
+                    parse_constant=_reject_json_constant,
+                    object_pairs_hook=_unique_json_object,
+                )
+            except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+                raise RunnerContractError(
+                    "development transaction intent is invalid"
+                ) from error
+            body = (
+                {
+                    key: nested
+                    for key, nested in intent.items()
+                    if key != "intent_sha256"
+                }
+                if isinstance(intent, Mapping)
+                else {}
+            )
+            artifact_paths = (
+                intent.get("artifact_paths")
+                if isinstance(intent, Mapping)
+                else None
+            )
+            allowed = self._allowed_transaction_artifact_paths(entry)
+            required = {
+                f"runs/{entry.run_id}.stdout",
+                f"runs/{entry.run_id}.stderr",
+            }
+            if (
+                not isinstance(intent, dict)
+                or set(intent)
+                != {
+                    "schema_version",
+                    "plan_sha256",
+                    "position",
+                    "ordinal",
+                    "run_id",
+                    "artifact_paths",
+                    "intent_sha256",
+                }
+                or intent.get("schema_version") != 1
+                or intent.get("plan_sha256") != plan.plan_sha256
+                or intent.get("position") != position
+                or intent.get("ordinal") != entry.ordinal
+                or intent.get("run_id") != entry.run_id
+                or not isinstance(artifact_paths, list)
+                or not all(isinstance(item, str) for item in artifact_paths)
+                or artifact_paths != sorted(artifact_paths)
+                or len(set(artifact_paths)) != len(artifact_paths)
+                or not required.issubset(set(artifact_paths))
+                or not set(artifact_paths).issubset(allowed)
+                or intent.get("intent_sha256") != canonical_sha256(body)
+                or raw != _canonical_bytes(intent) + b"\n"
+            ):
+                raise RunnerContractError("development transaction intent is invalid")
+            if position > len(committed):
+                raise RunnerContractError(
+                    "development transaction is beyond the checkpoint prefix"
+                )
+            if position < len(committed):
+                if set(artifact_paths) != set(committed[position]):
+                    raise RunnerContractError(
+                        "committed development transaction differs from its record"
+                    )
+            else:
+                if set(artifact_paths) & committed_all:
+                    raise RunnerContractError(
+                        "interrupted development artifacts are checkpoint-referenced"
+                    )
+                for relative in artifact_paths:
+                    path = self._safe_artifact_path(
+                        relative,
+                        "interrupted development artifact",
+                    )
+                    self._unlink_closed_transaction_file(
+                        path,
+                        "interrupted development artifact",
+                        checkpoint_snapshot=checkpoint_snapshot,
+                        missing_ok=True,
+                    )
+            self._unlink_closed_transaction_file(
+                intent_path,
+                "development transaction intent",
+                checkpoint_snapshot=checkpoint_snapshot,
+                expected_identity=identity,
+            )
+            recovered.append(entry.ordinal)
+        try:
+            transactions.rmdir()
+        except OSError as error:
+            raise RunnerContractError(
+                "development transaction directory did not become empty"
+            ) from error
+        directory = os.open(self.output_dir, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        runs = self.output_dir / "runs"
+        try:
+            runs.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+        return tuple(recovered)
+
+    def _publish_transaction_intent(
+        self,
+        plan: CompetitionPlan,
+        position: int,
+        entry: RunPlanEntry,
+        attempt: EvaluatedAttempt,
+    ) -> Path:
+        body: dict[str, object] = {
+            "schema_version": 1,
+            "plan_sha256": plan.plan_sha256,
+            "position": position,
+            "ordinal": entry.ordinal,
+            "run_id": entry.run_id,
+            "artifact_paths": list(self._transaction_artifact_paths(attempt)),
+        }
+        intent = {**body, "intent_sha256": canonical_sha256(body)}
+        relative, _digest = self._publish_immutable(
+            f"transactions/{position + 1:08d}.json",
+            _canonical_bytes(intent) + b"\n",
+        )
+        return self.output_dir / relative
 
     def _publish_immutable(self, relative: str, data: bytes) -> tuple[str, str]:
         self._ensure_root()
@@ -3909,6 +4391,7 @@ class CheckpointStore:
         prepared_by_dataset = _validate_prepared_dataset_authority(
             plan, prepared_datasets
         )
+        self._recover_interrupted_transactions(plan)
         records = [] if report is None else list(report.records)
         if len(records) >= len(plan.entries):
             raise RunnerContractError("checkpoint already contains its full plan")
@@ -3945,6 +4428,12 @@ class CheckpointStore:
             self._prezero_authority_cache.update(
                 staging._prezero_authority_cache
             )
+        self._publish_transaction_intent(
+            plan,
+            len(records),
+            entry,
+            attempt,
+        )
         records.append(self._stored_attempt(attempt))
         return self.write(
             plan,
@@ -4300,20 +4789,13 @@ class CheckpointStore:
             "method_input_sha256": authoritative_method_input_sha256,
             "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
         }
-        matrix_value = (
-            evidence_value.get("matrix")
-            if isinstance(evidence_value, Mapping)
-            else None
-        )
+        expected_matrix_present = self._expects_realized_prezero(entry, run)
         expected_probability, expected_policy = self._expected_prezero_authority(
             entry,
             prepared,
             execution_authority,
             calibration_usage=calibration_usage,
-            matrix_present=(
-                isinstance(matrix_value, Mapping)
-                and matrix_value.get("shape") is not None
-            ),
+            expected_matrix_present=expected_matrix_present,
         )
         observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
         try:
@@ -4340,6 +4822,7 @@ class CheckpointStore:
                 truth_kind=truth_kind,
                 expected_score_input_sha256=_count_score_input_sha256(prepared),
                 expected_score_config_sha256=expected_score_config_sha256,
+                expected_matrix_present=expected_matrix_present,
                 expected_probability=expected_probability,
                 expected_policy=expected_policy,
             )
@@ -4374,6 +4857,7 @@ class CheckpointStore:
     ) -> CheckpointReport:
         if not isinstance(plan, CompetitionPlan):
             raise TypeError("plan must be a CompetitionPlan")
+        self._recover_interrupted_transactions(plan)
         prepared_by_dataset = _validate_prepared_dataset_authority(
             plan, prepared_datasets
         )

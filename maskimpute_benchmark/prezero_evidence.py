@@ -611,6 +611,7 @@ def validate_stored_prezero_evidence(
     truth_kind: str,
     expected_score_input_sha256: str | None,
     expected_score_config_sha256: str | None,
+    expected_matrix_present: bool,
     expected_probability: np.ndarray | None = None,
     expected_policy: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
@@ -721,7 +722,13 @@ def validate_stored_prezero_evidence(
         raise PreZeroEvidenceError("p_pre_zero matrix receipt is malformed")
     if not isinstance(storage, Mapping) or set(storage) != _STORAGE_FIELDS:
         raise PreZeroEvidenceError("p_pre_zero storage receipt is malformed")
+    if type(expected_matrix_present) is not bool:
+        raise TypeError("expected_matrix_present must be a bool")
     matrix_present = matrix.get("shape") is not None
+    if matrix_present != expected_matrix_present:
+        raise PreZeroEvidenceError(
+            "p_pre_zero matrix presence differs from execution provenance"
+        )
     probability: np.ndarray | None = None
     if matrix_present:
         if method_id != "maskimpute" or not requires_count_score:
