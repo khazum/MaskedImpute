@@ -1719,7 +1719,7 @@ def test_completed_output_uses_common_log2_cp10k_and_complete_long_form_metrics(
         prepared.audit.retained_cell_ids_sha256
     )
     np.testing.assert_allclose(evaluated.evaluator_output, expected_output)
-    assert len(evaluated.metrics) == len(expected) == 35
+    assert len(evaluated.metrics) == len(expected) == 36
     assert [metric.metric for metric in evaluated.metrics] == list(expected)
     mse = next(metric for metric in evaluated.metrics if metric.metric == "mse")
     assert mse.status == "completed"
@@ -1829,7 +1829,7 @@ def test_noncompleted_attempts_keep_complete_reason_coded_metric_denominator(
 
     assert evaluated.run.status == expected_status
     assert evaluated.run.reason == reason
-    assert len(evaluated.metrics) == 35
+    assert len(evaluated.metrics) == 36
     assert all(metric.value is None for metric in evaluated.metrics)
     assert all(metric.status == expected_status for metric in evaluated.metrics)
     assert all(metric.reason == reason for metric in evaluated.metrics)

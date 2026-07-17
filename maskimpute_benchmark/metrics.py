@@ -274,8 +274,8 @@ def _reconstruction_metric_names() -> list[str]:
         [
             "mean_distortion",
             "variance_distortion",
-            "false_positive_expression",
             "mean_gene_wasserstein_distance",
+            "false_positive_expression",
             "corr_err",
             "n_corr_genes",
             "cell_correlation_distortion",
