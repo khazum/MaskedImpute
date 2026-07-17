@@ -491,9 +491,21 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
                 )
             return group[name]
 
-        def data_dtype(dataset: object, name: str, kinds: str) -> None:
-            if not isinstance(dataset, h5py.Dataset):
+        def dataset_layout(element: object, name: str) -> object:
+            if not isinstance(element, h5py.Dataset):
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
+            if element.is_virtual:
+                raise ScalingContractError(
+                    f"H5AD HDF5 {name} virtual dataset layout is forbidden"
+                )
+            if element.external is not None:
+                raise ScalingContractError(
+                    f"H5AD HDF5 {name} external dataset layout is forbidden"
+                )
+            return element
+
+        def data_dtype(dataset: object, name: str, kinds: str) -> None:
+            dataset = dataset_layout(dataset, name)
             dtype = dataset.dtype
             if dtype.kind not in kinds or (dtype.kind in "biufc" and dtype.itemsize > 8):
                 raise ScalingContractError(f"H5AD HDF5 {name} dtype is invalid")
@@ -518,9 +530,9 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
         def string_array(
             dataset: object, shape: tuple[int, ...], name: str
         ) -> None:
+            dataset = dataset_layout(dataset, name)
             if (
-                not isinstance(dataset, h5py.Dataset)
-                or dataset.shape != shape
+                dataset.shape != shape
                 or h5py.check_string_dtype(dataset.dtype) is None
             ):
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
@@ -654,7 +666,8 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
                 for field in names(element, 64, name):
                     bounded_metadata(child(element, field, f"{name}/{field}"), depth + 1, f"{name}/{field}")
                 return
-            if not isinstance(element, h5py.Dataset) or element.ndim > 2:
+            element = dataset_layout(element, name)
+            if element.ndim > 2:
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
             element_count = int(np.prod(element.shape, dtype=np.int64)) if element.shape else 1
             if element_count > 4_096:

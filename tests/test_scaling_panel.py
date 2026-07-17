@@ -1568,6 +1568,162 @@ def _rehashed_dataset_receipt(
     return changed
 
 
+def _replace_h5ad_dataset_with_external_raw(
+    retained: Path,
+    dataset_path: str,
+    raw_path: Path,
+) -> None:
+    import h5py
+
+    with h5py.File(retained, "r+") as handle:
+        original = handle[dataset_path]
+        values = original[...]
+        shape = original.shape
+        dtype = original.dtype
+        attributes = dict(original.attrs)
+        parent = original.parent
+        name = original.name.rsplit("/", maxsplit=1)[-1]
+        del parent[name]
+        replacement = parent.create_dataset(
+            name,
+            shape=shape,
+            dtype=dtype,
+            external=[(str(raw_path), 0, int(values.nbytes))],
+        )
+        replacement[...] = values
+        for key, value in attributes.items():
+            replacement.attrs[key] = value
+        assert replacement.external is not None
+
+
+def _replace_h5ad_dataset_with_virtual_source(
+    retained: Path,
+    dataset_path: str,
+    source_path: Path,
+) -> None:
+    import h5py
+
+    with h5py.File(retained, "r") as handle:
+        original = handle[dataset_path]
+        values = original[...]
+        shape = original.shape
+        dtype = original.dtype
+        attributes = dict(original.attrs)
+    with h5py.File(source_path, "w") as source:
+        source.create_dataset("source", data=values)
+    with h5py.File(retained, "r+") as handle:
+        parent_path, name = dataset_path.rsplit("/", maxsplit=1)
+        parent = handle[parent_path]
+        del parent[name]
+        layout = h5py.VirtualLayout(shape=shape, dtype=dtype)
+        layout[...] = h5py.VirtualSource(
+            str(source_path),
+            "source",
+            shape=shape,
+        )
+        replacement = parent.create_virtual_dataset(name, layout)
+        for key, value in attributes.items():
+            replacement.attrs[key] = value
+        assert replacement.is_virtual
+
+
+def test_scaling_h5ad_preflight_rejects_external_raw_before_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import anndata as ad
+
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+    )
+
+    plan = _plan()
+    receipt = _dataset_receipt(tmp_path)
+    retained = tmp_path / str(receipt["moderate_output_path"])
+    _replace_h5ad_dataset_with_external_raw(
+        retained,
+        "obs/draw",
+        tmp_path / "draw.external-raw.bin",
+    )
+    changed = _rehashed_dataset_receipt(receipt, retained)
+    original_read = ad.read_h5ad
+    read_called = False
+
+    def observe_read(*args, **kwargs):
+        nonlocal read_called
+        read_called = True
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(ad, "read_h5ad", observe_read)
+
+    with pytest.raises(
+        ScalingContractError,
+        match="H5AD HDF5.*external|H5AD HDF5.*layout",
+    ):
+        ScalingResultStore(tmp_path, plan).append_dataset(changed)
+
+    assert read_called is False
+
+
+def test_fresh_scaling_store_rejects_virtual_dataset_before_retained_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import anndata as ad
+
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+    )
+
+    plan = _plan()
+    receipt = _dataset_receipt(tmp_path)
+    store = ScalingResultStore(tmp_path, plan)
+    store.append_dataset(receipt)
+    retained = tmp_path / str(receipt["moderate_output_path"])
+    _replace_h5ad_dataset_with_virtual_source(
+        retained,
+        "X/data",
+        tmp_path / "virtual-source.h5",
+    )
+    changed = _rehashed_dataset_receipt(receipt, retained)
+
+    def mutate(payload: dict[str, object]) -> None:
+        payload["datasets"][0] = changed
+
+    _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
+    original_read = ad.read_h5ad
+    read_paths: list[Path] = []
+
+    def observe_read(path, *args, **kwargs):
+        read_paths.append(Path(path).resolve())
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(ad, "read_h5ad", observe_read)
+
+    with pytest.raises(
+        ScalingContractError,
+        match="H5AD HDF5.*virtual|H5AD HDF5.*layout",
+    ):
+        ScalingResultStore(tmp_path, plan).load(force_validate=True)
+
+    assert retained.resolve() not in read_paths
+
+
+def test_fresh_scaling_store_accepts_canonical_generated_h5ad_layout(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.scaling import ScalingResultStore
+
+    plan = _plan()
+    receipt = _dataset_receipt(tmp_path)
+    ScalingResultStore(tmp_path, plan).append_dataset(receipt)
+
+    loaded = ScalingResultStore(tmp_path, plan).load(force_validate=True)
+
+    assert loaded is not None
+    assert loaded.datasets == (receipt,)
+
+
 def test_scaling_h5ad_preflight_rejects_extra_rehashed_payload_before_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
