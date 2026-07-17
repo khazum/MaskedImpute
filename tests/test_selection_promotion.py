@@ -244,6 +244,128 @@ def test_interrupted_link_publication_leaves_no_partial_or_temporary_file(
     assert list(destination.parent.glob(f".{destination.name}.*.tmp")) == []
 
 
+def test_parent_swap_cannot_publish_into_replacement_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.selection_promotion as promotion
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    source, paths, source_file_sha, manifest_file_sha = _prepare_fake_stage(
+        repository,
+        None,
+    )
+    monkeypatch.setattr(
+        promotion,
+        "attach_downstream_evidence_to_selection_result",
+        _fake_attachment(
+            repository,
+            source,
+            paths,
+            source_file_sha,
+            manifest_file_sha,
+        ),
+    )
+    destination = repository / paths.selection_complete_input
+    parent = destination.parent
+    displaced = parent.with_name(f"{parent.name}-displaced")
+    replacement = parent.with_name(f"{parent.name}-replacement")
+    replacement.mkdir()
+    real_link = promotion.os.link
+    swapped = False
+
+    def swap_parent_before_link(source_name, destination_name, *args, **kwargs):
+        nonlocal swapped
+        if not swapped:
+            parent.rename(displaced)
+            replacement.rename(parent)
+            swapped = True
+            if not kwargs.get("src_dir_fd"):
+                malicious_source = parent / Path(source_name).name
+                malicious_source.write_bytes(b'{"malicious":true}\n')
+        return real_link(source_name, destination_name, *args, **kwargs)
+
+    monkeypatch.setattr(promotion.os, "link", swap_parent_before_link)
+
+    with pytest.raises(
+        promotion.SelectionPromotionError,
+        match="parent path changed",
+    ):
+        promotion.promote_development_selection_input(repository, None)
+
+    assert not os.path.lexists(destination)
+
+
+def test_symlink_target_is_rejected_without_touching_referent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.selection_promotion as promotion
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    source, paths, source_file_sha, manifest_file_sha = _prepare_fake_stage(
+        repository,
+        None,
+    )
+    monkeypatch.setattr(
+        promotion,
+        "attach_downstream_evidence_to_selection_result",
+        _fake_attachment(
+            repository,
+            source,
+            paths,
+            source_file_sha,
+            manifest_file_sha,
+        ),
+    )
+    destination = repository / paths.selection_complete_input
+    referent = tmp_path / "referent.json"
+    referent.write_bytes(b"unchanged\n")
+    destination.symlink_to(referent)
+
+    with pytest.raises(
+        promotion.SelectionPromotionError,
+        match="unique regular|symlink|unsafe",
+    ):
+        promotion.promote_development_selection_input(repository, None)
+
+    assert destination.is_symlink()
+    assert referent.read_bytes() == b"unchanged\n"
+
+
+def test_symlink_parent_is_rejected_before_source_or_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.selection_promotion as promotion
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _source, paths, _source_file_sha, _manifest_file_sha = _prepare_fake_stage(
+        repository,
+        None,
+    )
+    parent = (repository / paths.source_selection_input).parent
+    referent = parent.with_name(f"{parent.name}-referent")
+    parent.rename(referent)
+    parent.symlink_to(referent, target_is_directory=True)
+    monkeypatch.setattr(
+        promotion,
+        "attach_downstream_evidence_to_selection_result",
+        lambda *_args: pytest.fail("symlinked source reached attachment"),
+    )
+
+    with pytest.raises(
+        promotion.SelectionPromotionError,
+        match="parent path|not a directory|cannot open",
+    ):
+        promotion.promote_development_selection_input(repository, None)
+
+    assert not (referent / Path(paths.selection_complete_input).name).exists()
+
+
 def test_invalid_source_schema_is_rejected_before_attachment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

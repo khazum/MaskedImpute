@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
-import tempfile
+import secrets
+import stat
 from typing import Any
 
 from .protocol import canonical_sha256
 from .revisions import (
-    RevisionAuthorityError,
-    _read_canonical_json,
-    _read_stable_bytes,
     development_selection_stage_paths,
 )
 from .selection import (
@@ -67,67 +66,248 @@ def _canonical_json_bytes(value: object) -> bytes:
         ) from error
 
 
-def _safe_repository_path(repository: Path, relative_value: str, name: str) -> Path:
+def _fixed_repository_path(repository: Path, relative_value: str, name: str) -> Path:
     relative = PurePosixPath(relative_value)
-    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
         raise SelectionPromotionError(f"fixed {name} path is unsafe")
-    path = repository.joinpath(*relative.parts)
-    current = repository
-    if current.is_symlink():
-        raise SelectionPromotionError("selection promotion repository is a symlink")
-    for part in relative.parts:
-        current = current / part
-        if os.path.lexists(current) and current.is_symlink():
-            raise SelectionPromotionError(f"fixed {name} path contains a symlink")
-    return path
+    return repository.joinpath(*relative.parts)
+
+
+def _directory_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+    )
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+@contextmanager
+def _pinned_parent(path: Path, label: str):
+    """Yield a parent dirfd reached and rechecked without following symlinks."""
+
+    if not path.is_absolute() or not path.name:
+        raise SelectionPromotionError(f"{label} path must be absolute")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    descriptors: list[int] = []
+    edges: list[tuple[int, str, int, tuple[int, ...]]] = []
+    try:
+        current = os.open(path.anchor, flags)
+        descriptors.append(current)
+        for component in path.parent.relative_to(path.anchor).parts:
+            named = os.stat(component, dir_fd=current, follow_symlinks=False)
+            if not stat.S_ISDIR(named.st_mode):
+                raise SelectionPromotionError(
+                    f"{label} parent path is not a directory"
+                )
+            child = os.open(component, flags, dir_fd=current)
+            opened = os.fstat(child)
+            expected = _directory_identity(named)
+            if _directory_identity(opened) != expected:
+                os.close(child)
+                raise SelectionPromotionError(
+                    f"{label} parent path changed while being opened"
+                )
+            descriptors.append(child)
+            edges.append((current, component, child, expected))
+            current = child
+        yield current
+        for parent, component, child, expected in edges:
+            try:
+                named_after = os.stat(
+                    component,
+                    dir_fd=parent,
+                    follow_symlinks=False,
+                )
+                opened_after = os.fstat(child)
+            except OSError as error:
+                raise SelectionPromotionError(
+                    f"{label} parent path changed during access"
+                ) from error
+            if (
+                _directory_identity(named_after) != expected
+                or _directory_identity(opened_after) != expected
+            ):
+                raise SelectionPromotionError(
+                    f"{label} parent path changed during access"
+                )
+    except SelectionPromotionError:
+        raise
+    except OSError as error:
+        raise SelectionPromotionError(
+            f"cannot open {label} parent path: {error}"
+        ) from error
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _read_unique_regular_at(parent: int, name: str, label: str) -> bytes:
+    descriptor = -1
+    try:
+        named_before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISREG(named_before.st_mode) or named_before.st_nlink != 1:
+            raise SelectionPromotionError(f"{label} is not a unique regular file")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent,
+        )
+        opened_before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_before.st_mode)
+            or opened_before.st_nlink != 1
+            or opened_before.st_mode & 0o002
+            or _file_identity(opened_before) != _file_identity(named_before)
+            or opened_before.st_size > 128 * 1024 * 1024
+        ):
+            raise SelectionPromotionError(f"{label} is not a unique regular file")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        opened_after = os.fstat(descriptor)
+        named_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (
+            _file_identity(opened_before) != _file_identity(opened_after)
+            or _file_identity(opened_before) != _file_identity(named_after)
+        ):
+            raise SelectionPromotionError(f"{label} changed while being read")
+        raw = b"".join(chunks)
+        if len(raw) != opened_before.st_size:
+            raise SelectionPromotionError(f"{label} changed while being read")
+        return raw
+    except SelectionPromotionError:
+        raise
+    except OSError as error:
+        raise SelectionPromotionError(f"cannot read {label}: {error}") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise SelectionPromotionError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value: str) -> None:
+    raise SelectionPromotionError(f"nonfinite JSON constant {value}")
+
+
+def _secure_canonical_json(path: Path, label: str) -> tuple[dict[str, Any], str]:
+    try:
+        with _pinned_parent(path, label) as parent:
+            raw = _read_unique_regular_at(parent, path.name, label)
+        payload = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_reject_constant,
+            object_pairs_hook=_unique_object,
+        )
+    except SelectionPromotionError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise SelectionPromotionError(f"cannot parse {label}: {error}") from error
+    if type(payload) is not dict or raw != _canonical_json_bytes(payload):
+        raise SelectionPromotionError(f"{label} is not canonical JSON")
+    return payload, hashlib.sha256(raw).hexdigest()
 
 
 def _immutable_publish(path: Path, data: bytes) -> str:
     digest = hashlib.sha256(data).hexdigest()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
+    temporary_name = f".{path.name}.{secrets.token_hex(16)}.tmp"
+    with _pinned_parent(path, "selection-complete input") as parent:
+        descriptor = -1
+        temporary_exists = False
         try:
-            os.link(temporary, path)
-        except FileExistsError:
+            descriptor = os.open(
+                temporary_name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                0o600,
+                dir_fd=parent,
+            )
+            temporary_exists = True
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = -1
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
             try:
-                existing = _read_stable_bytes(
-                    path,
+                os.link(
+                    temporary_name,
+                    path.name,
+                    src_dir_fd=parent,
+                    dst_dir_fd=parent,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                existing = _read_unique_regular_at(
+                    parent,
+                    path.name,
                     "existing selection-complete input",
                 )
-            except RevisionAuthorityError as error:
+                if existing != data:
+                    raise SelectionPromotionError(
+                        "existing selection-complete input conflicts with promotion"
+                    )
+            except OSError as error:
                 raise SelectionPromotionError(
-                    "existing selection-complete input is unsafe"
+                    "selection-complete input could not be published"
                 ) from error
-            if existing != data:
+            os.unlink(temporary_name, dir_fd=parent)
+            temporary_exists = False
+            published = _read_unique_regular_at(
+                parent,
+                path.name,
+                "published selection-complete input",
+            )
+            if published != data:
                 raise SelectionPromotionError(
-                    "existing selection-complete input conflicts with promotion"
+                    "published selection-complete input differs"
                 )
-        except OSError as error:
-            raise SelectionPromotionError(
-                "selection-complete input could not be published"
-            ) from error
-        try:
-            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        except OSError as error:
-            raise SelectionPromotionError(
-                "selection-complete input directory could not be synchronized"
-            ) from error
-    finally:
-        temporary.unlink(missing_ok=True)
+            os.fsync(parent)
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temporary_exists:
+                try:
+                    os.unlink(temporary_name, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
     return digest
 
 
@@ -136,19 +316,18 @@ def _read_source(
     through_version: str | None,
 ) -> tuple[dict[str, Any], str]:
     paths = development_selection_stage_paths(through_version)
-    source_path = _safe_repository_path(
+    source_path = _fixed_repository_path(
         repository,
         paths.source_selection_input,
         "source selection input",
     )
     try:
-        source, file_sha256 = _read_canonical_json(
+        source, file_sha256 = _secure_canonical_json(
             source_path,
             "source development selection input",
-            indented=False,
         )
         observed_stage = _validate_selection_source_payload(source)
-    except (RevisionAuthorityError, SelectionAuthorityError) as error:
+    except (SelectionPromotionError, SelectionAuthorityError) as error:
         raise SelectionPromotionError(f"source selection input is invalid: {error}") from error
     if observed_stage != through_version:
         raise SelectionPromotionError("source selection input stage differs")
@@ -195,18 +374,17 @@ def _validate_promoted_payload(
     manifest_path_value = str(
         PurePosixPath(paths.downstream_directory) / "downstream_manifest.json"
     )
-    manifest_path = _safe_repository_path(
+    manifest_path = _fixed_repository_path(
         repository,
         manifest_path_value,
         "downstream manifest",
     )
     try:
-        manifest, manifest_file_sha = _read_canonical_json(
+        manifest, manifest_file_sha = _secure_canonical_json(
             manifest_path,
             "downstream manifest",
-            indented=False,
         )
-    except RevisionAuthorityError as error:
+    except SelectionPromotionError as error:
         raise SelectionPromotionError("downstream manifest is invalid") from error
     manifest_payload_sha = manifest.get("manifest_sha256")
     if (
@@ -251,19 +429,18 @@ def promote_development_selection_input(
         attached,
     )
     encoded = _canonical_json_bytes(promoted)
-    destination = _safe_repository_path(
+    destination = _fixed_repository_path(
         root,
         paths.selection_complete_input,
         "selection-complete input",
     )
     published_file_sha = _immutable_publish(destination, encoded)
     try:
-        published, reread_file_sha = _read_canonical_json(
+        published, reread_file_sha = _secure_canonical_json(
             destination,
             "selection-complete input",
-            indented=False,
         )
-    except RevisionAuthorityError as error:  # pragma: no cover - post-publish guard
+    except SelectionPromotionError as error:  # pragma: no cover - post-publish guard
         raise SelectionPromotionError(
             "published selection-complete input failed revalidation"
         ) from error
