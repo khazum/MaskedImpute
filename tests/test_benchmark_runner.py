@@ -863,8 +863,7 @@ def test_execution_environment_registry_binds_exact_runtime_lock(
     )
     lock_path = tmp_path / "runtime-lock.json"
     lock_path.write_text(
-        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
-        + "\n",
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
@@ -888,13 +887,10 @@ def test_execution_environment_registry_rejects_runtime_drift(
         check=True,
     )
     python = environment / "bin/python"
-    lock = build_runtime_environment_lock(
-        {"benchmark": ("python", python)}
-    )
+    lock = build_runtime_environment_lock({"benchmark": ("python", python)})
     lock_path = tmp_path / "runtime-lock.json"
     lock_path.write_text(
-        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
-        + "\n",
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
@@ -925,8 +921,7 @@ def test_execution_environment_registry_revalidates_bytes_and_environment_per_ro
     )
     lock_path = tmp_path / "runtime-lock.json"
     lock_path.write_text(
-        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
-        + "\n",
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True) + "\n",
         encoding="utf-8",
     )
     environments = ExecutionEnvironmentRegistry.fixed(
@@ -1011,13 +1006,10 @@ def test_per_row_revalidation_does_not_rediscover_runtime_closure(
         check=True,
     )
     python = environment / "bin/python"
-    lock = build_runtime_environment_lock(
-        {"benchmark": ("python", python)}
-    )
+    lock = build_runtime_environment_lock({"benchmark": ("python", python)})
     lock_path = tmp_path / "runtime-lock.json"
     lock_path.write_text(
-        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
-        + "\n",
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True) + "\n",
         encoding="utf-8",
     )
     environments = ExecutionEnvironmentRegistry.fixed(
@@ -1067,8 +1059,7 @@ def test_spawned_repository_executor_rejects_transient_runtime_swap(
     lock = build_runtime_environment_lock({"benchmark": ("python", python)})
     lock_path = tmp_path / "runtime-lock.json"
     lock_path.write_text(
-        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True)
-        + "\n",
+        json.dumps(lock, allow_nan=False, separators=(",", ":"), sort_keys=True) + "\n",
         encoding="utf-8",
     )
     environments = ExecutionEnvironmentRegistry.fixed(
@@ -1123,7 +1114,9 @@ def test_spawned_repository_executor_rejects_transient_runtime_swap(
         spawn_slow,
     )
     try:
-        with pytest.raises(RunnerContractError, match="runtime changed during execution"):
+        with pytest.raises(
+            RunnerContractError, match="runtime changed during execution"
+        ):
             executor(request)
     finally:
         if mutation.ident is not None:
@@ -1267,9 +1260,7 @@ def test_spawned_executor_passes_snapshot_bound_gpu_sampler(
         observed.append(resource_sampler)
         return _observed_executor(_request)
 
-    monkeypatch.setattr(
-        runner_module, "execute_adapter_in_spawned_process", capture
-    )
+    monkeypatch.setattr(runner_module, "execute_adapter_in_spawned_process", capture)
 
     executor(request)
 
@@ -1466,7 +1457,9 @@ def test_frozen_final_in_tree_threads_selected_v29_structure(
     assert captured["calibration_usage"] == "retained_all_development"
 
 
-def test_frozen_final_in_tree_calls_an_execution_path_that_accepts_final_usage() -> None:
+def test_frozen_final_in_tree_calls_an_execution_path_that_accepts_final_usage() -> (
+    None
+):
     import inspect
 
     from maskimpute_benchmark.methods.maskimpute import _run_in_tree
@@ -2160,10 +2153,10 @@ def test_implementation_source_digest_is_sorted_raw_and_symlink_safe(
     entrypoint.parent.rmdir()
     outside_scripts = tmp_path / "outside-scripts"
     outside_scripts.mkdir()
-    (outside_scripts / "run_development_competition.py").write_bytes(b"outside = True\n")
-    (entrypoint_root / "scripts").symlink_to(
-        outside_scripts, target_is_directory=True
+    (outside_scripts / "run_development_competition.py").write_bytes(
+        b"outside = True\n"
     )
+    (entrypoint_root / "scripts").symlink_to(outside_scripts, target_is_directory=True)
     with pytest.raises(RunnerContractError, match="directory.*symlink"):
         implementation_source_sha256(entrypoint_root)
 

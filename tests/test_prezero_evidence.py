@@ -42,9 +42,7 @@ SHA_B = "b" * 64
 
 
 def _prepared(mechanism: str = "symsim") -> PreparedDataset:
-    counts = np.array(
-        [[0.0, 0.0, 2.0, 0.0], [0.0, 3.0, 0.0, 0.0]], dtype="<f8"
-    )
+    counts = np.array([[0.0, 0.0, 2.0, 0.0], [0.0, 3.0, 0.0, 0.0]], dtype="<f8")
     cells = ("cell-1", "cell-2")
     genes = ("gene-1", "gene-2", "gene-3", "gene-4")
     truth_kind = {
@@ -58,9 +56,7 @@ def _prepared(mechanism: str = "symsim") -> PreparedDataset:
         "exact_continuous": "latent_expression",
         "proxy_high_depth": "reference_counts",
     }[truth_kind]
-    truth = np.array(
-        [[0.0, 1.0, 2.0, 5.0], [0.0, 3.0, 1.0, 0.0]], dtype="<f8"
-    )
+    truth = np.array([[0.0, 1.0, 2.0, 5.0], [0.0, 3.0, 1.0, 0.0]], dtype="<f8")
     dataset = ad.AnnData(X=counts.copy())
     dataset.obs_names = list(cells)
     dataset.var_names = list(genes)
@@ -124,11 +120,15 @@ def _entry(prepared: PreparedDataset, method_id: str = "maskimpute") -> RunPlanE
         biological_id=prepared.binding.biological_id,
         technical_view=prepared.binding.technical_view,
         model_seed=42 if method_id == "maskimpute" else None,
-        configuration_id="v27-reference" if method_id == "maskimpute" else "registry-default",
+        configuration_id="v27-reference"
+        if method_id == "maskimpute"
+        else "registry-default",
         configuration_sha256="3" * 64,
         preflight_status="planned",
         preflight_reason=None,
-        configuration_kind="candidate_search" if method_id == "maskimpute" else "registry",
+        configuration_kind="candidate_search"
+        if method_id == "maskimpute"
+        else "registry",
         requires_count_score=method_id == "maskimpute",
         requires_calibration=method_id == "maskimpute",
     )
@@ -330,7 +330,9 @@ def test_all_four_mechanisms_have_exact_or_reason_coded_score_evidence() -> None
     }
 
     for mechanism, reason in expected.items():
-        record = _completed_maskimpute(_prepared(mechanism)).p_pre_zero_evidence.to_record()
+        record = _completed_maskimpute(
+            _prepared(mechanism)
+        ).p_pre_zero_evidence.to_record()
         metrics = record["overall"]["metrics"]
         if reason is None:
             assert metrics["brier"]["value"] is not None
@@ -370,9 +372,10 @@ def test_development_checkpoint_compresses_and_resumes_realized_score_evidence(
 
     assert storage["encoding"] == "zlib_raw_f64_v1"
     assert storage["compression_level"] == 6
-    assert storage["compressed_sha256"] == hashlib.sha256(
-        first_path.read_bytes()
-    ).hexdigest()
+    assert (
+        storage["compressed_sha256"]
+        == hashlib.sha256(first_path.read_bytes()).hexdigest()
+    )
     expected = attempt.p_pre_zero_evidence.matrix.astype("<f8").tobytes(order="C")
     assert zlib.decompress(first_path.read_bytes()) == expected
     assert storage["uncompressed_sha256"] == hashlib.sha256(expected).hexdigest()
@@ -387,7 +390,9 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
     prepared = _prepared()
     plan = _plan(prepared)
     store = CheckpointStore(tmp_path / "competition")
-    report = store.append(plan, None, _completed_maskimpute(prepared), DevelopmentBudget())
+    report = store.append(
+        plan, None, _completed_maskimpute(prepared), DevelopmentBudget()
+    )
     evidence = report.records[0]["p_pre_zero_evidence"]
     path = store.output_dir / evidence["storage"]["path"]
     original = path.read_bytes()
@@ -399,9 +404,9 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
     path.write_bytes(original)
     _rewrite_checkpoint(
         store,
-        lambda payload: payload["records"][0]["p_pre_zero_evidence"][
-            "storage"
-        ].update({"compression_level": None}),
+        lambda payload: payload["records"][0]["p_pre_zero_evidence"]["storage"].update(
+            {"compression_level": None}
+        ),
     )
     with pytest.raises(RunnerContractError, match="p_pre_zero|score.*partial"):
         store.load(plan)
@@ -413,13 +418,13 @@ def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
     prepared = _prepared()
     plan = _plan(prepared)
     store = CheckpointStore(tmp_path / "competition")
-    report = store.append(plan, None, _completed_maskimpute(prepared), DevelopmentBudget())
+    report = store.append(
+        plan, None, _completed_maskimpute(prepared), DevelopmentBudget()
+    )
     evidence = report.records[0]["p_pre_zero_evidence"]
     storage = evidence["storage"]
     path = store.output_dir / storage["path"]
-    oversized = zlib.compress(
-        b"x" * (int(storage["uncompressed_nbytes"]) + 1), level=6
-    )
+    oversized = zlib.compress(b"x" * (int(storage["uncompressed_nbytes"]) + 1), level=6)
     path.write_bytes(oversized)
 
     def bind_oversized(payload):
@@ -448,6 +453,7 @@ def test_development_evidence_manifest_includes_realized_score_artifact(
     score = next(item for item in evidence.raw_artifacts if item.kind == "p_pre_zero")
     assert score.run_id == "run-maskimpute-symsim"
     assert score.path.endswith(".p-pre-zero-f64.zlib")
-    assert score.file_sha256 == hashlib.sha256(
-        (store.output_dir / score.path).read_bytes()
-    ).hexdigest()
+    assert (
+        score.file_sha256
+        == hashlib.sha256((store.output_dir / score.path).read_bytes()).hexdigest()
+    )

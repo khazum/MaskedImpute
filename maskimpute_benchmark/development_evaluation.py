@@ -2741,9 +2741,7 @@ def load_completed_reconstruction_checkpoint(
             score_path = score_storage.get("path")
             if score_path is not None:
                 score_digest = score_storage.get("compressed_sha256")
-                if not isinstance(score_path, str) or not isinstance(
-                    score_digest, str
-                ):
+                if not isinstance(score_path, str) or not isinstance(score_digest, str):
                     raise DevelopmentEvaluationError(
                         "checkpoint p_pre_zero binding is incomplete"
                     )
