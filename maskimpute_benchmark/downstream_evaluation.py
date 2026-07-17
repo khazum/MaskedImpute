@@ -21,6 +21,20 @@ CLUSTERING_N_INIT = 20
 CLUSTERING_MAX_COMPONENTS = 30
 POSITIVE_DE_ALPHA = 0.05
 POSITIVE_DE_FAMILY_ID = "one_vs_rest_all_groups_all_genes"
+TRAJECTORY_MAX_NEIGHBORS = 15
+TRAJECTORY_MAX_COMPONENTS = 30
+TRAJECTORY_DIFFUSION_MODES = 15
+
+DOWNSTREAM_ENDPOINT_NAMES = (
+    "marker_rank_loss",
+    "clustering_ari_loss",
+    "clustering_nmi_loss",
+    "positive_de_marker_recall",
+    "positive_de_false_discovery_rate",
+    "heldout_gene_profile_rank_loss",
+    "heldout_cell_profile_rank_loss",
+    "trajectory_pseudotime_rank_loss",
+)
 
 
 def _stable_ids(values: object, name: str) -> tuple[str, ...]:
@@ -98,7 +112,9 @@ class TrajectoryTruth:
         if not np.all(np.isfinite(values)):
             raise ValueError("pseudotime must contain only finite values")
         if not isinstance(self.root_cell_id, str) or self.root_cell_id not in cell_ids:
-            raise ValueError("trajectory root_cell_id must identify one trajectory cell")
+            raise ValueError(
+                "trajectory root_cell_id must identify one trajectory cell"
+            )
         if not isinstance(self.source_id, str) or not self.source_id.strip():
             raise ValueError("trajectory source_id must be nonempty")
         minimum = float(np.min(values))
@@ -155,12 +171,16 @@ class EvaluatorTargets:
                 raise ValueError("available group markers cannot have a reason")
             expected_groups = set(labels)
             if set(self.group_markers) != expected_groups:
-                raise ValueError("group markers must match the evaluator groups exactly")
+                raise ValueError(
+                    "group markers must match the evaluator groups exactly"
+                )
             markers: dict[str, np.ndarray] = {}
             for group in sorted(expected_groups):
                 mask = np.asarray(self.group_markers[group])
                 if mask.ndim != 1 or mask.size != len(gene_ids):
-                    raise ValueError("each group marker mask must have one value per gene")
+                    raise ValueError(
+                        "each group marker mask must have one value per gene"
+                    )
                 if mask.dtype.kind != "b":
                     raise TypeError("group marker masks must be boolean")
                 copied = np.array(mask, dtype=bool, copy=True)
@@ -385,16 +405,13 @@ def _one_sided_welch_p_values(
         outside_term = outside_variance / n_outside
         standard_error_squared = inside_term + outside_term
         p_values = np.ones(values.shape[1], dtype=np.float64)
-        separated_constants = (standard_error_squared == 0.0) & (
-            mean_difference > 0.0
-        )
+        separated_constants = (standard_error_squared == 0.0) & (mean_difference > 0.0)
         p_values[separated_constants] = 0.0
         variable = standard_error_squared > 0.0
         if np.any(variable):
-            denominator = (
-                inside_term[variable] ** 2 / (n_inside - 1)
-                + outside_term[variable] ** 2 / (n_outside - 1)
-            )
+            denominator = inside_term[variable] ** 2 / (n_inside - 1) + outside_term[
+                variable
+            ] ** 2 / (n_outside - 1)
             degrees_of_freedom = np.divide(
                 standard_error_squared[variable] ** 2,
                 denominator,
@@ -442,7 +459,9 @@ def evaluate_marker_and_de_endpoints(
         family_size = len(set(labels.tolist())) * values.shape[1]
         reason = None
     if reason is None and targets.group_markers is None:
-        reason = targets.group_markers_reason or "group_specific_marker_truth_unavailable"
+        reason = (
+            targets.group_markers_reason or "group_specific_marker_truth_unavailable"
+        )
     if reason is None and len(set(labels.tolist())) < 2:
         reason = "fewer_than_two_groups"
     if reason is not None:
@@ -618,9 +637,7 @@ def _kmeans_once(
     n_cells = values.shape[0]
     centers = [values[int(random.integers(0, n_cells))].copy()]
     for _ in range(1, n_clusters):
-        distances = np.min(
-            _squared_euclidean(values, np.asarray(centers)), axis=1
-        )
+        distances = np.min(_squared_euclidean(values, np.asarray(centers)), axis=1)
         total = float(np.sum(distances))
         if total <= 0.0:
             return None
@@ -698,17 +715,20 @@ def _contingency(
     predicted_levels = {
         int(value): index for index, value in enumerate(sorted(set(predicted.tolist())))
     }
-    table = np.zeros(
-        (len(truth_levels), len(predicted_levels)), dtype=np.int64
-    )
+    table = np.zeros((len(truth_levels), len(predicted_levels)), dtype=np.int64)
     for truth_value, predicted_value in zip(truth, predicted, strict=True):
-        table[truth_levels[str(truth_value)], predicted_levels[int(predicted_value)]] += 1
+        table[
+            truth_levels[str(truth_value)], predicted_levels[int(predicted_value)]
+        ] += 1
     return table, np.sum(table, axis=1), np.sum(table, axis=0)
 
 
 def _adjusted_rand_index(truth: np.ndarray, predicted: np.ndarray) -> float:
     table, truth_counts, predicted_counts = _contingency(truth, predicted)
-    pair = lambda value: value * (value - 1.0) / 2.0
+
+    def pair(value: np.ndarray | float) -> np.ndarray | float:
+        return value * (value - 1.0) / 2.0
+
     observed = float(np.sum(pair(table.astype(np.float64))))
     truth_pairs = float(np.sum(pair(truth_counts.astype(np.float64))))
     predicted_pairs = float(np.sum(pair(predicted_counts.astype(np.float64))))
@@ -716,14 +736,14 @@ def _adjusted_rand_index(truth: np.ndarray, predicted: np.ndarray) -> float:
     expected = truth_pairs * predicted_pairs / total_pairs
     maximum = 0.5 * (truth_pairs + predicted_pairs)
     denominator = maximum - expected
-    return 1.0 if denominator == 0.0 and observed == maximum else (
-        (observed - expected) / denominator
+    return (
+        1.0
+        if denominator == 0.0 and observed == maximum
+        else ((observed - expected) / denominator)
     )
 
 
-def _normalized_mutual_information(
-    truth: np.ndarray, predicted: np.ndarray
-) -> float:
+def _normalized_mutual_information(truth: np.ndarray, predicted: np.ndarray) -> float:
     table, truth_counts, predicted_counts = _contingency(truth, predicted)
     total = float(truth.size)
     joint = table.astype(np.float64) / total
@@ -734,10 +754,7 @@ def _normalized_mutual_information(
         probability = joint[truth_index, predicted_index]
         mutual_information += probability * np.log(
             probability
-            / (
-                truth_probability[truth_index]
-                * predicted_probability[predicted_index]
-            )
+            / (truth_probability[truth_index] * predicted_probability[predicted_index])
         )
     truth_entropy = float(-np.sum(truth_probability * np.log(truth_probability)))
     predicted_entropy = float(
@@ -774,14 +791,12 @@ def evaluate_clustering_endpoints(
             reason = None
     if reason is None:
         assert labels is not None
-        centered = _log_cp10k(values)
+        normalized = _log_cp10k(values)
+        input_scale = max(float(np.linalg.norm(normalized, ord=2)), 1.0)
+        centered = normalized.copy()
         centered -= np.mean(centered, axis=0)
         left, singular, _right = np.linalg.svd(centered, full_matrices=False)
-        tolerance = (
-            np.finfo(np.float64).eps
-            * max(centered.shape)
-            * (float(singular[0]) if singular.size else 0.0)
-        )
+        tolerance = np.finfo(np.float64).eps * max(centered.shape) * input_scale
         rank = int(np.sum(singular > tolerance))
         if rank == 0:
             reason = "constant_method_representation"
@@ -797,9 +812,7 @@ def evaluate_clustering_endpoints(
                     reason = "deterministic_kmeans_failed"
                 else:
                     ari_loss = 1.0 - _adjusted_rand_index(labels, predicted)
-                    nmi_loss = 1.0 - _normalized_mutual_information(
-                        labels, predicted
-                    )
+                    nmi_loss = 1.0 - _normalized_mutual_information(labels, predicted)
                     return (
                         _completed_record(
                             "clustering_ari_loss",
@@ -939,6 +952,218 @@ def evaluate_heldout_endpoints(
     return gene_record, cell_record
 
 
+def _trajectory_representation(values: np.ndarray) -> np.ndarray | None:
+    normalized = _log_cp10k(values)
+    input_scale = max(float(np.linalg.norm(normalized, ord=2)), 1.0)
+    centered = normalized.copy()
+    centered -= np.mean(centered, axis=0)
+    left, singular, _right = np.linalg.svd(centered, full_matrices=False)
+    if not singular.size:
+        return None
+    tolerance = np.finfo(np.float64).eps * max(centered.shape) * input_scale
+    rank = int(np.sum(singular > tolerance))
+    if rank == 0:
+        return None
+    components = min(TRAJECTORY_MAX_COMPONENTS, rank)
+    return left[:, :components] * singular[:components]
+
+
+def _pairwise_squared_distance(values: np.ndarray) -> np.ndarray:
+    norms = np.sum(values * values, axis=1, dtype=np.float64)
+    distances = norms[:, None] + norms[None, :] - 2.0 * (values @ values.T)
+    np.maximum(distances, 0.0, out=distances)
+    np.fill_diagonal(distances, 0.0)
+    return distances
+
+
+def _diffusion_distance_from_root(
+    representation: np.ndarray, root_index: int
+) -> tuple[np.ndarray | None, str | None]:
+    n_cells = representation.shape[0]
+    n_neighbors = min(
+        TRAJECTORY_MAX_NEIGHBORS,
+        max(2, int(np.sqrt(n_cells))),
+        n_cells - 1,
+    )
+    distances = _pairwise_squared_distance(representation)
+    neighbor_distance = distances.copy()
+    np.fill_diagonal(neighbor_distance, np.inf)
+    neighbor_order = np.argsort(neighbor_distance, axis=1, kind="mergesort")[
+        :, :n_neighbors
+    ]
+    edge_mask = np.zeros((n_cells, n_cells), dtype=bool)
+    edge_mask[
+        np.repeat(np.arange(n_cells), n_neighbors), neighbor_order.reshape(-1)
+    ] = True
+    edge_mask |= edge_mask.T
+    positive = distances[edge_mask & (distances > 0.0)]
+    if positive.size == 0:
+        return None, "trajectory_affinity_scale_unavailable"
+    scale_squared = float(np.median(positive))
+    if not np.isfinite(scale_squared) or scale_squared <= 0.0:
+        return None, "trajectory_affinity_scale_unavailable"
+    graph = sparse.csr_matrix(edge_mask)
+    component_count = sparse.csgraph.connected_components(
+        graph, directed=False, return_labels=False
+    )
+    if component_count != 1:
+        return None, "trajectory_graph_disconnected"
+    rows, columns = np.nonzero(edge_mask)
+    diagonal = np.arange(n_cells)
+    affinity = sparse.csr_matrix(
+        (
+            np.concatenate(
+                [
+                    np.exp(-distances[rows, columns] / (2.0 * scale_squared)),
+                    np.ones(n_cells, dtype=np.float64),
+                ]
+            ),
+            (
+                np.concatenate([rows, diagonal]),
+                np.concatenate([columns, diagonal]),
+            ),
+        ),
+        shape=(n_cells, n_cells),
+    )
+    affinity.eliminate_zeros()
+    degree = np.asarray(affinity.sum(axis=1)).reshape(-1)
+    if np.any(degree <= 0.0):
+        return None, "trajectory_graph_has_zero_degree"
+    inverse_sqrt_degree = 1.0 / np.sqrt(degree)
+    degree_scaling = sparse.diags(inverse_sqrt_degree)
+    symmetric_transition = degree_scaling @ affinity @ degree_scaling
+    n_eigenvectors = min(TRAJECTORY_DIFFUSION_MODES + 1, n_cells - 1)
+    initial = np.linspace(1.0, 2.0, n_cells, dtype=np.float64)
+    initial /= np.linalg.norm(initial)
+    try:
+        eigenvalues, eigenvectors = sparse.linalg.eigsh(
+            symmetric_transition,
+            k=n_eigenvectors,
+            which="LA",
+            v0=initial,
+            tol=1e-10,
+        )
+    except sparse.linalg.ArpackNoConvergence:
+        return None, "trajectory_diffusion_eigensolver_failed"
+    order = np.argsort(-eigenvalues, kind="mergesort")
+    eigenvalues = eigenvalues[order]
+    eigenvectors = eigenvectors[:, order]
+    mode_mask = (
+        (np.arange(eigenvalues.size) > 0)
+        & (np.abs(eigenvalues) > 1e-10)
+        & (eigenvalues < 1.0 - 1e-10)
+    )
+    if not np.any(mode_mask):
+        return None, "trajectory_diffusion_modes_unavailable"
+    selected_values = eigenvalues[mode_mask]
+    right_eigenvectors = inverse_sqrt_degree[:, None] * eigenvectors[:, mode_mask]
+    multiscale = (
+        right_eigenvectors * (selected_values / (1.0 - selected_values))[None, :]
+    )
+    difference = multiscale - multiscale[root_index]
+    pseudotime = np.sqrt(np.sum(difference * difference, axis=1))
+    if not np.all(np.isfinite(pseudotime)):
+        return None, "nonfinite_diffusion_pseudotime"
+    if np.ptp(pseudotime) == 0.0:
+        return None, "constant_diffusion_pseudotime"
+    return pseudotime, None
+
+
+def evaluate_trajectory_endpoint(
+    output: MethodOutput, targets: EvaluatorTargets
+) -> EndpointRecord:
+    """Evaluate genuine root-oriented pseudotime with multiscale diffusion."""
+
+    values, cell_ids, _gene_ids, _target_cells, _target_genes = (
+        _aligned_evaluator_arrays(output, targets)
+    )
+    procedure = (
+        "root_oriented_multiscale_diffusion_log1p_cp10k_full_svd_"
+        "knn=floor_sqrt_n_capped_15_sparse_eigsh_modes=15"
+    )
+    if targets.trajectory is None:
+        return _unavailable_record(
+            "trajectory_pseudotime_rank_loss",
+            targets.trajectory_reason
+            or "genuine_pseudotime_not_available_in_simulator_output",
+            direction="lower_is_better",
+            descriptive_n=0,
+            descriptive_unit="trajectory_cells",
+            procedure=procedure,
+        )
+    if values.shape[0] < 3:
+        return _unavailable_record(
+            "trajectory_pseudotime_rank_loss",
+            "fewer_than_three_trajectory_cells",
+            direction="lower_is_better",
+            descriptive_n=values.shape[0],
+            descriptive_unit="trajectory_cells",
+            procedure=procedure,
+        )
+    representation = _trajectory_representation(values)
+    if representation is None:
+        return _unavailable_record(
+            "trajectory_pseudotime_rank_loss",
+            "constant_method_representation",
+            direction="lower_is_better",
+            descriptive_n=values.shape[0],
+            descriptive_unit="trajectory_cells",
+            procedure=procedure,
+        )
+    trajectory = targets.trajectory
+    trajectory_cells = {value: index for index, value in enumerate(trajectory.cell_ids)}
+    pseudotime = trajectory.pseudotime[
+        np.asarray([trajectory_cells[value] for value in cell_ids])
+    ]
+    root_index = cell_ids.index(trajectory.root_cell_id)
+    estimated, reason = _diffusion_distance_from_root(representation, root_index)
+    if estimated is None:
+        assert reason is not None
+        return _unavailable_record(
+            "trajectory_pseudotime_rank_loss",
+            reason,
+            direction="lower_is_better",
+            descriptive_n=values.shape[0],
+            descriptive_unit="trajectory_cells",
+            procedure=procedure,
+        )
+    correlation = _profile_spearman(estimated, pseudotime)
+    return _completed_record(
+        "trajectory_pseudotime_rank_loss",
+        1.0 - correlation,
+        direction="lower_is_better",
+        descriptive_n=values.shape[0],
+        descriptive_unit="trajectory_cells",
+        procedure=procedure,
+    )
+
+
+def evaluate_downstream_endpoints(
+    output: MethodOutput, targets: EvaluatorTargets
+) -> tuple[EndpointRecord, ...]:
+    """Return the fixed complete evaluator-only endpoint record."""
+
+    marker, recall, false_discovery_rate = evaluate_marker_and_de_endpoints(
+        output, targets
+    )
+    clustering_ari, clustering_nmi = evaluate_clustering_endpoints(output, targets)
+    heldout_gene, heldout_cell = evaluate_heldout_endpoints(output, targets)
+    trajectory = evaluate_trajectory_endpoint(output, targets)
+    records = (
+        marker,
+        clustering_ari,
+        clustering_nmi,
+        recall,
+        false_discovery_rate,
+        heldout_gene,
+        heldout_cell,
+        trajectory,
+    )
+    if tuple(record.endpoint for record in records) != DOWNSTREAM_ENDPOINT_NAMES:
+        raise AssertionError("downstream endpoint implementation is incomplete")
+    return records
+
+
 def _marker_column(mechanism: str, group: str) -> str | None:
     if mechanism == "symsim" and group.startswith("pop-"):
         return f"marker_group_{group.removeprefix('pop-')}"
@@ -991,8 +1216,7 @@ def evaluator_targets_from_dataset(
             for group in sorted(set(group_labels))
         }
         if expected_columns and all(
-            column is not None and column in var
-            for column in expected_columns.values()
+            column is not None and column in var for column in expected_columns.values()
         ):
             marker_mapping = {}
             for group, column in expected_columns.items():

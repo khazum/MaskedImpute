@@ -58,9 +58,7 @@ def _simulator_dataset(
     heldout: np.ndarray | None = None,
     pseudotime: np.ndarray | None = None,
 ) -> ad.AnnData:
-    counts = np.asarray(
-        [[5, 0, 1], [4, 1, 0], [0, 5, 1], [1, 4, 0]], dtype=np.int64
-    )
+    counts = np.asarray([[5, 0, 1], [4, 1, 0], [0, 5, 1], [1, 4, 0]], dtype=np.int64)
     obs = pd.DataFrame(
         {"mechanism": [mechanism] * 4, "group": list(groups)},
         index=("cell-4", "cell-2", "cell-3", "cell-1"),
@@ -83,7 +81,10 @@ def _simulator_dataset(
         (
             "symsim",
             ("pop-1", "pop-1", "pop-2", "pop-2"),
-            {"marker_group_1": (True, False, False), "marker_group_2": (False, True, False)},
+            {
+                "marker_group_1": (True, False, False),
+                "marker_group_2": (False, True, False),
+            },
             {"pop-1": [True, False, False], "pop-2": [False, True, False]},
         ),
         (
@@ -98,7 +99,10 @@ def _simulator_dataset(
         (
             "sparsim",
             ("chu-c1", "chu-c1", "chu-c3", "chu-c3"),
-            {"marker_chu_c1": (True, False, False), "marker_chu_c3": (False, True, False)},
+            {
+                "marker_chu_c1": (True, False, False),
+                "marker_chu_c3": (False, True, False),
+            },
             {"chu-c1": [True, False, False], "chu-c3": [False, True, False]},
         ),
     ],
@@ -133,7 +137,9 @@ def test_simulator_adapter_extracts_group_specific_markers_by_explicit_schema(
     )
 
 
-def test_semisynthetic_adapter_keeps_heldout_counts_and_reports_missing_markers() -> None:
+def test_semisynthetic_adapter_keeps_heldout_counts_and_reports_missing_markers() -> (
+    None
+):
     from maskimpute_benchmark.downstream_evaluation import (
         evaluator_targets_from_dataset,
     )
@@ -225,7 +231,9 @@ def _marker_de_fixture():
     )
 
 
-def test_marker_rank_and_positive_de_are_hand_calculated_with_one_global_bh_family() -> None:
+def test_marker_rank_and_positive_de_are_hand_calculated_with_one_global_bh_family() -> (
+    None
+):
     from maskimpute_benchmark.downstream_evaluation import (
         evaluate_marker_and_de_endpoints,
     )
@@ -308,9 +316,9 @@ def test_marker_and_de_emit_complete_reasons_when_marker_truth_is_unavailable() 
     ]
     assert all(record.value is None for record in records)
     assert all(record.status == "unavailable" for record in records)
-    assert {
-        record.reason for record in records
-    } == {"group_specific_marker_truth_unavailable"}
+    assert {record.reason for record in records} == {
+        "group_specific_marker_truth_unavailable"
+    }
     assert all(record.independent_n == 1 for record in records)
 
 
@@ -396,9 +404,10 @@ def test_clustering_is_deterministic_and_permutation_invariant() -> None:
     relabeled.obs["group"] = relabeled.obs["group"].map(
         {"a": "third", "b": "first", "c": "second"}
     )
-    assert evaluate_clustering_endpoints(
-        output, evaluator_targets_from_dataset(relabeled)
-    ) == first
+    assert (
+        evaluate_clustering_endpoints(output, evaluator_targets_from_dataset(relabeled))
+        == first
+    )
 
 
 @pytest.mark.parametrize(
@@ -408,6 +417,11 @@ def test_clustering_is_deterministic_and_permutation_invariant() -> None:
         (
             ("a", "a", "b", "b"),
             np.ones((4, 3)),
+            "constant_method_representation",
+        ),
+        (
+            ("a",) * 5 + ("b",) * 5,
+            np.ones((10, 3)),
             "constant_method_representation",
         ),
         (
@@ -444,7 +458,10 @@ def _heldout_fixture(values: np.ndarray, heldout: np.ndarray | None):
         obs=pd.DataFrame(
             {
                 "mechanism": ["semisynthetic"] * values.shape[0],
-                "group": ["a" if index < values.shape[0] // 2 else "b" for index in range(values.shape[0])],
+                "group": [
+                    "a" if index < values.shape[0] // 2 else "b"
+                    for index in range(values.shape[0])
+                ],
             },
             index=cell_ids,
         ),
@@ -487,9 +504,7 @@ def test_heldout_profile_losses_are_permutation_invariant_and_deterministic() ->
         evaluate_heldout_endpoints,
     )
 
-    heldout = np.asarray(
-        [[1, 4, 2], [2, 1, 4], [4, 2, 1], [3, 3, 1]], dtype=float
-    )
+    heldout = np.asarray([[1, 4, 2], [2, 1, 4], [4, 2, 1], [3, 3, 1]], dtype=float)
     output, targets = _heldout_fixture(heldout.copy(), heldout)
     baseline = evaluate_heldout_endpoints(output, targets)
     assert [record.value for record in baseline] == pytest.approx([0.0, 0.0])
@@ -531,9 +546,212 @@ def test_heldout_endpoints_have_fixed_missing_and_constant_reasons() -> None:
         "independent_heldout_counts_unavailable"
     }
 
-    constant_output, constant_targets = _heldout_fixture(
-        np.eye(3), np.ones((3, 3))
-    )
+    constant_output, constant_targets = _heldout_fixture(np.eye(3), np.ones((3, 3)))
     gene, cell = evaluate_heldout_endpoints(constant_output, constant_targets)
     assert gene.reason == "heldout_has_no_variable_gene_profiles"
     assert cell.reason == "heldout_has_no_variable_cell_profiles"
+
+
+def _trajectory_fixture(values: np.ndarray, pseudotime: np.ndarray):
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluator_targets_from_dataset,
+    )
+
+    cell_ids = tuple(f"cell-{index:02d}" for index in range(len(pseudotime), 0, -1))
+    gene_ids = tuple(f"gene-{index:02d}" for index in range(values.shape[1], 0, -1))
+    dataset = ad.AnnData(
+        X=np.zeros_like(values, dtype=np.int64),
+        obs=pd.DataFrame(
+            {
+                "mechanism": ["trajectory-reference"] * len(pseudotime),
+                "group": ["not-used"] * len(pseudotime),
+                "pseudotime": pseudotime,
+            },
+            index=cell_ids,
+        ),
+        var=pd.DataFrame(index=gene_ids),
+    )
+    targets = evaluator_targets_from_dataset(
+        dataset,
+        trajectory_root_cell_id=cell_ids[0],
+        trajectory_source_id="genuine-linear-trajectory-fixture",
+    )
+    return (
+        MethodOutput(values=values, cell_ids=cell_ids, gene_ids=gene_ids),
+        targets,
+    )
+
+
+def test_diffusion_trajectory_rank_loss_recovers_genuine_linear_order() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        evaluate_trajectory_endpoint,
+    )
+
+    pseudotime = np.arange(20, dtype=float)
+    values = np.column_stack([20.0 - pseudotime, pseudotime + 1.0, np.full(20, 2.0)])
+    output, targets = _trajectory_fixture(values, pseudotime)
+    record = evaluate_trajectory_endpoint(output, targets)
+
+    assert record.endpoint == "trajectory_pseudotime_rank_loss"
+    assert record.status == "completed"
+    assert record.value == pytest.approx(0.0)
+    assert record.descriptive_n == 20
+    assert record.descriptive_unit == "trajectory_cells"
+    assert record.independent_n == 1
+    assert "multiscale_diffusion" in record.procedure
+
+
+def test_diffusion_trajectory_is_deterministic_and_id_permutation_invariant() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluate_trajectory_endpoint,
+    )
+
+    pseudotime = np.arange(20, dtype=float)
+    values = np.column_stack([20.0 - pseudotime, pseudotime + 1.0, np.full(20, 2.0)])
+    output, targets = _trajectory_fixture(values, pseudotime)
+    baseline = evaluate_trajectory_endpoint(output, targets)
+    assert evaluate_trajectory_endpoint(output, targets) == baseline
+
+    rows = np.asarray(
+        [19, 0, 10, 4, 15, 2, 17, 6, 12, 8, 1, 18, 3, 16, 5, 14, 7, 13, 9, 11]
+    )
+    columns = np.asarray([2, 0, 1])
+    permuted = MethodOutput(
+        values=output.values[rows][:, columns],
+        cell_ids=tuple(output.cell_ids[index] for index in rows),
+        gene_ids=tuple(output.gene_ids[index] for index in columns),
+    )
+    assert evaluate_trajectory_endpoint(permuted, targets) == baseline
+
+
+def test_diffusion_trajectory_uses_bounded_sparse_eigensolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        evaluate_trajectory_endpoint,
+    )
+
+    pseudotime = np.arange(40, dtype=float)
+    values = np.column_stack([40.0 - pseudotime, pseudotime + 1.0, np.full(40, 2.0)])
+    output, targets = _trajectory_fixture(values, pseudotime)
+
+    def reject_dense_eigendecomposition(*_args, **_kwargs):
+        raise AssertionError("trajectory evaluation must not use dense eigh")
+
+    monkeypatch.setattr(np.linalg, "eigh", reject_dense_eigendecomposition)
+    record = evaluate_trajectory_endpoint(output, targets)
+
+    assert record.status == "completed"
+    assert record.value == pytest.approx(0.0)
+
+
+def test_trajectory_endpoint_reports_missing_constant_and_disconnected_graph() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluate_trajectory_endpoint,
+        evaluator_targets_from_dataset,
+    )
+
+    no_truth_dataset = _simulator_dataset(
+        "symsim",
+        ("pop-1", "pop-1", "pop-2", "pop-2"),
+        {
+            "marker_group_1": (True, False, False),
+            "marker_group_2": (False, True, False),
+        },
+    )
+    no_truth_output = MethodOutput(
+        values=np.asarray(no_truth_dataset.X, dtype=float),
+        cell_ids=tuple(no_truth_dataset.obs_names),
+        gene_ids=tuple(no_truth_dataset.var_names),
+    )
+    missing = evaluate_trajectory_endpoint(
+        no_truth_output, evaluator_targets_from_dataset(no_truth_dataset)
+    )
+    assert missing.reason == "genuine_pseudotime_not_available_in_simulator_output"
+
+    pseudotime = np.arange(10, dtype=float)
+    constant_output, constant_targets = _trajectory_fixture(
+        np.ones((10, 3)), pseudotime
+    )
+    constant = evaluate_trajectory_endpoint(constant_output, constant_targets)
+    assert constant.reason == "constant_method_representation"
+
+    first = np.column_stack(
+        [30.0 - pseudotime[:5], pseudotime[:5] + 1.0, np.zeros(5), np.ones(5)]
+    )
+    second_time = pseudotime[:5]
+    second = np.column_stack(
+        [np.zeros(5), np.ones(5), 30.0 - second_time, second_time + 1.0]
+    )
+    disconnected_output, disconnected_targets = _trajectory_fixture(
+        np.vstack([first, second]), pseudotime
+    )
+    disconnected = evaluate_trajectory_endpoint(
+        disconnected_output, disconnected_targets
+    )
+    assert disconnected.reason == "trajectory_graph_disconnected"
+
+
+def test_complete_evaluator_always_returns_fixed_eight_row_schema() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        DOWNSTREAM_ENDPOINT_NAMES,
+        MethodOutput,
+        evaluate_downstream_endpoints,
+        evaluator_targets_from_dataset,
+    )
+
+    values = np.asarray([[8, 1, 0], [7, 2, 0], [0, 8, 1], [0, 7, 2]], dtype=float)
+    heldout = np.asarray([[4, 1, 0], [3, 2, 0], [0, 4, 1], [0, 3, 2]], dtype=float)
+    dataset = _simulator_dataset(
+        "semisynthetic",
+        ("alpha", "alpha", "beta", "beta"),
+        {},
+        heldout=heldout,
+    )
+    output = MethodOutput(
+        values=values,
+        cell_ids=tuple(dataset.obs_names),
+        gene_ids=tuple(dataset.var_names),
+    )
+    records = evaluate_downstream_endpoints(
+        output, evaluator_targets_from_dataset(dataset)
+    )
+
+    assert tuple(record.endpoint for record in records) == DOWNSTREAM_ENDPOINT_NAMES
+    assert DOWNSTREAM_ENDPOINT_NAMES == (
+        "marker_rank_loss",
+        "clustering_ari_loss",
+        "clustering_nmi_loss",
+        "positive_de_marker_recall",
+        "positive_de_false_discovery_rate",
+        "heldout_gene_profile_rank_loss",
+        "heldout_cell_profile_rank_loss",
+        "trajectory_pseudotime_rank_loss",
+    )
+    assert len(records) == 8
+    assert all(record.independent_unit == "biological_draw" for record in records)
+    assert all(record.independent_n == 1 for record in records)
+    assert all(
+        record.descriptive_unit != "independent_replicates" for record in records
+    )
+    assert all(
+        (record.value is not None and record.reason is None)
+        or (record.value is None and record.reason is not None)
+        for record in records
+    )
+    by_name = {record.endpoint: record for record in records}
+    assert (
+        by_name["marker_rank_loss"].reason == "group_specific_marker_truth_unavailable"
+    )
+    assert (
+        by_name["positive_de_marker_recall"].reason
+        == "group_specific_marker_truth_unavailable"
+    )
+    assert by_name["trajectory_pseudotime_rank_loss"].reason == (
+        "genuine_pseudotime_not_available_in_simulator_output"
+    )
+    assert by_name["heldout_gene_profile_rank_loss"].status == "completed"
+    assert by_name["heldout_cell_profile_rank_loss"].status == "completed"
