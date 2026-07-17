@@ -52,11 +52,22 @@ tensorflow_force_gpu_allow_growth = os.environ.get("TF_FORCE_GPU_ALLOW_GROWTH")
 if tensorflow_force_gpu_allow_growth != "true":
     raise RuntimeError("TF_FORCE_GPU_ALLOW_GROWTH must be true")
 sys.path.insert(0, str(source_dir))
+import tensorflow
+physical_gpus = tensorflow.config.experimental.list_physical_devices("GPU")
+if not physical_gpus:
+    raise RuntimeError("DCA registry resources require a TensorFlow-visible GPU")
+for physical_gpu in physical_gpus:
+    tensorflow.config.experimental.set_memory_growth(physical_gpu, True)
+tensorflow_memory_growth = all(
+    tensorflow.config.experimental.get_memory_growth(physical_gpu)
+    for physical_gpu in physical_gpus
+)
+if not tensorflow_memory_growth:
+    raise RuntimeError("DCA TensorFlow memory-growth policy was not applied")
 import anndata
 import dca
 import numpy
 import scanpy
-import tensorflow
 from dca.api import dca as dca_run
 
 module_path = Path(dca.__file__).resolve(strict=True)
@@ -103,6 +114,7 @@ receipt = {
     "python_version": sys.version.split()[0],
     "scanpy_version": str(getattr(scanpy, "__version__", "unknown")),
     "tensorflow_force_gpu_allow_growth": tensorflow_force_gpu_allow_growth,
+    "tensorflow_memory_growth": str(tensorflow_memory_growth).lower(),
     "tensorflow_version": str(tensorflow.__version__),
 }
 receipt_path.write_text(
@@ -256,7 +268,7 @@ def run_dca(
         ),
         CompatibilityEvent(
             "allocator_policy",
-            "subprocess binds TF_FORCE_GPU_ALLOW_GROWTH=true before TensorFlow import and receipts the exact value",
+            "subprocess binds TF_FORCE_GPU_ALLOW_GROWTH=true before TensorFlow import, then programmatically enables and receipts memory growth on every TensorFlow-visible physical GPU before importing DCA",
         ),
         CompatibilityEvent(
             "compatibility_shims",
@@ -337,6 +349,7 @@ def run_dca(
                     "python_version",
                     "scanpy_version",
                     "tensorflow_force_gpu_allow_growth",
+                    "tensorflow_memory_growth",
                     "tensorflow_version",
                 }
             ),

@@ -449,6 +449,7 @@ def test_dca_binds_tensorflow_gpu_growth_and_receipts_it(
             "python_version\ttest-python\n"
             "scanpy_version\ttest-scanpy\n"
             "tensorflow_force_gpu_allow_growth\ttrue\n"
+            "tensorflow_memory_growth\ttrue\n"
             "tensorflow_version\ttest-tensorflow\n",
             encoding="utf-8",
         )
@@ -469,6 +470,7 @@ def test_dca_binds_tensorflow_gpu_growth_and_receipts_it(
         dict(execution.environment_receipt)["tensorflow_force_gpu_allow_growth"]
         == "true"
     )
+    assert dict(execution.environment_receipt)["tensorflow_memory_growth"] == "true"
     compatibility = {event.code: event.detail for event in execution.compatibility_log}
     assert "TF_FORCE_GPU_ALLOW_GROWTH=true" in compatibility["allocator_policy"]
 
@@ -992,6 +994,7 @@ def test_real_pinned_dca_tiny_smoke_when_legacy_environment_exists(
         dict(execution.environment_receipt)["tensorflow_force_gpu_allow_growth"]
         == "true"
     )
+    assert dict(execution.environment_receipt)["tensorflow_memory_growth"] == "true"
     assert "upstream_training_override" in [
         event.code for event in execution.compatibility_log
     ]
