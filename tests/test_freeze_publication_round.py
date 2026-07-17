@@ -2490,3 +2490,285 @@ def test_schema_four_stage_rejects_core_file_changed_during_replay(
             repository,
             _resolve_publication_stage(repository),
         )
+
+
+@pytest.mark.parametrize(
+    ("active_stage", "stage_order"),
+    (
+        ("base", ("base",)),
+        ("v28", ("base", "v28")),
+        ("v29", ("base", "v28", "v29")),
+    ),
+)
+def test_dynamic_artifact_paths_are_exact_and_stage_qualified(
+    tmp_path: Path,
+    active_stage: str,
+    stage_order: tuple[str, ...],
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        _publication_artifact_paths,
+        _resolve_publication_stage,
+    )
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    for stage in stage_order:
+        _materialize_publication_stage_footprint(repository, stage)
+    layout = _resolve_publication_stage(repository)
+
+    paths = _publication_artifact_paths(layout)
+
+    common = {
+        "runtime_lock",
+        "method_registry",
+        "selection_contract",
+        "development_search",
+        "v28_revision",
+        "v29_revision",
+        "ablation_registry",
+        "scaling_panel",
+        "trajectory_panel",
+        "protocol",
+        "saver_qualification",
+        "saver_package_lock",
+        "saver_build_receipt",
+        "dataset_status",
+        "count_score_manifest",
+        "retained_calibration",
+    }
+    suffixes = {
+        "selection_source_input",
+        "selection_complete_input",
+        "selection_report",
+        "evaluation_manifest",
+        "reconstruction_checkpoint",
+        "orthogonal_manifest",
+        "downstream_plan",
+        "downstream_manifest",
+    }
+    expected_stage_names = {
+        f"{stage}_{suffix}" for stage in stage_order for suffix in suffixes
+    }
+    assert set(paths) == common | expected_stage_names
+    assert paths["v28_revision"] == "study/v28_revision.json"
+    assert paths["v29_revision"] == "study/v29_revision.json"
+    assert paths["scaling_panel"] == "study/scaling_panel.json"
+    assert paths["trajectory_panel"] == "study/trajectory_panel.json"
+    assert not {
+        "selection_input",
+        "selection_report",
+        "evaluation_manifest",
+        "reconstruction_checkpoint",
+    }.intersection(paths)
+
+    external = _publication_artifact_paths(
+        layout,
+        include_external_reference=True,
+    )
+    assert set(external) == set(paths) | {"external_reference_checkpoint"}
+
+
+def test_dynamic_artifact_trajectory_authority_is_not_stage_presence(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.publication_freeze import _resolve_publication_stage
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _materialize_publication_stage_footprint(repository, "base")
+    _write_json(repository / "study/trajectory_panel.json", {"schema_version": 1})
+
+    assert _resolve_publication_stage(repository).active_stage == "base"
+
+
+def test_dynamic_artifact_bindings_reject_duplicate_normalized_paths() -> None:
+    from maskimpute_benchmark.publication_freeze import _artifact_bindings
+
+    with pytest.raises(PublicationFreezeError, match="duplicate.*path"):
+        _artifact_bindings(
+            {
+                "first": {"path": "study/protocol.json", "sha256": "1" * 64},
+                "second": {"path": "study//protocol.json", "sha256": "2" * 64},
+            }
+        )
+
+
+def test_tree_receipt_changes_for_unreferenced_file(tmp_path: Path) -> None:
+    from maskimpute_benchmark.publication_freeze import _closed_stage_tree_sha256
+
+    repository = tmp_path / "repository"
+    tree = repository / "tree"
+    tree.mkdir(parents=True)
+    (tree / "retained.bin").write_bytes(b"retained")
+    before = _closed_stage_tree_sha256(repository, "tree")
+
+    (tree / "unreferenced.bin").write_bytes(b"new evidence")
+    after = _closed_stage_tree_sha256(repository, "tree")
+
+    assert before != after
+
+
+@pytest.mark.parametrize("kind", ("symlink", "fifo", "socket", "hardlink"))
+def test_tree_receipt_rejects_links_and_special_files(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    import os
+    import socket
+
+    from maskimpute_benchmark.publication_freeze import _closed_stage_tree_sha256
+
+    repository = tmp_path / "repository"
+    tree = repository / "tree"
+    tree.mkdir(parents=True)
+    retained = tree / "retained.bin"
+    retained.write_bytes(b"retained")
+    special = tree / "special"
+    opened_socket = None
+    if kind == "symlink":
+        special.symlink_to(retained)
+    elif kind == "fifo":
+        special.parent.mkdir(parents=True, exist_ok=True)
+        os.mkfifo(special)
+    elif kind == "socket":
+        opened_socket = socket.socket(socket.AF_UNIX)
+        opened_socket.bind(str(special))
+    else:
+        os.link(retained, special)
+    try:
+        with pytest.raises(PublicationFreezeError, match="symlink|special|unique"):
+            _closed_stage_tree_sha256(repository, "tree")
+    finally:
+        if opened_socket is not None:
+            opened_socket.close()
+
+
+def _dynamic_bindings_for_layout(
+    repository: Path,
+    layout: object,
+) -> dict[str, dict[str, str]]:
+    from maskimpute_benchmark.publication_freeze import _publication_artifact_paths
+
+    paths = _publication_artifact_paths(layout)
+    for name, relative in paths.items():
+        path = repository / relative
+        if not path.exists():
+            _write_json(path, {"artifact": name})
+    return {
+        name: {
+            "path": relative,
+            "sha256": hashlib.sha256((repository / relative).read_bytes()).hexdigest(),
+        }
+        for name, relative in paths.items()
+    }
+
+
+def test_stage_receipt_closes_exact_inventory_and_activation_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        _build_development_stage_receipt,
+        _resolve_publication_stage,
+        _validate_development_stage_receipt,
+        _validate_publication_stage_evidence,
+    )
+
+    repository, reports = _schema_four_stage_chain(tmp_path, "v29")
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+    layout = _resolve_publication_stage(repository)
+    evidence, _report = _validate_publication_stage_evidence(repository, layout)
+    bindings = _dynamic_bindings_for_layout(repository, layout)
+
+    receipt = _build_development_stage_receipt(
+        repository,
+        layout,
+        evidence,
+        bindings,
+    )
+
+    stage_names = sorted(
+        f"{stage}_{suffix}"
+        for stage in ("base", "v28", "v29")
+        for suffix in (
+            "selection_source_input",
+            "selection_complete_input",
+            "selection_report",
+            "evaluation_manifest",
+            "reconstruction_checkpoint",
+            "orthogonal_manifest",
+            "downstream_plan",
+            "downstream_manifest",
+        )
+    )
+    assert receipt["schema_version"] == 1
+    assert receipt["active_stage"] == "v29"
+    assert receipt["revision_versions"] == ["v28", "v29"]
+    assert receipt["stage_order"] == ["base", "v28", "v29"]
+    assert receipt["artifact_names"] == stage_names
+    assert receipt["stages"][0]["activation"] is None
+    assert receipt["stages"][1]["activation"] == {
+        "version": "v28",
+        "trigger": "v28",
+        "revision_authority_artifact": "v28_revision",
+        "preceding_complete_input_artifact": "base_selection_complete_input",
+        "preceding_report_artifact": "base_selection_report",
+        "selection_input_file_sha256": evidence.stages[1].activation.selection_input_file_sha256,
+        "selection_result_sha256": evidence.stages[1].activation.selection_result_sha256,
+        "selection_report_file_sha256": evidence.stages[1].activation.selection_report_file_sha256,
+    }
+    assert all(
+        isinstance(stage[key], str)
+        and len(stage[key]) == 64
+        and set(stage[key]) <= set("0123456789abcdef")
+        for stage in receipt["stages"]
+        for key in (
+            "reconstruction_tree_sha256",
+            "orthogonal_tree_sha256",
+            "downstream_tree_sha256",
+        )
+    )
+    assert _validate_development_stage_receipt(receipt, layout, bindings) == receipt
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("artifact_names", "stage_order", "activation", "inventory_sha256"),
+)
+def test_stage_receipt_rejects_any_inventory_or_chain_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        _build_development_stage_receipt,
+        _resolve_publication_stage,
+        _validate_development_stage_receipt,
+        _validate_publication_stage_evidence,
+    )
+
+    repository, reports = _schema_four_stage_chain(tmp_path, "v29")
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+    layout = _resolve_publication_stage(repository)
+    evidence, _report = _validate_publication_stage_evidence(repository, layout)
+    bindings = _dynamic_bindings_for_layout(repository, layout)
+    receipt = _build_development_stage_receipt(
+        repository,
+        layout,
+        evidence,
+        bindings,
+    )
+    changed = deepcopy(receipt)
+    if mutation == "artifact_names":
+        changed["artifact_names"] = changed["artifact_names"][:-1]
+    elif mutation == "stage_order":
+        changed["stage_order"] = list(reversed(changed["stage_order"]))
+    elif mutation == "activation":
+        changed["stages"][1]["activation"]["preceding_report_artifact"] = (
+            "v28_selection_report"
+        )
+    else:
+        changed["inventory_sha256"] = "0" * 64
+
+    with pytest.raises(PublicationFreezeError, match="stage receipt|inventory|activation"):
+        _validate_development_stage_receipt(changed, layout, bindings)
