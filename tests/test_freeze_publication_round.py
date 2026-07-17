@@ -1780,6 +1780,64 @@ def test_prepare_never_overwrites_concurrently_published_frozen_method(
     ) == '{"competing":true}\n'
 
 
+def test_prepare_accepts_identical_concurrently_published_frozen_method(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        freeze_module,
+        "_recompute_selection_report",
+        lambda *_args: deepcopy(report),
+    )
+    real_link = freeze_module.os.link
+
+    def publish_identical_file(source, destination, **kwargs):
+        study = repository / "study"
+        (study / destination).write_bytes((study / source).read_bytes())
+        return real_link(source, destination, **kwargs)
+
+    monkeypatch.setattr(freeze_module.os, "link", publish_identical_file)
+
+    prepared = prepare_frozen_method(repository)
+
+    assert json.loads(
+        (repository / "study/frozen_method.json").read_text(encoding="utf-8")
+    ) == prepared
+    assert not list((repository / "study").glob(".frozen_method.json.*.tmp"))
+
+
+def test_atomic_write_retry_accepts_file_left_after_post_link_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    path = (tmp_path / "authority" / "frozen_method.json").resolve()
+    path.parent.mkdir()
+    raw = b'{"schema_version":1}\n'
+    real_fsync = freeze_module.os.fsync
+    calls = 0
+
+    def fail_directory_fsync_once(descriptor: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated post-link durability failure")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(freeze_module.os, "fsync", fail_directory_fsync_once)
+    with pytest.raises(PublicationFreezeError, match="cannot open.*parent"):
+        freeze_module._atomic_write(path, raw)
+    assert path.read_bytes() == raw
+
+    monkeypatch.setattr(freeze_module.os, "fsync", real_fsync)
+    freeze_module._atomic_write(path, raw)
+
+    assert path.read_bytes() == raw
+    assert not list(path.parent.glob(".frozen_method.json.*.tmp"))
+
+
 def test_secure_json_rejects_parent_directory_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -1224,6 +1224,66 @@ def _canonical_bytes(payload: object) -> bytes:
         raise PublicationFreezeError("frozen method is not canonical JSON") from error
 
 
+def _concurrent_publication_matches(parent: int, name: str, raw: bytes) -> bool:
+    """Compare a create-only publication winner through one stable descriptor."""
+
+    descriptor = -1
+    try:
+        named_before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(named_before.st_mode)
+            or named_before.st_nlink != 1
+            or named_before.st_size != len(raw)
+        ):
+            return False
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent,
+        )
+        opened_before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_before.st_mode)
+            or opened_before.st_nlink != 1
+            or _identity(opened_before) != _identity(named_before)
+        ):
+            return False
+        position = 0
+        identical = True
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            end = position + len(chunk)
+            if end > len(raw) or chunk != raw[position:end]:
+                identical = False
+            position = end
+        opened_after = os.fstat(descriptor)
+        named_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (
+            _identity(opened_before) != _identity(opened_after)
+            or _identity(opened_before) != _identity(named_after)
+        ):
+            raise PublicationFreezeError(
+                "concurrently published frozen method changed while being read"
+            )
+        if not identical or position != len(raw):
+            return False
+        os.fsync(descriptor)
+        return True
+    except PublicationFreezeError:
+        raise
+    except OSError as error:
+        raise PublicationFreezeError(
+            "concurrently published frozen method is unavailable or unsafe"
+        ) from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _atomic_write(path: Path, raw: bytes) -> None:
     temporary_name = f".{path.name}.{secrets.token_hex(16)}.tmp"
     with _pinned_parent(path, "frozen method output") as parent:
@@ -1253,9 +1313,13 @@ def _atomic_write(path: Path, raw: bytes) -> None:
                     follow_symlinks=False,
                 )
             except FileExistsError as error:
-                raise PublicationFreezeError(
-                    "frozen method was concurrently published"
-                ) from error
+                if not _concurrent_publication_matches(parent, path.name, raw):
+                    raise PublicationFreezeError(
+                        "a different frozen method was concurrently published"
+                    ) from error
+                os.unlink(temporary_name, dir_fd=parent)
+                os.fsync(parent)
+                return
             os.unlink(temporary_name, dir_fd=parent)
             published = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
             if (
