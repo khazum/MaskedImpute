@@ -427,6 +427,43 @@ def test_complete_manifest_revalidates_bound_source_and_dataset_bytes(
         load_downstream_evidence_manifest(destination)
 
 
+def test_complete_manifest_rejects_self_consistent_sealed_source_drift(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        build_downstream_evidence_plan,
+        load_downstream_evidence_manifest,
+        run_downstream_evidence,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset_path, cells, _output_path = _development_source(tmp_path)
+    plan = build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(_dataset_binding(dataset_path, cells),),
+    )
+    destination = tmp_path / "downstream"
+    run_downstream_evidence(plan, destination)
+
+    checkpoint_path = source / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["records"][0]["run"]["configuration_id"] = "forged-configuration"
+    checkpoint_body = {
+        key: value
+        for key, value in checkpoint.items()
+        if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = canonical_sha256(checkpoint_body)
+    _write_canonical(checkpoint_path, checkpoint)
+
+    with pytest.raises(
+        DownstreamEvidenceError, match="persisted downstream plan sources changed"
+    ):
+        load_downstream_evidence_manifest(destination)
+
+
 def test_selection_schema_four_requires_bound_downstream_completeness(
     tmp_path: Path,
 ) -> None:
