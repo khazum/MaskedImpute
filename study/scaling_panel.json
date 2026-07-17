@@ -28,7 +28,8 @@
     "n_corr_genes"
   ],
   "excluded_metric_families": {
-    "cell_cell_correlation_and_distance": "quadratic_cell_pair_metric_not_scalable"
+    "cell_cell_correlation_and_distance": "quadratic_cell_pair_metric_not_scalable",
+    "p_pre_zero_score_evidence": "evaluated_in_main_final_panel_not_retained_in_scaling_panel"
   },
   "genes": 500,
   "method_ids": [

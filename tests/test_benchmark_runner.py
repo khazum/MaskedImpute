@@ -259,6 +259,14 @@ def _slow_observed_executor(request: ExecutionRequest) -> AdapterOutcome:
     return _observed_executor(request)
 
 
+def _slow_marker_executor(_request: ExecutionRequest) -> AdapterOutcome:
+    time.sleep(0.4)
+    return AdapterOutcome.unavailable(
+        "child_completed",
+        stdout=b"child-finished",
+    )
+
+
 def _maskimpute_result_executor(request: ExecutionRequest) -> AdapterOutcome:
     from maskimpute import ImputationResult
     from maskimpute.ablations import AblationRunResult
@@ -1182,6 +1190,55 @@ def test_spawned_executor_uses_parent_sampled_resources_not_executor_claims() ->
     assert outcome.peak_gpu_bytes == 0
     assert outcome.rss_measurement == "mock_process_tree_rss"
     assert outcome.gpu_measurement == "not_applicable_cpu"
+
+
+@pytest.mark.parametrize(
+    ("method_id", "rss", "gpu", "expected_reason"),
+    (
+        ("observed", 2, 0, "peak_rss_exceeded"),
+        ("scvi", 1, 2, "peak_gpu_exceeded"),
+    ),
+)
+def test_spawned_executor_terminates_live_process_at_resource_cap(
+    method_id: str,
+    rss: int,
+    gpu: int,
+    expected_reason: str,
+) -> None:
+    from dataclasses import replace
+
+    base = load_method_registry(METHODS_PATH).by_id(method_id)
+    resources = replace(
+        base.resources,
+        max_rss_gib=(1 / 1024**3 if expected_reason == "peak_rss_exceeded" else 48),
+        max_gpu_gib=(1 / 1024**3 if expected_reason == "peak_gpu_exceeded" else 0),
+    )
+    spec = replace(base, resources=resources)
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=42 if spec.stochastic else None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+
+    outcome = execute_adapter_in_spawned_process(
+        request,
+        _slow_marker_executor,
+        poll_interval_seconds=0.01,
+        resource_sampler=_FixedResourceSampler(rss=rss, gpu=gpu),
+    )
+
+    assert outcome.status == "resource_exceeded"
+    assert outcome.reason == expected_reason
+    assert outcome.stdout == b""
+    assert outcome.peak_rss_bytes == rss
+    assert outcome.peak_gpu_bytes == gpu
 
 
 def test_gpu_sampler_uses_bound_absolute_nvidia_smi_after_path_changes(

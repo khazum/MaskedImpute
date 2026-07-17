@@ -104,6 +104,14 @@ def test_tracked_scaling_contract_is_exact_and_prespecified() -> None:
         "magic",
     )
     assert contract.model_seed == 42
+    assert dict(contract.excluded_metric_families) == {
+        "cell_cell_correlation_and_distance": (
+            "quadratic_cell_pair_metric_not_scalable"
+        ),
+        "p_pre_zero_score_evidence": (
+            "evaluated_in_main_final_panel_not_retained_in_scaling_panel"
+        ),
+    }
     assert (
         contract.file_sha256
         == hashlib.sha256(
@@ -210,11 +218,13 @@ def test_scaling_record_keeps_metrics_and_hashes_but_not_dense_outputs() -> None
     import numpy as np
 
     from maskimpute_benchmark.runner import (
-        EvaluatedAttempt,
         LongFormMetric,
         RawRunResult,
     )
-    from maskimpute_benchmark.scaling import scaling_attempt_record
+    from maskimpute_benchmark.scaling import (
+        ScalingEvaluatedAttempt,
+        scaling_attempt_record,
+    )
 
     run = RawRunResult(
         run_id="scaling-maskimpute-10000-seed-42-aaaaaaaaaaaa",
@@ -236,6 +246,8 @@ def test_scaling_record_keeps_metrics_and_hashes_but_not_dense_outputs() -> None
         excluded_cell_ids_sha256="e" * 64,
         retained_cell_count=10_000,
         retained_cell_ids_sha256="f" * 64,
+        retained_gene_count=500,
+        observed_zero_count=4_000_000,
         status="completed",
         reason=None,
         runtime_seconds=1.25,
@@ -268,7 +280,7 @@ def test_scaling_record_keeps_metrics_and_hashes_but_not_dense_outputs() -> None
         status="completed",
         reason=None,
     )
-    attempt = EvaluatedAttempt(
+    attempt = ScalingEvaluatedAttempt(
         run=run,
         metrics=(metric,),
         stdout=b"out",
@@ -284,6 +296,7 @@ def test_scaling_record_keeps_metrics_and_hashes_but_not_dense_outputs() -> None
     assert record["run"]["evaluator_output_retention"] == "hash_only"
     assert "native_output" not in record
     assert "evaluator_output" not in record
+    assert "p_pre_zero_evidence" not in record
     assert record["metrics"] == [metric.to_dict()]
     assert record["stdout"] == b"out"
     assert record["stderr"] == b"err"
@@ -328,11 +341,13 @@ def _dataset_receipt(output_dir: Path, cells: int = 10_000) -> dict[str, object]
 
 def _first_attempt(plan):
     from maskimpute_benchmark.runner import (
-        EvaluatedAttempt,
         LongFormMetric,
         RawRunResult,
     )
-    from maskimpute_benchmark.scaling import _SCALING_ACCURACY_METRICS
+    from maskimpute_benchmark.scaling import (
+        _SCALING_ACCURACY_METRICS,
+        ScalingEvaluatedAttempt,
+    )
 
     entry = plan.entries[0]
     run = RawRunResult(
@@ -355,6 +370,8 @@ def _first_attempt(plan):
         excluded_cell_ids_sha256="e" * 64,
         retained_cell_count=10_000,
         retained_cell_ids_sha256="f" * 64,
+        retained_gene_count=500,
+        observed_zero_count=4_000_000,
         status="completed",
         reason=None,
         runtime_seconds=1.25,
@@ -390,7 +407,7 @@ def _first_attempt(plan):
         )
         for name in _SCALING_ACCURACY_METRICS
     )
-    return EvaluatedAttempt(
+    return ScalingEvaluatedAttempt(
         run=run,
         metrics=metrics,
         stdout=b"out",

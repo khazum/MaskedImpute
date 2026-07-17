@@ -29,7 +29,10 @@ dropout, exact pre-capture-zero, and observed-nonzero MSE; gNRMSE; mean and
 variance distortion; per-gene empirical Wasserstein distance; and gene-gene
 correlation distortion. Cell-cell correlations and pairwise cell distances are
 deliberately excluded because their dense quadratic implementation does not fit
-the larger sizes. This exclusion is fixed before execution and is not based on
+the larger sizes. Realized `p_pre_zero` score matrices and their calibration
+analysis are also excluded: they are retained and evaluated in the main final
+panel, while duplicating them here would violate the bounded scaling-storage
+contract. These exclusions are fixed before execution and are not based on
 results.
 
 Every method-size row retains runtime, peak process-tree RSS, peak GPU memory,

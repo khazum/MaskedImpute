@@ -24,10 +24,11 @@ from .runner import (
     AdapterOutcome,
     AuthorizedConfiguration,
     DatasetBinding,
-    EvaluatedAttempt,
     ExecutionEnvironmentRegistry,
     ExecutionRequest,
+    LongFormMetric,
     PreparedDataset,
+    RawRunResult,
     RepositoryAdapterDispatcher,
     RunPlanEntry,
     RunnerAuthority,
@@ -119,6 +120,19 @@ _DATASET_RECEIPT_KEYS = {
 
 class ScalingContractError(ValueError):
     """Raised when the scaling authority, plan, or evidence is not closed."""
+
+
+@dataclass(frozen=True, slots=True)
+class ScalingEvaluatedAttempt:
+    """Bounded scaling result without main-study score-matrix evidence."""
+
+    run: RawRunResult
+    metrics: tuple[LongFormMetric, ...]
+    stdout: bytes
+    stderr: bytes
+    native_output: np.ndarray | None
+    native_output_scale: str | None
+    evaluator_output: np.ndarray | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,7 +370,10 @@ def load_scaling_contract(path: Path) -> ScalingContract:
     if excluded != {
         "cell_cell_correlation_and_distance": (
             "quadratic_cell_pair_metric_not_scalable"
-        )
+        ),
+        "p_pre_zero_score_evidence": (
+            "evaluated_in_main_final_panel_not_retained_in_scaling_panel"
+        ),
     }:
         raise ScalingContractError("scaling excluded metric families are invalid")
     if payload.get("genes") != 500 or type(payload["genes"]) is not int:
@@ -595,12 +612,12 @@ def build_scaling_plan(
 
 
 def scaling_attempt_record(
-    attempt: EvaluatedAttempt, *, cells: int, accuracy_enabled: bool
+    attempt: ScalingEvaluatedAttempt, *, cells: int, accuracy_enabled: bool
 ) -> dict[str, object]:
     """Retain complete metrics/resources/logs while dropping both dense matrices."""
 
-    if not isinstance(attempt, EvaluatedAttempt):
-        raise TypeError("attempt must be an EvaluatedAttempt")
+    if not isinstance(attempt, ScalingEvaluatedAttempt):
+        raise TypeError("attempt must be a ScalingEvaluatedAttempt")
     if type(cells) is not int or cells <= 0:
         raise ValueError("cells must be a positive integer")
     if type(accuracy_enabled) is not bool:
@@ -1467,7 +1484,7 @@ def _evaluate_scaling_outcome(
     run_entry: RunPlanEntry,
     prepared: PreparedDataset,
     outcome: AdapterOutcome,
-) -> EvaluatedAttempt:
+) -> ScalingEvaluatedAttempt:
     """Evaluate without any cell-by-cell matrix, then discard both dense outputs."""
 
     from .runner import (
@@ -1563,6 +1580,11 @@ def _evaluate_scaling_outcome(
         excluded_cell_ids_sha256=prepared.audit.excluded_cell_ids_sha256,
         retained_cell_count=prepared.audit.retained_cell_count,
         retained_cell_ids_sha256=prepared.audit.retained_cell_ids_sha256,
+        retained_gene_count=prepared.method_input.shape[1],
+        observed_zero_count=(
+            prepared.method_input.counts.size
+            - int(np.count_nonzero(prepared.method_input.counts))
+        ),
         status=status,
         reason=reason,
         runtime_seconds=outcome.runtime_seconds,
@@ -1590,7 +1612,7 @@ def _evaluate_scaling_outcome(
         native_output_sha256=native_output_sha256,
         evaluator_output_sha256=evaluator_output_sha256,
     )
-    return EvaluatedAttempt(
+    return ScalingEvaluatedAttempt(
         run=run,
         metrics=metrics,
         stdout=outcome.stdout,
@@ -1727,6 +1749,7 @@ __all__ = [
     "ScalingContract",
     "ScalingContractError",
     "ScalingExecutionAuthority",
+    "ScalingEvaluatedAttempt",
     "ScalingPlan",
     "ScalingPlanEntry",
     "ScalingResultStore",

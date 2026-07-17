@@ -214,9 +214,9 @@ def _correlation_matrix_distortion(
 
     if n_variables < 2:
         return _unavailable(n_variables, reason), n_variables
-    constant = (
-        np.std(selected_imputed, axis=standard_deviation_axis, ddof=0) == 0
-    ) | (np.std(selected_truth, axis=standard_deviation_axis, ddof=0) == 0)
+    constant = (np.std(selected_imputed, axis=standard_deviation_axis, ddof=0) == 0) | (
+        np.std(selected_truth, axis=standard_deviation_axis, ddof=0) == 0
+    )
     if np.any(constant):
         return _unavailable(n_variables, constant_reason), n_variables
     corr_imputed = np.corrcoef(selected_imputed, rowvar=rowvar)
@@ -240,9 +240,7 @@ def _pairwise_distance_distortion(
     for first in range(n_cells - 1):
         count = n_cells - first - 1
         truth_distance = np.linalg.norm(truth[first + 1 :] - truth[first], axis=1)
-        imputed_distance = np.linalg.norm(
-            imputed[first + 1 :] - imputed[first], axis=1
-        )
+        imputed_distance = np.linalg.norm(imputed[first + 1 :] - imputed[first], axis=1)
         values[offset : offset + count] = np.abs(imputed_distance - truth_distance)
         offset += count
     return _metric(np.mean(values), n_pairs)
@@ -353,12 +351,9 @@ def reconstruction_metrics(
         np.mean(imputed_array, axis=0) - np.mean(truth_array, axis=0)
     )
     variance_difference = np.abs(
-        np.var(imputed_array, axis=0, ddof=0)
-        - np.var(truth_array, axis=0, ddof=0)
+        np.var(imputed_array, axis=0, ddof=0) - np.var(truth_array, axis=0, ddof=0)
     )
-    result["mean_distortion"] = _metric(
-        np.mean(mean_difference), truth_array.shape[1]
-    )
+    result["mean_distortion"] = _metric(np.mean(mean_difference), truth_array.shape[1])
     result["variance_distortion"] = _metric(
         np.mean(variance_difference), truth_array.shape[1]
     )
@@ -401,9 +396,7 @@ def reconstruction_metrics(
     for metric in ("mse", "mae", "gnrmse"):
         result[f"{metric}_dropout"] = result[f"{metric}_induced_dropout"]
         result[f"{metric}_nonzero"] = result[f"{metric}_non_dropout_nonzero"]
-    result["pairwise_cell_distance_distortion"] = result[
-        "cell_distance_distortion"
-    ]
+    result["pairwise_cell_distance_distortion"] = result["cell_distance_distortion"]
     return result
 
 
@@ -426,9 +419,9 @@ def _auroc(probability: np.ndarray, outcome: np.ndarray) -> float:
     n_positive = int(outcome.sum())
     n_negative = outcome.size - n_positive
     positive_rank_sum = float(_average_ranks(probability)[outcome == 1].sum())
-    return (
-        positive_rank_sum - n_positive * (n_positive + 1) / 2.0
-    ) / (n_positive * n_negative)
+    return (positive_rank_sum - n_positive * (n_positive + 1) / 2.0) / (
+        n_positive * n_negative
+    )
 
 
 def _average_precision(probability: np.ndarray, outcome: np.ndarray) -> float:
@@ -524,7 +517,7 @@ def _wilson_interval(successes: int, n: int) -> tuple[float, float]:
 def _reliability(
     probability: np.ndarray, outcome: np.ndarray, n_bins: int
 ) -> tuple[MetricValue, list[dict[str, float | int]]]:
-    chunks = _tie_aware_groups(probability, n_bins)
+    chunks = tie_aware_groups(probability, n_bins)
     bins: list[dict[str, float | int]] = []
     weighted_error = 0.0
     for index, chunk in enumerate(chunks, start=1):
@@ -548,7 +541,7 @@ def _reliability(
     return _metric(weighted_error / outcome.size, outcome.size), bins
 
 
-def _tie_aware_groups(values: np.ndarray, maximum_groups: int) -> list[np.ndarray]:
+def tie_aware_groups(values: np.ndarray, maximum_groups: int) -> list[np.ndarray]:
     """Target equal-frequency groups without splitting identical values."""
 
     order = np.argsort(values, kind="stable")
@@ -695,9 +688,7 @@ def _stratum_record(
     n_bins: int,
     truth_kind: str,
 ) -> dict[str, Any]:
-    metrics = _score_selected(
-        probability, observed, truth, mask, n_bins, truth_kind
-    )
+    metrics = _score_selected(probability, observed, truth, mask, n_bins, truth_kind)
     return {
         "stratum_type": stratum_type,
         "label": label,
@@ -729,10 +720,8 @@ def stratified_zero_score_metrics(
 
     observed_zero = observed_array == 0
     library_size = np.sum(observed_array, axis=1)
-    cell_chunks = _tie_aware_groups(library_size, 4)
-    cell_chunks.extend(
-        np.array([], dtype=int) for _ in range(4 - len(cell_chunks))
-    )
+    cell_chunks = tie_aware_groups(library_size, 4)
+    cell_chunks.extend(np.array([], dtype=int) for _ in range(4 - len(cell_chunks)))
     library_records: list[dict[str, Any]] = []
     for quartile, cells in enumerate(cell_chunks, start=1):
         cell_mask = np.zeros(observed_array.shape[0], dtype=bool)
@@ -788,5 +777,6 @@ __all__ = [
     "entry_masks",
     "reconstruction_metrics",
     "stratified_zero_score_metrics",
+    "tie_aware_groups",
     "zero_score_metrics",
 ]

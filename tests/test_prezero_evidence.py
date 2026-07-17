@@ -227,6 +227,38 @@ def _rewrite_checkpoint(store: CheckpointStore, mutate) -> dict[str, object]:
     return payload
 
 
+def _rebind_score_payload(
+    payload: dict[str, object], *, score_raw: bytes | None = None
+) -> None:
+    evidence = payload["records"][0]["p_pre_zero_evidence"]
+    if score_raw is not None:
+        evidence["policy_sha256"] = canonical_sha256(evidence["policy"])
+        semantic = hashlib.sha256()
+        semantic.update(b"maskimpute-realized-p-pre-zero-v1\0")
+        semantic.update(
+            json.dumps(
+                {
+                    "identity": evidence["identity"],
+                    "shape": evidence["matrix"]["shape"],
+                    "dtype": evidence["matrix"]["dtype"],
+                    "policy_sha256": evidence["policy_sha256"],
+                },
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode("utf-8")
+        )
+        semantic.update(score_raw)
+        evidence["matrix"]["semantic_sha256"] = semantic.hexdigest()
+    body = {
+        key: value
+        for key, value in evidence.items()
+        if key not in {"evidence_sha256", "storage"}
+    }
+    evidence["evidence_sha256"] = canonical_sha256(body)
+
+
 def test_adapter_exposes_realized_p_pre_zero_as_a_defensive_matrix() -> None:
     prepared = _prepared()
     execution = _maskimpute_execution(prepared)
@@ -321,6 +353,50 @@ def test_non_maskimpute_and_noncompleted_attempts_have_explicit_score_rows() -> 
     assert timeout.to_record()["overall"]["metrics"]["auroc"]["status"] == "timeout"
 
 
+def test_unavailable_library_strata_use_the_canonical_tie_aware_partition() -> None:
+    from maskimpute_benchmark.metrics import stratified_zero_score_metrics
+    from maskimpute_benchmark.prezero_evidence import evaluate_prezero_evidence
+
+    library_groups = np.array([1.0] + [2.0] * 8 + [3.0, 4.0, 5.0])
+    observed = np.column_stack((library_groups, np.zeros(library_groups.size)))
+    expected = stratified_zero_score_metrics(
+        np.zeros_like(observed),
+        observed,
+        None,
+        truth_kind="orthogonal_only",
+    )["library_size_quartiles"]
+
+    record = evaluate_prezero_evidence(
+        identity={
+            "run_id": "run-observed-orthogonal",
+            "method_id": "observed",
+            "dataset_id": "dataset-orthogonal",
+            "source_dataset_sha256": "1" * 64,
+            "mechanism": "orthogonal",
+            "biological_id": "draw-01",
+            "technical_view": "replicate-a",
+            "model_seed": None,
+            "configuration_id": "registry-default",
+            "configuration_sha256": "2" * 64,
+            "method_input_sha256": "3" * 64,
+            "retained_cell_ids_sha256": "4" * 64,
+        },
+        method_shape=observed.shape,
+        method_id="observed",
+        execution=None,
+        run_status="completed",
+        run_reason=None,
+        observed=observed,
+        truth=None,
+        truth_kind="orthogonal_only",
+    ).to_record()
+
+    assert [
+        (item["label"], item["lower"], item["upper"], item["n"])
+        for item in record["strata"]["library_size_quartiles"]
+    ] == [(item["label"], item["lower"], item["upper"], item["n"]) for item in expected]
+
+
 def test_all_four_mechanisms_have_exact_or_reason_coded_score_evidence() -> None:
     expected = {
         "symsim": None,
@@ -409,6 +485,83 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
         ),
     )
     with pytest.raises(RunnerContractError, match="p_pre_zero|score.*partial"):
+        store.load(plan)
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "library_label",
+        "truth_bounds",
+        "library_denominator",
+        "truth_denominator",
+        "bounded_metric",
+        "negative_log_loss",
+        "reliability_probability",
+        "reliability_count",
+        "reliability_interval",
+        "too_many_reliability_bins",
+        "policy_extra_field",
+        "policy_semantics",
+        "policy_artifact_checksum",
+        "policy_empty_algorithm",
+    ),
+)
+def test_development_checkpoint_rejects_semantically_invalid_score_payload(
+    tmp_path: Path, case: str
+) -> None:
+    prepared = _prepared()
+    plan = _plan(prepared)
+    store = CheckpointStore(tmp_path / case)
+    store.append(plan, None, _completed_maskimpute(prepared), DevelopmentBudget())
+
+    def mutate(payload: dict[str, object]) -> None:
+        evidence = payload["records"][0]["p_pre_zero_evidence"]
+        library = evidence["strata"]["library_size_quartiles"]
+        truth = evidence["strata"]["truth_expression_bins"]
+        overall = evidence["overall"]
+        if case == "library_label":
+            library[0]["label"] = "Q9"
+        elif case == "truth_bounds":
+            truth[0]["lower"] = 0.5
+        elif case in {"library_denominator", "truth_denominator"}:
+            record = library[0] if case == "library_denominator" else truth[0]
+            record["n"] += 1
+            for metric in record["metrics"].values():
+                metric["n"] = record["n"]
+        elif case == "bounded_metric":
+            overall["metrics"]["brier"]["value"] = 1.25
+        elif case == "negative_log_loss":
+            overall["metrics"]["log_loss"]["value"] = -0.1
+        elif case == "reliability_probability":
+            overall["reliability_bins"][0]["mean_prediction"] = 1.1
+        elif case == "reliability_count":
+            overall["reliability_bins"][0]["n"] = 0
+        elif case == "reliability_interval":
+            overall["reliability_bins"][0]["wilson_lower"] = 0.9
+            overall["reliability_bins"][0]["wilson_upper"] = 0.1
+        elif case == "too_many_reliability_bins":
+            template = dict(overall["reliability_bins"][0])
+            overall["reliability_bins"] = [
+                {**template, "bin": index} for index in range(1, 12)
+            ]
+        elif case == "policy_extra_field":
+            evidence["policy"]["unbound"] = "value"
+        elif case == "policy_semantics":
+            evidence["policy"]["probability_semantics"] = "post_capture_zero"
+        elif case == "policy_artifact_checksum":
+            evidence["policy"]["score_artifact_sha256"] = "not-a-checksum"
+        elif case == "policy_empty_algorithm":
+            evidence["policy"]["calibration_algorithm"] = ""
+        else:  # pragma: no cover - parametrization is fixed above
+            raise AssertionError(case)
+        raw = zlib.decompress(
+            (store.output_dir / evidence["storage"]["path"]).read_bytes()
+        )
+        _rebind_score_payload(payload, score_raw=raw)
+
+    _rewrite_checkpoint(store, mutate)
+    with pytest.raises(RunnerContractError, match="p_pre_zero|score"):
         store.load(plan)
 
 

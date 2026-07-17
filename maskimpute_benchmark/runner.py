@@ -2898,9 +2898,8 @@ def _stable_exception_detail_sha256(error: Exception, domain: bytes) -> str:
 
 def _terminal_reason_component(value: str, fallback: str) -> str:
     normalized = value.replace("-", "_").lower()
-    if (
-        re.fullmatch(r"[a-z][a-z0-9_]*", normalized)
-        and not any(marker in normalized for marker in ("pending", "not_yet", "unverified"))
+    if re.fullmatch(r"[a-z][a-z0-9_]*", normalized) and not any(
+        marker in normalized for marker in ("pending", "not_yet", "unverified")
     ):
         return normalized
     return fallback
@@ -2939,9 +2938,7 @@ def _adapter_failure_reason(
 
     method = _terminal_reason_component(method_id, "method")
     if unavailable and isinstance(error, AdapterUnavailableError):
-        category = _terminal_reason_component(
-            error.reason_code, "adapter_unavailable"
-        )
+        category = _terminal_reason_component(error.reason_code, "adapter_unavailable")
     else:
         error_type = f"{type(error).__module__}.{type(error).__qualname__}"
         category = "adapter_exception_" + _terminal_reason_component(
@@ -5389,7 +5386,7 @@ def execute_adapter_in_spawned_process(
     )
     next_resource_sample = started
 
-    def sample_resources() -> None:
+    def sample_resources() -> str | None:
         nonlocal peak_rss, peak_gpu, rss_provenance, gpu_provenance
         try:
             sample = sampler.sample(
@@ -5397,30 +5394,66 @@ def execute_adapter_in_spawned_process(
                 gpu_required=request.method_spec.resources.gpu_required,
             )
         except Exception:
-            return
+            return None
         if not isinstance(sample, ResourceSample):
-            return
+            return None
         rss_provenance = sample.rss_provenance
         gpu_provenance = sample.gpu_provenance
         if sample.peak_rss_bytes is not None:
             peak_rss = max(peak_rss or 0, sample.peak_rss_bytes)
         if sample.peak_gpu_bytes is not None:
             peak_gpu = max(peak_gpu or 0, sample.peak_gpu_bytes)
+        if peak_rss is not None and peak_rss > request.max_rss_bytes:
+            return "peak_rss_exceeded"
+        if peak_gpu is not None and peak_gpu > request.max_gpu_bytes:
+            return "peak_gpu_exceeded"
+        return None
 
-    sample_resources()
+    live_resource_reason = sample_resources()
     try:
         while time.monotonic() < deadline:
+            if live_resource_reason is not None and process.is_alive():
+                break
             if parent_connection.poll(float(poll_interval_seconds)):
                 message = parent_connection.recv()
                 break
             now = time.monotonic()
             if now >= next_resource_sample:
-                sample_resources()
+                sampled_reason = sample_resources()
+                if sampled_reason is not None and process.is_alive():
+                    live_resource_reason = sampled_reason
                 next_resource_sample = now + (
                     1.0 if request.method_spec.resources.gpu_required else 0.05
                 )
             if not process.is_alive():
                 break
+        if live_resource_reason is not None and process.is_alive():
+            process.terminate()
+            process.join(timeout=2)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=2)
+            elapsed = max(0.0, time.monotonic() - started)
+            if peak_rss is None or (
+                request.method_spec.resources.gpu_required and peak_gpu is None
+            ):
+                return AdapterOutcome.infrastructure_error(
+                    "resource_telemetry_unavailable",
+                    runtime_seconds=elapsed,
+                    peak_rss_bytes=peak_rss or 0,
+                    peak_gpu_bytes=peak_gpu or 0,
+                    rss_measurement=rss_provenance,
+                    gpu_measurement=gpu_provenance,
+                )
+            assert peak_gpu is not None
+            return AdapterOutcome.resource_exceeded(
+                live_resource_reason,
+                runtime_seconds=elapsed,
+                peak_rss_bytes=peak_rss,
+                peak_gpu_bytes=peak_gpu,
+                rss_measurement=rss_provenance,
+                gpu_measurement=gpu_provenance,
+            )
         sample_resources()
         if message is None and parent_connection.poll(0):
             message = parent_connection.recv()

@@ -12,7 +12,12 @@ import zlib
 
 import numpy as np
 
-from .metrics import MetricValue, stratified_zero_score_metrics, zero_score_metrics
+from .metrics import (
+    MetricValue,
+    stratified_zero_score_metrics,
+    tie_aware_groups,
+    zero_score_metrics,
+)
 from .protocol import canonical_sha256
 
 
@@ -28,6 +33,20 @@ _METRIC_NAMES = (
     "calibration_slope",
     "ece",
 )
+_BOUNDED_METRIC_NAMES = frozenset({"auroc", "auprc", "brier", "ece"})
+_POLICY_FIELDS = {
+    "schema_version",
+    "probability_semantics",
+    "evaluation_domain",
+    "score_source",
+    "score_artifact_sha256",
+    "score_input_sha256",
+    "score_config_sha256",
+    "calibration_artifact_sha256",
+    "calibration_algorithm",
+    "calibration_scope",
+    "calibration_equivalence_reason",
+}
 _POLICY_SOURCE_FIELDS = {
     "source": "score_source",
     "score_artifact_sha256": "score_artifact_sha256",
@@ -232,37 +251,7 @@ def _score_report(
             ),
         }
         library_size = np.sum(observed, axis=1)
-        order = np.argsort(library_size, kind="stable")
-        groups: list[np.ndarray] = []
-        start = 0
-        while start < order.size:
-            stop = start + 1
-            while (
-                stop < order.size
-                and library_size[order[stop]] == library_size[order[start]]
-            ):
-                stop += 1
-            groups.append(order[start:stop])
-            start = stop
-        if len(groups) <= 4:
-            cell_chunks = groups
-        else:
-            split_points = [
-                min(
-                    range(1, len(groups)),
-                    key=lambda index: abs(
-                        sum(len(group) for group in groups[:index])
-                        - quartile * len(order) / 4
-                    ),
-                )
-                for quartile in range(1, 4)
-            ]
-            split_points = sorted(set(split_points))
-            cell_chunks = []
-            previous = 0
-            for stop in (*split_points, len(groups)):
-                cell_chunks.append(np.concatenate(groups[previous:stop]))
-                previous = stop
+        cell_chunks = tie_aware_groups(library_size, 4)
         cell_chunks.extend(np.array([], dtype=int) for _ in range(4 - len(cell_chunks)))
         library_records: list[dict[str, object]] = []
         for quartile, cells in enumerate(cell_chunks, start=1):
@@ -516,6 +505,16 @@ def _validate_metric_group(
             raise PreZeroEvidenceError(
                 "completed exact-truth p_pre_zero metric is invalid"
             )
+        else:
+            numeric = float(metric_value)
+            if name in _BOUNDED_METRIC_NAMES and not 0.0 <= numeric <= 1.0:
+                raise PreZeroEvidenceError(
+                    f"p_pre_zero metric {name} must be in [0, 1]"
+                )
+            if name == "log_loss" and numeric < 0.0:
+                raise PreZeroEvidenceError(
+                    "p_pre_zero metric log_loss must be nonnegative"
+                )
     if not isinstance(bins, list):
         raise PreZeroEvidenceError("p_pre_zero reliability bins must be a list")
     if evidence_status != "completed" or truth_reason is not None:
@@ -524,6 +523,17 @@ def _validate_metric_group(
                 "unavailable p_pre_zero evidence cannot have reliability bins"
             )
         return
+    if expected_n == 0:
+        if bins:
+            raise PreZeroEvidenceError(
+                "zero-denominator p_pre_zero metrics cannot have reliability bins"
+            )
+        return
+    if not 1 <= len(bins) <= 10:
+        raise PreZeroEvidenceError(
+            "p_pre_zero reliability bin count must be between one and ten"
+        )
+    total_bin_n = 0
     for index, item in enumerate(bins, start=1):
         if not isinstance(item, Mapping) or set(item) != {
             "bin",
@@ -534,8 +544,13 @@ def _validate_metric_group(
             "wilson_upper",
         }:
             raise PreZeroEvidenceError("p_pre_zero reliability bin is malformed")
-        if item.get("bin") != index or type(item.get("n")) is not int:
+        if (
+            item.get("bin") != index
+            or type(item.get("n")) is not int
+            or item.get("n") <= 0
+        ):
             raise PreZeroEvidenceError("p_pre_zero reliability bin order differs")
+        total_bin_n += item["n"]
         for name in (
             "mean_prediction",
             "observed_fraction",
@@ -551,6 +566,21 @@ def _validate_metric_group(
                 raise PreZeroEvidenceError(
                     "p_pre_zero reliability bin contains an invalid number"
                 )
+            if not 0.0 <= float(nested) <= 1.0:
+                raise PreZeroEvidenceError(
+                    "p_pre_zero reliability bin probability is outside [0, 1]"
+                )
+        observed_fraction = float(item["observed_fraction"])
+        wilson_lower = float(item["wilson_lower"])
+        wilson_upper = float(item["wilson_upper"])
+        if not wilson_lower <= observed_fraction <= wilson_upper:
+            raise PreZeroEvidenceError(
+                "p_pre_zero reliability interval does not contain its observation"
+            )
+    if total_bin_n != expected_n:
+        raise PreZeroEvidenceError(
+            "p_pre_zero reliability denominator differs from its metric group"
+        )
 
 
 def validate_stored_prezero_evidence(
@@ -645,11 +675,35 @@ def validate_stored_prezero_evidence(
             matrix.get("content_sha256"), "p_pre_zero matrix content"
         )
         _require_sha256(matrix.get("semantic_sha256"), "p_pre_zero semantic matrix")
-        if not isinstance(policy, Mapping):
+        if not isinstance(policy, Mapping) or set(policy) != _POLICY_FIELDS:
             raise PreZeroEvidenceError("p_pre_zero score policy is unavailable")
         policy_value = _json_copy(dict(policy))
         if policy_sha256 != canonical_sha256(policy_value):
             raise PreZeroEvidenceError("p_pre_zero policy checksum differs")
+        if (
+            policy.get("schema_version") != 1
+            or policy.get("probability_semantics")
+            != "pre_capture_count_is_zero_given_observed_counts"
+            or policy.get("evaluation_domain") != "observed_zero_entries_only"
+            or policy.get("score_source") not in {"direct", "retained_calibrator"}
+        ):
+            raise PreZeroEvidenceError("p_pre_zero score policy semantics differ")
+        for name in (
+            "score_artifact_sha256",
+            "score_input_sha256",
+            "score_config_sha256",
+            "calibration_artifact_sha256",
+        ):
+            _require_sha256(policy.get(name), f"p_pre_zero policy {name}")
+        for name in (
+            "calibration_algorithm",
+            "calibration_scope",
+            "calibration_equivalence_reason",
+        ):
+            if not isinstance(policy.get(name), str) or not policy.get(name):
+                raise PreZeroEvidenceError(
+                    f"p_pre_zero policy {name} must be a nonempty string"
+                )
         if requires_calibration and policy.get("score_source") != "retained_calibrator":
             raise PreZeroEvidenceError(
                 "calibrated p_pre_zero policy does not use the retained calibrator"
@@ -757,11 +811,17 @@ def validate_stored_prezero_evidence(
         "truth_expression_bins",
     }:
         raise PreZeroEvidenceError("p_pre_zero strata are incomplete")
+    library_records = strata.get("library_size_quartiles")
+    truth_records = strata.get("truth_expression_bins")
+    if not isinstance(library_records, list) or not isinstance(truth_records, list):
+        raise PreZeroEvidenceError("p_pre_zero strata are incomplete")
+    previous_library_upper: float | None = None
+    padded_library_strata = False
     for stratum_type in ("library_size_quartiles", "truth_expression_bins"):
         records = strata.get(stratum_type)
         if not isinstance(records, list) or len(records) != 4:
             raise PreZeroEvidenceError("p_pre_zero strata cardinality differs")
-        for record in records:
+        for index, record in enumerate(records):
             if (
                 not isinstance(record, Mapping)
                 or set(record)
@@ -779,6 +839,52 @@ def validate_stored_prezero_evidence(
                 or record.get("n") < 0
             ):
                 raise PreZeroEvidenceError("p_pre_zero stratum is malformed")
+            if stratum_type == "library_size_quartiles":
+                if record.get("label") != f"Q{index + 1}":
+                    raise PreZeroEvidenceError(
+                        "p_pre_zero library stratum label differs"
+                    )
+                lower = record.get("lower")
+                upper = record.get("upper")
+                if lower is None or upper is None:
+                    if lower is not None or upper is not None:
+                        raise PreZeroEvidenceError(
+                            "p_pre_zero library stratum bounds are partial"
+                        )
+                    padded_library_strata = True
+                else:
+                    if (
+                        padded_library_strata
+                        or type(lower) is not float
+                        or type(upper) is not float
+                        or not np.isfinite(lower)
+                        or not np.isfinite(upper)
+                        or lower < 0.0
+                        or lower > upper
+                        or (
+                            previous_library_upper is not None
+                            and lower <= previous_library_upper
+                        )
+                    ):
+                        raise PreZeroEvidenceError(
+                            "p_pre_zero library stratum bounds differ"
+                        )
+                    previous_library_upper = upper
+            else:
+                expected_truth = (
+                    ("[0,1)", 0.0, 1.0),
+                    ("[1,2)", 1.0, 2.0),
+                    ("[2,4)", 2.0, 4.0),
+                    ("[4,inf)", 4.0, None),
+                )[index]
+                if (
+                    record.get("label"),
+                    record.get("lower"),
+                    record.get("upper"),
+                ) != expected_truth or type(record.get("lower")) is not float:
+                    raise PreZeroEvidenceError(
+                        "p_pre_zero truth-expression stratum bounds differ"
+                    )
             _validate_metric_group(
                 {
                     "metrics": record.get("metrics"),
@@ -791,6 +897,21 @@ def validate_stored_prezero_evidence(
                 ),
                 truth_kind=str(truth_kind),
             )
+    if sum(record["n"] for record in library_records) != observed_zero_count:
+        raise PreZeroEvidenceError(
+            "p_pre_zero library strata do not partition observed zeros"
+        )
+    truth_total = sum(record["n"] for record in truth_records)
+    if truth_kind == "orthogonal_only":
+        allowed_truth_totals = {0}
+    elif evidence_status == "completed":
+        allowed_truth_totals = {observed_zero_count}
+    else:
+        allowed_truth_totals = {0, observed_zero_count}
+    if truth_total not in allowed_truth_totals:
+        raise PreZeroEvidenceError(
+            "p_pre_zero truth strata do not partition their declared truth"
+        )
     return _json_copy(value)
 
 
