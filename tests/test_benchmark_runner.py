@@ -785,12 +785,17 @@ def test_spawned_executor_round_trips_maskimpute_result() -> None:
     assert ablation_result.diagnostics == {"status": "spawned"}
 
 
-def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environments() -> (
-    None
-):
+def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environments(
+    tmp_path: Path,
+) -> None:
     repository = Path.cwd()
     registry = load_method_registry(METHODS_PATH)
-    environments = ExecutionEnvironmentRegistry.fixed(repository)
+    missing_magic = tmp_path / "missing-magic-python"
+    scvi_python = Path(sys.executable)
+    environments = ExecutionEnvironmentRegistry.fixed(
+        repository,
+        {"magic": missing_magic, "scvi": scvi_python},
+    )
     dispatcher = RepositoryAdapterDispatcher(repository, environments)
     authority = _authority(maskimpute_ready=True)
     observed = registry.by_id("observed")
@@ -830,9 +835,7 @@ def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environmen
     unavailable = dispatcher(missing_request)
     assert unavailable.status == "unavailable"
     assert unavailable.reason == "environment_executable_unavailable:magic"
-    assert environments.executable_for("scvi") == (
-        repository / "artifacts/envs/scvi-py312/bin/python"
-    ).absolute()
+    assert environments.executable_for("scvi") == scvi_python.absolute()
 
 
 def test_execution_environment_registry_binds_exact_runtime_lock(
