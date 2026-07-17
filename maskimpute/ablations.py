@@ -671,7 +671,11 @@ def _derive_prezero_execution_policy(
             }
             and development_biological_id == "external"
         )
-        if not (final_identity or external_identity):
+        registered_trajectory_identity = (
+            development_mechanism == "synthetic_trajectory"
+            and development_biological_id == "trajectory-draw-01"
+        )
+        if not (final_identity or external_identity or registered_trajectory_identity):
             raise ValueError(
                 "retained-all-development inference identity is outside authority"
             )
@@ -695,13 +699,18 @@ def _derive_prezero_execution_policy(
     if trusted_spec.score_source == "retained_calibrator":
         observed_zero = counts == 0
         if calibration_usage == "retained_all_development":
-            probability[observed_zero] = verified_calibration.transform(
-                direct_score[observed_zero]
-            )
+            if np.any(observed_zero):
+                probability[observed_zero] = verified_calibration.transform(
+                    direct_score[observed_zero]
+                )
             calibration_scope = (
-                "retained_all_development_for_external_inference"
-                if development_biological_id == "external"
-                else "retained_all_development_for_final_inference"
+                "retained_all_development_for_registered_trajectory_inference"
+                if registered_trajectory_identity
+                else (
+                    "retained_all_development_for_external_inference"
+                    if development_biological_id == "external"
+                    else "retained_all_development_for_final_inference"
+                )
             )
         elif development_mechanism == "symsim":
             probability[observed_zero] = (
@@ -725,12 +734,8 @@ def _derive_prezero_execution_policy(
             calibration_fold_receipt = {
                 "calibrator_algorithm": fold["calibrator"]["algorithm"],
                 "calibrator_sha256": _canonical_payload_sha256(fold["calibrator"]),
-                "held_out_manifest_sha256s": tuple(
-                    fold["held_out_manifest_sha256s"]
-                ),
-                "training_manifest_sha256s": tuple(
-                    fold["training_manifest_sha256s"]
-                ),
+                "held_out_manifest_sha256s": tuple(fold["held_out_manifest_sha256s"]),
+                "training_manifest_sha256s": tuple(fold["training_manifest_sha256s"]),
             }
         else:
             probability[observed_zero] = verified_calibration.transform(

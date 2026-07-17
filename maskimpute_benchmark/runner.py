@@ -25,9 +25,12 @@ import sys
 import tempfile
 import time
 from types import MappingProxyType
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from .trajectory_dataset import RegisteredTrajectoryBinding
 
 from .methods import AdapterExecution, MethodInput, MethodSpec
 from .methods.registry import MethodRegistry
@@ -175,9 +178,7 @@ def _unlink_owned_staging_temporary(
                 )
         descriptor = os.open(
             path,
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
         )
         opened = os.fstat(descriptor)
         if _stable_stat_identity(before) != _stable_stat_identity(opened):
@@ -207,9 +208,7 @@ def _unlink_owned_staging_temporary(
                 )
         directory = os.open(
             parent,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
         )
         try:
             os.fsync(directory)
@@ -1659,7 +1658,7 @@ class DatasetQCAudit:
 class PreparedDataset:
     """Evaluator-private truth plus the sole reusable truth-free method input."""
 
-    binding: DatasetBinding
+    binding: DatasetBinding | RegisteredTrajectoryBinding
     audit: DatasetQCAudit
     method_input: MethodInput
     evaluator_dataset: Any
@@ -1667,7 +1666,7 @@ class PreparedDataset:
 
 def _prepare_dataset_with_exclusions(
     dataset: Any,
-    binding: DatasetBinding,
+    binding: DatasetBinding | RegisteredTrajectoryBinding,
     policy: DatasetQCPolicy,
     excluded_cell_ids: tuple[str, ...] | None,
 ) -> PreparedDataset:
@@ -1683,8 +1682,12 @@ def _prepare_dataset_with_exclusions(
     if not isinstance(policy, DatasetQCPolicy):
         raise TypeError("policy must be a DatasetQCPolicy")
     policy.require_fixed_publication_rule()
-    if not isinstance(binding, DatasetBinding):
-        raise TypeError("binding must be a DatasetBinding")
+    from .trajectory_dataset import RegisteredTrajectoryBinding
+
+    if not isinstance(binding, (DatasetBinding, RegisteredTrajectoryBinding)):
+        raise TypeError(
+            "binding must be a DatasetBinding or RegisteredTrajectoryBinding"
+        )
     if not isinstance(dataset, ad.AnnData):
         raise TypeError("dataset must be an AnnData object")
     try:
@@ -1777,6 +1780,8 @@ def prepare_dataset_for_execution(
     helper remains useful for schema tests and non-paired diagnostic data.
     """
 
+    if not isinstance(binding, DatasetBinding):
+        raise TypeError("binding must be a DatasetBinding")
     return _prepare_dataset_with_exclusions(dataset, binding, policy, None)
 
 
@@ -3007,9 +3012,7 @@ def _derive_prezero_execution_authority(
         for component in (path, *path.parents):
             if component == repository.parent:
                 break
-            if os.path.lexists(component) and stat.S_ISLNK(
-                component.lstat().st_mode
-            ):
+            if os.path.lexists(component) and stat.S_ISLNK(component.lstat().st_mode):
                 raise RunnerContractError(f"{name} path contains a symlink")
         try:
             metadata = path.lstat()
@@ -3100,8 +3103,7 @@ def _derive_prezero_execution_authority(
             != context.count_model_config_sha256
             or manifest.get("dataset_qc_policy_sha256")
             != DatasetQCPolicy.fixed().sha256
-            or manifest.get("manifest_sha256")
-            != canonical_sha256(unsigned_manifest)
+            or manifest.get("manifest_sha256") != canonical_sha256(unsigned_manifest)
         ):
             raise RunnerContractError(
                 "development count-score manifest authority is invalid"
@@ -3164,51 +3166,135 @@ def _derive_prezero_execution_authority(
         authority_payload = _load_strict_json(
             authority_file, "final count-score authority"
         )
-        expected_authority_fields = {
-            "schema_version",
-            "artifact_type",
-            "status",
-            "scope",
-            "frozen_method_sha256",
-            "execution_claim_sha256",
-            "execution_environment_sha256",
-            "dataset_manifest_sha256",
-            "selection_contract_file_sha256",
-            "count_model_config",
-            "count_model_config_sha256",
-            "payload_sha256",
-        }
         unsigned_authority = {
             name: value
             for name, value in authority_payload.items()
             if name != "payload_sha256"
         }
-        if (
-            set(authority_payload) != expected_authority_fields
-            or authority_payload.get("schema_version") != 1
-            or authority_payload.get("artifact_type")
-            != "maskimpute_final_count_score_authority"
-            or authority_payload.get("status") != "ready"
-            or authority_payload.get("scope") != "truth_free_final_inference"
-            or authority_payload.get("dataset_manifest_sha256")
-            != prepared.binding.manifest_sha256
-            or authority_payload.get("count_model_config")
-            != count_model_payload
-            or authority_payload.get("count_model_config_sha256")
-            != context.count_model_config_sha256
-            or authority_payload.get("payload_sha256")
-            != canonical_sha256(unsigned_authority)
-        ):
-            raise RunnerContractError("final count-score authority is invalid")
-        for name in (
-            "frozen_method_sha256",
-            "execution_claim_sha256",
-            "execution_environment_sha256",
-            "selection_contract_file_sha256",
-        ):
-            _require_sha256(
-                authority_payload.get(name), f"final count-score authority {name}"
-            )
+        from .trajectory_dataset import RegisteredTrajectoryBinding
+
+        if isinstance(prepared.binding, RegisteredTrajectoryBinding):
+            binding = prepared.binding
+            expected_authority_fields = {
+                "schema_version",
+                "artifact_type",
+                "status",
+                "scope",
+                "frozen_method_sha256",
+                "primary_final_plan_sha256",
+                "primary_execution_authority_sha256",
+                "primary_count_score_authority_file_sha256",
+                "execution_claim_sha256",
+                "execution_environment_sha256",
+                "trajectory_authority_file_sha256",
+                "trajectory_authority_sha256",
+                "trajectory_binding_sha256",
+                "trajectory_dataset_sha256",
+                "trajectory_dataset_file_sha256",
+                "trajectory_dataset_receipt_sha256",
+                "trajectory_dataset_receipt_file_sha256",
+                "trajectory_method_input_sha256",
+                "trajectory_retained_cell_ids_sha256",
+                "dataset_qc_policy_sha256",
+                "count_model_config",
+                "count_model_config_sha256",
+                "retained_calibration_file_sha256",
+                "payload_sha256",
+            }
+            if (
+                set(authority_payload) != expected_authority_fields
+                or authority_payload.get("schema_version") != 1
+                or authority_payload.get("artifact_type")
+                != "maskimpute_trajectory_count_score_authority"
+                or authority_payload.get("status") != "ready"
+                or authority_payload.get("scope")
+                != "truth_free_registered_trajectory_inference"
+                or entry.mechanism != binding.mechanism
+                or entry.biological_id != binding.biological_id
+                or entry.technical_view != binding.technical_view
+                or entry.source_dataset_sha256 != binding.dataset_sha256
+                or authority_payload.get("trajectory_authority_file_sha256")
+                != binding.authority_file_sha256
+                or authority_payload.get("trajectory_authority_sha256")
+                != binding.authority_sha256
+                or authority_payload.get("trajectory_binding_sha256")
+                != binding.registered_binding_sha256
+                or authority_payload.get("trajectory_dataset_sha256")
+                != binding.dataset_sha256
+                or authority_payload.get("trajectory_dataset_file_sha256")
+                != binding.dataset_file_sha256
+                or authority_payload.get("trajectory_method_input_sha256")
+                != method_input_sha256(prepared.method_input)
+                or authority_payload.get("trajectory_retained_cell_ids_sha256")
+                != prepared.audit.retained_cell_ids_sha256
+                or authority_payload.get("dataset_qc_policy_sha256")
+                != DatasetQCPolicy.fixed().sha256
+                or authority_payload.get("count_model_config") != count_model_payload
+                or authority_payload.get("count_model_config_sha256")
+                != context.count_model_config_sha256
+                or authority_payload.get("retained_calibration_file_sha256")
+                != calibration_file_sha256
+                or authority_payload.get("payload_sha256")
+                != canonical_sha256(unsigned_authority)
+            ):
+                raise RunnerContractError(
+                    "registered trajectory count-score authority is invalid"
+                )
+            for name in (
+                "frozen_method_sha256",
+                "primary_final_plan_sha256",
+                "primary_execution_authority_sha256",
+                "primary_count_score_authority_file_sha256",
+                "execution_claim_sha256",
+                "execution_environment_sha256",
+                "trajectory_dataset_receipt_sha256",
+                "trajectory_dataset_receipt_file_sha256",
+            ):
+                _require_sha256(
+                    authority_payload.get(name),
+                    f"trajectory count-score authority {name}",
+                )
+        else:
+            expected_authority_fields = {
+                "schema_version",
+                "artifact_type",
+                "status",
+                "scope",
+                "frozen_method_sha256",
+                "execution_claim_sha256",
+                "execution_environment_sha256",
+                "dataset_manifest_sha256",
+                "selection_contract_file_sha256",
+                "count_model_config",
+                "count_model_config_sha256",
+                "payload_sha256",
+            }
+            if (
+                set(authority_payload) != expected_authority_fields
+                or authority_payload.get("schema_version") != 1
+                or authority_payload.get("artifact_type")
+                != "maskimpute_final_count_score_authority"
+                or authority_payload.get("status") != "ready"
+                or authority_payload.get("scope") != "truth_free_final_inference"
+                or authority_payload.get("dataset_manifest_sha256")
+                != prepared.binding.manifest_sha256
+                or authority_payload.get("count_model_config") != count_model_payload
+                or authority_payload.get("count_model_config_sha256")
+                != context.count_model_config_sha256
+                or authority_payload.get("payload_sha256")
+                != canonical_sha256(unsigned_authority)
+            ):
+                raise RunnerContractError("final count-score authority is invalid")
+            for name in (
+                "frozen_method_sha256",
+                "execution_claim_sha256",
+                "execution_environment_sha256",
+                "selection_contract_file_sha256",
+            ):
+                _require_sha256(
+                    authority_payload.get(name),
+                    f"final count-score authority {name}",
+                )
         score = fit_p_pre_zero_count_model(
             prepared.method_input.counts,
             prepared.method_input.obs_ids,
@@ -3221,9 +3307,7 @@ def _derive_prezero_execution_authority(
         raise RunnerContractError(
             "deterministic score configuration differs from execution authority"
         )
-    registry = load_ablation_registry(
-        repository / "study/ablations.json"
-    )
+    registry = load_ablation_registry(repository / "study/ablations.json")
     score_spec = (
         registry.reference
         if entry.requires_calibration
@@ -3514,9 +3598,7 @@ def evaluate_adapter_outcome(
     )
     calibration_receipt = outcome.calibration_fold_receipt
     method_input_digest = method_input_sha256(prepared.method_input)
-    score_observed, score_truth, score_truth_kind = _prezero_evaluator_targets(
-        prepared
-    )
+    score_observed, score_truth, score_truth_kind = _prezero_evaluator_targets(prepared)
     try:
         p_pre_zero_evidence = evaluate_prezero_evidence(
             identity={
@@ -3817,9 +3899,9 @@ class CheckpointStore:
             )
             self._prezero_authority_cache[key] = cached
         shape, probability_bytes, policy_bytes = cached
-        detached_probability = np.frombuffer(
-            probability_bytes, dtype="<f8"
-        ).reshape(shape).copy(order="C")
+        detached_probability = (
+            np.frombuffer(probability_bytes, dtype="<f8").reshape(shape).copy(order="C")
+        )
         detached_probability.setflags(write=False)
         detached_policy = json.loads(
             policy_bytes.decode("utf-8"),
@@ -3890,11 +3972,7 @@ class CheckpointStore:
             f"{base}.stdout",
             f"{base}.stderr",
             *(() if attempt.native_output is None else (f"{base}.native-f64",)),
-            *(
-                ()
-                if attempt.evaluator_output is None
-                else (f"{base}.log2-cp10k-f64",)
-            ),
+            *(() if attempt.evaluator_output is None else (f"{base}.log2-cp10k-f64",)),
             *(
                 ()
                 if attempt.p_pre_zero_evidence.raw_matrix_bytes is None
@@ -3978,9 +4056,7 @@ class CheckpointStore:
             or metadata.st_uid != os.geteuid()
             or metadata.st_nlink != 1
         ):
-            raise RunnerContractError(
-                f"{name} must be an owned unique regular file"
-            )
+            raise RunnerContractError(f"{name} must be an owned unique regular file")
 
     def _remove_stale_publication_temporaries(
         self,
@@ -4005,9 +4081,7 @@ class CheckpointStore:
             / f"{position:08d}.json"
             for position in range(1, len(plan.entries) + 1)
         }
-        transaction_prefixes = {
-            name: f".{name}." for name in transaction_files
-        }
+        transaction_prefixes = {name: f".{name}." for name in transaction_files}
         run_files = {
             PurePosixPath(relative).name: self.output_dir / relative
             for entry in plan.entries
@@ -4201,14 +4275,10 @@ class CheckpointStore:
                 "checkpoint transaction prefix differs from its plan"
             )
         checksum_body = {
-            key: nested
-            for key, nested in payload.items()
-            if key != "checkpoint_sha256"
+            key: nested for key, nested in payload.items() if key != "checkpoint_sha256"
         }
         if payload.get("checkpoint_sha256") != canonical_sha256(checksum_body):
-            raise RunnerContractError(
-                "checkpoint transaction prefix checksum differs"
-            )
+            raise RunnerContractError("checkpoint transaction prefix checksum differs")
         records = payload.get("records")
         if not isinstance(records, list) or len(records) > len(plan.entries):
             raise RunnerContractError(
@@ -4233,11 +4303,7 @@ class CheckpointStore:
                 )
             run = record.get("run")
             evidence = record.get("p_pre_zero_evidence")
-            storage = (
-                evidence.get("storage")
-                if isinstance(evidence, Mapping)
-                else None
-            )
+            storage = evidence.get("storage") if isinstance(evidence, Mapping) else None
             if (
                 not isinstance(run, Mapping)
                 or run.get("run_id") != entry.run_id
@@ -4320,9 +4386,7 @@ class CheckpointStore:
                     and self._stat_identity(before) != expected_identity
                 )
             ):
-                raise RunnerContractError(
-                    f"{name} is not an owned unique closed file"
-                )
+                raise RunnerContractError(f"{name} is not an owned unique closed file")
             descriptor = os.open(
                 path,
                 os.O_RDONLY
@@ -4411,9 +4475,7 @@ class CheckpointStore:
                 else {}
             )
             artifact_paths = (
-                intent.get("artifact_paths")
-                if isinstance(intent, Mapping)
-                else None
+                intent.get("artifact_paths") if isinstance(intent, Mapping) else None
             )
             allowed = self._allowed_transaction_artifact_paths(entry)
             required = {
@@ -4724,9 +4786,7 @@ class CheckpointStore:
                 execution_authority=plan.execution_context,
                 calibration_usage="development_holdout",
             )
-            self._prezero_authority_cache.update(
-                staging._prezero_authority_cache
-            )
+            self._prezero_authority_cache.update(staging._prezero_authority_cache)
         self._publish_transaction_intent(
             plan,
             len(records),
@@ -4938,9 +4998,7 @@ class CheckpointStore:
                 )
         if run.get("status") not in _OUTCOME_STATUSES:
             raise RunnerContractError("checkpoint run status is invalid")
-        authoritative_method_input_sha256 = method_input_sha256(
-            prepared.method_input
-        )
+        authoritative_method_input_sha256 = method_input_sha256(prepared.method_input)
         for name, expected in (
             ("method_input_sha256", authoritative_method_input_sha256),
             ("dataset_qc_policy_sha256", expected_dataset_qc_policy_sha256),
@@ -5112,9 +5170,7 @@ class CheckpointStore:
                 ),
                 requires_count_score=entry.requires_count_score,
                 requires_calibration=entry.requires_calibration,
-                expected_calibration_file_sha256=(
-                    expected_calibration_file_sha256
-                ),
+                expected_calibration_file_sha256=(expected_calibration_file_sha256),
                 compressed=compressed_p_pre_zero,
                 observed=observed,
                 truth=truth,
@@ -6024,6 +6080,61 @@ class RepositoryAdapterDispatcher:
         calibration_path = self.repository_root / request.retained_calibration_path
         if _file_sha256(calibration_path) != request.retained_calibration_sha256:
             return AdapterOutcome.failed("retained_calibration_file_checksum_mismatch")
+        trajectory_identity = (
+            request.mechanism == "synthetic_trajectory"
+            or request.biological_id == "trajectory-draw-01"
+        )
+        if trajectory_identity:
+            if (
+                request.mechanism != "synthetic_trajectory"
+                or request.biological_id != "trajectory-draw-01"
+                or request.technical_view != "deterministic-count-allocation"
+                or request.dataset_id != "trajectory-exact-latent-01"
+                or request.count_score_manifest_path is None
+                or request.count_score_manifest_sha256 is None
+            ):
+                return AdapterOutcome.failed(
+                    "registered_trajectory_identity_outside_authority"
+                )
+            score_authority_path = (
+                self.repository_root / request.count_score_manifest_path
+            )
+            if (
+                _file_sha256(score_authority_path)
+                != request.count_score_manifest_sha256
+            ):
+                return AdapterOutcome.failed(
+                    "trajectory_count_score_authority_checksum_mismatch"
+                )
+            try:
+                score_authority = _load_strict_json(
+                    score_authority_path,
+                    "trajectory count-score authority",
+                )
+                score_body = {
+                    key: value
+                    for key, value in score_authority.items()
+                    if key != "payload_sha256"
+                }
+                if (
+                    score_authority.get("artifact_type")
+                    != "maskimpute_trajectory_count_score_authority"
+                    or score_authority.get("scope")
+                    != "truth_free_registered_trajectory_inference"
+                    or score_authority.get("trajectory_dataset_sha256")
+                    != request.method_input.source_dataset_sha256
+                    or score_authority.get("trajectory_method_input_sha256")
+                    != request.method_input_sha256
+                    or score_authority.get("count_model_config_sha256")
+                    != request.count_model_config_sha256
+                    or score_authority.get("payload_sha256")
+                    != canonical_sha256(score_body)
+                ):
+                    raise RunnerContractError(
+                        "trajectory count-score authority differs from request"
+                    )
+            except (OSError, RunnerContractError, ValueError):
+                return AdapterOutcome.failed("trajectory_count_score_authority_invalid")
         from maskimpute import MaskImputeConfig, PreZeroCountModelConfig
         from maskimpute.calibration import load_calibration_artifact
         from maskimpute_benchmark.methods.maskimpute import (

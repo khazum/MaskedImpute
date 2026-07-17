@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+from pathlib import PurePosixPath
 import re
 from types import MappingProxyType
-from typing import Mapping
+from typing import Any, Mapping
 
 import anndata as ad
 import numpy as np
@@ -77,6 +78,100 @@ class TrajectoryAuthority:
     seed: int
     source_id: str
     technical_view: str
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredTrajectoryBinding:
+    """Truthful file and registered-authority binding for trajectory execution."""
+
+    schema_version: str
+    dataset_id: str
+    mechanism: str
+    biological_id: str
+    technical_view: str
+    condition: str
+    draw: int
+    cells: int
+    genes: int
+    source_id: str
+    root_cell_id: str
+    seed: int
+    dataset_sha256: str
+    dataset_file_path: str
+    dataset_file_sha256: str
+    authority_path: str
+    authority_file_sha256: str
+    authority_sha256: str
+    registered_binding_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "trajectory-execution-dataset-binding-v1":
+            raise TrajectoryAuthorityError(
+                "trajectory execution binding schema differs"
+            )
+        for name in (
+            "dataset_sha256",
+            "dataset_file_sha256",
+            "authority_file_sha256",
+            "authority_sha256",
+            "registered_binding_sha256",
+        ):
+            _digest(getattr(self, name), f"trajectory binding {name}")
+        for name in (
+            "dataset_id",
+            "mechanism",
+            "biological_id",
+            "technical_view",
+            "condition",
+            "source_id",
+            "root_cell_id",
+        ):
+            _text(getattr(self, name), f"trajectory binding {name}")
+        for name in ("draw", "cells", "genes", "seed"):
+            _positive_integer(getattr(self, name), f"trajectory binding {name}")
+        if (
+            self.dataset_id != REGISTERED_TRAJECTORY_DATASET_ID
+            or self.mechanism != "synthetic_trajectory"
+            or self.cells != 2_700
+            or self.genes != 120
+        ):
+            raise TrajectoryAuthorityError(
+                "trajectory execution binding identity differs"
+            )
+        for value, expected, name in (
+            (
+                self.dataset_file_path,
+                "results/trajectory/dataset/evaluator.h5ad",
+                "dataset file",
+            ),
+            (
+                self.authority_path,
+                "study/trajectory_panel.json",
+                "authority file",
+            ),
+        ):
+            relative = PurePosixPath(value)
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or not relative.parts
+                or relative.as_posix() != expected
+            ):
+                raise TrajectoryAuthorityError(
+                    f"trajectory execution {name} path differs"
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryPreparedDataset:
+    """Registered authority, persisted evaluator data, and truth-free input."""
+
+    authority: TrajectoryAuthority
+    binding: RegisteredTrajectoryBinding
+    prepared: Any
+    receipt: Mapping[str, object]
+    receipt_file_path: str
+    receipt_file_sha256: str
 
 
 def default_trajectory_authority_path() -> Path:
@@ -324,8 +419,10 @@ def generate_registered_trajectory_dataset(
 __all__ = [
     "FOUR_RECONSTRUCTION_MECHANISMS",
     "REGISTERED_TRAJECTORY_DATASET_ID",
+    "RegisteredTrajectoryBinding",
     "TrajectoryAuthority",
     "TrajectoryAuthorityError",
+    "TrajectoryPreparedDataset",
     "default_trajectory_authority_path",
     "generate_registered_trajectory_dataset",
     "load_trajectory_authority",

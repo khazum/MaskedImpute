@@ -236,6 +236,623 @@ def test_final_plan_uses_three_fixed_seeds_and_retains_nonrun_denominator() -> N
     assert len(plan.plan_sha256) == 64
 
 
+def test_trajectory_plan_is_exactly_one_registered_supplementary_denominator(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        build_trajectory_execution_plan,
+        materialize_prepared_trajectory_dataset,
+    )
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    registered = materialize_prepared_trajectory_dataset(repository, round_dir)
+    registry = _registry()
+
+    plan = build_trajectory_execution_plan(
+        _receipt(registry),
+        registry,
+        registered,
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+        primary_final_plan_sha256="a" * 64,
+    )
+
+    assert plan.scope == "supplementary_trajectory"
+    assert {entry.run.dataset_id for entry in plan.entries} == {
+        registered.binding.dataset_id
+    }
+    by_method: dict[str, list[object]] = {}
+    for entry in plan.entries:
+        by_method.setdefault(entry.run.method_id, []).append(entry)
+        assert entry.run.run_id.startswith("trajectory-")
+        spec = registry.by_id(entry.run.method_id)
+        assert spec.resources.timeout_seconds > 0
+    assert len(by_method["observed"]) == 1
+    assert len(by_method["maskimpute"]) == 3
+    assert {entry.run.model_seed for entry in by_method["maskimpute"]} == {42, 43, 44}
+    assert len(by_method["magic"]) == 3
+    assert len(by_method["scimpute"]) == 1
+    assert by_method["scimpute"][0].action == "not_applicable"
+    assert plan.input_hashes["trajectory_authority_sha256"] == (
+        registered.authority.authority_sha256
+    )
+    assert plan.input_hashes["trajectory_binding_sha256"] == (
+        registered.authority.binding_sha256
+    )
+    assert plan.input_hashes["trajectory_dataset_sha256"] == (
+        registered.binding.dataset_sha256
+    )
+    assert (
+        plan.input_hashes["trajectory_dataset_receipt_sha256"]
+        == (registered.receipt["receipt_sha256"])
+    )
+    assert plan.input_hashes["primary_final_plan_sha256"] == "a" * 64
+
+
+def test_trajectory_plan_rejects_nearby_registered_identity(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_trajectory_execution_plan,
+        materialize_prepared_trajectory_dataset,
+    )
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    registered = materialize_prepared_trajectory_dataset(repository, round_dir)
+    nearby = replace(
+        registered,
+        authority=replace(
+            registered.authority,
+            source_id="registered-synthetic-trajectory-v2",
+        ),
+    )
+    registry = _registry()
+
+    with pytest.raises(FinalRunnerContractError, match="trajectory.*identity"):
+        build_trajectory_execution_plan(
+            _receipt(registry),
+            registry,
+            nearby,
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            execution_authority_sha256="9" * 64,
+            primary_final_plan_sha256="a" * 64,
+        )
+
+
+def test_trajectory_execution_authority_is_separate_and_names_registered_input(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        materialize_prepared_trajectory_dataset,
+        materialize_trajectory_execution_authority,
+    )
+    from maskimpute_benchmark.runner import (
+        ExecutionAuthorityContext,
+        method_input_sha256,
+    )
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    registered = materialize_prepared_trajectory_dataset(repository, round_dir)
+    calibration_path = repository / "primary/retained_calibration.json"
+    score_path = repository / "primary/count_score_authority.json"
+    calibration_path.parent.mkdir()
+    calibration_path.write_bytes(b"{}\n")
+    score_path.write_bytes(b"{}\n")
+    frozen = _receipt(_registry())
+    base = frozen["selected_configuration"]["hyperparameters"]
+    count = {"n_folds": 2}
+    primary = ExecutionAuthorityContext(
+        authority_sha256="9" * 64,
+        base_configuration_json=json.dumps(base, separators=(",", ":"), sort_keys=True),
+        base_configuration_sha256=canonical_sha256(base),
+        count_model_config_json=json.dumps(
+            count, separators=(",", ":"), sort_keys=True
+        ),
+        count_model_config_sha256=canonical_sha256(count),
+        count_score_manifest_path="primary/count_score_authority.json",
+        count_score_manifest_sha256=hashlib.sha256(score_path.read_bytes()).hexdigest(),
+        retained_calibration_path="primary/retained_calibration.json",
+        retained_calibration_sha256=hashlib.sha256(
+            calibration_path.read_bytes()
+        ).hexdigest(),
+    )
+    authority = materialize_trajectory_execution_authority(
+        repository,
+        round_dir,
+        frozen,
+        registered,
+        primary,
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        primary_final_plan_sha256="a" * 64,
+    )
+    resumed = materialize_trajectory_execution_authority(
+        repository,
+        round_dir,
+        frozen,
+        registered,
+        primary,
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        primary_final_plan_sha256="a" * 64,
+    )
+
+    assert resumed == authority
+    assert authority != primary
+    assert authority.count_score_manifest_path.endswith(
+        "results/trajectory/execution_authority/count_score_authority.json"
+    )
+    assert authority.retained_calibration_path.endswith(
+        "results/trajectory/execution_authority/retained_calibration.json"
+    )
+    score = json.loads(
+        (repository / authority.count_score_manifest_path).read_text(encoding="utf-8")
+    )
+    assert score["artifact_type"] == "maskimpute_trajectory_count_score_authority"
+    assert score["scope"] == "truth_free_registered_trajectory_inference"
+    assert score["trajectory_authority_sha256"] == (registered.binding.authority_sha256)
+    assert score["trajectory_binding_sha256"] == (
+        registered.binding.registered_binding_sha256
+    )
+    assert score["trajectory_method_input_sha256"] == method_input_sha256(
+        registered.prepared.method_input
+    )
+
+
+def test_trajectory_score_policy_rederives_only_for_registered_identity(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        build_final_execution_plan,
+        build_trajectory_execution_plan,
+        materialize_prepared_trajectory_dataset,
+        materialize_trajectory_execution_authority,
+    )
+    from maskimpute_benchmark.runner import _derive_prezero_execution_authority
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    frozen = _receipt(_registry())
+    primary_plan = build_final_execution_plan(
+        frozen,
+        _registry(),
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    primary_entry = next(
+        entry for entry in primary_plan.entries if entry.run.method_id == "maskimpute"
+    )
+    primary_prepared = _unavailable_prepared(
+        primary_entry,
+        count_model_ready=True,
+    )
+    primary_authority, _calibration = _write_real_final_score_authority(
+        repository,
+        primary_prepared,
+    )
+    base = frozen["selected_configuration"]["hyperparameters"]
+    primary_authority = replace(
+        primary_authority,
+        base_configuration_json=json.dumps(base, separators=(",", ":"), sort_keys=True),
+        base_configuration_sha256=canonical_sha256(base),
+    )
+    registered = materialize_prepared_trajectory_dataset(repository, round_dir)
+    trajectory_authority = materialize_trajectory_execution_authority(
+        repository,
+        round_dir,
+        frozen,
+        registered,
+        primary_authority,
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        primary_final_plan_sha256=primary_plan.plan_sha256,
+    )
+    trajectory_plan = build_trajectory_execution_plan(
+        frozen,
+        _registry(),
+        registered,
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256=trajectory_authority.authority_sha256,
+        primary_final_plan_sha256=primary_plan.plan_sha256,
+    )
+    entry = next(
+        value
+        for value in trajectory_plan.entries
+        if value.run.method_id == "maskimpute"
+    )
+
+    probability, policy = _derive_prezero_execution_authority(
+        registered.prepared,
+        entry.run,
+        trajectory_authority,
+        calibration_usage="retained_all_development",
+        repository=repository,
+    )
+
+    assert probability.shape == registered.prepared.method_input.shape
+    assert policy["calibration_scope"] == (
+        "retained_all_development_for_registered_trajectory_inference"
+    )
+    with pytest.raises(Exception, match="trajectory|authority|identity"):
+        _derive_prezero_execution_authority(
+            registered.prepared,
+            replace(entry.run, mechanism="synthetic-trajectory"),
+            trajectory_authority,
+            calibration_usage="retained_all_development",
+            repository=repository,
+        )
+
+
+def _trajectory_store_inputs(tmp_path: Path):
+    from maskimpute_benchmark.final_runner import (
+        build_trajectory_execution_plan,
+        materialize_prepared_trajectory_dataset,
+        materialize_trajectory_execution_authority,
+    )
+    from maskimpute_benchmark.runner import ExecutionAuthorityContext
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    registered = materialize_prepared_trajectory_dataset(repository, round_dir)
+    frozen = _receipt(_registry())
+    base = frozen["selected_configuration"]["hyperparameters"]
+    count = {"n_folds": 2}
+    calibration_path = repository / "primary/retained_calibration.json"
+    score_path = repository / "primary/count_score_authority.json"
+    calibration_path.parent.mkdir()
+    calibration_path.write_bytes(b"{}\n")
+    score_path.write_bytes(b"{}\n")
+    primary = ExecutionAuthorityContext(
+        authority_sha256="9" * 64,
+        base_configuration_json=json.dumps(base, separators=(",", ":"), sort_keys=True),
+        base_configuration_sha256=canonical_sha256(base),
+        count_model_config_json=json.dumps(
+            count, separators=(",", ":"), sort_keys=True
+        ),
+        count_model_config_sha256=canonical_sha256(count),
+        count_score_manifest_path="primary/count_score_authority.json",
+        count_score_manifest_sha256=hashlib.sha256(score_path.read_bytes()).hexdigest(),
+        retained_calibration_path="primary/retained_calibration.json",
+        retained_calibration_sha256=hashlib.sha256(
+            calibration_path.read_bytes()
+        ).hexdigest(),
+    )
+    authority = materialize_trajectory_execution_authority(
+        repository,
+        round_dir,
+        frozen,
+        registered,
+        primary,
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        primary_final_plan_sha256="a" * 64,
+    )
+    plan = build_trajectory_execution_plan(
+        frozen,
+        _registry(),
+        registered,
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256=authority.authority_sha256,
+        primary_final_plan_sha256="a" * 64,
+    )
+    return repository, round_dir, registered, authority, plan
+
+
+def test_trajectory_result_store_is_separate_resumable_and_complete(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        FinalRunnerContractError,
+    )
+
+    repository, round_dir, registered, authority, plan = _trajectory_store_inputs(
+        tmp_path
+    )
+    output = round_dir / "results/trajectory/execution"
+    prepared = {registered.binding.dataset_id: registered.prepared}
+    with pytest.raises(FinalRunnerContractError, match="authority"):
+        FinalResultStore(
+            output,
+            plan,
+            prepared,
+            _authority(),
+            authority_repository=repository,
+        )
+    store = FinalResultStore(
+        output,
+        plan,
+        prepared,
+        authority,
+        authority_repository=repository,
+    )
+
+    for entry in plan.entries:
+        store.append(
+            entry,
+            _unavailable_attempt(entry, prepared=registered.prepared),
+        )
+    manifest = store.finalize()
+    resumed = FinalResultStore(
+        output,
+        plan,
+        prepared,
+        authority,
+        authority_repository=repository,
+    )
+
+    assert manifest["scope"] == "supplementary_trajectory"
+    assert manifest["recorded_run_count"] == len(plan.entries)
+    assert len(resumed.load_records()) == len(plan.entries)
+    assert resumed.load_manifest() == manifest
+    assert not (round_dir / "results/final/execution").exists()
+
+
+def test_trajectory_manifest_publication_is_resumable_after_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.final_runner import FinalResultStore
+
+    repository, round_dir, registered, authority, plan = _trajectory_store_inputs(
+        tmp_path
+    )
+    output = round_dir / "results/trajectory/execution"
+    prepared = {registered.binding.dataset_id: registered.prepared}
+    store = FinalResultStore(
+        output,
+        plan,
+        prepared,
+        authority,
+        authority_repository=repository,
+    )
+    for entry in plan.entries:
+        store.append(
+            entry,
+            _unavailable_attempt(entry, prepared=registered.prepared),
+        )
+
+    def interrupt_after_manifest() -> dict[str, object]:
+        raise RuntimeError("interrupted after trajectory manifest")
+
+    monkeypatch.setattr(store, "load_manifest", interrupt_after_manifest)
+    with pytest.raises(RuntimeError, match="after trajectory manifest"):
+        store.finalize()
+    assert store.manifest_path.is_file()
+    resumed = FinalResultStore(
+        output,
+        plan,
+        prepared,
+        authority,
+        authority_repository=repository,
+    )
+    assert resumed.load_manifest()["status"] == "completed"
+
+
+def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.methods as methods
+    import maskimpute_benchmark.publication_freeze as publication_freeze
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        _owned_final_result_file_manifest,
+        _rederive_trajectory_evidence_before_receipt,
+        _trajectory_evaluation_evidence,
+        execute_trajectory_plan,
+        final_result_file_manifest,
+        validate_trajectory_execution_for_evaluation,
+    )
+    from maskimpute_benchmark.runner import AdapterOutcome
+
+    repository, round_dir, registered, authority, plan = _trajectory_store_inputs(
+        tmp_path
+    )
+    prepared = {registered.binding.dataset_id: registered.prepared}
+    store = FinalResultStore(
+        round_dir / "results/trajectory/execution",
+        plan,
+        prepared,
+        authority,
+        authority_repository=repository,
+    )
+    calls: list[str] = []
+    publications = 0
+
+    def executor(request):
+        calls.append(request.method_spec.id)
+        return AdapterOutcome.unavailable("test_terminal_unavailable")
+
+    def published() -> None:
+        nonlocal publications
+        publications += 1
+
+    manifest = execute_trajectory_plan(
+        plan,
+        _registry(),
+        prepared,
+        authority,
+        executor,
+        store,
+        on_record_published=published,
+    )
+    validation = validate_trajectory_execution_for_evaluation(
+        plan,
+        store.load_records(),
+    )
+    cumulative = _owned_final_result_file_manifest(round_dir)["result_files"]
+    evidence = _trajectory_evaluation_evidence(
+        round_dir,
+        plan,
+        registered,
+        authority,
+        store,
+        validation,
+        cumulative,
+    )
+
+    assert len(calls) == sum(entry.action == "execute" for entry in plan.entries)
+    assert publications == 1
+    assert manifest["scope"] == "supplementary_trajectory"
+    assert validation["scope"] == "supplementary_trajectory"
+    assert validation["planned_run_count"] == len(plan.entries)
+    assert validation["not_applicable_count"] == sum(
+        entry.action == "not_applicable" for entry in plan.entries
+    )
+    assert evidence["execution_validation"] == validation
+    assert {row["path"] for row in evidence["result_files"]} == {
+        row["path"]
+        for row in cumulative
+        if row["path"].startswith("results/trajectory/")
+    }
+    monkeypatch.setattr(
+        publication_freeze,
+        "validate_frozen_method",
+        lambda _repository: _receipt(_registry()),
+    )
+    monkeypatch.setattr(
+        methods,
+        "load_method_registry",
+        lambda _path: _registry(),
+    )
+    assert (
+        _rederive_trajectory_evidence_before_receipt(
+            repository,
+            round_dir,
+            evidence,
+            cumulative,
+            primary_final_plan_sha256="a" * 64,
+        )
+        == evidence
+    )
+    stdout = next(
+        round_dir / row["path"]
+        for row in evidence["result_files"]
+        if row["path"].endswith(".stdout")
+    )
+    stdout.write_bytes(stdout.read_bytes() + b"changed-before-receipt")
+    fresh_files = final_result_file_manifest(round_dir)["result_files"]
+    with pytest.raises(Exception, match="record|artifact|changed"):
+        _rederive_trajectory_evidence_before_receipt(
+            repository,
+            round_dir,
+            evidence,
+            fresh_files,
+            primary_final_plan_sha256="a" * 64,
+        )
+
+
+def test_combined_preflight_binds_primary_trajectory_scaling_with_one_reserve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.scaling as scaling
+    from maskimpute_benchmark.final_runner import (
+        _FINAL_STORAGE_RESERVE_BYTES,
+        _validate_combined_storage_capacity,
+        build_final_execution_plan,
+    )
+
+    _repository, round_dir, _registered, _authority, trajectory = (
+        _trajectory_store_inputs(tmp_path)
+    )
+    primary = build_final_execution_plan(
+        _receipt(_registry()),
+        _registry(),
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    scaling_receipt = {
+        "schema": "maskimpute-scaling-storage-preflight-v1",
+        "required_free_bytes": 123_456,
+        "receipt_sha256": "b" * 64,
+    }
+    monkeypatch.setattr(
+        scaling,
+        "scaling_storage_preflight",
+        lambda _authority: scaling_receipt,
+    )
+    observed_free = 10**15
+    monkeypatch.setattr(
+        "maskimpute_benchmark.final_runner.shutil.disk_usage",
+        lambda _path: type("Usage", (), {"free": observed_free})(),
+    )
+
+    receipt = _validate_combined_storage_capacity(
+        primary,
+        trajectory,
+        object(),
+        round_dir,
+    )
+
+    assert receipt["scaling"] == scaling_receipt
+    assert receipt["reserve_bytes"] == _FINAL_STORAGE_RESERVE_BYTES
+    assert receipt["required_free_bytes"] == (
+        receipt["primary"]["required_free_bytes"]
+        + receipt["trajectory"]["required_free_bytes"]
+        + scaling_receipt["required_free_bytes"]
+        + _FINAL_STORAGE_RESERVE_BYTES
+    )
+    assert receipt["observed_free_bytes"] == observed_free
+
+
 def test_final_plan_rejects_runtime_or_method_receipt_tampering() -> None:
     from maskimpute_benchmark.final_runner import (
         FinalRunnerContractError,
@@ -513,16 +1130,12 @@ def _completed_attempt(
             score_diagnostics = {
                 "source": "retained_calibrator",
                 "score_artifact_sha256": "a" * 64,
-                "score_input_sha256": _counts_sha256(
-                    prepared.method_input.counts
-                ),
+                "score_input_sha256": _counts_sha256(prepared.method_input.counts),
                 "score_config_sha256": _authority().count_model_config_sha256,
                 "calibration_file_sha256": "b" * 64,
                 "calibration_payload_sha256": "c" * 64,
                 "retained_calibrator": "identity",
-                "calibration_scope": (
-                    "retained_all_development_for_final_inference"
-                ),
+                "calibration_scope": ("retained_all_development_for_final_inference"),
                 "equivalence_reason": (
                     "retained_identity_calibrator_equals_direct_score"
                 ),
@@ -664,9 +1277,7 @@ def _write_real_final_score_authority(repository: Path, prepared):
     base = {"latent_dim": 2}
     context = ExecutionAuthorityContext(
         authority_sha256="9" * 64,
-        base_configuration_json=json.dumps(
-            base, separators=(",", ":"), sort_keys=True
-        ),
+        base_configuration_json=json.dumps(base, separators=(",", ":"), sort_keys=True),
         base_configuration_sha256=canonical_sha256(base),
         count_model_config_json=json.dumps(
             count_payload, separators=(",", ":"), sort_keys=True
@@ -768,7 +1379,6 @@ def _final_store(
 def test_final_result_store_is_immutable_resumable_and_manifest_complete(
     tmp_path: Path,
 ) -> None:
-
     registry = _registry()
     plan = build_plan = __import__(
         "maskimpute_benchmark.final_runner", fromlist=["build_final_execution_plan"]
@@ -1433,9 +2043,7 @@ def test_final_conversion_terminal_score_remains_exactly_authorized(
         evidence["overall"], evidence["strata"] = _score_report(
             replacement,
             np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
-            np.asarray(
-                prepared.evaluator_dataset.layers["truth"], dtype=np.float64
-            ),
+            np.asarray(prepared.evaluator_dataset.layers["truth"], dtype=np.float64),
             truth_kind="exact_pre_capture",
             unavailable_status="unavailable",
             unavailable_reason=evidence["reason"],
@@ -2466,6 +3074,69 @@ def test_interrupted_maskimpute_transaction_removes_realized_score_artifact(
     assert not (output / "runs").exists()
 
 
+def test_interrupted_trajectory_transactions_recover_before_and_after_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalResultStore,
+        _recover_interrupted_trajectory_transactions,
+    )
+
+    repository, round_dir, registered, authority, plan = _trajectory_store_inputs(
+        tmp_path
+    )
+    output = round_dir / "results/trajectory/execution"
+    prepared = {registered.binding.dataset_id: registered.prepared}
+    store = FinalResultStore(
+        output,
+        plan,
+        prepared,
+        authority,
+        authority_repository=repository,
+    )
+    entry = plan.entries[0]
+    attempt = _unavailable_attempt(entry, prepared=registered.prepared)
+    original = store._stored_final_attempt
+
+    def interrupt_before_record(attempt_value, *, artifacts=None):
+        stored = original(attempt_value, artifacts=artifacts)
+        if artifacts is None:
+            raise RuntimeError("trajectory interrupted before record")
+        return stored
+
+    monkeypatch.setattr(store, "_stored_final_attempt", interrupt_before_record)
+    with pytest.raises(RuntimeError, match="before record"):
+        store.append(entry, attempt)
+    assert _recover_interrupted_trajectory_transactions(round_dir) == (1,)
+    assert not (output / "records").exists()
+
+    committed = FinalResultStore(
+        output,
+        plan,
+        prepared,
+        authority,
+        authority_repository=repository,
+    )
+
+    def interrupt_after_record(_intent_path):
+        raise RuntimeError("trajectory interrupted after record")
+
+    monkeypatch.setattr(committed, "_complete_transaction", interrupt_after_record)
+    with pytest.raises(RuntimeError, match="after record"):
+        committed.append(entry, attempt)
+    assert (output / "records/00000001.json").is_file()
+    assert _recover_interrupted_trajectory_transactions(round_dir) == (1,)
+    resumed = FinalResultStore(
+        output,
+        plan,
+        prepared,
+        authority,
+        authority_repository=repository,
+    )
+    assert len(resumed.load_records()) == 1
+
+
 def test_stale_result_temporary_recovery_rejects_symlink(tmp_path: Path) -> None:
     from maskimpute_benchmark.final_runner import (
         FinalRunnerContractError,
@@ -2489,6 +3160,19 @@ def test_frozen_final_round_public_api_accepts_no_scientific_overrides() -> None
     assert tuple(inspect.signature(run_frozen_final_round).parameters) == (
         "repository",
         "round_dir",
+    )
+
+
+def test_frozen_round_preflights_all_scopes_before_first_adapter() -> None:
+    from maskimpute_benchmark.final_runner import run_frozen_final_round
+
+    source = inspect.getsource(run_frozen_final_round)
+
+    assert source.index("_validate_combined_storage_capacity(") < source.index(
+        "SpawnedRepositoryExecutor("
+    )
+    assert source.index("execute_trajectory_plan(") < source.index(
+        "_record_final_evaluation_after_scaling("
     )
 
 
@@ -2607,6 +3291,21 @@ def test_frozen_final_cli_exposes_only_round_locator() -> None:
         assert forbidden not in completed.stdout
 
 
+def _minimal_trajectory_evidence() -> dict[str, object]:
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "status": "completed",
+        "scope": "supplementary_trajectory",
+        "plan": {},
+        "dataset": {},
+        "execution_authority": {},
+        "execution_manifest": {},
+        "execution_validation": {},
+        "result_files": [],
+    }
+    return {**body, "evidence_sha256": canonical_sha256(body)}
+
+
 def test_incomplete_scaling_blocks_final_evaluation_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2643,7 +3342,11 @@ def test_incomplete_scaling_blocks_final_evaluation_receipt(
         final_runner._record_final_evaluation_after_scaling(
             tmp_path,
             tmp_path,
-            {"schema_version": 1, "status": "completed"},
+            {
+                "schema_version": 1,
+                "status": "completed",
+                "trajectory_evidence": _minimal_trajectory_evidence(),
+            },
         )
 
     assert receipt_called is False
@@ -2693,6 +3396,11 @@ def test_complete_scaling_is_bound_before_the_only_evaluation_receipt(
         "_owned_final_result_file_manifest",
         lambda _round_dir: {"result_files": cumulative},
     )
+    monkeypatch.setattr(
+        final_runner,
+        "_rederive_trajectory_evidence_before_receipt",
+        lambda _repository, _round_dir, observed, _files, **_kwargs: dict(observed),
+    )
 
     def record_receipt(_round_dir, manifest, *, repo):
         recorded.update(manifest)
@@ -2703,6 +3411,8 @@ def test_complete_scaling_is_bound_before_the_only_evaluation_receipt(
     base = {
         "schema_version": 1,
         "status": "completed",
+        "final_plan_sha256": "d" * 64,
+        "trajectory_evidence": _minimal_trajectory_evidence(),
         "result_files": [cumulative[0]],
     }
 
@@ -2717,3 +3427,94 @@ def test_complete_scaling_is_bound_before_the_only_evaluation_receipt(
     assert recorded["result_files"] == cumulative
     assert recorded["repository"] == tmp_path
     assert "scaling_evidence" not in base
+
+
+def test_trajectory_change_during_scaling_blocks_the_only_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.scaling as scaling
+    import maskimpute_benchmark.study as study
+
+    trajectory_file = tmp_path / "results/trajectory/execution/run.stdout"
+    trajectory_file.parent.mkdir(parents=True)
+    trajectory_file.write_bytes(b"before")
+    trajectory_path = "results/trajectory/execution/run.stdout"
+    initial_digest = hashlib.sha256(b"before").hexdigest()
+    trajectory_evidence = _minimal_trajectory_evidence()
+    trajectory_body = {
+        key: value
+        for key, value in trajectory_evidence.items()
+        if key != "evidence_sha256"
+    }
+    trajectory_body["result_files"] = [
+        {"path": trajectory_path, "sha256": initial_digest}
+    ]
+    trajectory_evidence = {
+        **trajectory_body,
+        "evidence_sha256": canonical_sha256(trajectory_body),
+    }
+    receipt_called = False
+
+    def run_scaling(_repository, _round_dir):
+        trajectory_file.write_bytes(b"after")
+        return SimpleNamespace(
+            status="completed",
+            planned_run_count=1,
+            records=({},),
+            datasets=({},),
+        )
+
+    def current_inventory(_round_dir):
+        return {
+            "result_files": [
+                {
+                    "path": trajectory_path,
+                    "sha256": hashlib.sha256(trajectory_file.read_bytes()).hexdigest(),
+                }
+            ]
+        }
+
+    def rederive(_repository, _round_dir, observed, fresh, **_kwargs):
+        assert fresh[0]["sha256"] != observed["result_files"][0]["sha256"]
+        raise final_runner.FinalRunnerContractError(
+            "trajectory evidence changed before receipt"
+        )
+
+    def record_receipt(*_args, **_kwargs):
+        nonlocal receipt_called
+        receipt_called = True
+        return {}
+
+    monkeypatch.setattr(scaling, "run_scaling_panel", run_scaling)
+    monkeypatch.setattr(
+        final_runner,
+        "_owned_final_result_file_manifest",
+        current_inventory,
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_rederive_trajectory_evidence_before_receipt",
+        rederive,
+    )
+    monkeypatch.setattr(study, "record_final_evaluation", record_receipt)
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="trajectory evidence changed",
+    ):
+        final_runner._record_final_evaluation_after_scaling(
+            tmp_path,
+            tmp_path,
+            {
+                "schema_version": 1,
+                "status": "completed",
+                "final_plan_sha256": "d" * 64,
+                "trajectory_evidence": trajectory_evidence,
+            },
+        )
+
+    assert receipt_called is False
