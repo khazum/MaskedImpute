@@ -801,6 +801,75 @@ def test_ready_public_selection_binds_results_to_all_repository_authorities(
         )
 
 
+def test_schema_four_selection_requires_downstream_and_revalidates_legacy_envelope(
+    tmp_path, monkeypatch
+):
+    import maskimpute_benchmark.evaluation_manifest as evaluation
+    import maskimpute_benchmark.selection as selection
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    authority = selection._load_selection_authority(repository, require_clean=False)
+    status, payload = _status_and_payload(authority)
+    core = {key: value for key, value in payload.items() if key != "result_sha256"}
+    core.update(
+        {
+            "schema_version": 4,
+            "revision_versions": [],
+            "downstream_evidence": {
+                "path": "artifacts/downstream",
+                "manifest_file_sha256": "1" * 64,
+                "manifest_sha256": "2" * 64,
+                "plan_sha256": "3" * 64,
+                "planned_denominator_count": 1,
+                "endpoint_row_count": 8,
+            },
+        }
+    )
+    schema_four = {**core, "result_sha256": selection._canonical_sha256(core)}
+    observed_evaluation_data = []
+    monkeypatch.setattr(
+        selection,
+        "_validate_development_dataset_status",
+        lambda _repository: status,
+    )
+    monkeypatch.setattr(
+        selection,
+        "validate_downstream_selection_completeness",
+        lambda *_args: {
+            "downstream_manifest_sha256": "2" * 64,
+            "downstream_plan_sha256": "3" * 64,
+        },
+    )
+
+    def validate_legacy(_repository, data, _authority, _status):
+        observed_evaluation_data.append(data)
+        return SimpleNamespace(bindings={})
+
+    monkeypatch.setattr(
+        evaluation,
+        "validate_selection_evaluation_manifest",
+        validate_legacy,
+    )
+
+    report = selection._select_for_repository(
+        schema_four,
+        repository,
+        require_clean=False,
+    )
+
+    assert report.selected_configuration == "v27-c01-direct-r1-g1"
+    assert report.authority_bindings["downstream_plan_sha256"] == "3" * 64
+    assert len(observed_evaluation_data) == 1
+    projected = observed_evaluation_data[0]
+    assert projected["schema_version"] == 2
+    assert "downstream_evidence" not in projected
+    assert "revision_versions" not in projected
+    projected_core = {
+        key: value for key, value in projected.items() if key != "result_sha256"
+    }
+    assert projected["result_sha256"] == selection._canonical_sha256(projected_core)
+
+
 def test_selection_blocks_if_count_score_manifest_binding_is_pending(tmp_path):
     import maskimpute_benchmark.selection as selection
 
@@ -942,6 +1011,39 @@ def test_cli_forwards_results_without_reconstructing_caller_design(
     )
 
     assert script._report(loaded) == {"selected": sentinel}
+
+
+def test_cli_accepts_selection_complete_schema_four(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "select_development_candidate_schema_four_script",
+        Path("scripts/select_development_candidate.py"),
+    )
+    assert spec is not None and spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    sentinel = {
+        "schema_version": 4,
+        "dataset_manifest_sha256": "a" * 64,
+        "count_score_manifest_sha256": "b" * 64,
+        "retained_calibration_artifact_sha256": "c" * 64,
+        "evaluation_manifest_sha256": "e" * 64,
+        "records": [],
+        "orthogonal_intervals": [],
+        "revision_versions": [],
+        "downstream_evidence": {
+            "path": "artifacts/downstream",
+            "manifest_file_sha256": "1" * 64,
+            "manifest_sha256": "2" * 64,
+            "plan_sha256": "3" * 64,
+            "planned_denominator_count": 1,
+            "endpoint_row_count": 8,
+        },
+        "result_sha256": "d" * 64,
+    }
+    input_path = tmp_path / "selection-input-schema-four.json"
+    input_path.write_text(json.dumps(sentinel), encoding="utf-8")
+
+    assert script._load(input_path) == sentinel
 
 
 def test_cli_loaded_schema2_reaches_real_consumer_and_binds_manifest(
