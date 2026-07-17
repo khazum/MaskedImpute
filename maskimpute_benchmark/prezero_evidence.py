@@ -42,7 +42,8 @@ _POLICY_FIELDS = {
     "score_artifact_sha256",
     "score_input_sha256",
     "score_config_sha256",
-    "calibration_artifact_sha256",
+    "calibration_file_sha256",
+    "calibration_payload_sha256",
     "calibration_algorithm",
     "calibration_scope",
     "calibration_equivalence_reason",
@@ -52,7 +53,8 @@ _POLICY_SOURCE_FIELDS = {
     "score_artifact_sha256": "score_artifact_sha256",
     "score_input_sha256": "score_input_sha256",
     "score_config_sha256": "score_config_sha256",
-    "calibration_artifact_sha256": "calibration_artifact_sha256",
+    "calibration_file_sha256": "calibration_file_sha256",
+    "calibration_payload_sha256": "calibration_payload_sha256",
     "retained_calibrator": "calibration_algorithm",
     "calibration_scope": "calibration_scope",
     "equivalence_reason": "calibration_equivalence_reason",
@@ -124,14 +126,17 @@ def _require_sha256(value: object, name: str) -> str:
     return value
 
 
-def _policy_from_execution(execution: object) -> dict[str, object]:
-    policy_source = getattr(execution, "realized_p_pre_zero_policy", None)
+def policy_from_score_diagnostics(
+    policy_source: object,
+) -> dict[str, object]:
+    """Build the canonical persisted policy from verified score diagnostics."""
+
     if not isinstance(policy_source, Mapping):
         raise PreZeroEvidenceError(
             "completed MaskImpute execution lacks realized score policy evidence"
         )
     policy: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "probability_semantics": "pre_capture_count_is_zero_given_observed_counts",
         "evaluation_domain": "observed_zero_entries_only",
     }
@@ -148,6 +153,12 @@ def _policy_from_execution(execution: object) -> dict[str, object]:
         else:
             policy[destination_name] = value
     return policy
+
+
+def _policy_from_execution(execution: object) -> dict[str, object]:
+    return policy_from_score_diagnostics(
+        getattr(execution, "realized_p_pre_zero_policy", None)
+    )
 
 
 def _probability_matrix(value: object, shape: tuple[int, int]) -> np.ndarray:
@@ -593,13 +604,15 @@ def validate_stored_prezero_evidence(
     expected_shape: tuple[int, int],
     requires_count_score: bool,
     requires_calibration: bool,
-    expected_calibration_artifact_sha256: str | None,
+    expected_calibration_file_sha256: str | None,
     compressed: bytes | None,
     observed: np.ndarray,
     truth: np.ndarray | None,
     truth_kind: str,
     expected_score_input_sha256: str | None,
     expected_score_config_sha256: str | None,
+    expected_probability: np.ndarray | None = None,
+    expected_policy: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Validate one persisted evidence record and its bounded matrix bytes."""
 
@@ -715,6 +728,10 @@ def validate_stored_prezero_evidence(
             raise PreZeroEvidenceError(
                 "p_pre_zero matrix is not authorized for this configuration"
             )
+        if expected_probability is None or expected_policy is None:
+            raise PreZeroEvidenceError(
+                "p_pre_zero matrix lacks exact execution authority"
+            )
         if matrix.get("shape") != list(expected_shape) or matrix.get("dtype") != "<f8":
             raise PreZeroEvidenceError("p_pre_zero matrix shape or dtype differs")
         content_sha256 = _require_sha256(
@@ -727,7 +744,7 @@ def validate_stored_prezero_evidence(
         if policy_sha256 != canonical_sha256(policy_value):
             raise PreZeroEvidenceError("p_pre_zero policy checksum differs")
         if (
-            policy.get("schema_version") != 1
+            policy.get("schema_version") != 2
             or policy.get("probability_semantics")
             != "pre_capture_count_is_zero_given_observed_counts"
             or policy.get("evaluation_domain") != "observed_zero_entries_only"
@@ -738,7 +755,8 @@ def validate_stored_prezero_evidence(
             "score_artifact_sha256",
             "score_input_sha256",
             "score_config_sha256",
-            "calibration_artifact_sha256",
+            "calibration_file_sha256",
+            "calibration_payload_sha256",
         ):
             _require_sha256(policy.get(name), f"p_pre_zero policy {name}")
         expected_score_input = _require_sha256(
@@ -750,8 +768,8 @@ def validate_stored_prezero_evidence(
             "authoritative p_pre_zero score configuration",
         )
         expected_calibration = _require_sha256(
-            expected_calibration_artifact_sha256,
-            "authoritative p_pre_zero calibration artifact",
+            expected_calibration_file_sha256,
+            "authoritative p_pre_zero calibration file",
         )
         if policy.get("score_input_sha256") != expected_score_input:
             raise PreZeroEvidenceError(
@@ -761,7 +779,7 @@ def validate_stored_prezero_evidence(
             raise PreZeroEvidenceError(
                 "p_pre_zero score configuration differs from execution authority"
             )
-        if policy.get("calibration_artifact_sha256") != expected_calibration:
+        if policy.get("calibration_file_sha256") != expected_calibration:
             raise PreZeroEvidenceError(
                 "p_pre_zero calibration policy differs from execution authority"
             )
@@ -811,6 +829,17 @@ def validate_stored_prezero_evidence(
         ):
             raise PreZeroEvidenceError(
                 "stored p_pre_zero matrix contains invalid probabilities"
+            )
+        expected_probability_array = _probability_matrix(
+            expected_probability, expected_shape
+        )
+        if not np.array_equal(probability, expected_probability_array):
+            raise PreZeroEvidenceError(
+                "stored p_pre_zero matrix differs from execution authority"
+            )
+        if _canonical_bytes(policy) != _canonical_bytes(dict(expected_policy)):
+            raise PreZeroEvidenceError(
+                "p_pre_zero score policy differs from execution authority"
             )
         semantic = hashlib.sha256()
         semantic.update(b"maskimpute-realized-p-pre-zero-v1\0")
@@ -1128,6 +1157,7 @@ __all__ = [
     "PreZeroEvidenceError",
     "encode_prezero_evidence",
     "evaluate_prezero_evidence",
+    "policy_from_score_diagnostics",
     "validate_stored_prezero_evidence",
     "zlib_compress_bound",
 ]

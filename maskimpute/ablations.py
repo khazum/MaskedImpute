@@ -629,51 +629,23 @@ def _trusted_ablation_spec(spec: object) -> tuple[AblationSpec, AblationRegistry
     return trusted, registry, registry_sha256
 
 
-def _fit_ablation_once(
+def _derive_prezero_execution_policy(
     observed_counts: object,
+    cell_ids: object,
     score_artifact: object,
     calibration_artifact: object,
     spec: AblationSpec,
-    config: MaskImputeConfig,
-    device: object,
     *,
-    cell_ids: object,
+    calibration_usage: str,
     development_mechanism: str,
     development_biological_id: str,
-    calibration_usage: str = "development_holdout",
-    decoder: str = "scaled_gaussian",
-    decoder_config: object | None = None,
-    structure_config: object | None = None,
-):
-    """Fit one development ablation from verified, truth-free score artifacts.
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Derive the exact realized score matrix and its truth-free policy receipt."""
 
-    This internal single-run primitive does not authorize a publication panel.
-    The authority layer must bind the dataset, common base configuration, count
-    score, calibration artifact, complete spec-by-seed grid, and output manifest.
-    This function still rejects raw score matrices and free-form interventions.
-    """
-
-    import torch
-
-    from maskimpute.calibration import CalibrationArtifact
+    from maskimpute.calibration import CalibrationArtifact, _canonical_json_bytes
     from maskimpute.count_model import PreZeroCountModelScore
-    from maskimpute.result import ImputationResult
-    from maskimpute.train import TrainingOutcome
 
-    trusted_spec, registry, registry_sha256 = _trusted_ablation_spec(spec)
-    if decoder not in {"scaled_gaussian", "negative_binomial"}:
-        raise ValueError("decoder must be scaled_gaussian or negative_binomial")
-    if decoder == "scaled_gaussian" and (
-        decoder_config is not None or structure_config is not None
-    ):
-        raise ValueError("scaled_gaussian does not accept decoder/structure config")
-    if decoder == "negative_binomial" and trusted_spec.id != registry.reference.id:
-        raise ValueError("negative_binomial is a reference-only development revision")
-    if type(config) is not MaskImputeConfig:
-        raise TypeError("config must be an exact MaskImputeConfig")
-    config = replace(config)
-    if config.seed not in registry.model_seeds:
-        raise ValueError("config seed is outside the tracked ablation seed panel")
+    trusted_spec, _registry, _registry_sha256 = _trusted_ablation_spec(spec)
     mechanisms = {"symsim", "sergio", "sparsim", "semisynthetic"}
     if calibration_usage not in {
         "development_holdout",
@@ -703,7 +675,6 @@ def _fit_ablation_once(
             raise ValueError(
                 "retained-all-development inference identity is outside authority"
             )
-    resolved_config = resolve_training_config(config, trusted_spec)
 
     counts = validate_observed_counts(observed_counts)
     if type(score_artifact) is not PreZeroCountModelScore:
@@ -747,17 +718,13 @@ def _fit_ablation_once(
             }
             fold = next(
                 value
-                for value in calibration_payload[
-                    "development_holdout_calibrators"
-                ]
+                for value in calibration_payload["development_holdout_calibrators"]
                 if value["mechanism"] == development_mechanism
                 and value["biological_id"] == development_biological_id
             )
             calibration_fold_receipt = {
                 "calibrator_algorithm": fold["calibrator"]["algorithm"],
-                "calibrator_sha256": _canonical_payload_sha256(
-                    fold["calibrator"]
-                ),
+                "calibrator_sha256": _canonical_payload_sha256(fold["calibrator"]),
                 "held_out_manifest_sha256s": tuple(
                     fold["held_out_manifest_sha256s"]
                 ),
@@ -782,6 +749,83 @@ def _fit_ablation_once(
             equivalence_reason = "retained_nonidentity_calibrator_transformed_score"
     else:
         equivalence_reason = "direct_cross_fitted_count_score"
+
+    score_manifest = score_artifact.manifest
+    return probability, {
+        "source": trusted_spec.score_source,
+        "artifact_integrity_verified": True,
+        "source_authorized_by_panel": False,
+        "score_artifact_sha256": score_manifest["score_sha256"],
+        "score_input_sha256": score_manifest["input_sha256"],
+        "score_config_sha256": score_manifest["config_sha256"],
+        "calibration_file_sha256": hashlib.sha256(
+            _canonical_json_bytes(calibration_payload)
+        ).hexdigest(),
+        "calibration_payload_sha256": calibration_payload["payload_sha256"],
+        "retained_calibrator": verified_calibration.selected_algorithm,
+        "calibration_scope": calibration_scope,
+        "calibration_holdout": calibration_holdout,
+        "calibration_fold_receipt": calibration_fold_receipt,
+        "equivalence_reason": equivalence_reason,
+    }
+
+
+def _fit_ablation_once(
+    observed_counts: object,
+    score_artifact: object,
+    calibration_artifact: object,
+    spec: AblationSpec,
+    config: MaskImputeConfig,
+    device: object,
+    *,
+    cell_ids: object,
+    development_mechanism: str,
+    development_biological_id: str,
+    calibration_usage: str = "development_holdout",
+    decoder: str = "scaled_gaussian",
+    decoder_config: object | None = None,
+    structure_config: object | None = None,
+):
+    """Fit one development ablation from verified, truth-free score artifacts.
+
+    This internal single-run primitive does not authorize a publication panel.
+    The authority layer must bind the dataset, common base configuration, count
+    score, calibration artifact, complete spec-by-seed grid, and output manifest.
+    This function still rejects raw score matrices and free-form interventions.
+    """
+
+    import torch
+
+    from maskimpute.result import ImputationResult
+    from maskimpute.train import TrainingOutcome
+
+    trusted_spec, registry, registry_sha256 = _trusted_ablation_spec(spec)
+    if decoder not in {"scaled_gaussian", "negative_binomial"}:
+        raise ValueError("decoder must be scaled_gaussian or negative_binomial")
+    if decoder == "scaled_gaussian" and (
+        decoder_config is not None or structure_config is not None
+    ):
+        raise ValueError("scaled_gaussian does not accept decoder/structure config")
+    if decoder == "negative_binomial" and trusted_spec.id != registry.reference.id:
+        raise ValueError("negative_binomial is a reference-only development revision")
+    if type(config) is not MaskImputeConfig:
+        raise TypeError("config must be an exact MaskImputeConfig")
+    config = replace(config)
+    if config.seed not in registry.model_seeds:
+        raise ValueError("config seed is outside the tracked ablation seed panel")
+    resolved_config = resolve_training_config(config, trusted_spec)
+
+    counts = validate_observed_counts(observed_counts)
+    probability, score_diagnostics = _derive_prezero_execution_policy(
+        counts,
+        cell_ids,
+        score_artifact,
+        calibration_artifact,
+        trusted_spec,
+        calibration_usage=calibration_usage,
+        development_mechanism=development_mechanism,
+        development_biological_id=development_biological_id,
+    )
 
     dispersion = None
     if decoder == "scaled_gaussian":
@@ -967,7 +1011,6 @@ def _fit_ablation_once(
         gamma=resolved_config.gate_gamma,
     )
 
-    score_manifest = score_artifact.manifest
     base_config_payload = _training_config_payload(config)
     effective_config_payload = _training_config_payload(resolved_config)
     diagnostics = {
@@ -991,20 +1034,7 @@ def _fit_ablation_once(
             ),
             "registry_sha256": registry_sha256,
         },
-        "score": {
-            "source": trusted_spec.score_source,
-            "artifact_integrity_verified": True,
-            "source_authorized_by_panel": False,
-            "score_artifact_sha256": score_manifest["score_sha256"],
-            "score_input_sha256": score_manifest["input_sha256"],
-            "score_config_sha256": score_manifest["config_sha256"],
-            "calibration_artifact_sha256": calibration_payload["payload_sha256"],
-            "retained_calibrator": verified_calibration.selected_algorithm,
-            "calibration_scope": calibration_scope,
-            "calibration_holdout": calibration_holdout,
-            "calibration_fold_receipt": calibration_fold_receipt,
-            "equivalence_reason": equivalence_reason,
-        },
+        "score": score_diagnostics,
         "masks": {
             "fixed_validation_mask_sha256": outcome.validation_mask_hashes[0],
             "fixed_validation_positive_entries": int(

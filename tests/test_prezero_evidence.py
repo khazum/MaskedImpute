@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict, replace
 import hashlib
 import json
 from pathlib import Path
@@ -38,7 +39,6 @@ from maskimpute_benchmark.protocol import canonical_sha256
 
 METHODS = Path("study/methods.json")
 SHA_A = "a" * 64
-SHA_B = "b" * 64
 
 
 def _score_input_sha256(prepared: PreparedDataset) -> str:
@@ -53,7 +53,117 @@ def _prepared_datasets(
     return {prepared.binding.dataset_id: prepared}
 
 
+def _identity_calibration_artifact():
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+        fit_development_calibration,
+    )
+
+    records = []
+    for index, (draw, view) in enumerate(
+        (
+            ("draw-01", "moderate"),
+            ("draw-01", "severe"),
+            ("draw-02", "moderate"),
+            ("draw-02", "severe"),
+        ),
+        start=1,
+    ):
+        dataset_sha = hashlib.sha256(f"{draw}:{view}".encode()).hexdigest()
+        records.append(
+            CalibrationRecord(
+                p_pre_zero=(0.1, 0.25, 0.7, 0.9),
+                target=(0, 0, 1, 1),
+                mechanism="symsim",
+                biological_id=draw,
+                manifest_sha256=f"{index:x}" * 64,
+                truth_kind="exact_pre_capture",
+                namespace="dev",
+                data_role="development",
+                technical_view=view,
+                dataset_id=f"dataset-{dataset_sha[:24]}",
+                dataset_sha256=dataset_sha,
+                protocol_sha256=DEVELOPMENT_PROTOCOL_SHA256,
+            )
+        )
+    return fit_development_calibration(records)
+
+
+def _write_real_score_authority(
+    repository: Path,
+    prepared: PreparedDataset,
+):
+    from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
+    from maskimpute.calibration import save_calibration_artifact
+    from maskimpute_benchmark.development_scores import (
+        _manifest_payload,
+        _score_entry,
+        _score_filename,
+        save_count_score_artifact,
+    )
+    from maskimpute_benchmark.runner import ExecutionAuthorityContext
+
+    count_config = PreZeroCountModelConfig(n_folds=2, link_max_iter=25)
+    ablation_path = repository / "study/ablations.json"
+    ablation_path.parent.mkdir(parents=True, exist_ok=True)
+    ablation_path.write_bytes(Path("study/ablations.json").read_bytes())
+    score = fit_p_pre_zero_count_model(
+        prepared.method_input.counts,
+        prepared.method_input.obs_ids,
+        count_config,
+    )
+    score_directory = repository / "scores"
+    score_directory.mkdir(parents=True)
+    save_count_score_artifact(score_directory / _score_filename(prepared), score)
+    manifest = _manifest_payload(
+        [_score_entry(prepared, score)],
+        dataset_manifest_sha256=prepared.binding.manifest_sha256,
+        count_model_config_sha256=score.config_sha256,
+        dataset_qc_policy_sha256=DatasetQCPolicy.fixed().sha256,
+    )
+    manifest_path = score_directory / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            manifest,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    calibration = _identity_calibration_artifact()
+    calibration_path = repository / "calibration.json"
+    save_calibration_artifact(calibration_path, calibration)
+    base = {}
+    count_payload = asdict(count_config)
+    context = ExecutionAuthorityContext(
+        authority_sha256="9" * 64,
+        base_configuration_json=json.dumps(
+            base, separators=(",", ":"), sort_keys=True
+        ),
+        base_configuration_sha256=canonical_sha256(base),
+        count_model_config_json=json.dumps(
+            count_payload, separators=(",", ":"), sort_keys=True
+        ),
+        count_model_config_sha256=canonical_sha256(count_payload),
+        count_score_manifest_path="scores/manifest.json",
+        count_score_manifest_sha256=hashlib.sha256(
+            manifest_path.read_bytes()
+        ).hexdigest(),
+        retained_calibration_path="calibration.json",
+        retained_calibration_sha256=hashlib.sha256(
+            calibration_path.read_bytes()
+        ).hexdigest(),
+    )
+    return context, score, calibration
+
+
 def _prepared(mechanism: str = "symsim") -> PreparedDataset:
+    from maskimpute_benchmark.development_scores import canonical_cell_ids_sha256
+
     counts = np.array([[0.0, 0.0, 2.0, 0.0], [0.0, 3.0, 0.0, 0.0]], dtype="<f8")
     cells = ("cell-1", "cell-2")
     genes = ("gene-1", "gene-2", "gene-3", "gene-4")
@@ -92,7 +202,7 @@ def _prepared(mechanism: str = "symsim") -> PreparedDataset:
         excluded_cell_count=0,
         excluded_cell_ids_sha256=empty_ids_sha,
         retained_cell_count=2,
-        retained_cell_ids_sha256=SHA_B,
+        retained_cell_ids_sha256=canonical_cell_ids_sha256(cells),
         excluded_cell_ids=(),
         retained_cell_ids=cells,
     )
@@ -147,29 +257,32 @@ def _entry(prepared: PreparedDataset, method_id: str = "maskimpute") -> RunPlanE
 
 
 def _maskimpute_execution(
-    prepared: PreparedDataset, probability: np.ndarray | None = None
+    prepared: PreparedDataset,
+    probability: np.ndarray | None = None,
+    score_diagnostics: dict[str, object] | None = None,
 ) -> MaskImputeAdapterExecution:
     if probability is None:
         probability = np.array(
             [[0.8, 0.2, 0.0, 0.4], [0.7, 0.0, 0.3, 0.9]], dtype="<f8"
         )
+    if score_diagnostics is None:
+        score_diagnostics = {
+            "source": "retained_calibrator",
+            "score_artifact_sha256": "4" * 64,
+            "score_input_sha256": _score_input_sha256(prepared),
+            "score_config_sha256": "6" * 64,
+            "calibration_file_sha256": "7" * 64,
+            "calibration_payload_sha256": "8" * 64,
+            "retained_calibrator": "identity",
+            "calibration_scope": "leave_one_biological_draw_out",
+            "equivalence_reason": "retained_identity_calibrator_equals_direct_score",
+        }
     result = ImputationResult(
         selective_counts=prepared.method_input.counts,
         denoised_counts=prepared.method_input.counts,
         p_pre_zero=probability,
         latent=np.ones((2, 1), dtype="<f8"),
-        diagnostics={
-            "score": {
-                "source": "retained_calibrator",
-                "score_artifact_sha256": "4" * 64,
-                "score_input_sha256": _score_input_sha256(prepared),
-                "score_config_sha256": "6" * 64,
-                "calibration_artifact_sha256": "7" * 64,
-                "retained_calibrator": "identity",
-                "calibration_scope": "leave_one_biological_draw_out",
-                "equivalence_reason": "retained_identity_calibrator_equals_direct_score",
-            }
-        },
+        diagnostics={"score": score_diagnostics},
     )
     spec = load_method_registry(METHODS).by_id("maskimpute")
     snapshot = snapshot_method_output(
@@ -192,17 +305,22 @@ def _maskimpute_execution(
     )
 
 
-def _completed_maskimpute(prepared: PreparedDataset):
+def _completed_maskimpute(
+    prepared: PreparedDataset,
+    *,
+    execution: MaskImputeAdapterExecution | None = None,
+    calibration_file_sha256: str = "7" * 64,
+):
     return evaluate_adapter_outcome(
         _entry(prepared),
         prepared,
         AdapterOutcome.completed(
-            _maskimpute_execution(prepared),
+            _maskimpute_execution(prepared) if execution is None else execution,
             runtime_seconds=1,
             peak_rss_bytes=1,
             peak_gpu_bytes=1,
             calibration_fold_receipt=CalibrationFoldReceipt(
-                calibration_artifact_sha256="7" * 64,
+                calibration_artifact_sha256=calibration_file_sha256,
                 calibration_context_sha256="8" * 64,
                 mechanism=prepared.binding.mechanism,
                 biological_id=prepared.binding.biological_id,
@@ -225,6 +343,60 @@ def _plan(prepared: PreparedDataset) -> CompetitionPlan:
         },
         entries=(_entry(prepared),),
         plan_sha256="c" * 64,
+    )
+
+
+def _real_development_checkpoint_case(
+    repository: Path,
+    prepared: PreparedDataset,
+) -> tuple[CompetitionPlan, object, CheckpointStore]:
+    from maskimpute_benchmark.runner import _derive_prezero_execution_authority
+
+    context, _score, _calibration = _write_real_score_authority(
+        repository, prepared
+    )
+    probability, policy = _derive_prezero_execution_authority(
+        prepared,
+        _entry(prepared),
+        context,
+        calibration_usage="development_holdout",
+        repository=repository,
+    )
+    score_diagnostics = {
+        "source": policy["score_source"],
+        "score_artifact_sha256": policy["score_artifact_sha256"],
+        "score_input_sha256": policy["score_input_sha256"],
+        "score_config_sha256": policy["score_config_sha256"],
+        "calibration_file_sha256": policy["calibration_file_sha256"],
+        "calibration_payload_sha256": policy["calibration_payload_sha256"],
+        "retained_calibrator": policy["calibration_algorithm"],
+        "calibration_scope": policy["calibration_scope"],
+        "equivalence_reason": policy["calibration_equivalence_reason"],
+    }
+    execution = _maskimpute_execution(
+        prepared,
+        probability,
+        score_diagnostics,
+    )
+    attempt = _completed_maskimpute(
+        prepared,
+        execution=execution,
+        calibration_file_sha256=context.retained_calibration_sha256,
+    )
+    plan = replace(
+        _plan(prepared),
+        input_hashes={
+            "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+            "implementation_source_sha256": implementation_source_sha256(),
+            "count_model_config_sha256": context.count_model_config_sha256,
+            "count_score_manifest_sha256": context.count_score_manifest_sha256,
+            "retained_calibration_sha256": context.retained_calibration_sha256,
+        },
+        execution_context=context,
+    )
+    return plan, attempt, CheckpointStore(
+        repository / "competition",
+        authority_repository=repository,
     )
 
 
@@ -277,12 +449,23 @@ def _validate_stored_completed_score(
     prepared: PreparedDataset,
     record: dict[str, object],
     compressed: bytes,
+    *,
+    expected_probability: np.ndarray | None = None,
+    expected_policy: dict[str, object] | None = None,
+    bind_exact_authority: bool = True,
 ) -> dict[str, object]:
     from maskimpute_benchmark.prezero_evidence import (
         validate_stored_prezero_evidence,
     )
 
     truth_layer = prepared.evaluator_dataset.uns["primary_truth_layer"]
+    if bind_exact_authority:
+        if expected_probability is None:
+            expected_probability = np.frombuffer(
+                zlib.decompress(compressed), dtype="<f8"
+            ).reshape(prepared.method_input.shape)
+        if expected_policy is None:
+            expected_policy = dict(record["policy"])
     return validate_stored_prezero_evidence(
         record,
         expected_identity=record["identity"],
@@ -292,7 +475,7 @@ def _validate_stored_completed_score(
         expected_shape=prepared.method_input.shape,
         requires_count_score=True,
         requires_calibration=True,
-        expected_calibration_artifact_sha256="7" * 64,
+        expected_calibration_file_sha256="7" * 64,
         compressed=compressed,
         observed=np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
         truth=np.asarray(
@@ -301,6 +484,8 @@ def _validate_stored_completed_score(
         truth_kind="exact_pre_capture",
         expected_score_input_sha256=_score_input_sha256(prepared),
         expected_score_config_sha256="6" * 64,
+        expected_probability=expected_probability,
+        expected_policy=expected_policy,
     )
 
 
@@ -346,6 +531,157 @@ def test_stored_score_validation_rejects_rehashed_policy_drift() -> None:
         _validate_stored_completed_score(prepared, record, compressed)
 
 
+def test_stored_score_validation_rejects_coordinated_matrix_report_replacement() -> (
+    None
+):
+    from maskimpute_benchmark.prezero_evidence import (
+        PreZeroEvidenceError,
+        _score_report,
+    )
+
+    prepared = _prepared()
+    record, compressed = _encoded_completed_score(prepared)
+    expected_probability = np.frombuffer(
+        zlib.decompress(compressed), dtype="<f8"
+    ).reshape(prepared.method_input.shape)
+    expected_policy = dict(record["policy"])
+    replacement = np.array(
+        [[0.05, 0.95, 0.0, 0.85], [0.15, 0.0, 0.75, 0.25]],
+        dtype="<f8",
+    )
+    replacement_raw = replacement.tobytes(order="C")
+    replacement_compressed = zlib.compress(replacement_raw, level=6)
+    record["matrix"]["content_sha256"] = hashlib.sha256(
+        replacement_raw
+    ).hexdigest()
+    record["storage"].update(
+        {
+            "compressed_sha256": hashlib.sha256(
+                replacement_compressed
+            ).hexdigest(),
+            "compressed_nbytes": len(replacement_compressed),
+            "uncompressed_sha256": hashlib.sha256(replacement_raw).hexdigest(),
+            "uncompressed_nbytes": len(replacement_raw),
+        }
+    )
+    observed = np.asarray(prepared.evaluator_dataset.X, dtype=np.float64)
+    truth = np.asarray(
+        prepared.evaluator_dataset.layers["pre_capture_counts"], dtype=np.float64
+    )
+    record["overall"], record["strata"] = _score_report(
+        replacement,
+        observed,
+        truth,
+        truth_kind="exact_pre_capture",
+    )
+    _rebind_score_payload(
+        {"records": [{"p_pre_zero_evidence": record}]},
+        score_raw=replacement_raw,
+    )
+
+    with pytest.raises(PreZeroEvidenceError, match="matrix differs"):
+        _validate_stored_completed_score(
+            prepared,
+            record,
+            replacement_compressed,
+            expected_probability=expected_probability,
+            expected_policy=expected_policy,
+        )
+
+
+def test_stored_score_validation_requires_exact_execution_authority() -> None:
+    from maskimpute_benchmark.prezero_evidence import PreZeroEvidenceError
+
+    prepared = _prepared()
+    record, compressed = _encoded_completed_score(prepared)
+
+    with pytest.raises(PreZeroEvidenceError, match="exact execution authority"):
+        _validate_stored_completed_score(
+            prepared,
+            record,
+            compressed,
+            bind_exact_authority=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("score_artifact_sha256", "d" * 64),
+        ("calibration_payload_sha256", "e" * 64),
+        ("calibration_algorithm", "isotonic"),
+        ("calibration_scope", "forged_scope"),
+        ("calibration_equivalence_reason", "forged_equivalence"),
+    ),
+)
+def test_stored_score_validation_rejects_rehashed_valid_policy_drift(
+    field: str,
+    replacement: str,
+) -> None:
+    from maskimpute_benchmark.prezero_evidence import PreZeroEvidenceError
+
+    prepared = _prepared()
+    record, compressed = _encoded_completed_score(prepared)
+    expected_policy = dict(record["policy"])
+    record["policy"][field] = replacement
+    raw = zlib.decompress(compressed)
+    _rebind_score_payload(
+        {"records": [{"p_pre_zero_evidence": record}]},
+        score_raw=raw,
+    )
+
+    with pytest.raises(PreZeroEvidenceError, match="policy differs"):
+        _validate_stored_completed_score(
+            prepared,
+            record,
+            compressed,
+            expected_probability=np.frombuffer(raw, dtype="<f8").reshape(
+                prepared.method_input.shape
+            ),
+            expected_policy=expected_policy,
+        )
+
+
+def test_development_score_authority_uses_exact_ready_artifacts_and_digest_domains(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.runner import _derive_prezero_execution_authority
+
+    prepared = _prepared()
+    context, score, calibration = _write_real_score_authority(
+        tmp_path, prepared
+    )
+
+    probability, policy = _derive_prezero_execution_authority(
+        prepared,
+        _entry(prepared),
+        context,
+        calibration_usage="development_holdout",
+        repository=tmp_path,
+    )
+
+    np.testing.assert_array_equal(probability, score.p_pre_zero)
+    assert policy["schema_version"] == 2
+    assert policy["score_artifact_sha256"] == score.score_sha256
+    assert policy["score_input_sha256"] == score.input_sha256
+    assert policy["score_config_sha256"] == score.config_sha256
+    assert policy["calibration_file_sha256"] == (
+        context.retained_calibration_sha256
+    )
+    assert policy["calibration_payload_sha256"] == (
+        calibration.to_dict()["payload_sha256"]
+    )
+    assert (
+        policy["calibration_file_sha256"]
+        != policy["calibration_payload_sha256"]
+    )
+    assert policy["calibration_algorithm"] == "identity"
+    assert policy["calibration_scope"] == "leave_one_biological_draw_out"
+    assert policy["calibration_equivalence_reason"] == (
+        "retained_identity_calibrator_equals_direct_score"
+    )
+
+
 def test_adapter_exposes_realized_p_pre_zero_as_a_defensive_matrix() -> None:
     prepared = _prepared()
     execution = _maskimpute_execution(prepared)
@@ -381,12 +717,19 @@ def test_evaluator_binds_realized_matrix_policy_and_machine_readable_metrics() -
         "configuration_id": "v27-reference",
         "configuration_sha256": "3" * 64,
         "method_input_sha256": attempt.run.method_input_sha256,
-        "retained_cell_ids_sha256": SHA_B,
+        "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
     }
     assert record["matrix"]["shape"] == [2, 4]
     assert record["matrix"]["dtype"] == "<f8"
     assert len(record["matrix"]["semantic_sha256"]) == 64
+    assert record["policy"]["schema_version"] == 2
     assert record["policy"]["score_source"] == "retained_calibrator"
+    assert record["policy"]["calibration_file_sha256"] == "7" * 64
+    assert record["policy"]["calibration_payload_sha256"] == "8" * 64
+    assert (
+        record["policy"]["calibration_file_sha256"]
+        != record["policy"]["calibration_payload_sha256"]
+    )
     assert record["policy_sha256"]
     assert record["overall"]["metrics"] == {
         name: record["overall"]["metrics"][name]
@@ -518,10 +861,9 @@ def test_development_checkpoint_compresses_and_resumes_realized_score_evidence(
     tmp_path: Path,
 ) -> None:
     prepared = _prepared()
-    plan = _plan(prepared)
-    attempt = _completed_maskimpute(prepared)
-    first = CheckpointStore(tmp_path / "first")
-    second = CheckpointStore(tmp_path / "second")
+    plan, attempt, _store = _real_development_checkpoint_case(tmp_path, prepared)
+    first = CheckpointStore(tmp_path / "first", authority_repository=tmp_path)
+    second = CheckpointStore(tmp_path / "second", authority_repository=tmp_path)
 
     first_report = first.append(
         plan,
@@ -557,11 +899,65 @@ def test_development_checkpoint_compresses_and_resumes_realized_score_evidence(
     assert storage["uncompressed_nbytes"] == len(expected)
     assert first_path.read_bytes() == second_path.read_bytes()
     assert (
-        CheckpointStore(first.output_dir).load(
+        CheckpointStore(
+            first.output_dir, authority_repository=tmp_path
+        ).load(
             plan, prepared_datasets=_prepared_datasets(prepared)
         )
         == first_report
     )
+
+
+def test_development_checkpoint_rejects_coordinated_score_replacement(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.prezero_evidence import _score_report
+
+    prepared = _prepared()
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
+    prepared_datasets = _prepared_datasets(prepared)
+    store.append(
+        plan,
+        None,
+        attempt,
+        DevelopmentBudget(),
+        prepared_datasets=prepared_datasets,
+    )
+
+    def mutate(payload: dict[str, object]) -> None:
+        evidence = payload["records"][0]["p_pre_zero_evidence"]
+        replacement = np.where(
+            prepared.method_input.counts == 0.0,
+            0.125,
+            0.0,
+        ).astype("<f8")
+        raw = replacement.tobytes(order="C")
+        compressed = zlib.compress(raw, level=6)
+        path = store.output_dir / evidence["storage"]["path"]
+        path.write_bytes(compressed)
+        evidence["storage"].update(
+            {
+                "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
+                "compressed_nbytes": len(compressed),
+                "uncompressed_sha256": hashlib.sha256(raw).hexdigest(),
+                "uncompressed_nbytes": len(raw),
+            }
+        )
+        evidence["matrix"]["content_sha256"] = hashlib.sha256(raw).hexdigest()
+        evidence["overall"], evidence["strata"] = _score_report(
+            replacement,
+            np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+            np.asarray(
+                prepared.evaluator_dataset.layers["pre_capture_counts"],
+                dtype=np.float64,
+            ),
+            truth_kind="exact_pre_capture",
+        )
+        _rebind_score_payload(payload, score_raw=raw)
+
+    _rewrite_checkpoint(store, mutate)
+    with pytest.raises(RunnerContractError, match="matrix differs"):
+        store.load(plan, prepared_datasets=prepared_datasets)
 
 
 def test_development_checkpoint_rejects_rehashed_metric_drift(
@@ -569,12 +965,11 @@ def test_development_checkpoint_rejects_rehashed_metric_drift(
 ) -> None:
     prepared = _prepared()
     prepared_datasets = {prepared.binding.dataset_id: prepared}
-    plan = _plan(prepared)
-    store = CheckpointStore(tmp_path / "competition")
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
     store.append(
         plan,
         None,
-        _completed_maskimpute(prepared),
+        attempt,
         DevelopmentBudget(),
         prepared_datasets=prepared_datasets,
     )
@@ -593,12 +988,11 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
     tmp_path: Path,
 ) -> None:
     prepared = _prepared()
-    plan = _plan(prepared)
-    store = CheckpointStore(tmp_path / "competition")
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
     report = store.append(
         plan,
         None,
-        _completed_maskimpute(prepared),
+        attempt,
         DevelopmentBudget(),
         prepared_datasets=_prepared_datasets(prepared),
     )
@@ -644,12 +1038,11 @@ def test_development_checkpoint_rejects_semantically_invalid_score_payload(
     tmp_path: Path, case: str
 ) -> None:
     prepared = _prepared()
-    plan = _plan(prepared)
-    store = CheckpointStore(tmp_path / case)
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
     store.append(
         plan,
         None,
-        _completed_maskimpute(prepared),
+        attempt,
         DevelopmentBudget(),
         prepared_datasets=_prepared_datasets(prepared),
     )
@@ -766,12 +1159,11 @@ def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
     tmp_path: Path,
 ) -> None:
     prepared = _prepared()
-    plan = _plan(prepared)
-    store = CheckpointStore(tmp_path / "competition")
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
     report = store.append(
         plan,
         None,
-        _completed_maskimpute(prepared),
+        attempt,
         DevelopmentBudget(),
         prepared_datasets=_prepared_datasets(prepared),
     )
@@ -799,12 +1191,11 @@ def test_development_evidence_manifest_includes_realized_score_artifact(
     )
 
     prepared = _prepared()
-    plan = _plan(prepared)
-    store = CheckpointStore(tmp_path / "competition")
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
     store.append(
         plan,
         None,
-        _completed_maskimpute(prepared),
+        attempt,
         DevelopmentBudget(),
         prepared_datasets=_prepared_datasets(prepared),
     )
@@ -813,6 +1204,7 @@ def test_development_evidence_manifest_includes_realized_score_artifact(
         store.output_dir,
         plan,
         prepared_datasets=_prepared_datasets(prepared),
+        authority_repository=tmp_path,
     )
     score = next(item for item in evidence.raw_artifacts if item.kind == "p_pre_zero")
     assert score.run_id == "run-maskimpute-symsim"

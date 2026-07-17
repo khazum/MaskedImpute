@@ -224,7 +224,7 @@ def _attach_score_evidence(record: dict[str, Any]) -> None:
     }
     if numeric:
         policy = {
-            "schema_version": 1,
+            "schema_version": 2,
             "probability_semantics": (
                 "pre_capture_count_is_zero_given_observed_counts"
             ),
@@ -233,7 +233,8 @@ def _attach_score_evidence(record: dict[str, Any]) -> None:
             "score_artifact_sha256": "1" * 64,
             "score_input_sha256": "2" * 64,
             "score_config_sha256": "3" * 64,
-            "calibration_artifact_sha256": "4" * 64,
+            "calibration_file_sha256": "4" * 64,
+            "calibration_payload_sha256": "5" * 64,
             "calibration_algorithm": "identity",
             "calibration_scope": "retained_all_development",
             "calibration_equivalence_reason": (

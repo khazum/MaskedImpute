@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 
 from maskimpute_benchmark.methods.registry import MethodRegistry, load_method_registry
@@ -390,7 +391,7 @@ def test_final_plan_rejects_unbound_matched_bulk_applicability() -> None:
         )
 
 
-def _unavailable_prepared(plan_entry):
+def _unavailable_prepared(plan_entry, *, count_model_ready: bool = False):
     import anndata as ad
     import numpy as np
 
@@ -400,12 +401,20 @@ def _unavailable_prepared(plan_entry):
         PreparedDataset,
     )
 
-    counts = np.array([[1.0, 0.0], [0.0, 2.0]], dtype="<f8")
+    counts = (
+        np.array(
+            [[0.0, 0.0, 2.0, 0.0], [0.0, 3.0, 0.0, 0.0]],
+            dtype="<f8",
+        )
+        if count_model_ready
+        else np.array([[1.0, 0.0], [0.0, 2.0]], dtype="<f8")
+    )
+    var_ids = tuple(f"gene-{index}" for index in range(1, counts.shape[1] + 1))
     method_input = MethodInput(
         source_dataset_sha256=plan_entry.run.source_dataset_sha256,
         obs_ids=("cell-1", "cell-2"),
-        var_ids=("gene-1", "gene-2"),
-        shape=(2, 2),
+        var_ids=var_ids,
+        shape=counts.shape,
         obs_covariates=(),
         var_covariates=(),
         _count_bytes=counts.tobytes(order="C"),
@@ -446,17 +455,23 @@ def _unavailable_prepared(plan_entry):
     return prepared
 
 
-def _unavailable_attempt(plan_entry):
+def _unavailable_attempt(plan_entry, *, prepared=None):
     from maskimpute_benchmark.runner import AdapterOutcome, evaluate_adapter_outcome
 
     return evaluate_adapter_outcome(
         plan_entry.run,
-        _unavailable_prepared(plan_entry),
+        _unavailable_prepared(plan_entry) if prepared is None else prepared,
         AdapterOutcome.unavailable(plan_entry.reason or "test_unavailable"),
     )
 
 
-def _completed_attempt(plan_entry):
+def _completed_attempt(
+    plan_entry,
+    *,
+    probability=None,
+    score_diagnostics: dict[str, object] | None = None,
+    prepared=None,
+):
     from dataclasses import replace
 
     import anndata as ad
@@ -468,7 +483,7 @@ def _completed_attempt(plan_entry):
     from maskimpute_benchmark.methods.maskimpute import MaskImputeAdapterExecution
     from maskimpute_benchmark.runner import AdapterOutcome, evaluate_adapter_outcome
 
-    prepared = _unavailable_prepared(plan_entry)
+    prepared = _unavailable_prepared(plan_entry) if prepared is None else prepared
     evaluator_dataset = ad.AnnData(prepared.method_input.counts)
     evaluator_dataset.obs_names = list(prepared.method_input.obs_ids)
     evaluator_dataset.var_names = list(prepared.method_input.var_ids)
@@ -491,28 +506,32 @@ def _completed_attempt(plan_entry):
     if plan_entry.run.method_id == "maskimpute":
         from maskimpute.count_model import _counts_sha256
 
-        probability = np.where(prepared.method_input.counts == 0, 0.5, 0.0)
+        if probability is None:
+            probability = np.where(prepared.method_input.counts == 0, 0.5, 0.0)
+        if score_diagnostics is None:
+            score_diagnostics = {
+                "source": "retained_calibrator",
+                "score_artifact_sha256": "a" * 64,
+                "score_input_sha256": _counts_sha256(
+                    prepared.method_input.counts
+                ),
+                "score_config_sha256": _authority().count_model_config_sha256,
+                "calibration_file_sha256": "b" * 64,
+                "calibration_payload_sha256": "c" * 64,
+                "retained_calibrator": "identity",
+                "calibration_scope": (
+                    "retained_all_development_for_final_inference"
+                ),
+                "equivalence_reason": (
+                    "retained_identity_calibrator_equals_direct_score"
+                ),
+            }
         result = ImputationResult(
             selective_counts=prepared.method_input.counts,
             denoised_counts=prepared.method_input.counts,
             p_pre_zero=probability,
             latent=np.ones((prepared.method_input.shape[0], 1)),
-            diagnostics={
-                "score": {
-                    "source": "retained_calibrator",
-                    "score_artifact_sha256": "a" * 64,
-                    "score_input_sha256": _counts_sha256(
-                        prepared.method_input.counts
-                    ),
-                    "score_config_sha256": _authority().count_model_config_sha256,
-                    "calibration_artifact_sha256": "b" * 64,
-                    "retained_calibrator": "identity",
-                    "calibration_scope": "retained_all_development_for_final_inference",
-                    "equivalence_reason": (
-                        "retained_identity_calibrator_equals_direct_score"
-                    ),
-                }
-            },
+            diagnostics={"score": score_diagnostics},
         )
         selected_execution = MaskImputeAdapterExecution(
             snapshot=snapshot,
@@ -558,6 +577,156 @@ def _authority():
     )
 
 
+def _write_real_final_score_authority(repository: Path, prepared):
+    from maskimpute import PreZeroCountModelConfig
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+        fit_development_calibration,
+        save_calibration_artifact,
+    )
+    from maskimpute_benchmark.runner import ExecutionAuthorityContext
+
+    ablation_path = repository / "study/ablations.json"
+    ablation_path.parent.mkdir(parents=True, exist_ok=True)
+    ablation_path.write_bytes(Path("study/ablations.json").read_bytes())
+    records = []
+    for index, (draw, view) in enumerate(
+        (
+            ("draw-01", "moderate"),
+            ("draw-01", "severe"),
+            ("draw-02", "moderate"),
+            ("draw-02", "severe"),
+        ),
+        start=1,
+    ):
+        dataset_sha = hashlib.sha256(f"{draw}:{view}".encode()).hexdigest()
+        records.append(
+            CalibrationRecord(
+                p_pre_zero=(0.1, 0.25, 0.7, 0.9),
+                target=(0, 0, 1, 1),
+                mechanism="symsim",
+                biological_id=draw,
+                manifest_sha256=f"{index:x}" * 64,
+                truth_kind="exact_pre_capture",
+                namespace="dev",
+                data_role="development",
+                technical_view=view,
+                dataset_id=f"dataset-{dataset_sha[:24]}",
+                dataset_sha256=dataset_sha,
+                protocol_sha256=DEVELOPMENT_PROTOCOL_SHA256,
+            )
+        )
+    calibration = fit_development_calibration(records)
+    calibration_path = repository / "authority/calibration.json"
+    calibration_path.parent.mkdir(parents=True, exist_ok=True)
+    save_calibration_artifact(calibration_path, calibration)
+    count_config = PreZeroCountModelConfig(n_folds=2, link_max_iter=25)
+    count_payload = asdict(count_config)
+    score_body = {
+        "schema_version": 1,
+        "artifact_type": "maskimpute_final_count_score_authority",
+        "status": "ready",
+        "scope": "truth_free_final_inference",
+        "frozen_method_sha256": "1" * 64,
+        "execution_claim_sha256": "2" * 64,
+        "execution_environment_sha256": "3" * 64,
+        "dataset_manifest_sha256": prepared.binding.manifest_sha256,
+        "selection_contract_file_sha256": "4" * 64,
+        "count_model_config": count_payload,
+        "count_model_config_sha256": canonical_sha256(count_payload),
+    }
+    score_payload = {
+        **score_body,
+        "payload_sha256": canonical_sha256(score_body),
+    }
+    score_path = repository / "authority/count_score_authority.json"
+    score_path.write_text(
+        json.dumps(
+            score_payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    base = {"latent_dim": 2}
+    context = ExecutionAuthorityContext(
+        authority_sha256="9" * 64,
+        base_configuration_json=json.dumps(
+            base, separators=(",", ":"), sort_keys=True
+        ),
+        base_configuration_sha256=canonical_sha256(base),
+        count_model_config_json=json.dumps(
+            count_payload, separators=(",", ":"), sort_keys=True
+        ),
+        count_model_config_sha256=canonical_sha256(count_payload),
+        count_score_manifest_path="authority/count_score_authority.json",
+        count_score_manifest_sha256=hashlib.sha256(score_path.read_bytes()).hexdigest(),
+        retained_calibration_path="authority/calibration.json",
+        retained_calibration_sha256=hashlib.sha256(
+            calibration_path.read_bytes()
+        ).hexdigest(),
+    )
+    return context, calibration
+
+
+def _diagnostics_from_policy(policy: dict[str, object]) -> dict[str, object]:
+    return {
+        "source": policy["score_source"],
+        "score_artifact_sha256": policy["score_artifact_sha256"],
+        "score_input_sha256": policy["score_input_sha256"],
+        "score_config_sha256": policy["score_config_sha256"],
+        "calibration_file_sha256": policy["calibration_file_sha256"],
+        "calibration_payload_sha256": policy["calibration_payload_sha256"],
+        "retained_calibrator": policy["calibration_algorithm"],
+        "calibration_scope": policy["calibration_scope"],
+        "equivalence_reason": policy["calibration_equivalence_reason"],
+    }
+
+
+def _real_final_execution_inputs(repository: Path, entry, plan, registry):
+    from maskimpute_benchmark.runner import (
+        ExecutionRequest,
+        _derive_prezero_execution_authority,
+    )
+
+    prepared = _unavailable_prepared(entry, count_model_ready=True)
+    context, _calibration = _write_real_final_score_authority(repository, prepared)
+    probability, policy = _derive_prezero_execution_authority(
+        prepared,
+        entry.run,
+        context,
+        calibration_usage="retained_all_development",
+        repository=repository,
+    )
+    attempt = _completed_attempt(
+        entry,
+        probability=probability,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+    )
+    configuration = next(
+        value for value in plan.configurations if value.method_id == "maskimpute"
+    )
+    request = ExecutionRequest.create(
+        registry.by_id("maskimpute"),
+        prepared.method_input,
+        model_seed=entry.run.model_seed,
+        configuration=configuration,
+        authority=context,
+        mechanism=entry.run.mechanism,
+        biological_id=entry.run.biological_id,
+        technical_view=entry.run.technical_view,
+        dataset_id=entry.run.dataset_id,
+        timeout_seconds=5,
+        calibration_usage="retained_all_development",
+    )
+    return prepared, context, attempt, request
+
+
 def _prepared_for_plan(plan):
     prepared = {}
     for entry in plan.entries:
@@ -568,7 +737,14 @@ def _prepared_for_plan(plan):
     return prepared
 
 
-def _final_store(output: Path, plan, *, prepared=None, authority=None):
+def _final_store(
+    output: Path,
+    plan,
+    *,
+    prepared=None,
+    authority=None,
+    authority_repository: Path | None = None,
+):
     from maskimpute_benchmark.final_runner import FinalResultStore
 
     return FinalResultStore(
@@ -576,6 +752,7 @@ def _final_store(output: Path, plan, *, prepared=None, authority=None):
         plan,
         _prepared_for_plan(plan) if prepared is None else prepared,
         _authority() if authority is None else authority,
+        authority_repository=authority_repository,
     )
 
 
@@ -704,7 +881,6 @@ def test_final_result_store_binds_successful_final_calibration_request(
     from maskimpute_benchmark.final_runner import (
         build_final_execution_plan,
     )
-    from maskimpute_benchmark.runner import ExecutionRequest
 
     registry = _registry()
     full = build_final_execution_plan(
@@ -723,27 +899,26 @@ def test_final_result_store_binds_successful_final_calibration_request(
         configurations=full.configurations,
         plan_sha256="c" * 64,
     )
-    configuration = next(
-        value for value in plan.configurations if value.method_id == "maskimpute"
+    prepared, authority, attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
     )
-    prepared = _unavailable_prepared(entry)
-    request = ExecutionRequest.create(
-        registry.by_id("maskimpute"),
-        prepared.method_input,
-        model_seed=entry.run.model_seed,
-        configuration=configuration,
-        authority=_authority(),
-        mechanism=entry.run.mechanism,
-        biological_id=entry.run.biological_id,
-        technical_view=entry.run.technical_view,
-        dataset_id=entry.run.dataset_id,
-        timeout_seconds=5,
-        calibration_usage="retained_all_development",
+    prepared_datasets = _prepared_for_plan(plan)
+    prepared_datasets[entry.run.dataset_id] = prepared
+    store = _final_store(
+        tmp_path / "execution",
+        plan,
+        prepared=prepared_datasets,
+        authority=authority,
+        authority_repository=tmp_path,
     )
-    store = _final_store(tmp_path / "execution", plan)
-    store.append(full.entries[0], _unavailable_attempt(full.entries[0]))
+    store.append(
+        full.entries[0],
+        _unavailable_attempt(full.entries[0], prepared=prepared),
+    )
 
-    attempt = _completed_attempt(entry)
     record = store.append(
         entry,
         attempt,
@@ -753,13 +928,13 @@ def test_final_result_store_binds_successful_final_calibration_request(
     assert record["execution_request"] == {
         "calibration_usage": "retained_all_development",
         "configuration_sha256": entry.run.configuration_sha256,
-        "count_score_manifest_sha256": "a" * 64,
+        "count_score_manifest_sha256": authority.count_score_manifest_sha256,
         "dataset_id": entry.run.dataset_id,
         "execution_authority_sha256": "9" * 64,
         "method_input_sha256": request.method_input_sha256,
         "model_seed": entry.run.model_seed,
         "request_sha256": request.request_sha256,
-        "retained_calibration_sha256": "b" * 64,
+        "retained_calibration_sha256": authority.retained_calibration_sha256,
     }
     run = record["run"]
     assert run["native_output_path"] is None
@@ -786,7 +961,16 @@ def test_final_result_store_binds_successful_final_calibration_request(
         score_storage["uncompressed_sha256"]
         == hashlib.sha256(expected_score).hexdigest()
     )
-    assert _final_store(tmp_path / "execution", plan).load_records()[-1] == record
+    assert (
+        _final_store(
+            tmp_path / "execution",
+            plan,
+            prepared=prepared_datasets,
+            authority=authority,
+            authority_repository=tmp_path,
+        ).load_records()[-1]
+        == record
+    )
 
     oversized = dict(run)
     oversized["evaluator_output_shape"] = [2701, 1200]
@@ -813,7 +997,13 @@ def test_final_result_store_binds_successful_final_calibration_request(
         encoding="utf-8",
     )
     with pytest.raises(Exception, match="record|p_pre_zero|compressed"):
-        _final_store(tmp_path / "execution", plan).load_records()
+        _final_store(
+            tmp_path / "execution",
+            plan,
+            prepared=prepared_datasets,
+            authority=authority,
+            authority_repository=tmp_path,
+        ).load_records()
     score_path.write_bytes(score_compressed)
     record_path.write_text(
         json.dumps(record, allow_nan=False, separators=(",", ":"), sort_keys=True)
@@ -824,7 +1014,13 @@ def test_final_result_store_binds_successful_final_calibration_request(
     compressed_path = tmp_path / "execution" / str(run["evaluator_output_path"])
     compressed_path.write_bytes(compressed + b"tamper")
     with pytest.raises(Exception, match="record|artifact|compressed"):
-        _final_store(tmp_path / "execution", plan).load_records()
+        _final_store(
+            tmp_path / "execution",
+            plan,
+            prepared=prepared_datasets,
+            authority=authority,
+            authority_repository=tmp_path,
+        ).load_records()
 
 
 def test_final_result_store_rejects_rehashed_prezero_metric_drift(
@@ -836,7 +1032,6 @@ def test_final_result_store_rejects_rehashed_prezero_metric_drift(
         FinalRunnerContractError,
         build_final_execution_plan,
     )
-    from maskimpute_benchmark.runner import ExecutionRequest
 
     registry = _registry()
     full = build_final_execution_plan(
@@ -858,31 +1053,21 @@ def test_final_result_store_rejects_rehashed_prezero_metric_drift(
         configurations=full.configurations,
         plan_sha256="d" * 64,
     )
-    prepared = _unavailable_prepared(entry)
-    configuration = next(
-        value for value in plan.configurations if value.method_id == "maskimpute"
-    )
-    request = ExecutionRequest.create(
-        registry.by_id("maskimpute"),
-        prepared.method_input,
-        model_seed=entry.run.model_seed,
-        configuration=configuration,
-        authority=_authority(),
-        mechanism=entry.run.mechanism,
-        biological_id=entry.run.biological_id,
-        technical_view=entry.run.technical_view,
-        dataset_id=entry.run.dataset_id,
-        timeout_seconds=5,
-        calibration_usage="retained_all_development",
+    prepared, authority, attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
     )
     output = tmp_path / "execution"
     store = _final_store(
         output,
         plan,
         prepared={prepared.binding.dataset_id: prepared},
-        authority=_authority(),
+        authority=authority,
+        authority_repository=tmp_path,
     )
-    store.append(entry, _completed_attempt(entry), execution_request=request)
+    store.append(entry, attempt, execution_request=request)
     record_path = output / "records/00000001.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
     evidence = record["p_pre_zero_evidence"]
@@ -904,8 +1089,182 @@ def test_final_result_store_rejects_rehashed_prezero_metric_drift(
             output,
             plan,
             prepared={prepared.binding.dataset_id: prepared},
-            authority=_authority(),
+            authority=authority,
+            authority_repository=tmp_path,
         ).load_records()
+
+
+def test_final_result_store_refits_once_and_rejects_coordinated_score_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dataclasses import replace
+    import zlib
+
+    import maskimpute
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.prezero_evidence import _score_report
+    from maskimpute_benchmark.runner import (
+        ExecutionRequest,
+        _derive_prezero_execution_authority,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    source_entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    entry = replace(source_entry, run=replace(source_entry.run, ordinal=1))
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    prepared = _unavailable_prepared(entry, count_model_ready=True)
+    context, _calibration = _write_real_final_score_authority(tmp_path, prepared)
+    probability, policy = _derive_prezero_execution_authority(
+        prepared,
+        entry.run,
+        context,
+        calibration_usage="retained_all_development",
+        repository=tmp_path,
+    )
+    attempt = _completed_attempt(
+        entry,
+        probability=probability,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+    )
+    configuration = next(
+        value for value in plan.configurations if value.method_id == "maskimpute"
+    )
+    request = ExecutionRequest.create(
+        registry.by_id("maskimpute"),
+        prepared.method_input,
+        model_seed=entry.run.model_seed,
+        configuration=configuration,
+        authority=context,
+        mechanism=entry.run.mechanism,
+        biological_id=entry.run.biological_id,
+        technical_view=entry.run.technical_view,
+        dataset_id=entry.run.dataset_id,
+        timeout_seconds=5,
+        calibration_usage="retained_all_development",
+    )
+    refit_calls = 0
+    original_fit = maskimpute.fit_p_pre_zero_count_model
+
+    def counted_fit(*args, **kwargs):
+        nonlocal refit_calls
+        refit_calls += 1
+        return original_fit(*args, **kwargs)
+
+    monkeypatch.setattr(maskimpute, "fit_p_pre_zero_count_model", counted_fit)
+    output = tmp_path / "execution"
+    store = _final_store(
+        output,
+        plan,
+        prepared={prepared.binding.dataset_id: prepared},
+        authority=context,
+        authority_repository=tmp_path,
+    )
+    record = store.append(entry, attempt, execution_request=request)
+    assert refit_calls == 1
+    assert store.load_records() == (record,)
+    assert refit_calls == 1
+    second_seed = replace(
+        entry.run,
+        run_id=f"{entry.run.run_id}-seed-43",
+        model_seed=43,
+    )
+    cached_probability, cached_policy = store._artifacts._expected_prezero_authority(
+        second_seed,
+        prepared,
+        context,
+        calibration_usage="retained_all_development",
+        run_status="completed",
+    )
+    np.testing.assert_array_equal(cached_probability, probability)
+    assert cached_policy == policy
+    assert refit_calls == 1
+
+    evidence = record["p_pre_zero_evidence"]
+    replacement = np.where(
+        prepared.method_input.counts == 0.0,
+        0.125,
+        0.0,
+    ).astype("<f8")
+    raw = replacement.tobytes(order="C")
+    compressed = zlib.compress(raw, level=6)
+    score_path = output / evidence["storage"]["path"]
+    score_path.write_bytes(compressed)
+    evidence["storage"].update(
+        {
+            "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
+            "compressed_nbytes": len(compressed),
+            "uncompressed_sha256": hashlib.sha256(raw).hexdigest(),
+            "uncompressed_nbytes": len(raw),
+        }
+    )
+    evidence["matrix"]["content_sha256"] = hashlib.sha256(raw).hexdigest()
+    evidence["overall"], evidence["strata"] = _score_report(
+        replacement,
+        np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+        np.asarray(prepared.evaluator_dataset.layers["truth"], dtype=np.float64),
+        truth_kind="exact_pre_capture",
+    )
+    semantic = hashlib.sha256()
+    semantic.update(b"maskimpute-realized-p-pre-zero-v1\0")
+    semantic.update(
+        json.dumps(
+            {
+                "identity": evidence["identity"],
+                "shape": evidence["matrix"]["shape"],
+                "dtype": evidence["matrix"]["dtype"],
+                "policy_sha256": evidence["policy_sha256"],
+            },
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    semantic.update(raw)
+    evidence["matrix"]["semantic_sha256"] = semantic.hexdigest()
+    evidence_body = {
+        name: value
+        for name, value in evidence.items()
+        if name not in {"evidence_sha256", "storage"}
+    }
+    evidence["evidence_sha256"] = canonical_sha256(evidence_body)
+    record_path = output / "records/00000001.json"
+    record_path.write_text(
+        json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FinalRunnerContractError, match="matrix differs"):
+        store.load_records()
+    assert refit_calls == 1
 
 
 def test_final_result_store_append_does_not_rehash_the_whole_prefix(

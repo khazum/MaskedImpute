@@ -1244,6 +1244,8 @@ class FinalResultStore:
         plan: FinalExecutionPlan,
         prepared_datasets: Mapping[str, PreparedDataset],
         execution_authority: ExecutionAuthorityContext,
+        *,
+        authority_repository: Path | None = None,
     ) -> None:
         if not isinstance(output_dir, Path):
             raise TypeError("output_dir must be a pathlib.Path")
@@ -1268,7 +1270,10 @@ class FinalResultStore:
             self._validate_prepared_datasets(prepared_datasets)
         )
         self.execution_authority = execution_authority
-        self._artifacts = CheckpointStore(self.output_dir)
+        self._artifacts = CheckpointStore(
+            self.output_dir,
+            authority_repository=authority_repository,
+        )
         self._records_cache: tuple[dict[str, object], ...] | None = None
 
     def _validate_prepared_datasets(
@@ -1660,9 +1665,11 @@ class FinalResultStore:
                 expected_score_config_sha256=(
                     self.execution_authority.count_model_config_sha256
                 ),
-                expected_calibration_artifact_sha256=(
+                expected_calibration_file_sha256=(
                     self.execution_authority.retained_calibration_sha256
                 ),
+                execution_authority=self.execution_authority,
+                calibration_usage="retained_all_development",
             )
         except (RunnerContractError, OSError, ValueError) as error:
             raise FinalRunnerContractError(
@@ -1800,9 +1807,11 @@ class FinalResultStore:
                 expected_score_config_sha256=(
                     self.execution_authority.count_model_config_sha256
                 ),
-                expected_calibration_artifact_sha256=(
+                expected_calibration_file_sha256=(
                     self.execution_authority.retained_calibration_sha256
                 ),
+                execution_authority=self.execution_authority,
+                calibration_usage="retained_all_development",
             )
             self._artifacts._publish_immutable(
                 f"records/{plan_entry.run.ordinal:08d}.json",
@@ -2557,6 +2566,7 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
             plan,
             prepared,
             authority,
+            authority_repository=selected_repository,
         )
         if resuming:
             existing_records = store.load_records()

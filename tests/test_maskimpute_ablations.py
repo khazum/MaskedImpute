@@ -558,7 +558,11 @@ def test_development_reference_records_binding_identity_holdout_receipt():
         PreZeroCountModelConfig,
         fit_p_pre_zero_count_model,
     )
-    from maskimpute.ablations import _fit_ablation_once, load_ablation_registry
+    from maskimpute.ablations import (
+        _derive_prezero_execution_policy,
+        _fit_ablation_once,
+        load_ablation_registry,
+    )
 
     counts = np.array(
         [[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64
@@ -628,6 +632,115 @@ def test_development_reference_records_binding_identity_holdout_receipt():
     assert result.diagnostics["score"]["equivalence_reason"] == (
         "retained_identity_calibrator_equals_direct_score"
     )
+    calibration_payload = artifact.to_dict()
+    calibration_file_sha256 = hashlib.sha256(
+        (
+            json.dumps(
+                calibration_payload,
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    assert result.diagnostics["score"]["calibration_file_sha256"] == (
+        calibration_file_sha256
+    )
+    assert result.diagnostics["score"]["calibration_payload_sha256"] == (
+        calibration_payload["payload_sha256"]
+    )
+    assert calibration_file_sha256 != calibration_payload["payload_sha256"]
+    derived_probability, derived_policy = _derive_prezero_execution_policy(
+        counts,
+        cell_ids,
+        score,
+        artifact,
+        load_ablation_registry(Path("study/ablations.json")).reference,
+        calibration_usage="development_holdout",
+        development_mechanism="symsim",
+        development_biological_id="draw-01",
+    )
+    np.testing.assert_array_equal(derived_probability, result.p_pre_zero)
+    assert derived_policy == result.diagnostics["score"]
+
+
+@pytest.mark.parametrize(
+    ("spec_id", "mechanism", "expected_scope", "expected_equivalence"),
+    (
+        (
+            "direct-score",
+            "symsim",
+            "not_applicable_direct_score",
+            "direct_cross_fitted_count_score",
+        ),
+        (
+            "maskimpute-reference",
+            "sergio",
+            "all_development_external_exact_truth_mechanism",
+            "retained_identity_calibrator_equals_direct_score",
+        ),
+        (
+            "maskimpute-reference",
+            "sparsim",
+            "all_development_external_exact_truth_mechanism",
+            "retained_identity_calibrator_equals_direct_score",
+        ),
+        (
+            "maskimpute-reference",
+            "semisynthetic",
+            "all_development_external_exact_truth_mechanism",
+            "retained_identity_calibrator_equals_direct_score",
+        ),
+    ),
+)
+def test_development_score_derivation_uses_exact_policy_by_mechanism(
+    spec_id: str,
+    mechanism: str,
+    expected_scope: str,
+    expected_equivalence: str,
+) -> None:
+    from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
+    from maskimpute.ablations import (
+        _derive_prezero_execution_policy,
+        load_ablation_registry,
+    )
+
+    counts = np.array(
+        [[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64
+    )
+    cell_ids = tuple(f"cell-{index}" for index in range(len(counts)))
+    score = fit_p_pre_zero_count_model(
+        counts,
+        cell_ids,
+        PreZeroCountModelConfig(n_folds=2, link_max_iter=25),
+    )
+    artifact = _binding_identity_calibration_artifact()
+    registry = load_ablation_registry(Path("study/ablations.json"))
+    spec = registry.reference if spec_id == registry.reference.id else registry.by_id[
+        spec_id
+    ]
+
+    probability, diagnostics = _derive_prezero_execution_policy(
+        counts,
+        cell_ids,
+        score,
+        artifact,
+        spec,
+        calibration_usage="development_holdout",
+        development_mechanism=mechanism,
+        development_biological_id="draw-01",
+    )
+
+    np.testing.assert_array_equal(
+        probability,
+        score.score_for_counts(counts, cell_ids),
+    )
+    assert diagnostics["calibration_scope"] == expected_scope
+    assert diagnostics["equivalence_reason"] == expected_equivalence
+    assert diagnostics["calibration_holdout"] is None
+    assert diagnostics["calibration_fold_receipt"] is None
 
 
 def test_final_reference_uses_retained_all_development_calibrator_on_unseen_draw():

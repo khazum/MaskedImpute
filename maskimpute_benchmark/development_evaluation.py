@@ -2599,6 +2599,7 @@ def load_completed_reconstruction_checkpoint(
     plan: object,
     *,
     prepared_datasets: Mapping[str, PreparedDataset],
+    authority_repository: Path | None = None,
 ) -> ReconstructionEvidence:
     """Load an exact completed runner checkpoint and enumerate its bound files."""
 
@@ -2613,7 +2614,10 @@ def load_completed_reconstruction_checkpoint(
         raise TypeError("checkpoint_directory must be a pathlib.Path")
     if not isinstance(plan, CompetitionPlan):
         raise TypeError("plan must be a CompetitionPlan")
-    store = CheckpointStore(checkpoint_directory)
+    store = CheckpointStore(
+        checkpoint_directory,
+        authority_repository=authority_repository,
+    )
     try:
         report = store.load(plan, prepared_datasets=prepared_datasets)
         if (

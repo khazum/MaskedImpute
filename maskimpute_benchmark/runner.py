@@ -36,6 +36,7 @@ from .prezero_evidence import (
     PreZeroEvidenceError,
     encode_prezero_evidence,
     evaluate_prezero_evidence,
+    policy_from_score_diagnostics,
     validate_stored_prezero_evidence,
     zlib_compress_bound,
 )
@@ -2858,6 +2859,287 @@ def _count_score_input_sha256(prepared: PreparedDataset) -> str:
     return _counts_sha256(prepared.method_input.counts)
 
 
+def _derive_prezero_execution_authority(
+    prepared: PreparedDataset,
+    entry: RunPlanEntry,
+    context: ExecutionAuthorityContext,
+    *,
+    calibration_usage: str,
+    repository: Path,
+) -> tuple[np.ndarray, dict[str, object]]:
+    """Independently derive one exact realized-score matrix and policy."""
+
+    if not isinstance(prepared, PreparedDataset):
+        raise TypeError("prepared must be a PreparedDataset")
+    if not isinstance(entry, RunPlanEntry):
+        raise TypeError("entry must be a RunPlanEntry")
+    if not isinstance(context, ExecutionAuthorityContext):
+        raise TypeError("context must be an ExecutionAuthorityContext")
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    if entry.method_id != "maskimpute" or not entry.requires_count_score:
+        raise RunnerContractError(
+            "realized score authority requires a count-score MaskImpute entry"
+        )
+    if entry.dataset_id != prepared.binding.dataset_id:
+        raise RunnerContractError("score authority dataset differs from its plan entry")
+    repository = repository.resolve(strict=True)
+
+    def authority_path(relative_value: str, name: str) -> Path:
+        if not isinstance(relative_value, str):
+            raise RunnerContractError(f"{name} path must be a string")
+        relative = PurePosixPath(relative_value)
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            raise RunnerContractError(f"{name} path is unsafe")
+        path = repository.joinpath(*relative.parts)
+        for component in (path, *path.parents):
+            if component == repository.parent:
+                break
+            if os.path.lexists(component) and stat.S_ISLNK(
+                component.lstat().st_mode
+            ):
+                raise RunnerContractError(f"{name} path contains a symlink")
+        try:
+            metadata = path.lstat()
+        except OSError as error:
+            raise RunnerContractError(f"{name} file is unavailable") from error
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            raise RunnerContractError(f"{name} must be a unique regular file")
+        return path
+
+    calibration_file_sha256 = _require_sha256(
+        context.retained_calibration_sha256,
+        "retained calibration file checksum",
+    )
+    assert calibration_file_sha256 is not None
+    calibration_path = authority_path(
+        context.retained_calibration_path,
+        "retained calibration authority",
+    )
+    if _file_sha256(calibration_path) != calibration_file_sha256:
+        raise RunnerContractError("retained calibration file checksum mismatch")
+    try:
+        from maskimpute import PreZeroCountModelConfig, fit_p_pre_zero_count_model
+        from maskimpute.ablations import (
+            _derive_prezero_execution_policy,
+            load_ablation_registry,
+        )
+        from maskimpute.calibration import load_calibration_artifact
+
+        count_model_payload = json.loads(
+            context.count_model_config_json,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+        if (
+            not isinstance(count_model_payload, dict)
+            or canonical_sha256(count_model_payload)
+            != context.count_model_config_sha256
+        ):
+            raise RunnerContractError(
+                "count-model configuration differs from execution authority"
+            )
+        count_model_config = PreZeroCountModelConfig(**count_model_payload)
+        calibration = load_calibration_artifact(calibration_path)
+    except Exception as error:
+        raise RunnerContractError(
+            "retained score/calibration authority failed semantic validation"
+        ) from error
+
+    if calibration_usage == "development_holdout":
+        manifest_file_sha256 = _require_sha256(
+            context.count_score_manifest_sha256,
+            "development count-score manifest file checksum",
+        )
+        assert manifest_file_sha256 is not None
+        manifest_path = authority_path(
+            context.count_score_manifest_path,
+            "development count-score manifest authority",
+        )
+        if _file_sha256(manifest_path) != manifest_file_sha256:
+            raise RunnerContractError(
+                "development count-score manifest file checksum mismatch"
+            )
+        manifest = _load_strict_json(manifest_path, "development count-score manifest")
+        expected_manifest_fields = {
+            "schema_version",
+            "artifact_type",
+            "dataset_manifest_sha256",
+            "count_model_config_sha256",
+            "dataset_qc_policy_sha256",
+            "entries",
+            "manifest_sha256",
+        }
+        unsigned_manifest = {
+            name: value for name, value in manifest.items() if name != "manifest_sha256"
+        }
+        if (
+            set(manifest) != expected_manifest_fields
+            or manifest.get("schema_version") != 1
+            or manifest.get("artifact_type")
+            != "maskimpute_development_count_score_manifest"
+            or manifest.get("dataset_manifest_sha256")
+            != prepared.binding.manifest_sha256
+            or manifest.get("count_model_config_sha256")
+            != context.count_model_config_sha256
+            or manifest.get("dataset_qc_policy_sha256")
+            != DatasetQCPolicy.fixed().sha256
+            or manifest.get("manifest_sha256")
+            != canonical_sha256(unsigned_manifest)
+        ):
+            raise RunnerContractError(
+                "development count-score manifest authority is invalid"
+            )
+        entries = manifest.get("entries")
+        if not isinstance(entries, list):
+            raise RunnerContractError(
+                "development count-score manifest entries are invalid"
+            )
+        matches = [
+            value
+            for value in entries
+            if isinstance(value, Mapping)
+            and value.get("mechanism") == entry.mechanism
+            and value.get("biological_id") == entry.biological_id
+            and value.get("technical_view") == entry.technical_view
+            and value.get("dataset_id") == entry.dataset_id
+        ]
+        if len(matches) != 1:
+            raise RunnerContractError(
+                "development count-score manifest lacks one exact dataset entry"
+            )
+        try:
+            from .development_scores import (
+                _score_entry,
+                _score_filename,
+                load_count_score_artifact,
+            )
+
+            score = load_count_score_artifact(
+                manifest_path.parent / _score_filename(prepared)
+            )
+            score.score_for_counts(
+                prepared.method_input.counts,
+                prepared.method_input.obs_ids,
+            )
+            expected_entry = _score_entry(prepared, score)
+        except Exception as error:
+            raise RunnerContractError(
+                "development count-score artifact failed deterministic validation"
+            ) from error
+        if dict(matches[0]) != expected_entry:
+            raise RunnerContractError(
+                "development count-score entry differs from its deterministic artifact"
+            )
+    elif calibration_usage == "retained_all_development":
+        authority_file_sha256 = _require_sha256(
+            context.count_score_manifest_sha256,
+            "final count-score authority file checksum",
+        )
+        assert authority_file_sha256 is not None
+        authority_file = authority_path(
+            context.count_score_manifest_path,
+            "final count-score authority",
+        )
+        if _file_sha256(authority_file) != authority_file_sha256:
+            raise RunnerContractError(
+                "final count-score authority file checksum mismatch"
+            )
+        authority_payload = _load_strict_json(
+            authority_file, "final count-score authority"
+        )
+        expected_authority_fields = {
+            "schema_version",
+            "artifact_type",
+            "status",
+            "scope",
+            "frozen_method_sha256",
+            "execution_claim_sha256",
+            "execution_environment_sha256",
+            "dataset_manifest_sha256",
+            "selection_contract_file_sha256",
+            "count_model_config",
+            "count_model_config_sha256",
+            "payload_sha256",
+        }
+        unsigned_authority = {
+            name: value
+            for name, value in authority_payload.items()
+            if name != "payload_sha256"
+        }
+        if (
+            set(authority_payload) != expected_authority_fields
+            or authority_payload.get("schema_version") != 1
+            or authority_payload.get("artifact_type")
+            != "maskimpute_final_count_score_authority"
+            or authority_payload.get("status") != "ready"
+            or authority_payload.get("scope") != "truth_free_final_inference"
+            or authority_payload.get("dataset_manifest_sha256")
+            != prepared.binding.manifest_sha256
+            or authority_payload.get("count_model_config")
+            != count_model_payload
+            or authority_payload.get("count_model_config_sha256")
+            != context.count_model_config_sha256
+            or authority_payload.get("payload_sha256")
+            != canonical_sha256(unsigned_authority)
+        ):
+            raise RunnerContractError("final count-score authority is invalid")
+        for name in (
+            "frozen_method_sha256",
+            "execution_claim_sha256",
+            "execution_environment_sha256",
+            "selection_contract_file_sha256",
+        ):
+            _require_sha256(
+                authority_payload.get(name), f"final count-score authority {name}"
+            )
+        score = fit_p_pre_zero_count_model(
+            prepared.method_input.counts,
+            prepared.method_input.obs_ids,
+            count_model_config,
+        )
+    else:
+        raise RunnerContractError("score authority calibration usage is invalid")
+
+    if score.config_sha256 != context.count_model_config_sha256:
+        raise RunnerContractError(
+            "deterministic score configuration differs from execution authority"
+        )
+    registry = load_ablation_registry(
+        repository / "study/ablations.json"
+    )
+    score_spec = (
+        registry.reference
+        if entry.requires_calibration
+        else registry.by_id["direct-score"]
+    )
+    try:
+        probability, diagnostics = _derive_prezero_execution_policy(
+            prepared.method_input.counts,
+            prepared.method_input.obs_ids,
+            score,
+            calibration,
+            score_spec,
+            calibration_usage=calibration_usage,
+            development_mechanism=entry.mechanism,
+            development_biological_id=entry.biological_id,
+        )
+        policy = policy_from_score_diagnostics(diagnostics)
+    except Exception as error:
+        raise RunnerContractError(
+            "realized p_pre_zero derivation failed execution-policy validation"
+        ) from error
+    if policy["calibration_file_sha256"] != calibration_file_sha256:
+        raise RunnerContractError(
+            "calibration file and payload digest domains differ from authority"
+        )
+    return probability, policy
+
+
 def _evaluator_output_sha256(
     entry: RunPlanEntry,
     prepared: PreparedDataset,
@@ -3345,11 +3627,81 @@ class CheckpointStore:
         }
     )
 
-    def __init__(self, output_dir: Path) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        authority_repository: Path | None = None,
+    ) -> None:
         if not isinstance(output_dir, Path):
             raise TypeError("output_dir must be a pathlib.Path")
+        if authority_repository is not None and not isinstance(
+            authority_repository, Path
+        ):
+            raise TypeError("authority_repository must be a pathlib.Path")
         self.output_dir = output_dir.absolute()
         self.checkpoint_path = self.output_dir / "checkpoint.json"
+        self.authority_repository = (
+            Path(__file__).resolve().parents[1]
+            if authority_repository is None
+            else authority_repository.resolve(strict=True)
+        )
+        self._prezero_authority_cache: dict[
+            tuple[str, str, str, str, str, str, bool, str],
+            tuple[np.ndarray, dict[str, object]],
+        ] = {}
+
+    def _expected_prezero_authority(
+        self,
+        entry: RunPlanEntry,
+        prepared: PreparedDataset,
+        execution_authority: ExecutionAuthorityContext | None,
+        *,
+        calibration_usage: str,
+        run_status: object,
+    ) -> tuple[np.ndarray | None, dict[str, object] | None]:
+        """Derive and cache the exact matrix/policy for completed score runs."""
+
+        if (
+            run_status != "completed"
+            or entry.method_id != "maskimpute"
+            or not entry.requires_count_score
+        ):
+            return None, None
+        if execution_authority is None:
+            raise RunnerContractError(
+                "completed MaskImpute score lacks frozen execution authority"
+            )
+        key = (
+            execution_authority.authority_sha256,
+            execution_authority.count_model_config_sha256,
+            execution_authority.count_score_manifest_sha256 or "",
+            execution_authority.retained_calibration_sha256 or "",
+            entry.dataset_id,
+            _count_score_input_sha256(prepared),
+            entry.requires_calibration,
+            calibration_usage,
+        )
+        cached = self._prezero_authority_cache.get(key)
+        if cached is None:
+            probability, policy = _derive_prezero_execution_authority(
+                prepared,
+                entry,
+                execution_authority,
+                calibration_usage=calibration_usage,
+                repository=self.authority_repository,
+            )
+            frozen_probability = np.array(
+                probability,
+                dtype="<f8",
+                copy=True,
+                order="C",
+                subok=False,
+            )
+            frozen_probability.setflags(write=False)
+            cached = (frozen_probability, dict(policy))
+            self._prezero_authority_cache[key] = cached
+        return cached
 
     def _ensure_root(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -3711,7 +4063,9 @@ class CheckpointStore:
         prepared: PreparedDataset,
         expected_dataset_qc_policy_sha256: str | None,
         expected_score_config_sha256: str | None,
-        expected_calibration_artifact_sha256: str | None,
+        expected_calibration_file_sha256: str | None,
+        execution_authority: ExecutionAuthorityContext | None = None,
+        calibration_usage: str = "development_holdout",
     ) -> dict[str, object]:
         if not isinstance(value, dict) or set(value) != {
             "run",
@@ -3795,14 +4149,14 @@ class CheckpointStore:
             if (
                 entry.requires_calibration
                 and run.get("status") == "completed"
-                and expected_calibration_artifact_sha256 is None
+                and expected_calibration_file_sha256 is None
             ):
                 raise RunnerContractError(
                     "calibrated completed run lacks its LODO receipt"
                 )
-            if expected_calibration_artifact_sha256 is not None:
+            if expected_calibration_file_sha256 is not None:
                 _require_sha256(
-                    expected_calibration_artifact_sha256,
+                    expected_calibration_file_sha256,
                     "checkpoint final calibration artifact",
                 )
         else:
@@ -3822,8 +4176,8 @@ class CheckpointStore:
                 for digest in values:
                     _require_sha256(digest, f"checkpoint {name}")
             if (
-                expected_calibration_artifact_sha256 is not None
-                and calibration_artifact != expected_calibration_artifact_sha256
+                expected_calibration_file_sha256 is not None
+                and calibration_artifact != expected_calibration_file_sha256
             ):
                 raise RunnerContractError(
                     "checkpoint calibration artifact differs from execution authority"
@@ -3894,6 +4248,13 @@ class CheckpointStore:
             "method_input_sha256": authoritative_method_input_sha256,
             "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
         }
+        expected_probability, expected_policy = self._expected_prezero_authority(
+            entry,
+            prepared,
+            execution_authority,
+            calibration_usage=calibration_usage,
+            run_status=run.get("status"),
+        )
         observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
         try:
             validate_stored_prezero_evidence(
@@ -3910,8 +4271,8 @@ class CheckpointStore:
                 ),
                 requires_count_score=entry.requires_count_score,
                 requires_calibration=entry.requires_calibration,
-                expected_calibration_artifact_sha256=(
-                    expected_calibration_artifact_sha256
+                expected_calibration_file_sha256=(
+                    expected_calibration_file_sha256
                 ),
                 compressed=compressed_p_pre_zero,
                 observed=observed,
@@ -3919,6 +4280,8 @@ class CheckpointStore:
                 truth_kind=truth_kind,
                 expected_score_input_sha256=_count_score_input_sha256(prepared),
                 expected_score_config_sha256=expected_score_config_sha256,
+                expected_probability=expected_probability,
+                expected_policy=expected_policy,
             )
         except PreZeroEvidenceError as error:
             raise RunnerContractError(str(error)) from error
@@ -4013,9 +4376,11 @@ class CheckpointStore:
                 expected_score_config_sha256=plan.input_hashes.get(
                     "count_model_config_sha256"
                 ),
-                expected_calibration_artifact_sha256=plan.input_hashes.get(
+                expected_calibration_file_sha256=plan.input_hashes.get(
                     "retained_calibration_sha256"
                 ),
+                execution_authority=plan.execution_context,
+                calibration_usage="development_holdout",
             )
             for value, entry in zip(records_value, plan.entries, strict=False)
         )
