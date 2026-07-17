@@ -108,6 +108,8 @@ _PUBLICATION_OPERATIONAL_ROOTS = (
     "artifacts/method-sources",
     "artifacts/study/development",
 )
+
+
 class PublicationFreezeError(ValueError):
     """Raised when development evidence cannot authorize a publication freeze."""
 
@@ -182,9 +184,7 @@ def _publication_stage_paths(stage: str) -> PublicationStagePaths:
         reconstruction_directory = (
             "artifacts/study/development/competition-reconstruction"
         )
-        orthogonal_directory = (
-            "artifacts/study/development/evaluation/orthogonal"
-        )
+        orthogonal_directory = "artifacts/study/development/evaluation/orthogonal"
         revision_authority = None
         activation_selection_input = None
         activation_selection_report = None
@@ -240,7 +240,9 @@ def _publication_layout_for_active_stage(active_stage: str) -> PublicationStageL
         "v29": ("base", "v28", "v29"),
     }.get(active_stage)
     if order is None:
-        raise PublicationFreezeError("development stage receipt active stage is invalid")
+        raise PublicationFreezeError(
+            "development stage receipt active stage is invalid"
+        )
     return PublicationStageLayout(
         active_stage=active_stage,
         revision_versions=tuple(stage for stage in order if stage != "base"),
@@ -277,9 +279,7 @@ def _publication_artifact_paths(
             }
         )
     if include_external_reference:
-        result["external_reference_checkpoint"] = (
-            _EXTERNAL_REFERENCE_CHECKPOINT_PATH
-        )
+        result["external_reference_checkpoint"] = _EXTERNAL_REFERENCE_CHECKPOINT_PATH
     if len(result) != len(set(result.values())):
         raise PublicationFreezeError(
             "publication artifact inventory contains duplicate fixed paths"
@@ -317,12 +317,9 @@ def _safe_stage_directory_entries(repository: Path, relative: str) -> tuple[str,
             entries = tuple(sorted(os.listdir(descriptor)))
             opened_after = os.fstat(descriptor)
             named_after = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
-            if (
-                _directory_identity(opened_before)
-                != _directory_identity(opened_after)
-                or _directory_identity(opened_before)
-                != _directory_identity(named_after)
-            ):
+            if _directory_identity(opened_before) != _directory_identity(
+                opened_after
+            ) or _directory_identity(opened_before) != _directory_identity(named_after):
                 raise PublicationFreezeError(
                     f"publication stage directory changed during access: {relative}"
                 )
@@ -531,11 +528,9 @@ def _read_publication_stage_core(
             repository / paths.report,
             f"{paths.stage} selection report",
         )
-        downstream_manifest, downstream_manifest_file_sha256 = (
-            _secure_selection_json(
-                repository / paths.downstream_manifest,
-                f"{paths.stage} downstream manifest",
-            )
+        downstream_manifest, downstream_manifest_file_sha256 = _secure_selection_json(
+            repository / paths.downstream_manifest,
+            f"{paths.stage} downstream manifest",
         )
     except SelectionPromotionError as error:
         raise PublicationFreezeError(
@@ -663,9 +658,7 @@ def _validate_publication_stage_evidence(
                 f"{paths.stage} selection-complete downstream binding is invalid"
             )
         if downstream_binding.get("path") != paths.downstream_directory:
-            raise PublicationFreezeError(
-                f"{paths.stage} downstream path is not fixed"
-            )
+            raise PublicationFreezeError(f"{paths.stage} downstream path is not fixed")
         try:
             _validate_schema_four_source_projection(
                 root,
@@ -694,8 +687,7 @@ def _validate_publication_stage_evidence(
             != downstream_manifest_file_sha256
             or downstream_binding.get("manifest_file_sha256")
             != downstream_manifest_file_sha256
-            or downstream_binding.get("manifest_sha256")
-            != downstream_manifest_sha256
+            or downstream_binding.get("manifest_sha256") != downstream_manifest_sha256
             or downstream_binding.get("plan_sha256") != downstream_plan_sha256
         ):
             raise PublicationFreezeError(
@@ -773,10 +765,8 @@ def _validate_publication_stage_evidence(
             if (
                 activation.version != paths.stage
                 or activation.trigger != paths.stage
-                or activation.selection_input_path
-                != paths.activation_selection_input
-                or activation.selection_report_path
-                != paths.activation_selection_report
+                or activation.selection_input_path != paths.activation_selection_input
+                or activation.selection_report_path != paths.activation_selection_report
                 or activation.selection_input_file_sha256
                 != preceding.complete_input_file_sha256
                 or activation.selection_result_sha256
@@ -805,9 +795,7 @@ def _validate_publication_stage_evidence(
                 complete_result_sha256=complete_result_sha256,
                 report=frozen_report,
                 report_file_sha256=report_file_sha256,
-                downstream_manifest_file_sha256=(
-                    downstream_manifest_file_sha256
-                ),
+                downstream_manifest_file_sha256=(downstream_manifest_file_sha256),
                 downstream_manifest_sha256=downstream_manifest_sha256,
                 downstream_plan_sha256=downstream_plan_sha256,
                 activation=activation,
@@ -1067,9 +1055,7 @@ def _closed_tree_file_entry(
             )
         descriptor = os.open(
             name,
-            os.O_RDONLY
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
             dir_fd=parent,
         )
         opened_before = os.fstat(descriptor)
@@ -1087,10 +1073,9 @@ def _closed_tree_file_entry(
         )
         opened_after = os.fstat(descriptor)
         named_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        if (
-            _identity(opened_before) != _identity(opened_after)
-            or _identity(opened_before) != _identity(named_after)
-        ):
+        if _identity(opened_before) != _identity(opened_after) or _identity(
+            opened_before
+        ) != _identity(named_after):
             raise PublicationFreezeError(
                 f"publication stage tree changed while reading {relative}"
             )
@@ -1181,12 +1166,13 @@ def _snapshot_closed_stage_tree(root: Path) -> tuple[dict[str, object], ...]:
                         dir_fd=descriptor,
                         follow_symlinks=False,
                     )
-                    if (
-                        _tree_directory_identity(opened_before)
-                        != _tree_directory_identity(opened_after)
-                        or _tree_directory_identity(opened_before)
-                        != _tree_directory_identity(named_after)
-                    ):
+                    if _tree_directory_identity(
+                        opened_before
+                    ) != _tree_directory_identity(
+                        opened_after
+                    ) or _tree_directory_identity(
+                        opened_before
+                    ) != _tree_directory_identity(named_after):
                         raise PublicationFreezeError(
                             "publication stage tree directory changed during scan: "
                             f"{child_relative}"
@@ -1246,9 +1232,9 @@ def _snapshot_closed_stage_tree(root: Path) -> tuple[dict[str, object], ...]:
                 dir_fd=parent,
             )
             opened_before = os.fstat(root_descriptor)
-            if _tree_directory_identity(
-                opened_before
-            ) != _tree_directory_identity(named_before):
+            if _tree_directory_identity(opened_before) != _tree_directory_identity(
+                named_before
+            ):
                 raise PublicationFreezeError(
                     "publication stage tree root changed while opening"
                 )
@@ -1259,11 +1245,10 @@ def _snapshot_closed_stage_tree(root: Path) -> tuple[dict[str, object], ...]:
                 dir_fd=parent,
                 follow_symlinks=False,
             )
-            if (
-                _tree_directory_identity(opened_before)
-                != _tree_directory_identity(opened_after)
-                or _tree_directory_identity(opened_before)
-                != _tree_directory_identity(named_after)
+            if _tree_directory_identity(opened_before) != _tree_directory_identity(
+                opened_after
+            ) or _tree_directory_identity(opened_before) != _tree_directory_identity(
+                named_after
             ):
                 raise PublicationFreezeError(
                     "publication stage tree root changed during scan"
@@ -1340,9 +1325,7 @@ def _concurrent_publication_matches(parent: int, name: str, raw: bytes) -> bool:
             return False
         descriptor = os.open(
             name,
-            os.O_RDONLY
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
             dir_fd=parent,
         )
         opened_before = os.fstat(descriptor)
@@ -1364,10 +1347,9 @@ def _concurrent_publication_matches(parent: int, name: str, raw: bytes) -> bool:
             position = end
         opened_after = os.fstat(descriptor)
         named_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        if (
-            _identity(opened_before) != _identity(opened_after)
-            or _identity(opened_before) != _identity(named_after)
-        ):
+        if _identity(opened_before) != _identity(opened_after) or _identity(
+            opened_before
+        ) != _identity(named_after):
             raise PublicationFreezeError(
                 "concurrently published frozen method changed while being read"
             )
@@ -1571,9 +1553,7 @@ def _stage_receipt_inventory_sha256(
     return canonical_sha256(
         {
             "receipt": unsigned,
-            "artifact_bindings": {
-                name: artifacts[name] for name in artifact_names
-            },
+            "artifact_bindings": {name: artifacts[name] for name in artifact_names},
         }
     )
 
@@ -1636,8 +1616,7 @@ def _validate_development_stage_receipt(
             "downstream_manifest_artifact": f"{prefix}_downstream_manifest",
         }
         if row.get("stage") != prefix or any(
-            row.get(field) != artifact
-            for field, artifact in expected_artifacts.items()
+            row.get(field) != artifact for field, artifact in expected_artifacts.items()
         ):
             raise PublicationFreezeError(
                 "development stage receipt artifact references differ"
@@ -1659,20 +1638,34 @@ def _validate_development_stage_receipt(
                     "base development stage receipt activation must be null"
                 )
             continue
-        if type(activation) is not dict or set(activation) != _ACTIVATION_RECEIPT_FIELDS:
+        if (
+            type(activation) is not dict
+            or set(activation) != _ACTIVATION_RECEIPT_FIELDS
+        ):
             raise PublicationFreezeError(
                 f"{prefix} development stage receipt activation differs"
             )
         preceding = layout.stages[index - 1].stage
+        preceding_row = value["stages"][index - 1]
+        if type(preceding_row) is not dict:  # pragma: no cover - validated in order
+            raise PublicationFreezeError(
+                f"{prefix} development stage receipt activation differs"
+            )
+        preceding_complete_artifact = f"{preceding}_selection_complete_input"
+        preceding_report_artifact = f"{preceding}_selection_report"
         if (
             activation.get("version") != prefix
             or activation.get("trigger") != prefix
-            or activation.get("revision_authority_artifact")
-            != f"{prefix}_revision"
+            or activation.get("revision_authority_artifact") != f"{prefix}_revision"
             or activation.get("preceding_complete_input_artifact")
-            != f"{preceding}_selection_complete_input"
-            or activation.get("preceding_report_artifact")
-            != f"{preceding}_selection_report"
+            != preceding_complete_artifact
+            or activation.get("preceding_report_artifact") != preceding_report_artifact
+            or activation.get("selection_input_file_sha256")
+            != artifacts[preceding_complete_artifact]["sha256"]
+            or activation.get("selection_result_sha256")
+            != preceding_row.get("complete_result_sha256")
+            or activation.get("selection_report_file_sha256")
+            != artifacts[preceding_report_artifact]["sha256"]
         ):
             raise PublicationFreezeError(
                 f"{prefix} development stage receipt activation reference differs"
@@ -1687,9 +1680,7 @@ def _validate_development_stage_receipt(
                 f"{prefix} development stage receipt activation {field}",
             )
 
-    unsigned = {
-        key: value for key, value in value.items() if key != "inventory_sha256"
-    }
+    unsigned = {key: value for key, value in value.items() if key != "inventory_sha256"}
     expected_inventory = _stage_receipt_inventory_sha256(
         unsigned,
         expected_names,
@@ -1868,11 +1859,9 @@ def _validate_saver_package_authority(
     if (
         not isinstance(expected_package, Mapping)
         or not isinstance(expected_build, Mapping)
-        or package_binding.get("path")
-        != _COMMON_TRACKED_PATHS["saver_package_lock"]
+        or package_binding.get("path") != _COMMON_TRACKED_PATHS["saver_package_lock"]
         or package_binding.get("sha256") != expected_package.get("sha256")
-        or build_binding.get("path")
-        != _COMMON_TRACKED_PATHS["saver_build_receipt"]
+        or build_binding.get("path") != _COMMON_TRACKED_PATHS["saver_build_receipt"]
         or build_binding.get("sha256") != expected_build.get("sha256")
     ):
         raise PublicationFreezeError(
@@ -2264,9 +2253,7 @@ def _active_execution_evidence(
             )
         return base
     if not isinstance(selected_stage_checkpoint, Mapping):
-        raise PublicationFreezeError(
-            "selected-stage execution checkpoint is absent"
-        )
+        raise PublicationFreezeError("selected-stage execution checkpoint is absent")
     records = selected_stage_checkpoint.get("records")
     if type(records) is not list or not records:
         raise PublicationFreezeError(
@@ -2276,16 +2263,12 @@ def _active_execution_evidence(
     for record in records:
         run = record.get("run") if isinstance(record, Mapping) else None
         if not isinstance(run, Mapping):
-            raise PublicationFreezeError(
-                "selected-stage execution record is invalid"
-            )
+            raise PublicationFreezeError("selected-stage execution record is invalid")
         if run.get("method_id") != "maskimpute":
             raise PublicationFreezeError(
                 "selected-stage execution may contain only MaskImpute rows"
             )
-        identities.add(
-            (run.get("configuration_id"), run.get("configuration_sha256"))
-        )
+        identities.add((run.get("configuration_id"), run.get("configuration_sha256")))
     if identities != {(selected_id, selected_sha256)}:
         raise PublicationFreezeError(
             "selected-stage execution does not contain one unique selected configuration"
@@ -3012,14 +2995,23 @@ def build_frozen_method_payload(
             f"runtime environment {environment_id} inventory checksum",
         )
     artifacts = _artifact_bindings(artifact_bindings)
-    stage_layout = _layout_from_development_stage_receipt(
-        development_stage_receipt
-    )
+    stage_layout = _layout_from_development_stage_receipt(development_stage_receipt)
     stage_receipt = _validate_development_stage_receipt(
         development_stage_receipt,
         stage_layout,
         artifact_bindings,
     )
+    stage_rows = stage_receipt.get("stages")
+    if not isinstance(stage_rows, list) or not stage_rows:
+        raise PublicationFreezeError("development stage receipt is incomplete")
+    active_stage_row = stage_rows[-1]
+    if not isinstance(active_stage_row, Mapping) or _sha256(
+        bindings.get("development_result_sha256"),
+        "active selection development result",
+    ) != active_stage_row.get("complete_result_sha256"):
+        raise PublicationFreezeError(
+            "active stage complete result differs from selection authority"
+        )
     expected_selected_version = (
         "v27" if stage_layout.active_stage == "base" else stage_layout.active_stage
     )
@@ -3723,10 +3715,8 @@ def _validate_development_evidence_package(
         external_binding = artifacts["external_reference_checkpoint"]
         assert isinstance(external_binding, Mapping)
         if (
-            external.checkpoint_path
-            != repository / _EXTERNAL_REFERENCE_CHECKPOINT_PATH
-            or external.checkpoint_file_sha256
-            != external_binding.get("sha256")
+            external.checkpoint_path != repository / _EXTERNAL_REFERENCE_CHECKPOINT_PATH
+            or external.checkpoint_file_sha256 != external_binding.get("sha256")
         ):
             raise PublicationFreezeError(
                 "raw external-reference evidence differs from the frozen receipt"
@@ -3798,9 +3788,7 @@ def freeze_publication_round(repository: Path, round_dir: Path) -> dict[str, obj
         round_dir,
         selected_repository / _FROZEN_METHOD_PATH,
         selected_repository / _COMMON_TRACKED_PATHS["protocol"],
-        environment_path=(
-            selected_repository / _COMMON_TRACKED_PATHS["runtime_lock"]
-        ),
+        environment_path=(selected_repository / _COMMON_TRACKED_PATHS["runtime_lock"]),
         expected_config_sha256=hashes["config_sha256"],
         expected_protocol_sha256=hashes["protocol_sha256"],
         expected_environment_sha256=hashes["environment_sha256"],

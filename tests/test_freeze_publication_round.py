@@ -48,7 +48,7 @@ def _selection_report() -> dict[str, object]:
         "trigger": "freeze_candidate",
         "excluded_configurations": [],
         "authority_bindings": {
-            "development_result_sha256": "a" * 64,
+            "development_result_sha256": hashlib.sha256(b"v28:complete").hexdigest(),
             "evaluation_manifest_file_sha256": "b" * 64,
             "retained_calibration_artifact_sha256": "c" * 64,
         },
@@ -304,13 +304,15 @@ def _minimum_stage_receipt() -> dict[str, object]:
                 "version": "v28",
                 "trigger": "v28",
                 "revision_authority_artifact": "v28_revision",
-                "preceding_complete_input_artifact": (
-                    "base_selection_complete_input"
-                ),
+                "preceding_complete_input_artifact": ("base_selection_complete_input"),
                 "preceding_report_artifact": "base_selection_report",
-                "selection_input_file_sha256": "1" * 64,
-                "selection_result_sha256": "2" * 64,
-                "selection_report_file_sha256": "3" * 64,
+                "selection_input_file_sha256": bindings[
+                    "base_selection_complete_input"
+                ]["sha256"],
+                "selection_result_sha256": hashlib.sha256(b"base:complete").hexdigest(),
+                "selection_report_file_sha256": bindings["base_selection_report"][
+                    "sha256"
+                ],
             }
         rows.append(
             {
@@ -386,6 +388,7 @@ def _payload(
     *,
     selected_calibrator_summary: dict[str, object] | None = None,
     method_execution_evidence: dict[str, dict[str, object]] | None = None,
+    development_stage_receipt: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return build_frozen_method_payload(
         preparation_commit="f" * 40,
@@ -420,7 +423,11 @@ def _payload(
                 "sha256": "4" * 64,
             },
         },
-        development_stage_receipt=_minimum_stage_receipt(),
+        development_stage_receipt=(
+            _minimum_stage_receipt()
+            if development_stage_receipt is None
+            else development_stage_receipt
+        ),
     )
 
 
@@ -1233,9 +1240,7 @@ def _repository_fixture(
         / "artifacts/study/development/evaluation/development_selection_input.json"
     )
     _write_json(source_path, source_input)
-    downstream_directory = (
-        "artifacts/study/development/evaluation/downstream"
-    )
+    downstream_directory = "artifacts/study/development/evaluation/downstream"
     downstream_manifest_path = (
         repository / downstream_directory / "downstream_manifest.json"
     )
@@ -1279,6 +1284,9 @@ def _repository_fixture(
     report["pareto_set"] = [selected_row["configuration_id"]]
     report["assessments"][0]["configuration_id"] = selected_row["configuration_id"]
     report["assessments"][0]["version"] = "v27"
+    report["authority_bindings"]["development_result_sha256"] = selection_input[
+        "result_sha256"
+    ]
     methods = {
         "schema_version": 1,
         "methods": [
@@ -1416,8 +1424,7 @@ def test_prepare_and_validate_frozen_method_recompute_fixed_evidence(
         repository.resolve(),
         json.loads(
             (
-                repository
-                / "artifacts/study/development/evaluation/"
+                repository / "artifacts/study/development/evaluation/"
                 "development_selection_input-downstream.json"
             ).read_text(encoding="utf-8")
         ),
@@ -1802,9 +1809,12 @@ def test_prepare_accepts_identical_concurrently_published_frozen_method(
 
     prepared = prepare_frozen_method(repository)
 
-    assert json.loads(
-        (repository / "study/frozen_method.json").read_text(encoding="utf-8")
-    ) == prepared
+    assert (
+        json.loads(
+            (repository / "study/frozen_method.json").read_text(encoding="utf-8")
+        )
+        == prepared
+    )
     assert not list((repository / "study").glob(".frozen_method.json.*.tmp"))
 
 
@@ -2238,9 +2248,7 @@ def _publication_stage_footprint_paths(stage: str) -> dict[str, tuple[str, str]]
         reconstruction_directory = (
             "artifacts/study/development/competition-reconstruction"
         )
-        orthogonal_directory = (
-            "artifacts/study/development/evaluation/orthogonal"
-        )
+        orthogonal_directory = "artifacts/study/development/evaluation/orthogonal"
     else:
         revision = revision_stage_paths(stage)
         evaluation_manifest = revision.evaluation_manifest
@@ -2344,9 +2352,7 @@ def test_publication_stage_resolver_returns_exact_complete_prefix(
                 revision.activation_selection_report
             )
             assert stage.evaluation_manifest == revision.evaluation_manifest
-            assert stage.reconstruction_directory == (
-                revision.reconstruction_directory
-            )
+            assert stage.reconstruction_directory == (revision.reconstruction_directory)
             assert stage.orthogonal_directory == revision.orthogonal_directory
 
 
@@ -2437,8 +2443,7 @@ def test_unknown_stage_family_suffix_is_rejected(tmp_path: Path) -> None:
     repository.mkdir()
     _materialize_publication_stage_footprint(repository, "base")
     _write_json(
-        repository
-        / "artifacts/study/development/evaluation/"
+        repository / "artifacts/study/development/evaluation/"
         "development_selection_report-v30.json",
         {"trigger": "freeze_candidate"},
     )
@@ -2489,7 +2494,9 @@ def _schema_four_stage_chain(
             "source_selection_input_file_sha256": source_file_sha256,
             "source_selection_result_sha256": source["result_sha256"],
             "manifest_file_sha256": hashlib.sha256(
-                (repository / paths.downstream_directory / "downstream_manifest.json").read_bytes()
+                (
+                    repository / paths.downstream_directory / "downstream_manifest.json"
+                ).read_bytes()
             ).hexdigest(),
             "manifest_sha256": hashlib.sha256(f"{stage}:manifest".encode()).hexdigest(),
             "plan_sha256": hashlib.sha256(f"{stage}:plan".encode()).hexdigest(),
@@ -2530,6 +2537,9 @@ def _schema_four_stage_chain(
             report["pareto_set"] = [selected_id]
             report["assessments"][0]["configuration_id"] = selected_id
             report["assessments"][0]["version"] = selected_version
+        report["authority_bindings"]["development_result_sha256"] = complete[
+            "result_sha256"
+        ]
         reports[stage] = report
         _write_json(repository / paths.selection_report, report)
     return repository, reports
@@ -2676,8 +2686,7 @@ def test_schema_four_stage_rejects_nonpromoted_complete_input(
     repository, reports = _schema_four_stage_chain(tmp_path, "base")
     _patch_schema_four_stage_replay(monkeypatch, repository, reports)
     complete_path = (
-        repository
-        / development_selection_stage_paths(None).selection_complete_input
+        repository / development_selection_stage_paths(None).selection_complete_input
     )
     complete = json.loads(complete_path.read_text(encoding="utf-8"))
     complete["schema_version"] = 2
@@ -2732,9 +2741,7 @@ def test_schema_four_stage_rejects_selected_version_older_than_active_stage(
 
     repository, reports = _schema_four_stage_chain(tmp_path, "v29")
     reports["v29"]["selected_configuration"] = "v28-c01-nb-parent-c03"
-    reports["v29"]["assessments"][0]["configuration_id"] = (
-        "v28-c01-nb-parent-c03"
-    )
+    reports["v29"]["assessments"][0]["configuration_id"] = "v28-c01-nb-parent-c03"
     reports["v29"]["assessments"][0]["version"] = "v28"
     terminal = development_selection_stage_paths("v29").selection_report
     _write_json(repository / terminal, reports["v29"])
@@ -2762,8 +2769,7 @@ def test_schema_four_stage_rejects_core_file_changed_during_replay(
     repository, reports = _schema_four_stage_chain(tmp_path, "base")
     _patch_schema_four_stage_replay(monkeypatch, repository, reports)
     complete_path = (
-        repository
-        / development_selection_stage_paths(None).selection_complete_input
+        repository / development_selection_stage_paths(None).selection_complete_input
     )
 
     def mutate_after_recompute(_repository: Path, payload: dict[str, object]):
@@ -2986,9 +2992,7 @@ def test_tree_receipt_directory_swap_cannot_escape_pinned_root(
 
     def racing_scandir(target):
         nonlocal path_walk
-        descriptor_walk = (
-            type(target) is int and os.fstat(target).st_ino == root_inode
-        )
+        descriptor_walk = type(target) is int and os.fstat(target).st_ino == root_inode
         pathname_walk = not isinstance(target, int) and Path(target) == root
         if not swapped and (descriptor_walk or pathname_walk):
             swap_in()
@@ -3123,9 +3127,15 @@ def test_stage_receipt_closes_exact_inventory_and_activation_chain(
         "revision_authority_artifact": "v28_revision",
         "preceding_complete_input_artifact": "base_selection_complete_input",
         "preceding_report_artifact": "base_selection_report",
-        "selection_input_file_sha256": evidence.stages[1].activation.selection_input_file_sha256,
-        "selection_result_sha256": evidence.stages[1].activation.selection_result_sha256,
-        "selection_report_file_sha256": evidence.stages[1].activation.selection_report_file_sha256,
+        "selection_input_file_sha256": evidence.stages[
+            1
+        ].activation.selection_input_file_sha256,
+        "selection_result_sha256": evidence.stages[
+            1
+        ].activation.selection_result_sha256,
+        "selection_report_file_sha256": evidence.stages[
+            1
+        ].activation.selection_report_file_sha256,
     }
     assert all(
         isinstance(stage[key], str)
@@ -3180,8 +3190,67 @@ def test_stage_receipt_rejects_any_inventory_or_chain_mutation(
     else:
         changed["inventory_sha256"] = "0" * 64
 
-    with pytest.raises(PublicationFreezeError, match="stage receipt|inventory|activation"):
+    with pytest.raises(
+        PublicationFreezeError, match="stage receipt|inventory|activation"
+    ):
         _validate_development_stage_receipt(changed, layout, bindings)
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "selection_input_file_sha256",
+        "selection_result_sha256",
+        "selection_report_file_sha256",
+    ),
+)
+def test_stage_receipt_rejects_coherently_rehashed_activation_drift(
+    field: str,
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        _publication_layout_for_active_stage,
+        _stage_receipt_inventory_sha256,
+        _validate_development_stage_receipt,
+    )
+
+    layout = _publication_layout_for_active_stage("v28")
+    bindings = _minimum_artifact_bindings()
+    changed = deepcopy(_minimum_stage_receipt())
+    activation = changed["stages"][1]["activation"]
+    assert isinstance(activation, dict)
+    activation[field] = "f" * 64
+    unsigned = {
+        key: value for key, value in changed.items() if key != "inventory_sha256"
+    }
+    changed["inventory_sha256"] = _stage_receipt_inventory_sha256(
+        unsigned,
+        changed["artifact_names"],
+        bindings,
+    )
+
+    with pytest.raises(PublicationFreezeError, match="activation.*differs"):
+        _validate_development_stage_receipt(changed, layout, bindings)
+
+
+def test_frozen_method_rejects_coherently_rehashed_active_stage_result() -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        _stage_receipt_inventory_sha256,
+    )
+
+    bindings = _minimum_artifact_bindings()
+    changed = deepcopy(_minimum_stage_receipt())
+    changed["stages"][-1]["complete_result_sha256"] = "f" * 64
+    unsigned = {
+        key: value for key, value in changed.items() if key != "inventory_sha256"
+    }
+    changed["inventory_sha256"] = _stage_receipt_inventory_sha256(
+        unsigned,
+        changed["artifact_names"],
+        bindings,
+    )
+
+    with pytest.raises(PublicationFreezeError, match="active stage.*result"):
+        _payload(development_stage_receipt=changed)
 
 
 def test_v29_configuration_is_loaded_from_exact_tracked_revision_authority() -> None:
@@ -3319,14 +3388,16 @@ def test_selected_stage_execution_swaps_only_maskimpute_evidence() -> None:
     )
 
     assert evidence["maskimpute"]["artifact"] == "v29_reconstruction_checkpoint"
-    assert evidence["maskimpute"]["checkpoint_payload_sha256"] == revision[
-        "checkpoint_sha256"
-    ]
+    assert (
+        evidence["maskimpute"]["checkpoint_payload_sha256"]
+        == revision["checkpoint_sha256"]
+    )
     for method_id in ("observed", "capacity-matched-ae", "magic"):
         assert evidence[method_id]["artifact"] == "base_reconstruction_checkpoint"
-        assert evidence[method_id]["checkpoint_payload_sha256"] == base[
-            "checkpoint_sha256"
-        ]
+        assert (
+            evidence[method_id]["checkpoint_payload_sha256"]
+            == base["checkpoint_sha256"]
+        )
 
 
 @pytest.mark.parametrize(
@@ -3398,9 +3469,9 @@ def test_base_comparator_denominator_remains_unchanged_for_base_selection() -> N
     )
 
     assert set(evidence) == {"observed", "maskimpute", "magic"}
-    assert {
-        row["artifact"] for row in evidence.values()
-    } == {"base_reconstruction_checkpoint"}
+    assert {row["artifact"] for row in evidence.values()} == {
+        "base_reconstruction_checkpoint"
+    }
 
 
 def test_stage_receipt_payload_is_retained_by_outer_payload_checksum() -> None:
@@ -3459,17 +3530,17 @@ def test_revision_prepare_and_clean_validate_exact_active_stage(
     prepared = prepare_frozen_method(repository)
 
     assert prepared["development_stage_receipt"]["active_stage"] == active_stage
-    assert prepared["development_stage_receipt"]["revision_versions"] == list(
-        versions
-    )
+    assert prepared["development_stage_receipt"]["revision_versions"] == list(versions)
     assert prepared["selected_version"] == active_stage
     denominator = {row["id"]: row for row in prepared["method_denominator"]}
-    assert denominator["maskimpute"]["development_execution_evidence"][
-        "artifact"
-    ] == f"{active_stage}_reconstruction_checkpoint"
-    assert denominator["observed"]["development_execution_evidence"][
-        "artifact"
-    ] == "base_reconstruction_checkpoint"
+    assert (
+        denominator["maskimpute"]["development_execution_evidence"]["artifact"]
+        == f"{active_stage}_reconstruction_checkpoint"
+    )
+    assert (
+        denominator["observed"]["development_execution_evidence"]["artifact"]
+        == "base_reconstruction_checkpoint"
+    )
     assert validate_frozen_method(repository) == prepared
 
 
