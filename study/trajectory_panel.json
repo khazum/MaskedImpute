@@ -1,0 +1,27 @@
+{
+  "authority_sha256": "de843d2eb4b069a80755ec790b65f0ef25a3f0586c9ab34880567a0630bbbc7b",
+  "binding_sha256": "0ba4072748f72219ea9405b8149a005c7e73df29ac34c584bff98fd875e57169",
+  "biological_id": "trajectory-draw-01",
+  "cells": 2700,
+  "condition": "trajectory-reference",
+  "draw": 1,
+  "expected_dataset_sha256": "39b6363967f7bbbfa67cee98c7246670cb52088ab6cd90323ede438b81fd9d48",
+  "generator": {
+    "algorithm": "deterministic-smooth-count-allocation-v1",
+    "baseline_activity": 0.05,
+    "count_allocation": "largest_remainder_gene_id_tiebreak",
+    "early_genes": 40,
+    "late_genes": 40,
+    "library_size_minimum": 3000,
+    "library_size_span": 1001,
+    "transient_genes": 40,
+    "transient_width": 0.08
+  },
+  "genes": 120,
+  "mechanism": "synthetic_trajectory",
+  "root_cell_id": "cell-000001",
+  "schema_version": "trajectory-panel-v1",
+  "seed": 2026071601,
+  "source_id": "maskedimpute-exact-latent-trajectory-v1",
+  "technical_view": "deterministic-count-allocation"
+}
