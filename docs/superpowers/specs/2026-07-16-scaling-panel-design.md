@@ -5,8 +5,11 @@
 ## Purpose
 
 The scaling panel measures whether the frozen method and representative learned
-comparators remain executable as cell count grows. It is not an additional
-biological-replicate panel and cannot affect model selection.
+comparators remain executable as cell count grows. It is a supplementary phase
+of the claimed frozen final round, rooted at `<round>/results/scaling`, rather
+than a post-hoc analysis. It is not an additional biological-replicate panel
+and cannot affect model selection. The fixed denominator must be complete and
+validated before the study may write its sole final-evaluation receipt.
 
 ## Closed design
 
@@ -46,6 +49,26 @@ name a ceiling that was actually crossed; the other ceiling may have been
 crossed at the same time. Timeouts, resource failures, and unavailable runs
 remain in the result set.
 
+## Final-round lifecycle and publication authority
+
+The public runner accepts only the claimed canonical round. It loads the
+already frozen authorities, runs or resumes the scaling phase, and refuses to
+record final evaluation until all four datasets and all twenty method-size rows
+are present and replay-valid. The pre-receipt supplementary-phase hook retains
+an explicit insertion seam for the planned trajectory phase; scaling does not
+create a second receipt or a parallel publication lifecycle.
+
+The final evaluation manifest binds the full scaling plan payload, the latest
+checkpoint payload and file identity, every immutable checkpoint snapshot, and
+the exact bytes of all retained datasets, run artifacts, executor receipts,
+logs, and optional native/evaluator matrices. These paths are part of the same
+cumulative result inventory used by the final-round receipt. Adding, removing,
+or coherently rewriting scaling evidence after evaluation therefore invalidates
+the receipt. Publication analysis must enter through the evaluated scaling
+loader, which revalidates the receipt, frozen repository, exact inventory,
+checkpoint denominator, and replayed evidence; an unevaluated claimed round is
+not publication evidence.
+
 ## Storage and resume policy
 
 Every completed run retains both its native method matrix and its evaluator
@@ -68,13 +91,23 @@ receipted, and then deleted.
 
 Each run is first written into a private staging directory. The complete set of
 files is validated there, the directory is atomically renamed into its final
-run path, and only then is the checkpoint replaced. A retry removes only a
-closed, allow-listed orphan transaction left by a crash; malformed or symlinked
-paths are rejected. Every checkpoint and artifact path component must remain
-inside the output root and must not be a symbolic link. A canonical checkpoint
-binds a strict plan prefix, dataset receipts, logs, metrics, code, frozen
-method, runtime, and tracked authorities. Resume refuses changed bytes or a
-changed implementation hash.
+run path, and only then is the next immutable checkpoint snapshot published.
+Snapshots are contiguous numbered files under `results/scaling/checkpoints`;
+an existing snapshot is never replaced. Each cleaned dataset publication and
+each attempt publication immediately appends its snapshot to the study's
+append-only incremental-result journal. A canonical checkpoint binds a strict
+plan prefix, dataset receipts, logs, metrics, code, frozen method, runtime, and
+tracked authorities. Resume refuses changed bytes, a changed implementation
+hash, a missing history prefix, or a non-contiguous snapshot sequence.
+
+Load, transaction publication, checkpoint publication, and recovery are
+serialized with an exclusive lock on a stable open directory descriptor. A
+writer must compare the current checkpoint history with the cached authority
+before removing anything. Recovery may remove only closed, allow-listed,
+plan-owned staging or run directories that are not referenced by the validated
+checkpoint; referenced directories and ambiguous paths are preserved or
+rejected. Every checkpoint and artifact path component must remain inside the
+output root and must not be a symbolic link.
 
 On each fresh process resume, and once more before terminal publication, the
 store derives the expected seed triple, ephemeral protocol, dataset ID,
@@ -90,11 +123,27 @@ native artifact, rebuilds the method-output snapshot, reruns the tracked output
 converter, and requires byte-exact equality with the retained evaluator
 matrix. All replayed values must equal the checkpoint exactly.
 
-After that full validation, appends advance an in-memory immutable checkpoint
-snapshot transactionally: only the new receipt or run and its artifacts are
-validated before the canonical checkpoint is replaced. Historical H5ADs are
-not recursively reopened or rehashed on every append. Before an append, a
-compare-before-replace check requires the on-disk checkpoint bytes to equal the
-version that populated the cache. Returned snapshots are detached deep copies,
-so caller mutation cannot alter cached authority. Self-consistent checkpoint
-hashes alone are not evidence of a valid scaling row.
+Before AnnData is allowed to deserialize a retained H5AD, the validator enforces
+a plan-derived file-size ceiling and performs a bounded HDF5 metadata walk over
+the exact allowed groups, shapes, encodings, dtypes, links, and keys. It rejects
+oversized, appended, aliased, or malformed structures without reading the bulk
+matrix. After `read_h5ad`, it requires the file's device, inode, mode, link
+count, size, modification time, and change time to be unchanged. Fresh
+validation still hashes each retained H5AD once and preserves full deterministic
+regeneration and metric replay.
+
+After full validation, appends advance a detached in-memory checkpoint snapshot
+transactionally: only the new receipt or run and its artifacts are validated
+before a new numbered snapshot is published. Historical H5ADs are not
+recursively reopened or rehashed on every append. Before an append, the entire
+on-disk checkpoint history must equal the version that populated the cache.
+Returned snapshots are detached deep copies, so caller mutation cannot alter
+cached authority. Self-consistent checkpoint hashes alone are not evidence of
+a valid scaling row.
+
+`scaling_storage_preflight(authority)` is a pure, authority-derived calculation
+for the future combined primary/trajectory/scaling disk-space gate. It performs
+no execution or filesystem writes and receipts the planned run count, H5AD,
+run-artifact, immutable-checkpoint-history, materialization-peak, and final
+retained-byte bounds. Callers use its `required_free_bytes` value when composing
+the combined final-round preflight.

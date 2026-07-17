@@ -1768,3 +1768,115 @@ def test_frozen_final_cli_exposes_only_round_locator() -> None:
         "--method",
     ):
         assert forbidden not in completed.stdout
+
+
+def test_incomplete_scaling_blocks_final_evaluation_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.scaling as scaling
+    import maskimpute_benchmark.study as study
+
+    receipt_called = False
+
+    monkeypatch.setattr(
+        scaling,
+        "run_scaling_panel",
+        lambda _repository, _round_dir: SimpleNamespace(
+            status="running",
+            planned_run_count=20,
+            records=(),
+            datasets=(),
+        ),
+    )
+
+    def record_receipt(*_args, **_kwargs):
+        nonlocal receipt_called
+        receipt_called = True
+        return {"state": "evaluated"}
+
+    monkeypatch.setattr(study, "record_final_evaluation", record_receipt)
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="scaling.*denominator.*incomplete",
+    ):
+        final_runner._record_final_evaluation_after_scaling(
+            tmp_path,
+            tmp_path,
+            {"schema_version": 1, "status": "completed"},
+        )
+
+    assert receipt_called is False
+
+
+def test_complete_scaling_is_bound_before_the_only_evaluation_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.scaling as scaling
+    import maskimpute_benchmark.study as study
+
+    checkpoint = SimpleNamespace(
+        status="completed",
+        planned_run_count=1,
+        records=({"run": {"run_id": "scaling-observed-10000"}},),
+        datasets=({"cells": 10_000},),
+    )
+    evidence = {
+        "schema_version": 1,
+        "status": "completed",
+        "evidence_sha256": "a" * 64,
+    }
+    cumulative = [
+        {"path": "results/main.txt", "sha256": "b" * 64},
+        {"path": "results/scaling/checkpoint.json", "sha256": "c" * 64},
+    ]
+    recorded: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        scaling,
+        "run_scaling_panel",
+        lambda _repository, _round_dir: checkpoint,
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_scaling_evaluation_evidence",
+        lambda _repository, _round_dir, observed, _result_files: (
+            evidence if observed is checkpoint else None
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_owned_final_result_file_manifest",
+        lambda _round_dir: {"result_files": cumulative},
+    )
+
+    def record_receipt(_round_dir, manifest, *, repo):
+        recorded.update(manifest)
+        recorded["repository"] = repo
+        return {"state": "evaluated"}
+
+    monkeypatch.setattr(study, "record_final_evaluation", record_receipt)
+    base = {
+        "schema_version": 1,
+        "status": "completed",
+        "result_files": [cumulative[0]],
+    }
+
+    result = final_runner._record_final_evaluation_after_scaling(
+        tmp_path,
+        tmp_path,
+        base,
+    )
+
+    assert result == {"state": "evaluated"}
+    assert recorded["scaling_evidence"] == evidence
+    assert recorded["result_files"] == cumulative
+    assert recorded["repository"] == tmp_path
+    assert "scaling_evidence" not in base

@@ -844,6 +844,232 @@ def final_result_file_manifest(round_dir: Path) -> dict[str, object]:
     return {"result_files": files}
 
 
+def _scaling_checkpoint_file_bindings(round_dir: Path) -> dict[str, str]:
+    """Derive every scaling result path and digest from its closed checkpoint."""
+
+    checkpoint_root = round_dir / "results/scaling/checkpoints"
+    if not os.path.lexists(checkpoint_root):
+        return {}
+    try:
+        root_metadata = checkpoint_root.lstat()
+        checkpoint_paths = tuple(
+            sorted(checkpoint_root.iterdir(), key=lambda path: path.name)
+        )
+    except OSError as error:
+        raise FinalRunnerContractError(
+            "supplementary scaling checkpoint history is unavailable"
+        ) from error
+    expected_names = tuple(
+        f"{index:08d}.json" for index in range(1, len(checkpoint_paths) + 1)
+    )
+    if (
+        stat.S_ISLNK(root_metadata.st_mode)
+        or not stat.S_ISDIR(root_metadata.st_mode)
+        or not checkpoint_paths
+        or tuple(path.name for path in checkpoint_paths) != expected_names
+    ):
+        raise FinalRunnerContractError(
+            "supplementary scaling checkpoint history is not canonical"
+        )
+    bindings: dict[str, str] = {}
+    previous_datasets: list[object] = []
+    previous_records: list[object] = []
+    expected_plan: object = None
+    expected_inputs: object = None
+    expected_planned: object = None
+    checkpoint: dict[str, object] | None = None
+    raw = b""
+    for sequence, checkpoint_path in enumerate(checkpoint_paths, start=1):
+        raw = _read_unique_file(
+            checkpoint_path,
+            f"supplementary scaling checkpoint {sequence}",
+            max_bytes=32 * 1024 * 1024,
+        )
+        checkpoint = _strict_json(raw, "supplementary scaling checkpoint")
+        if (
+            set(checkpoint)
+            != {
+                "schema_version",
+                "plan_sha256",
+                "input_hashes",
+                "planned_run_count",
+                "status",
+                "datasets",
+                "records",
+                "checkpoint_sha256",
+            }
+            or raw != _canonical_bytes(checkpoint) + b"\n"
+        ):
+            raise FinalRunnerContractError(
+                "supplementary scaling checkpoint is not canonical"
+            )
+        body = {
+            key: value
+            for key, value in checkpoint.items()
+            if key != "checkpoint_sha256"
+        }
+        input_hashes = checkpoint.get("input_hashes")
+        datasets = checkpoint.get("datasets")
+        records = checkpoint.get("records")
+        planned = checkpoint.get("planned_run_count")
+        if (
+            checkpoint.get("schema_version") != 1
+            or _sha256(checkpoint.get("plan_sha256"), "scaling plan")
+            != checkpoint.get("plan_sha256")
+            or not isinstance(input_hashes, Mapping)
+            or not input_hashes
+            or any(
+                not isinstance(name, str)
+                or _sha256(value, f"scaling input {name}") != value
+                for name, value in input_hashes.items()
+            )
+            or type(planned) is not int
+            or planned <= 0
+            or not isinstance(datasets, list)
+            or len(datasets) > 4
+            or not isinstance(records, list)
+            or len(records) > planned
+            or len(datasets) + len(records) != sequence
+            or datasets[: len(previous_datasets)] != previous_datasets
+            or records[: len(previous_records)] != previous_records
+            or checkpoint.get("checkpoint_sha256") != canonical_sha256(body)
+        ):
+            raise FinalRunnerContractError(
+                "supplementary scaling checkpoint binding is invalid"
+            )
+        if sequence == 1:
+            expected_plan = checkpoint.get("plan_sha256")
+            expected_inputs = input_hashes
+            expected_planned = planned
+        elif (
+            checkpoint.get("plan_sha256") != expected_plan
+            or input_hashes != expected_inputs
+            or planned != expected_planned
+        ):
+            raise FinalRunnerContractError(
+                "supplementary scaling checkpoint authority changed"
+            )
+        expected_status = (
+            "completed" if datasets and len(records) == planned else "running"
+        )
+        if checkpoint.get("status") != expected_status:
+            raise FinalRunnerContractError(
+                "supplementary scaling checkpoint status is invalid"
+            )
+        previous_datasets = datasets
+        previous_records = records
+        bindings[
+            f"results/scaling/checkpoints/{checkpoint_path.name}"
+        ] = hashlib.sha256(raw).hexdigest()
+    assert checkpoint is not None
+    datasets = previous_datasets
+    records = previous_records
+
+    def add(
+        relative_value: object,
+        digest_value: object,
+        name: str,
+        *,
+        expected: str | None = None,
+    ) -> None:
+        if not isinstance(relative_value, str):
+            raise FinalRunnerContractError(f"{name} path is invalid")
+        relative = PurePosixPath(relative_value)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or ".." in relative.parts
+            or (expected is not None and relative.as_posix() != expected)
+        ):
+            raise FinalRunnerContractError(f"{name} path is unsafe")
+        path = f"results/scaling/{relative.as_posix()}"
+        digest = _sha256(digest_value, f"{name} file")
+        if path in bindings:
+            raise FinalRunnerContractError(f"{name} path is duplicated")
+        bindings[path] = digest
+
+    observed_cells: list[int] = []
+    for index, receipt in enumerate(datasets):
+        if not isinstance(receipt, Mapping):
+            raise FinalRunnerContractError(
+                "supplementary scaling dataset receipt is invalid"
+            )
+        cells = receipt.get("cells")
+        if (
+            type(cells) is not int
+            or cells not in {10_000, 25_000, 50_000, 100_000}
+            or cells in observed_cells
+            or type(receipt.get("moderate_output_size_bytes")) is not int
+            or receipt["moderate_output_size_bytes"] <= 0
+        ):
+            raise FinalRunnerContractError(
+                "supplementary scaling dataset receipt is invalid"
+            )
+        observed_cells.append(cells)
+        add(
+            receipt.get("moderate_output_path"),
+            receipt.get("moderate_output_file_sha256"),
+            f"supplementary scaling dataset {index}",
+            expected=f"generated/scaling-{cells}/dataset/moderate.h5ad",
+        )
+
+    seen_runs: set[str] = set()
+    for index, record in enumerate(records):
+        if (
+            not isinstance(record, Mapping)
+            or set(record) != {"run", "metrics", "record_sha256"}
+            or not isinstance(record.get("run"), Mapping)
+            or not isinstance(record.get("metrics"), list)
+        ):
+            raise FinalRunnerContractError(
+                "supplementary scaling record is invalid"
+            )
+        unsigned = {key: value for key, value in record.items() if key != "record_sha256"}
+        if record.get("record_sha256") != canonical_sha256(unsigned):
+            raise FinalRunnerContractError(
+                "supplementary scaling record binding is invalid"
+            )
+        run = record["run"]
+        run_id = run.get("run_id")
+        if (
+            not isinstance(run_id, str)
+            or _SAFE_ID.fullmatch(run_id) is None
+            or not run_id.startswith("scaling-")
+            or run_id in seen_runs
+        ):
+            raise FinalRunnerContractError(
+                "supplementary scaling run identity is invalid"
+            )
+        seen_runs.add(run_id)
+        base = f"runs/{run_id}"
+        for prefix, filename in (
+            ("stdout", "run.stdout"),
+            ("stderr", "run.stderr"),
+            ("executor_receipt", "run.executor-receipt.json"),
+        ):
+            add(
+                run.get(f"{prefix}_path"),
+                run.get(f"{prefix}_file_sha256"),
+                f"supplementary scaling record {index} {prefix}",
+                expected=f"{base}/{filename}",
+            )
+        for prefix, filename in (
+            ("native_output", "run.native-f64.zlib"),
+            ("evaluator_output", "run.log2-cp10k-f64.zlib"),
+        ):
+            relative = run.get(f"{prefix}_path")
+            digest = run.get(f"{prefix}_file_sha256")
+            if relative is None and digest is None:
+                continue
+            add(
+                relative,
+                digest,
+                f"supplementary scaling record {index} {prefix}",
+                expected=f"{base}/{filename}",
+            )
+    return bindings
+
+
 def _owned_final_result_paths(round_dir: Path) -> frozenset[str]:
     """Derive exact dataset/final-runner paths; never bless arbitrary files."""
 
@@ -989,6 +1215,7 @@ def _owned_final_result_paths(round_dir: Path) -> frozenset[str]:
     execution_manifest = execution_root / "execution_manifest.json"
     if os.path.lexists(execution_manifest):
         owned.add("results/final/execution/execution_manifest.json")
+    owned.update(_scaling_checkpoint_file_bindings(destination))
     return frozenset(owned)
 
 
@@ -1232,6 +1459,29 @@ def _record_incremental_results_if_changed(
         if str(error) == "incremental result manifest adds no files":
             return None
         raise
+
+
+def _recover_scaling_transactions_for_resume(
+    repository: Path,
+    round_dir: Path,
+) -> tuple[str, ...]:
+    """Recover checkpoint-unreferenced scaling run publications before journaling."""
+
+    scaling_root = round_dir / "results/scaling"
+    if not os.path.lexists(scaling_root):
+        return ()
+    from .scaling import ScalingResultStore, load_scaling_execution_authority
+
+    try:
+        authority = load_scaling_execution_authority(repository)
+        return ScalingResultStore(
+            scaling_root,
+            authority.plan,
+        ).recover_unreferenced_transactions()
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "supplementary scaling transactions are not resumable"
+        ) from error
 
 
 class FinalResultStore:
@@ -2313,6 +2563,139 @@ def validate_final_execution_for_evaluation(
     return {**body, "validation_sha256": canonical_sha256(body)}
 
 
+def _scaling_evaluation_evidence(
+    repository: Path,
+    round_dir: Path,
+    checkpoint: object,
+    result_files: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Bind the validated scaling plan, checkpoint, and exact result bytes."""
+
+    from .scaling import (
+        ScalingCheckpoint,
+        load_scaling_execution_authority,
+        scaling_checkpoint_payload,
+        scaling_plan_payload,
+    )
+
+    if not isinstance(checkpoint, ScalingCheckpoint):
+        raise FinalRunnerContractError(
+            "supplementary scaling checkpoint is not canonical"
+        )
+    authority = load_scaling_execution_authority(repository)
+    plan_payload = scaling_plan_payload(authority.plan)
+    checkpoint_payload = scaling_checkpoint_payload(checkpoint)
+    if (
+        checkpoint.plan_sha256 != authority.plan.plan_sha256
+        or dict(checkpoint.input_hashes) != dict(authority.plan.input_hashes)
+        or checkpoint.status != "completed"
+        or len(checkpoint.records) != checkpoint.planned_run_count
+    ):
+        raise FinalRunnerContractError(
+            "supplementary scaling denominator is incomplete or changed"
+        )
+    checkpoint_relative = (
+        "results/scaling/checkpoints/"
+        f"{len(checkpoint.datasets) + len(checkpoint.records):08d}.json"
+    )
+    checkpoint_path = round_dir / checkpoint_relative
+    raw = _read_unique_file(
+        checkpoint_path,
+        "supplementary scaling checkpoint",
+        max_bytes=32 * 1024 * 1024,
+    )
+    if raw != _canonical_bytes(checkpoint_payload) + b"\n":
+        raise FinalRunnerContractError(
+            "supplementary scaling checkpoint differs from its validated payload"
+        )
+    declared = _scaling_checkpoint_file_bindings(round_dir)
+    observed: dict[str, str] = {}
+    for row in result_files:
+        if not isinstance(row, Mapping):
+            raise FinalRunnerContractError("final result inventory is invalid")
+        path = row.get("path")
+        digest = row.get("sha256")
+        if isinstance(path, str) and path.startswith("results/scaling/"):
+            if path in observed:
+                raise FinalRunnerContractError(
+                    "supplementary scaling result path is duplicated"
+                )
+            observed[path] = _sha256(digest, f"supplementary scaling result {path}")
+    if observed != declared:
+        raise FinalRunnerContractError(
+            "supplementary scaling result inventory differs from its checkpoint"
+        )
+    scaling_files = [
+        {"path": path, "sha256": observed[path]} for path in sorted(observed)
+    ]
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "status": "completed",
+        "plan": plan_payload,
+        "checkpoint_path": checkpoint_relative,
+        "checkpoint_file_sha256": hashlib.sha256(raw).hexdigest(),
+        "checkpoint_payload": checkpoint_payload,
+        "result_files": scaling_files,
+    }
+    return {**body, "evidence_sha256": canonical_sha256(body)}
+
+
+def _run_pre_receipt_supplementary_phases(
+    repository: Path,
+    round_dir: Path,
+) -> Mapping[str, object]:
+    """Run frozen supplementary phases at the explicit pre-receipt seam."""
+
+    from .scaling import run_scaling_panel
+
+    # The planned trajectory phase is inserted in this closed seam before the
+    # sole receipt without changing the primary final execution denominator.
+    return {"scaling": run_scaling_panel(repository, round_dir)}
+
+
+def _record_final_evaluation_after_scaling(
+    repository: Path,
+    round_dir: Path,
+    evaluation_manifest: Mapping[str, object],
+) -> dict[str, object]:
+    """Require the complete supplementary denominator before issuing the receipt."""
+
+    from .study import record_final_evaluation
+
+    supplementary = _run_pre_receipt_supplementary_phases(repository, round_dir)
+    checkpoint = supplementary.get("scaling")
+    if (
+        checkpoint is None
+        or getattr(checkpoint, "status", None) != "completed"
+        or len(getattr(checkpoint, "records", ()))
+        != getattr(checkpoint, "planned_run_count", None)
+    ):
+        raise FinalRunnerContractError(
+            "supplementary scaling denominator is incomplete"
+        )
+    cumulative = _owned_final_result_file_manifest(round_dir)
+    result_files = cumulative["result_files"]
+    assert isinstance(result_files, list)
+    evidence = _scaling_evaluation_evidence(
+        repository,
+        round_dir,
+        checkpoint,
+        result_files,
+    )
+    sealed_manifest = dict(evaluation_manifest)
+    if "scaling_evidence" in sealed_manifest:
+        raise FinalRunnerContractError(
+            "evaluation manifest already contains supplementary scaling evidence"
+        )
+    sealed_manifest["scaling_evidence"] = evidence
+    sealed_manifest["result_files"] = result_files
+    return record_final_evaluation(
+        round_dir,
+        sealed_manifest,
+        repo=repository,
+    )
+
+
 def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, object]:
     """Claim and execute the frozen final round without scientific overrides."""
 
@@ -2322,7 +2705,6 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
     from .simulators.base import load_final_manifest_claim
     from .study import (
         assert_final_runnable,
-        record_final_evaluation,
         record_incremental_results,
     )
 
@@ -2338,10 +2720,14 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
     if resuming:
         _remove_stale_result_temporaries(destination)
         _recover_interrupted_final_transactions(destination)
+        _recover_scaling_transactions_for_resume(
+            selected_repository,
+            destination,
+        )
         results = destination / "results/final"
         if os.path.lexists(results / "execution_authority") or os.path.lexists(
             results / "execution"
-        ):
+        ) or os.path.lexists(destination / "results/scaling/checkpoints"):
             _record_incremental_results_if_changed(
                 selected_repository,
                 destination,
@@ -2476,7 +2862,6 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
         evaluation_validation = validate_final_execution_for_evaluation(
             plan, store._cached_records()
         )
-        cumulative = _owned_final_result_file_manifest(destination)
         evaluation_manifest: dict[str, object] = {
             "schema_version": 1,
             "status": "completed",
@@ -2490,12 +2875,11 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
             "final_execution_payload_sha256": execution_manifest["manifest_sha256"],
             "execution_validation": evaluation_validation,
             "storage_preflight": storage_preflight,
-            "result_files": cumulative["result_files"],
         }
-        evaluation_receipt = record_final_evaluation(
+        evaluation_receipt = _record_final_evaluation_after_scaling(
+            selected_repository,
             destination,
             evaluation_manifest,
-            repo=selected_repository,
         )
     finally:
         if executor is not None:

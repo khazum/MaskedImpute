@@ -2160,6 +2160,129 @@ def _result_file_bindings(
     return result
 
 
+def _validate_embedded_scaling_evidence(
+    value: object,
+    result_bindings: Mapping[str, str],
+) -> Mapping[str, object]:
+    evidence = _exact_mapping(
+        value,
+        frozenset(
+            {
+                "schema_version",
+                "status",
+                "plan",
+                "checkpoint_path",
+                "checkpoint_file_sha256",
+                "checkpoint_payload",
+                "result_files",
+                "evidence_sha256",
+            }
+        ),
+        "embedded scaling evidence",
+    )
+    body = {key: nested for key, nested in evidence.items() if key != "evidence_sha256"}
+    checkpoint_path = evidence.get("checkpoint_path")
+    checkpoint_file_sha256 = _sha256(
+        evidence.get("checkpoint_file_sha256"),
+        "embedded scaling checkpoint file",
+    )
+    if (
+        evidence.get("schema_version") != 1
+        or evidence.get("status") != "completed"
+        or not isinstance(checkpoint_path, str)
+        or re.fullmatch(
+            r"results/scaling/checkpoints/[0-9]{8}\.json",
+            checkpoint_path,
+        )
+        is None
+        or evidence.get("evidence_sha256") != canonical_sha256(body)
+        or result_bindings.get(str(checkpoint_path)) != checkpoint_file_sha256
+    ):
+        raise FinalAnalysisContractError(
+            "embedded scaling evidence binding is invalid"
+        )
+    plan = _exact_mapping(
+        evidence.get("plan"),
+        frozenset(
+            {
+                "schema_version",
+                "input_hashes",
+                "entries",
+                "configurations",
+                "plan_sha256",
+            }
+        ),
+        "embedded scaling plan",
+    )
+    plan_body = {key: nested for key, nested in plan.items() if key != "plan_sha256"}
+    if (
+        plan.get("schema_version") != 1
+        or plan.get("plan_sha256") != canonical_sha256(plan_body)
+    ):
+        raise FinalAnalysisContractError("embedded scaling plan binding is invalid")
+    checkpoint = _exact_mapping(
+        evidence.get("checkpoint_payload"),
+        frozenset(
+            {
+                "schema_version",
+                "plan_sha256",
+                "input_hashes",
+                "planned_run_count",
+                "status",
+                "datasets",
+                "records",
+                "checkpoint_sha256",
+            }
+        ),
+        "embedded scaling checkpoint",
+    )
+    checkpoint_body = {
+        key: nested
+        for key, nested in checkpoint.items()
+        if key != "checkpoint_sha256"
+    }
+    records = checkpoint.get("records")
+    datasets = checkpoint.get("datasets")
+    planned = checkpoint.get("planned_run_count")
+    if (
+        checkpoint.get("schema_version") != 1
+        or checkpoint.get("status") != "completed"
+        or checkpoint.get("plan_sha256") != plan.get("plan_sha256")
+        or checkpoint.get("input_hashes") != plan.get("input_hashes")
+        or type(planned) is not int
+        or planned <= 0
+        or not isinstance(records, list)
+        or len(records) != planned
+        or not isinstance(datasets, list)
+        or not datasets
+        or checkpoint.get("checkpoint_sha256")
+        != canonical_sha256(checkpoint_body)
+        or checkpoint_path
+        != (
+            "results/scaling/checkpoints/"
+            f"{len(datasets) + len(records):08d}.json"
+        )
+    ):
+        raise FinalAnalysisContractError(
+            "embedded scaling checkpoint binding is invalid"
+        )
+    nested = _result_file_bindings(
+        {"result_files": evidence.get("result_files")}
+    )
+    if (
+        not nested
+        or set(nested) != {
+            path for path in result_bindings if path.startswith("results/scaling/")
+        }
+        or any(result_bindings.get(path) != digest for path, digest in nested.items())
+        or nested.get(str(checkpoint_path)) != checkpoint_file_sha256
+    ):
+        raise FinalAnalysisContractError(
+            "embedded scaling result inventory is invalid"
+        )
+    return evidence
+
+
 def _validate_storage_preflight(
     value: object,
     *,
@@ -2402,6 +2525,7 @@ def _evaluated_inputs(
                 "final_execution_payload_sha256",
                 "execution_validation",
                 "storage_preflight",
+                "scaling_evidence",
                 "result_files",
             }
         )
@@ -2431,6 +2555,10 @@ def _evaluated_inputs(
         raise FinalAnalysisContractError(str(error)) from error
 
     result_bindings = _result_file_bindings(evaluation)
+    scaling_evidence = _validate_embedded_scaling_evidence(
+        evaluation.get("scaling_evidence"),
+        result_bindings,
+    )
     manifest_relative = evaluation.get("final_execution_manifest_path")
     expected_manifest_relative = "results/final/execution/execution_manifest.json"
     if manifest_relative != expected_manifest_relative:
@@ -2741,6 +2869,7 @@ def _evaluated_inputs(
         ).as_posix(),
         "selection_contract_raw_sha256": selection_raw_hash,
         "selection_contract_payload_sha256": canonical_sha256(selection_contract),
+        "scaling_evidence_sha256": scaling_evidence["evidence_sha256"],
         "storage_preflight_sha256": canonical_sha256(dict(storage_preflight)),
     }
     snapshots: dict[str, object] = {

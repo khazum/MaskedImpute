@@ -590,6 +590,58 @@ def _evaluated_evidence(
                 "sha256": hashlib.sha256(manifest_raw).hexdigest(),
             },
         )
+        scaling_plan_body = {
+            "schema_version": 1,
+            "input_hashes": {"fixture_sha256": "a" * 64},
+            "entries": [{"ordinal": 1}],
+            "configurations": [{"method_id": "observed"}],
+        }
+        scaling_plan = {
+            **scaling_plan_body,
+            "plan_sha256": canonical_sha256(scaling_plan_body),
+        }
+        scaling_checkpoint_body = {
+            "schema_version": 1,
+            "plan_sha256": scaling_plan["plan_sha256"],
+            "input_hashes": scaling_plan["input_hashes"],
+            "planned_run_count": 1,
+            "status": "completed",
+            "datasets": [{"cells": 10_000}],
+            "records": [{"run": {"run_id": "scaling-observed-fixture"}}],
+        }
+        scaling_checkpoint = {
+            **scaling_checkpoint_body,
+            "checkpoint_sha256": canonical_sha256(scaling_checkpoint_body),
+        }
+        scaling_checkpoint_path = (
+            round_dir / "results/scaling/checkpoints/00000002.json"
+        )
+        scaling_checkpoint_raw = _write_json(
+            scaling_checkpoint_path,
+            scaling_checkpoint,
+        )
+        scaling_result_files = [
+            {
+                "path": scaling_checkpoint_path.relative_to(round_dir).as_posix(),
+                "sha256": hashlib.sha256(scaling_checkpoint_raw).hexdigest(),
+            }
+        ]
+        result_files.extend(scaling_result_files)
+        scaling_evidence_body = {
+            "schema_version": 1,
+            "status": "completed",
+            "plan": scaling_plan,
+            "checkpoint_path": "results/scaling/checkpoints/00000002.json",
+            "checkpoint_file_sha256": hashlib.sha256(
+                scaling_checkpoint_raw
+            ).hexdigest(),
+            "checkpoint_payload": scaling_checkpoint,
+            "result_files": scaling_result_files,
+        }
+        scaling_evidence = {
+            **scaling_evidence_body,
+            "evidence_sha256": canonical_sha256(scaling_evidence_body),
+        }
         validation_body = {
             "schema_version": 1,
             "status": "eligible_for_final_evaluation_complete_terminal_denominator",
@@ -617,6 +669,7 @@ def _evaluated_evidence(
             ).hexdigest(),
             "final_execution_payload_sha256": execution_manifest["manifest_sha256"],
             "execution_validation": validation,
+            "scaling_evidence": scaling_evidence,
             "storage_preflight": {
                 "schema": "maskimpute-final-storage-preflight-v1",
                 "completed_record_count": 0,
