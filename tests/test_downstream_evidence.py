@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import struct
 import sys
 import zlib
@@ -818,6 +819,7 @@ def test_revision_downstream_bundle_covers_base_and_activated_checkpoint(
         run_downstream_evidence,
     )
     from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
     from maskimpute_benchmark.runner import AuthorizedConfiguration
 
     base_root = tmp_path / "base"
@@ -942,7 +944,8 @@ def test_revision_downstream_bundle_covers_base_and_activated_checkpoint(
         for source in combined.development_sources
     )
 
-    destination = tmp_path / "downstream-v28"
+    stage_paths = development_selection_stage_paths("v28")
+    destination = tmp_path / stage_paths.downstream_directory
     run_downstream_evidence(combined, destination)
     loaded = load_downstream_evidence_manifest(destination)
     assert loaded.planned_denominator_count == 3
@@ -979,17 +982,31 @@ def test_revision_downstream_bundle_covers_base_and_activated_checkpoint(
         "records": selection_records,
         "orthogonal_intervals": [],
     }
+    source_payload = {
+        **selection_core,
+        "result_sha256": canonical_sha256(selection_core),
+    }
+    source_file_sha = _write_canonical(
+        tmp_path / stage_paths.source_selection_input,
+        source_payload,
+    )
     upgraded = attach_downstream_evidence_to_selection_result(
-        {
-            **selection_core,
-            "result_sha256": canonical_sha256(selection_core),
-        },
+        source_payload,
         tmp_path,
-        "downstream-v28",
+        stage_paths.downstream_directory,
     )
     source_bindings = upgraded["downstream_evidence"]["sources"]
     assert [source["source_id"] for source in source_bindings] == ["base", "v28"]
     assert upgraded["downstream_evidence"]["revision_versions"] == ["v28"]
+    assert upgraded["downstream_evidence"]["source_selection_input_path"] == (
+        stage_paths.source_selection_input
+    )
+    assert upgraded["downstream_evidence"]["source_selection_input_file_sha256"] == (
+        source_file_sha
+    )
+    assert upgraded["downstream_evidence"]["source_selection_result_sha256"] == (
+        source_payload["result_sha256"]
+    )
 
     evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
     evaluation["revisions"][0]["reconstruction"]["checkpoint_sha256"] = "0" * 64
@@ -1198,6 +1215,16 @@ def test_development_downstream_routes_to_latest_fixed_revision_without_fallback
     _write_canonical(
         v29_path,
         {"schema_version": 3, "revision_versions": ["v29"]},
+    )
+    with pytest.raises(
+        DownstreamEvidenceError,
+        match="v29 revision selection input identity differs",
+    ):
+        development_downstream_revision_version(tmp_path)
+
+    _write_canonical(
+        v29_path,
+        {"schema_version": 4, "revision_versions": ["v28", "v29"]},
     )
     with pytest.raises(
         DownstreamEvidenceError,
@@ -2177,6 +2204,7 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
         run_downstream_evidence,
     )
     from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
     from maskimpute_benchmark.selection import (
         SelectionAuthorityError,
         attach_downstream_evidence_to_selection_result,
@@ -2191,7 +2219,8 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
         configurations=_test_configuration_authority(),
         source_plan=_development_source_plan(source),
     )
-    destination = tmp_path / "artifacts" / "downstream"
+    stage_paths = development_selection_stage_paths(None)
+    destination = tmp_path / stage_paths.downstream_directory
     run_downstream_evidence(plan, destination)
     evidence = load_downstream_evidence_manifest(destination)
     selection_records = [
@@ -2220,12 +2249,14 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
         "orthogonal_intervals": [],
     }
     payload = {**core, "result_sha256": canonical_sha256(core)}
+    source_path = tmp_path / stage_paths.source_selection_input
+    _write_canonical(source_path, payload)
 
     with pytest.raises(SelectionAuthorityError, match="source status"):
         attach_downstream_evidence_to_selection_result(
             payload,
             tmp_path,
-            "artifacts/downstream",
+            stage_paths.downstream_directory,
         )
 
     for selection_record, downstream_record in zip(
@@ -2242,10 +2273,40 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
     )
     core["records"] = selection_records
     payload = {**core, "result_sha256": canonical_sha256(core)}
+    source_file_sha = _write_canonical(source_path, payload)
+
+    forged_source = {**payload, "operator_override": True}
+    forged_source_core = {
+        key: value for key, value in forged_source.items() if key != "result_sha256"
+    }
+    forged_source["result_sha256"] = canonical_sha256(forged_source_core)
+    _write_canonical(source_path, forged_source)
+    with pytest.raises(SelectionAuthorityError, match="missing or extra"):
+        attach_downstream_evidence_to_selection_result(
+            forged_source,
+            tmp_path,
+            stage_paths.downstream_directory,
+        )
+
+    changed_source = dict(payload)
+    changed_source["dataset_manifest_sha256"] = "9" * 64
+    changed_source_core = {
+        key: value for key, value in changed_source.items() if key != "result_sha256"
+    }
+    changed_source["result_sha256"] = canonical_sha256(changed_source_core)
+    _write_canonical(source_path, changed_source)
+    with pytest.raises(SelectionAuthorityError, match="source selection input differs"):
+        attach_downstream_evidence_to_selection_result(
+            payload,
+            tmp_path,
+            stage_paths.downstream_directory,
+        )
+
+    source_file_sha = _write_canonical(source_path, payload)
     upgraded = attach_downstream_evidence_to_selection_result(
         payload,
         tmp_path,
-        "artifacts/downstream",
+        stage_paths.downstream_directory,
     )
 
     assert upgraded["schema_version"] == 4
@@ -2256,6 +2317,33 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
     )
     assert receipt["downstream_manifest_sha256"] == evidence.manifest_sha256
     assert binding["endpoint_row_count"] == 16
+    assert binding["source_selection_input_path"] == (
+        stage_paths.source_selection_input
+    )
+    assert binding["source_selection_input_file_sha256"] == source_file_sha
+    assert binding["source_selection_result_sha256"] == payload["result_sha256"]
+
+    v28_paths = development_selection_stage_paths("v28")
+    v28_core = {
+        **core,
+        "schema_version": 3,
+        "revision_versions": ["v28"],
+    }
+    v28_payload = {
+        **v28_core,
+        "result_sha256": canonical_sha256(v28_core),
+    }
+    _write_canonical(tmp_path / v28_paths.source_selection_input, v28_payload)
+    shutil.copytree(destination, tmp_path / v28_paths.downstream_directory)
+    with pytest.raises(
+        SelectionAuthorityError,
+        match="downstream revision sources differ",
+    ):
+        attach_downstream_evidence_to_selection_result(
+            v28_payload,
+            tmp_path,
+            v28_paths.downstream_directory,
+        )
 
     missing_denominator = [
         record

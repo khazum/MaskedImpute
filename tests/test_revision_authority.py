@@ -16,29 +16,20 @@ SHA_B = "b" * 64
 
 
 def _activation(version: str, trigger: str):
-    from maskimpute_benchmark.revisions import RevisionActivation
+    from maskimpute_benchmark.revisions import (
+        RevisionActivation,
+        revision_stage_paths,
+    )
+
+    paths = revision_stage_paths(version)
 
     return RevisionActivation(
         version=version,
         trigger=trigger,
-        selection_input_path=(
-            "artifacts/study/development/evaluation/"
-            + (
-                "development_selection_input.json"
-                if version == "v28"
-                else "development_selection_input-v28.json"
-            )
-        ),
+        selection_input_path=paths.activation_selection_input,
         selection_input_file_sha256=SHA_A,
         selection_result_sha256=SHA_B,
-        selection_report_path=(
-            "artifacts/study/development/evaluation/"
-            + (
-                "development_selection_report.json"
-                if version == "v28"
-                else "development_selection_report-v28.json"
-            )
-        ),
+        selection_report_path=paths.activation_selection_report,
         selection_report_file_sha256=SHA_A,
     )
 
@@ -150,11 +141,25 @@ def test_extended_authority_rejects_unbounded_revision_denominators() -> None:
 
 
 def test_revision_stage_paths_are_fixed_and_version_separated() -> None:
-    from maskimpute_benchmark.revisions import revision_stage_paths
+    from maskimpute_benchmark.revisions import (
+        development_selection_stage_paths,
+        revision_stage_paths,
+    )
 
+    base = development_selection_stage_paths(None)
     v28 = revision_stage_paths("v28")
     v29 = revision_stage_paths("v29")
 
+    assert base.source_selection_input == (
+        "artifacts/study/development/evaluation/development_selection_input.json"
+    )
+    assert base.selection_complete_input == (
+        "artifacts/study/development/evaluation/"
+        "development_selection_input-downstream.json"
+    )
+    assert base.downstream_directory == (
+        "artifacts/study/development/evaluation/downstream"
+    )
     assert v28.reconstruction_directory == (
         "artifacts/study/development/competition-v28-revision"
     )
@@ -164,7 +169,16 @@ def test_revision_stage_paths_are_fixed_and_version_separated() -> None:
     assert v28.selection_input == (
         "artifacts/study/development/evaluation/development_selection_input-v28.json"
     )
-    assert v29.activation_selection_input == v28.selection_input
+    assert v28.selection_complete_input == (
+        "artifacts/study/development/evaluation/"
+        "development_selection_input-v28-downstream.json"
+    )
+    assert v29.selection_complete_input == (
+        "artifacts/study/development/evaluation/"
+        "development_selection_input-v29-downstream.json"
+    )
+    assert v28.activation_selection_input == base.selection_complete_input
+    assert v29.activation_selection_input == v28.selection_complete_input
     assert v29.activation_selection_report == v28.selection_report
     assert len(
         {
@@ -235,7 +249,11 @@ def test_revision_activation_rejects_incomplete_preceding_denominator(
     (tmp_path / paths.revision_authority).write_bytes(
         Path(paths.revision_authority).read_bytes()
     )
-    selection_input = {"result_sha256": SHA_B}
+    selection_input = {
+        "schema_version": 4,
+        "revision_versions": [],
+        "result_sha256": SHA_B,
+    }
     gates = {
         "candidate_completeness": {"passed": True},
         "required_comparator_completeness": {"passed": True},
@@ -318,7 +336,11 @@ def test_v29_activation_requires_structure_failure_in_its_exact_v28_parent(
         "selected_configuration": None,
         "trigger": "v29",
     }
-    selection_input = {"result_sha256": SHA_B}
+    selection_input = {
+        "schema_version": 4,
+        "revision_versions": ["v28"],
+        "result_sha256": SHA_B,
+    }
     for relative, payload in (
         (paths.activation_selection_input, selection_input),
         (paths.activation_selection_report, report),
@@ -420,3 +442,102 @@ def test_revision_entry_points_expose_no_scientific_or_path_overrides(
         "--through-version",
     ):
         assert forbidden not in help_text
+
+
+def test_revision_selector_reads_only_complete_input_and_publishes_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.revision_commands as commands
+    import maskimpute_benchmark.revisions as revisions
+    import maskimpute_benchmark.selection as selection
+    import maskimpute_benchmark.selection_promotion as promotion
+
+    paths = revisions.revision_stage_paths("v28")
+    observed: list[Path] = []
+    payload = {"schema_version": 4, "revision_versions": ["v28"]}
+    report = {
+        "selected_configuration": None,
+        "trigger": "v29",
+    }
+
+    def read(path: Path, _name: str):
+        observed.append(path)
+        return payload, "1" * 64
+
+    class Selection:
+        def to_dict(self):
+            return report
+
+    monkeypatch.setattr(promotion, "_secure_canonical_json", read)
+    monkeypatch.setattr(
+        selection,
+        "_select_for_repository",
+        lambda selected, repository, *, require_clean: Selection()
+        if selected is payload and repository == tmp_path.absolute() and require_clean
+        else pytest.fail("revision selector authority arguments changed"),
+    )
+    report_path = tmp_path / paths.selection_report
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    assert commands.select_revision_main("v28", tmp_path, []) == 0
+    assert observed == [tmp_path / paths.selection_complete_input]
+    published = report_path.read_bytes()
+    assert commands.select_revision_main("v28", tmp_path, []) == 0
+    assert report_path.read_bytes() == published
+
+    report["trigger"] = "different"
+    assert commands.select_revision_main("v28", tmp_path, []) == 2
+    assert report_path.read_bytes() == published
+
+
+def test_revision_selector_rejects_symlink_parent_before_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.revision_commands as commands
+    import maskimpute_benchmark.revisions as revisions
+    import maskimpute_benchmark.selection as selection
+
+    paths = revisions.revision_stage_paths("v28")
+    input_path = tmp_path / paths.selection_complete_input
+    real_parent = input_path.parent.with_name("evaluation-real")
+    real_parent.mkdir(parents=True)
+    (real_parent / input_path.name).write_bytes(b'{"schema_version":4}\n')
+    input_path.parent.symlink_to(real_parent, target_is_directory=True)
+    monkeypatch.setattr(
+        selection,
+        "_select_for_repository",
+        lambda *_args, **_kwargs: pytest.fail(
+            "symlink-parent revision input reached selection"
+        ),
+    )
+
+    assert commands.select_revision_main("v28", tmp_path, []) == 2
+
+
+def test_revision_selector_rejects_schema_three_at_complete_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.revision_commands as commands
+    import maskimpute_benchmark.selection as selection
+    import maskimpute_benchmark.selection_promotion as promotion
+
+    monkeypatch.setattr(
+        promotion,
+        "_secure_canonical_json",
+        lambda *_args: (
+            {"schema_version": 3, "revision_versions": ["v28"]},
+            "1" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        selection,
+        "_select_for_repository",
+        lambda *_args, **_kwargs: pytest.fail(
+            "schema-three complete-path input reached selection"
+        ),
+    )
+
+    assert commands.select_revision_main("v28", tmp_path, []) == 2

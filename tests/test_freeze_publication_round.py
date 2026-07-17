@@ -305,7 +305,10 @@ def _payload(
         runtime_environment_summary=_runtime_summary(),
         artifact_bindings={
             "selection_input": {
-                "path": "artifacts/study/development/evaluation/development_selection_input.json",
+                "path": (
+                    "artifacts/study/development/evaluation/"
+                    "development_selection_input-downstream.json"
+                ),
                 "sha256": "5" * 64,
             },
             "selection_report": {
@@ -1136,7 +1139,10 @@ def _repository_fixture(
         "reason_code": "prespecified_decoder_only_revision",
     }
     paths = {
-        "selection_input": "artifacts/study/development/evaluation/development_selection_input.json",
+        "selection_input": (
+            "artifacts/study/development/evaluation/"
+            "development_selection_input-downstream.json"
+        ),
         "selection_report": "artifacts/study/development/evaluation/development_selection_report.json",
         "evaluation_manifest": "artifacts/study/development/evaluation/evaluation_manifest.json",
         "reconstruction_checkpoint": "artifacts/study/development/competition-reconstruction/checkpoint.json",
@@ -1247,7 +1253,8 @@ def test_prepare_and_validate_frozen_method_recompute_fixed_evidence(
             json.loads(
                 (
                     repository
-                    / "artifacts/study/development/evaluation/development_selection_input.json"
+                    / "artifacts/study/development/evaluation/"
+                    "development_selection_input-downstream.json"
                 ).read_text(encoding="utf-8")
             ),
         )
@@ -1263,6 +1270,15 @@ def test_prepare_and_validate_frozen_method_recompute_fixed_evidence(
         == hashlib.sha256(
             (repository / "environments/development-runtime.lock.json").read_bytes()
         ).hexdigest()
+    )
+
+
+def test_publication_freeze_consumes_only_base_selection_complete_input() -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
+
+    assert freeze_module._FIXED_PATHS["selection_input"] == (
+        development_selection_stage_paths(None).selection_complete_input
     )
 
 

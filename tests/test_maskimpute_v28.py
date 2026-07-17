@@ -807,6 +807,7 @@ def test_tracked_revision_authorities_keep_full_comparator_denominator(tmp_path)
 
 def test_selection_cli_and_v28_activation_share_canonical_fixed_paths() -> None:
     import maskimpute_benchmark.runner as runner
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
 
     specification = importlib.util.spec_from_file_location(
         "v28_selection_script",
@@ -816,8 +817,15 @@ def test_selection_cli_and_v28_activation_share_canonical_fixed_paths() -> None:
     script = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(script)
     arguments = script._parser().parse_args([])
+    base = development_selection_stage_paths(None)
 
-    assert arguments.input == runner._V28_SELECTION_INPUT_PATH
-    assert arguments.output == runner._V28_SELECTION_REPORT_PATH
-    assert arguments.input.name == "development_selection_input.json"
-    assert arguments.output.name == "development_selection_report.json"
+    assert vars(arguments) == {}
+    assert script.SELECTION_INPUT_PATH == runner._V28_SELECTION_INPUT_PATH
+    assert script.SELECTION_REPORT_PATH == runner._V28_SELECTION_REPORT_PATH
+    assert script.SELECTION_INPUT_PATH.as_posix().endswith(
+        base.selection_complete_input
+    )
+    assert script.SELECTION_INPUT_PATH.name == (
+        "development_selection_input-downstream.json"
+    )
+    assert script.SELECTION_REPORT_PATH.name == "development_selection_report.json"

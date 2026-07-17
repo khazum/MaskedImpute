@@ -162,21 +162,29 @@ def select_revision_main(
     _parser(
         f"Apply the fixed development selection gates through {version}."
     ).parse_args(argv)
-    from .development_evaluation import _canonical_json_bytes, _publish_bound_file
-    from .revisions import (
-        RevisionAuthorityError,
-        _read_canonical_json,
-        revision_stage_paths,
-    )
+    from .development_evaluation import _canonical_json_bytes
+    from .revisions import RevisionAuthorityError, revision_stage_paths
     from .selection import SelectionAuthorityError, _select_for_repository
+    from .selection_promotion import (
+        SelectionPromotionError,
+        _immutable_publish,
+        _secure_canonical_json,
+    )
 
     paths = revision_stage_paths(version)
     try:
-        payload, _input_sha256 = _read_canonical_json(
-            repository.absolute() / paths.selection_input,
+        payload, _input_sha256 = _secure_canonical_json(
+            repository.absolute() / paths.selection_complete_input,
             f"{version} revision selection input",
-            indented=False,
         )
+        expected_versions = ["v28"] if version == "v28" else ["v28", "v29"]
+        if (
+            payload.get("schema_version") != 4
+            or payload.get("revision_versions") != expected_versions
+        ):
+            raise SelectionAuthorityError(
+                f"{version} fixed selection input is not selection-complete schema 4"
+            )
         report = _select_for_repository(
             payload,
             repository.absolute(),
@@ -184,10 +192,11 @@ def select_revision_main(
         ).to_dict()
         encoded = _canonical_json_bytes(report) + b"\n"
         report_path = repository.absolute() / paths.selection_report
-        report_sha256 = _publish_bound_file(report_path, encoded)
+        report_sha256 = _immutable_publish(report_path, encoded)
     except (
         RevisionAuthorityError,
         SelectionAuthorityError,
+        SelectionPromotionError,
         OSError,
         RuntimeError,
         TypeError,

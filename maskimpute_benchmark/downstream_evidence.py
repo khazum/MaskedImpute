@@ -3485,7 +3485,7 @@ def development_downstream_revision_version(
             path, f"{version} revision selection input"
         )
         if (
-            payload.get("schema_version") not in {3, 4}
+            payload.get("schema_version") != 3
             or payload.get("revision_versions") != expected_versions
         ):
             raise DownstreamEvidenceError(
