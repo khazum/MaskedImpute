@@ -68,6 +68,7 @@ _FIXED_PATHS = {
     "development_search": "study/development_search.json",
     "v28_revision": "study/v28_revision.json",
     "ablation_registry": "study/ablations.json",
+    "scaling_panel": "study/scaling_panel.json",
     "protocol": "study/protocol.json",
     "saver_qualification": "environments/saver-r.qualification.json",
     "saver_package_lock": "environments/saver-r.lock.json",
@@ -547,8 +548,7 @@ def _validate_saver_package_authority(
             if (
                 not isinstance(registry_source, Mapping)
                 or {
-                    key: registry_source.get(key)
-                    for key in ("url", "revision", "tree")
+                    key: registry_source.get(key) for key in ("url", "revision", "tree")
                 }
                 != dict(source)
                 or not isinstance(environment, Mapping)
@@ -1157,9 +1157,7 @@ def _method_panel(
                 f"method {method_id} lacks final upstream license authority"
             )
         if not isinstance(citation, Mapping):
-            raise PublicationFreezeError(
-                f"method {method_id} lacks citation authority"
-            )
+            raise PublicationFreezeError(f"method {method_id} lacks citation authority")
         if in_tree and (
             citation.get("status") == "pending"
             and citation.get("doi") is None
@@ -1168,9 +1166,7 @@ def _method_panel(
             citation_disposition = "in_tree_self_citation_no_external_doi"
         elif citation.get("status") == "verified":
             citation_disposition = (
-                "verified_project_citation"
-                if in_tree
-                else "verified_external_citation"
+                "verified_project_citation" if in_tree else "verified_external_citation"
             )
         else:
             qualifier = "project" if in_tree else "external"
@@ -1240,9 +1236,10 @@ def _method_panel(
                     raise PublicationFreezeError(
                         f"completed method {method_id} is not bound to a ready runtime environment"
                     )
-                if method_id in {"observed", "maskimpute"} and evidence[
-                    "failed_run_count"
-                ] != 0:
+                if (
+                    method_id in {"observed", "maskimpute"}
+                    and evidence["failed_run_count"] != 0
+                ):
                     raise PublicationFreezeError(
                         f"method {method_id} has failed development attempts"
                     )
@@ -1338,9 +1335,7 @@ def _method_panel(
                 "integration_status": terminal_integration_status,
                 "integration_reason": terminal_integration_reason,
                 "disposition": disposition,
-                "final_applicability": _final_applicability(
-                    terminal_row, disposition
-                ),
+                "final_applicability": _final_applicability(terminal_row, disposition),
                 "development_execution_evidence": evidence,
             }
         )
@@ -1597,7 +1592,12 @@ def _expected_frozen_method(
     if external_method_ids:
         try:
             external_validation = load_external_reference_evidence(repository)
-        except (ExternalReferenceDevelopmentError, OSError, TypeError, ValueError) as error:
+        except (
+            ExternalReferenceDevelopmentError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
             raise PublicationFreezeError(
                 f"external-reference production evidence is invalid: {error}"
             ) from error
@@ -1617,9 +1617,7 @@ def _expected_frozen_method(
             raise PublicationFreezeError(
                 "external-reference checkpoint path is not fixed"
             )
-        payloads["external_reference_checkpoint"] = dict(
-            external_validation.checkpoint
-        )
+        payloads["external_reference_checkpoint"] = dict(external_validation.checkpoint)
         artifact_bindings["external_reference_checkpoint"] = {
             "path": external_relative,
             "sha256": external_validation.checkpoint_file_sha256,
@@ -1699,13 +1697,17 @@ def _expected_frozen_method(
     if external_method_ids:
         try:
             external_after = load_external_reference_evidence(repository)
-        except (ExternalReferenceDevelopmentError, OSError, TypeError, ValueError) as error:
+        except (
+            ExternalReferenceDevelopmentError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
             raise PublicationFreezeError(
                 f"external-reference production evidence changed: {error}"
             ) from error
         if (
-            dict(external_after.checkpoint)
-            != payloads["external_reference_checkpoint"]
+            dict(external_after.checkpoint) != payloads["external_reference_checkpoint"]
             or external_after.checkpoint_file_sha256
             != artifact_bindings["external_reference_checkpoint"]["sha256"]
             or external_validation is None
@@ -1816,7 +1818,12 @@ def _validate_clean_frozen_method(
     if "external_reference_checkpoint" in artifacts:
         try:
             external_validation = load_external_reference_evidence(repository)
-        except (ExternalReferenceDevelopmentError, OSError, TypeError, ValueError) as error:
+        except (
+            ExternalReferenceDevelopmentError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
             raise PublicationFreezeError(
                 f"frozen external-reference production evidence is invalid: {error}"
             ) from error

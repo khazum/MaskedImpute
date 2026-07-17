@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "role": "post_freeze_resource_scaling",
+  "mechanism": "symsim",
+  "technical_view": "moderate",
+  "cell_counts": [
+    10000,
+    25000,
+    50000,
+    100000
+  ],
+  "accuracy_cell_counts": [
+    10000,
+    25000,
+    50000,
+    100000
+  ],
+  "accuracy_metrics": [
+    "mse",
+    "mse_dropout",
+    "mse_pre_dropout_zero",
+    "mse_nonzero",
+    "gnrmse",
+    "mean_distortion",
+    "variance_distortion",
+    "mean_gene_wasserstein_distance",
+    "corr_err",
+    "n_corr_genes"
+  ],
+  "excluded_metric_families": {
+    "cell_cell_correlation_and_distance": "quadratic_cell_pair_metric_not_scalable"
+  },
+  "genes": 500,
+  "method_ids": [
+    "observed",
+    "maskimpute",
+    "dca",
+    "scvi",
+    "magic"
+  ],
+  "model_seed": 42,
+  "seed_derivation": {
+    "algorithm": "sha256-domain-separated-63bit-v1",
+    "master_seed": 902731828901227361
+  },
+  "artifact_policy": {
+    "evaluator_output_retention": "metrics_only_after_hashing",
+    "generated_dataset_retention": "moderate_h5ad",
+    "paired_control_retention": "discard_after_semantic_and_file_hashing",
+    "native_simulator_output_retention": "discard_after_manifest_hashing"
+  }
+}

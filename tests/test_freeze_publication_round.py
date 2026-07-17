@@ -1149,6 +1149,7 @@ def _repository_fixture(
         "development_search": "study/development_search.json",
         "v28_revision": "study/v28_revision.json",
         "ablation_registry": "study/ablations.json",
+        "scaling_panel": "study/scaling_panel.json",
         "protocol": "study/protocol.json",
         "saver_qualification": "environments/saver-r.qualification.json",
         "saver_package_lock": "environments/saver-r.lock.json",
@@ -1178,6 +1179,10 @@ def _repository_fixture(
             payload = _retained_calibration_payload()
         elif name == "ablation_registry":
             payload = _ablation_registry()
+        elif name == "scaling_panel":
+            payload = json.loads(
+                Path("study/scaling_panel.json").read_text(encoding="utf-8")
+            )
         elif name == "protocol":
             payload = json.loads(
                 Path("study/protocol.json").read_text(encoding="utf-8")
@@ -1299,12 +1304,8 @@ def test_prepare_binds_external_reference_execution_to_exact_measured_reference(
 
     checkpoint = _external_checkpoint_payload(repository)
     checkpoint["eligible_dataset_ids"] = ["tung-ipsc-ercc-bulk-replicates"]
-    checkpoint["reference_bindings"][0]["dataset_id"] = (
-        "tung-ipsc-ercc-bulk-replicates"
-    )
-    checkpoint["records"][0]["run"]["dataset_id"] = (
-        "tung-ipsc-ercc-bulk-replicates"
-    )
+    checkpoint["reference_bindings"][0]["dataset_id"] = "tung-ipsc-ercc-bulk-replicates"
+    checkpoint["records"][0]["run"]["dataset_id"] = "tung-ipsc-ercc-bulk-replicates"
     checkpoint["checkpoint_sha256"] = canonical_sha256(
         {key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"}
     )
@@ -1319,7 +1320,9 @@ def test_prepare_binds_external_reference_execution_to_exact_measured_reference(
         return ValidatedExternalReferenceEvidence(
             output_directory=external_path.parent,
             checkpoint_path=external_path,
-            checkpoint_file_sha256=hashlib.sha256(external_path.read_bytes()).hexdigest(),
+            checkpoint_file_sha256=hashlib.sha256(
+                external_path.read_bytes()
+            ).hexdigest(),
             checkpoint=checkpoint,
             dataset_id="tung-ipsc-ercc-bulk-replicates",
             method_ids=("d3impute",),
@@ -1384,7 +1387,9 @@ def test_prepare_propagates_production_external_reference_validation_failure(
         lambda *_args: deepcopy(report),
     )
 
-    with pytest.raises(PublicationFreezeError, match="evaluator truth reference rejected"):
+    with pytest.raises(
+        PublicationFreezeError, match="evaluator truth reference rejected"
+    ):
         prepare_frozen_method(repository)
 
 
