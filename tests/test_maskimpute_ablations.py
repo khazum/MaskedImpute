@@ -647,7 +647,7 @@ def test_final_reference_uses_retained_all_development_calibrator_on_unseen_draw
         cell_ids,
         PreZeroCountModelConfig(n_folds=2, link_max_iter=25),
     )
-    artifact = _nonidentity_calibration_artifact()
+    artifact = _binding_identity_calibration_artifact()
     result = _fit_ablation_once(
         counts,
         score,
