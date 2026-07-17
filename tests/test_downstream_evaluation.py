@@ -312,3 +312,120 @@ def test_marker_and_de_emit_complete_reasons_when_marker_truth_is_unavailable() 
         record.reason for record in records
     } == {"group_specific_marker_truth_unavailable"}
     assert all(record.independent_n == 1 for record in records)
+
+
+def _clustering_fixture(groups: tuple[str, ...], values: np.ndarray):
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluator_targets_from_dataset,
+    )
+
+    cell_ids = tuple(f"cell-{index:02d}" for index in range(len(groups), 0, -1))
+    gene_ids = tuple(f"gene-{index:02d}" for index in range(values.shape[1], 0, -1))
+    dataset = ad.AnnData(
+        X=np.zeros_like(values, dtype=np.int64),
+        obs=pd.DataFrame(
+            {"mechanism": ["orthogonal"] * len(groups), "group": groups},
+            index=cell_ids,
+        ),
+        var=pd.DataFrame(index=gene_ids),
+    )
+    return (
+        MethodOutput(values=values, cell_ids=cell_ids, gene_ids=gene_ids),
+        evaluator_targets_from_dataset(dataset),
+        dataset,
+    )
+
+
+def test_clustering_losses_match_hand_calculated_crossed_partition() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        CLUSTERING_SEED,
+        evaluate_clustering_endpoints,
+    )
+
+    output, targets, _ = _clustering_fixture(
+        ("a", "a", "b", "b"),
+        np.asarray([[10, 0], [0, 10], [10, 0], [0, 10]], dtype=float),
+    )
+    ari, nmi = evaluate_clustering_endpoints(output, targets)
+
+    # The inferred partition is {1,3}/{2,4}; against {1,2}/{3,4},
+    # ARI=-1/2 and arithmetic-normalized mutual information is zero.
+    assert ari.endpoint == "clustering_ari_loss"
+    assert ari.value == pytest.approx(1.5)
+    assert nmi.endpoint == "clustering_nmi_loss"
+    assert nmi.value == pytest.approx(1.0)
+    assert CLUSTERING_SEED == 20_260_716
+    assert "seed=20260716" in ari.procedure
+    assert ari.independent_unit == "biological_draw"
+    assert ari.independent_n == 1
+    assert ari.descriptive_n == 4
+    assert ari.descriptive_unit == "cells"
+
+
+def test_clustering_is_deterministic_and_permutation_invariant() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluate_clustering_endpoints,
+        evaluator_targets_from_dataset,
+    )
+
+    groups = ("a",) * 4 + ("b",) * 4 + ("c",) * 4
+    values = np.asarray(
+        [[20, 18, 0, 0, 0, 0]] * 4
+        + [[0, 0, 20, 18, 0, 0]] * 4
+        + [[0, 0, 0, 0, 20, 18]] * 4,
+        dtype=float,
+    )
+    output, targets, dataset = _clustering_fixture(groups, values)
+    first = evaluate_clustering_endpoints(output, targets)
+    second = evaluate_clustering_endpoints(output, targets)
+    assert first == second
+    assert [record.value for record in first] == pytest.approx([0.0, 0.0])
+
+    rows = np.asarray([11, 0, 7, 2, 9, 5, 1, 8, 4, 10, 3, 6])
+    columns = np.asarray([5, 1, 3, 0, 4, 2])
+    permuted = MethodOutput(
+        values=output.values[rows][:, columns],
+        cell_ids=tuple(output.cell_ids[index] for index in rows),
+        gene_ids=tuple(output.gene_ids[index] for index in columns),
+    )
+    assert evaluate_clustering_endpoints(permuted, targets) == first
+
+    relabeled = dataset.copy()
+    relabeled.obs["group"] = relabeled.obs["group"].map(
+        {"a": "third", "b": "first", "c": "second"}
+    )
+    assert evaluate_clustering_endpoints(
+        output, evaluator_targets_from_dataset(relabeled)
+    ) == first
+
+
+@pytest.mark.parametrize(
+    ("groups", "values", "reason"),
+    [
+        (("a", "a", "a", "a"), np.eye(4), "fewer_than_two_groups"),
+        (
+            ("a", "a", "b", "b"),
+            np.ones((4, 3)),
+            "constant_method_representation",
+        ),
+        (
+            ("a", "b", "b"),
+            np.eye(3),
+            "fewer_than_two_cells_in_group",
+        ),
+    ],
+)
+def test_clustering_degenerate_inputs_have_fixed_reasons(
+    groups: tuple[str, ...], values: np.ndarray, reason: str
+) -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        evaluate_clustering_endpoints,
+    )
+
+    output, targets, _ = _clustering_fixture(groups, values)
+    records = evaluate_clustering_endpoints(output, targets)
+
+    assert all(record.status == "unavailable" for record in records)
+    assert {record.reason for record in records} == {reason}

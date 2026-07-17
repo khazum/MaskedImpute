@@ -17,6 +17,8 @@ from scipy import stats
 
 
 CLUSTERING_SEED = 20_260_716
+CLUSTERING_N_INIT = 20
+CLUSTERING_MAX_COMPONENTS = 30
 POSITIVE_DE_ALPHA = 0.05
 POSITIVE_DE_FAMILY_ID = "one_vs_rest_all_groups_all_genes"
 
@@ -603,6 +605,237 @@ def evaluate_marker_and_de_endpoints(
             **family_kwargs,
         )
     return marker_record, recall_record, fdr_record
+
+
+def _squared_euclidean(values: np.ndarray, centers: np.ndarray) -> np.ndarray:
+    differences = values[:, None, :] - centers[None, :, :]
+    return np.sum(differences * differences, axis=2)
+
+
+def _kmeans_once(
+    values: np.ndarray, n_clusters: int, random: np.random.Generator
+) -> tuple[np.ndarray, float] | None:
+    n_cells = values.shape[0]
+    centers = [values[int(random.integers(0, n_cells))].copy()]
+    for _ in range(1, n_clusters):
+        distances = np.min(
+            _squared_euclidean(values, np.asarray(centers)), axis=1
+        )
+        total = float(np.sum(distances))
+        if total <= 0.0:
+            return None
+        centers.append(values[int(random.choice(n_cells, p=distances / total))].copy())
+    center_matrix = np.asarray(centers)
+    previous: np.ndarray | None = None
+    for _ in range(300):
+        distances = _squared_euclidean(values, center_matrix)
+        labels = np.argmin(distances, axis=1)
+        counts = np.bincount(labels, minlength=n_clusters)
+        if np.any(counts == 0):
+            occupied_distance = distances[np.arange(n_cells), labels]
+            candidates = np.argsort(-occupied_distance, kind="mergesort")
+            used: set[int] = set()
+            for empty in np.flatnonzero(counts == 0):
+                replacement = next(
+                    int(index) for index in candidates if int(index) not in used
+                )
+                used.add(replacement)
+                center_matrix[empty] = values[replacement]
+            continue
+        new_centers = np.vstack(
+            [np.mean(values[labels == index], axis=0) for index in range(n_clusters)]
+        )
+        if previous is not None and np.array_equal(labels, previous):
+            center_matrix = new_centers
+            break
+        previous = labels.copy()
+        center_matrix = new_centers
+    final_distances = _squared_euclidean(values, center_matrix)
+    final_labels = np.argmin(final_distances, axis=1)
+    if np.any(np.bincount(final_labels, minlength=n_clusters) == 0):
+        return None
+    inertia = float(np.sum(final_distances[np.arange(n_cells), final_labels]))
+    return final_labels, inertia
+
+
+def _canonical_cluster_labels(labels: np.ndarray) -> tuple[int, ...]:
+    mapping: dict[int, int] = {}
+    result: list[int] = []
+    for value in labels.tolist():
+        integer = int(value)
+        if integer not in mapping:
+            mapping[integer] = len(mapping)
+        result.append(mapping[integer])
+    return tuple(result)
+
+
+def _deterministic_kmeans(values: np.ndarray, n_clusters: int) -> np.ndarray | None:
+    master = np.random.default_rng(CLUSTERING_SEED)
+    best_labels: np.ndarray | None = None
+    best_inertia = np.inf
+    best_canonical: tuple[int, ...] | None = None
+    for _ in range(CLUSTERING_N_INIT):
+        run_seed = int(master.integers(0, 2**63, dtype=np.int64))
+        result = _kmeans_once(values, n_clusters, np.random.default_rng(run_seed))
+        if result is None:
+            continue
+        labels, inertia = result
+        canonical = _canonical_cluster_labels(labels)
+        if inertia < best_inertia or (
+            inertia == best_inertia
+            and (best_canonical is None or canonical < best_canonical)
+        ):
+            best_labels = labels
+            best_inertia = inertia
+            best_canonical = canonical
+    return best_labels
+
+
+def _contingency(
+    truth: np.ndarray, predicted: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    truth_levels = {value: index for index, value in enumerate(sorted(set(truth)))}
+    predicted_levels = {
+        int(value): index for index, value in enumerate(sorted(set(predicted.tolist())))
+    }
+    table = np.zeros(
+        (len(truth_levels), len(predicted_levels)), dtype=np.int64
+    )
+    for truth_value, predicted_value in zip(truth, predicted, strict=True):
+        table[truth_levels[str(truth_value)], predicted_levels[int(predicted_value)]] += 1
+    return table, np.sum(table, axis=1), np.sum(table, axis=0)
+
+
+def _adjusted_rand_index(truth: np.ndarray, predicted: np.ndarray) -> float:
+    table, truth_counts, predicted_counts = _contingency(truth, predicted)
+    pair = lambda value: value * (value - 1.0) / 2.0
+    observed = float(np.sum(pair(table.astype(np.float64))))
+    truth_pairs = float(np.sum(pair(truth_counts.astype(np.float64))))
+    predicted_pairs = float(np.sum(pair(predicted_counts.astype(np.float64))))
+    total_pairs = pair(float(truth.size))
+    expected = truth_pairs * predicted_pairs / total_pairs
+    maximum = 0.5 * (truth_pairs + predicted_pairs)
+    denominator = maximum - expected
+    return 1.0 if denominator == 0.0 and observed == maximum else (
+        (observed - expected) / denominator
+    )
+
+
+def _normalized_mutual_information(
+    truth: np.ndarray, predicted: np.ndarray
+) -> float:
+    table, truth_counts, predicted_counts = _contingency(truth, predicted)
+    total = float(truth.size)
+    joint = table.astype(np.float64) / total
+    truth_probability = truth_counts.astype(np.float64) / total
+    predicted_probability = predicted_counts.astype(np.float64) / total
+    mutual_information = 0.0
+    for truth_index, predicted_index in zip(*np.nonzero(table), strict=True):
+        probability = joint[truth_index, predicted_index]
+        mutual_information += probability * np.log(
+            probability
+            / (
+                truth_probability[truth_index]
+                * predicted_probability[predicted_index]
+            )
+        )
+    truth_entropy = float(-np.sum(truth_probability * np.log(truth_probability)))
+    predicted_entropy = float(
+        -np.sum(predicted_probability * np.log(predicted_probability))
+    )
+    denominator = truth_entropy + predicted_entropy
+    return 1.0 if denominator == 0.0 else 2.0 * mutual_information / denominator
+
+
+def evaluate_clustering_endpoints(
+    output: MethodOutput, targets: EvaluatorTargets
+) -> tuple[EndpointRecord, EndpointRecord]:
+    """Return deterministic clustering recovery as one minus ARI and NMI."""
+
+    values, _cell_ids, _gene_ids, target_cells, _target_genes = (
+        _aligned_evaluator_arrays(output, targets)
+    )
+    procedure = (
+        "log1p_cp10k_full_svd_pca_kmeans_"
+        f"seed={CLUSTERING_SEED}_n_init={CLUSTERING_N_INIT}"
+    )
+    labels: np.ndarray | None
+    if targets.group_labels is None:
+        reason = targets.group_labels_reason or "group_labels_unavailable"
+        labels = None
+    else:
+        labels = np.asarray(targets.group_labels, dtype=str)[target_cells]
+        groups, counts = np.unique(labels, return_counts=True)
+        if groups.size < 2:
+            reason = "fewer_than_two_groups"
+        elif np.any(counts < 2):
+            reason = "fewer_than_two_cells_in_group"
+        else:
+            reason = None
+    if reason is None:
+        assert labels is not None
+        centered = _log_cp10k(values)
+        centered -= np.mean(centered, axis=0)
+        left, singular, _right = np.linalg.svd(centered, full_matrices=False)
+        tolerance = (
+            np.finfo(np.float64).eps
+            * max(centered.shape)
+            * (float(singular[0]) if singular.size else 0.0)
+        )
+        rank = int(np.sum(singular > tolerance))
+        if rank == 0:
+            reason = "constant_method_representation"
+        else:
+            components = min(CLUSTERING_MAX_COMPONENTS, rank)
+            representation = left[:, :components] * singular[:components]
+            n_groups = len(set(labels.tolist()))
+            if np.unique(representation, axis=0).shape[0] < n_groups:
+                reason = "fewer_distinct_method_profiles_than_groups"
+            else:
+                predicted = _deterministic_kmeans(representation, n_groups)
+                if predicted is None:
+                    reason = "deterministic_kmeans_failed"
+                else:
+                    ari_loss = 1.0 - _adjusted_rand_index(labels, predicted)
+                    nmi_loss = 1.0 - _normalized_mutual_information(
+                        labels, predicted
+                    )
+                    return (
+                        _completed_record(
+                            "clustering_ari_loss",
+                            ari_loss,
+                            direction="lower_is_better",
+                            descriptive_n=values.shape[0],
+                            descriptive_unit="cells",
+                            procedure=procedure,
+                        ),
+                        _completed_record(
+                            "clustering_nmi_loss",
+                            nmi_loss,
+                            direction="lower_is_better",
+                            descriptive_n=values.shape[0],
+                            descriptive_unit="cells",
+                            procedure=procedure,
+                        ),
+                    )
+    return (
+        _unavailable_record(
+            "clustering_ari_loss",
+            reason,
+            direction="lower_is_better",
+            descriptive_n=values.shape[0],
+            descriptive_unit="cells",
+            procedure=procedure,
+        ),
+        _unavailable_record(
+            "clustering_nmi_loss",
+            reason,
+            direction="lower_is_better",
+            descriptive_n=values.shape[0],
+            descriptive_unit="cells",
+            procedure=procedure,
+        ),
+    )
 
 
 def _marker_column(mechanism: str, group: str) -> str | None:
