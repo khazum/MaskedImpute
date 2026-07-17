@@ -30,6 +30,7 @@ from maskimpute_benchmark.methods.sccr import (
     run_sccr,
 )
 from maskimpute_benchmark.methods.scsdae import (
+    _SCSDAE_PROBE_DRIVER,
     SCSDaeConfig,
     SCSDaeUnavailableError,
     finalize_scsdae_output,
@@ -184,6 +185,7 @@ receipt = {{
     "pandas_version": "0.24.2",
     "python_version": "3.6.13",
     "source_script": str(Path(sys.argv[5])),
+    "tensorflow_memory_growth": "true",
     "tensorflow_version": "1.12.0",
 }}
 Path(sys.argv[9]).write_text(
@@ -230,6 +232,14 @@ def test_required_legacy_configs_match_pinned_defaults() -> None:
         l2_regularization=0.0,
         gene_scale=False,
         gpu_index=0,
+    )
+
+
+def test_scsdae_gpu_discovery_uses_the_growth_enabled_session_config() -> None:
+    assert "tf.test.is_gpu_available" not in _SCSDAE_PROBE_DRIVER
+    assert (
+        "device_lib.list_local_devices(session_config=probe_config)"
+        in _SCSDAE_PROBE_DRIVER
     )
 
 
@@ -619,8 +629,11 @@ def test_scsdae_real_pinned_gpu0_tiny_smoke_parses_upstream_header(
         seed=42,
         config=SCSDaeConfig(
             batch_size=16,
-            autoencoder_iterations=1,
-            pretrain_iterations=1,
+            # One epoch can leave the pinned linear output layer negative on
+            # current CUDA kernels; five remains a tiny disclosed override
+            # while exercising a valid native-output/evaluator path.
+            autoencoder_iterations=5,
+            pretrain_iterations=5,
             gpu_index=0,
         ),
         work_root=tmp_path,
@@ -633,7 +646,15 @@ def test_scsdae_real_pinned_gpu0_tiny_smoke_parses_upstream_header(
     assert receipt["gpu_index"] == "0"
     assert receipt["tensorflow_version"] == "1.12.0"
     assert receipt["keras_version"] == "2.2.4"
+    assert receipt["tensorflow_memory_growth"] == "true"
+    assert (
+        b"MASKIMPUTE_SCSDAE_PREFLIGHT tensorflow_memory_growth=true"
+        in execution.stdout
+    )
     assert "gpu_device_binding" in {
+        event.code for event in execution.compatibility_log
+    }
+    assert "allocator_policy" in {
         event.code for event in execution.compatibility_log
     }
 

@@ -54,6 +54,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 import keras
+from tensorflow.python.client import device_lib
 
 print(
     "MASKIMPUTE_SCSDAE_PREFLIGHT "
@@ -70,7 +71,20 @@ if str(tf.__version__) != "1.12.0" or str(keras.__version__) != "2.2.4":
         "MASKIMPUTE_LEGACY_ENVIRONMENT_MISMATCH: scSDAE requires "
         "TensorFlow 1.12.0 and Keras 2.2.4"
     )
-gpu_available = bool(tf.test.is_gpu_available(cuda_only=True))
+probe_config = tf.ConfigProto(allow_soft_placement=False)
+probe_config.gpu_options.allow_growth = True
+tensorflow_memory_growth = bool(probe_config.gpu_options.allow_growth)
+if not tensorflow_memory_growth:
+    raise RuntimeError("TensorFlow memory-growth policy was not applied")
+print(
+    "MASKIMPUTE_SCSDAE_PREFLIGHT "
+    f"tensorflow_memory_growth={str(tensorflow_memory_growth).lower()}",
+    flush=True,
+)
+gpu_available = any(
+    device.device_type == "GPU"
+    for device in device_lib.list_local_devices(session_config=probe_config)
+)
 print(
     f"MASKIMPUTE_SCSDAE_PREFLIGHT gpu_available={gpu_available} "
     f"gpu_index={gpu_index}",
@@ -88,7 +102,6 @@ try:
                 tf.constant([[1.0]], dtype=tf.float32),
                 tf.constant([[1.0]], dtype=tf.float32),
             )
-        probe_config = tf.ConfigProto(allow_soft_placement=False)
         with tf.Session(graph=probe_graph, config=probe_config) as probe_session:
             observed_probe = probe_session.run(probe_value)
     if observed_probe.shape != (1, 1) or float(observed_probe[0, 0]) != 1.0:
@@ -158,6 +171,18 @@ if str(tf.__version__) != "1.12.0" or str(keras.__version__) != "2.2.4":
         "TensorFlow 1.12.0 and Keras 2.2.4"
     )
 
+run_config = tf.ConfigProto()
+run_config.gpu_options.allow_growth = True
+tensorflow_memory_growth = bool(run_config.gpu_options.allow_growth)
+if not tensorflow_memory_growth:
+    raise RuntimeError("TensorFlow memory-growth policy was not applied")
+keras.backend.set_session(tf.Session(config=run_config))
+print(
+    "MASKIMPUTE_SCSDAE_PREFLIGHT "
+    f"tensorflow_memory_growth={str(tensorflow_memory_growth).lower()}",
+    flush=True,
+)
+
 random.seed(seed)
 np.random.seed(seed)
 tf.set_random_seed(seed)
@@ -206,6 +231,7 @@ receipt = {
     "pandas_version": str(pd.__version__),
     "python_version": sys.version.split()[0],
     "source_script": str(source_script),
+    "tensorflow_memory_growth": str(tensorflow_memory_growth).lower(),
     "tensorflow_version": str(tf.__version__),
 }
 receipt_path.write_text(
@@ -543,6 +569,10 @@ def run_scsdae(
             f"pinned CLI default GPU_SET=3 is an operational device ordinal, not a scientific hyperparameter; the study binds physical GPU index {config.gpu_index} and the subprocess sees it as logical GPU0",
         ),
         CompatibilityEvent(
+            "allocator_policy",
+            "both the TensorFlow 1.12 GPU-kernel preflight and the Keras execution session set and receipt gpu_options.allow_growth=true before creating their sessions",
+        ),
+        CompatibilityEvent(
             "seed_binding",
             "adapter wrapper sets Python, NumPy, and TensorFlow graph seeds before executing the exact pinned script via runpy",
         ),
@@ -670,6 +700,7 @@ def run_scsdae(
                         "pandas_version",
                         "python_version",
                         "source_script",
+                        "tensorflow_memory_growth",
                         "tensorflow_version",
                     }
                 ),
