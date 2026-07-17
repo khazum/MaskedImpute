@@ -435,8 +435,17 @@ def _regular_file_identity(metadata: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None:
-    """Inspect bounded HDF5 metadata before AnnData materializes an H5AD."""
+def _validate_scaling_h5ad_structure(
+    path: Path,
+    cells: int,
+    genes: int,
+    *,
+    profile: Literal["scaling", "trajectory"] = "scaling",
+) -> None:
+    """Inspect closed HDF5 metadata before AnnData materializes an H5AD."""
+
+    if profile not in {"scaling", "trajectory"}:
+        raise ScalingContractError("H5AD HDF5 validation profile is invalid")
 
     try:
         import h5py
@@ -507,7 +516,9 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
         def data_dtype(dataset: object, name: str, kinds: str) -> None:
             dataset = dataset_layout(dataset, name)
             dtype = dataset.dtype
-            if dtype.kind not in kinds or (dtype.kind in "biufc" and dtype.itemsize > 8):
+            if dtype.kind not in kinds or (
+                dtype.kind in "biufc" and dtype.itemsize > 8
+            ):
                 raise ScalingContractError(f"H5AD HDF5 {name} dtype is invalid")
 
         def array(
@@ -527,14 +538,9 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
                 name,
             )
 
-        def string_array(
-            dataset: object, shape: tuple[int, ...], name: str
-        ) -> None:
+        def string_array(dataset: object, shape: tuple[int, ...], name: str) -> None:
             dataset = dataset_layout(dataset, name)
-            if (
-                dataset.shape != shape
-                or h5py.check_string_dtype(dataset.dtype) is None
-            ):
+            if dataset.shape != shape or h5py.check_string_dtype(dataset.dtype) is None:
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
             attrs(
                 dataset,
@@ -558,9 +564,10 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
             if attribute_names != {"encoding-type", "encoding-version", "shape"}:
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
             encoding_type = text(element.attrs["encoding-type"], f"{name} encoding")
-            if encoding_type not in {"csr_matrix", "csc_matrix"} or text(
-                element.attrs["encoding-version"], f"{name} version"
-            ) != "0.1.0":
+            if (
+                encoding_type not in {"csr_matrix", "csc_matrix"}
+                or text(element.attrs["encoding-version"], f"{name} version") != "0.1.0"
+            ):
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
             encoded_shape = np.asarray(element.attrs["shape"])
             if (
@@ -578,7 +585,9 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
             data_dtype(indices, f"{name}/indices", "iu")
             data_dtype(indptr, f"{name}/indptr", "iu")
             nnz = data.shape[0]  # type: ignore[attr-defined]
-            pointer_count = shape[0] + 1 if encoding_type == "csr_matrix" else shape[1] + 1
+            pointer_count = (
+                shape[0] + 1 if encoding_type == "csr_matrix" else shape[1] + 1
+            )
             if (
                 data.ndim != 1  # type: ignore[attr-defined]
                 or nnz > shape[0] * shape[1]
@@ -599,10 +608,8 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
             if set(attributes) != {"encoding-type", "encoding-version", "ordered"}:
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
             if (
-                text(attributes["encoding-type"], f"{name} encoding")
-                != "categorical"
-                or text(attributes["encoding-version"], f"{name} version")
-                != "0.2.0"
+                text(attributes["encoding-type"], f"{name} encoding") != "categorical"
+                or text(attributes["encoding-version"], f"{name} version") != "0.2.0"
                 or bool(attributes["ordered"])
             ):
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
@@ -614,7 +621,9 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
             ):
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
             string_array(categories, categories.shape, f"{name}/categories")
-            array(child(group, "codes", f"{name}/codes"), (length,), f"{name}/codes", "iu")
+            array(
+                child(group, "codes", f"{name}/codes"), (length,), f"{name}/codes", "iu"
+            )
 
         def dataframe(
             group: object,
@@ -639,14 +648,14 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
             order = tuple(text(value, f"{name} column") for value in order_value)
             if (
                 text(attributes["_index"], f"{name} index") != "_index"
-                or text(attributes["encoding-type"], f"{name} encoding")
-                != "dataframe"
-                or text(attributes["encoding-version"], f"{name} version")
-                != "0.2.0"
+                or text(attributes["encoding-type"], f"{name} encoding") != "dataframe"
+                or text(attributes["encoding-version"], f"{name} version") != "0.2.0"
                 or order != columns
             ):
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
-            string_array(child(group, "_index", f"{name}/_index"), (length,), f"{name}/_index")
+            string_array(
+                child(group, "_index", f"{name}/_index"), (length,), f"{name}/_index"
+            )
 
         metadata_nodes = 0
 
@@ -664,27 +673,38 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
                     name,
                 )
                 for field in names(element, 64, name):
-                    bounded_metadata(child(element, field, f"{name}/{field}"), depth + 1, f"{name}/{field}")
+                    bounded_metadata(
+                        child(element, field, f"{name}/{field}"),
+                        depth + 1,
+                        f"{name}/{field}",
+                    )
                 return
             element = dataset_layout(element, name)
             if element.ndim > 2:
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
-            element_count = int(np.prod(element.shape, dtype=np.int64)) if element.shape else 1
+            element_count = (
+                int(np.prod(element.shape, dtype=np.int64)) if element.shape else 1
+            )
             if element_count > 4_096:
-                raise ScalingContractError(f"H5AD HDF5 {name} structure exceeds its bound")
+                raise ScalingContractError(
+                    f"H5AD HDF5 {name} structure exceeds its bound"
+                )
             dtype = element.dtype
             if dtype.kind == "O":
                 if h5py.check_string_dtype(dtype) is None:
                     raise ScalingContractError(f"H5AD HDF5 {name} dtype is invalid")
-            elif dtype.kind not in "SUbiuf" or (dtype.kind in "biuf" and dtype.itemsize > 8):
+            elif dtype.kind not in "SUbiuf" or (
+                dtype.kind in "biuf" and dtype.itemsize > 8
+            ):
                 raise ScalingContractError(f"H5AD HDF5 {name} dtype is invalid")
             attribute_names = set(element.attrs)
             if attribute_names != {"encoding-type", "encoding-version"}:
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
             encoding = text(element.attrs["encoding-type"], f"{name} encoding")
-            if encoding not in {"array", "numeric-scalar", "string", "string-array"} or text(
-                element.attrs["encoding-version"], f"{name} version"
-            ) != "0.2.0":
+            if (
+                encoding not in {"array", "numeric-scalar", "string", "string-array"}
+                or text(element.attrs["encoding-version"], f"{name} version") != "0.2.0"
+            ):
                 raise ScalingContractError(f"H5AD HDF5 {name} structure is invalid")
 
         def dictionary(group: object, expected_names: set[str], name: str) -> None:
@@ -716,12 +736,15 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
             )
             matrix(child(handle, "X", "X"), (cells, genes), "X")
             layers = child(handle, "layers", "layers")
-            dictionary(layers, {"pre_capture_counts"}, "layers")
-            matrix(
-                child(layers, "pre_capture_counts", "layers/pre_capture_counts"),
-                (cells, genes),
-                "layers/pre_capture_counts",
-            )
+            if profile == "scaling":
+                dictionary(layers, {"pre_capture_counts"}, "layers")
+                matrix(
+                    child(layers, "pre_capture_counts", "layers/pre_capture_counts"),
+                    (cells, genes),
+                    "layers/pre_capture_counts",
+                )
+            else:
+                dictionary(layers, set(), "layers")
 
             obs_columns = (
                 "dataset_id",
@@ -732,6 +755,7 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
                 "draw",
                 "library_size",
                 "group",
+                *(("pseudotime",) if profile == "trajectory" else ()),
             )
             obs = child(handle, "obs", "obs")
             dataframe(obs, cells, obs_columns, "obs")
@@ -741,11 +765,20 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
                 "condition": 1,
                 "biological_id": 1,
                 "technical_view": 1,
-                "group": 5,
+                "group": 5 if profile == "scaling" else 3,
             }.items():
-                categorical(child(obs, field, f"obs/{field}"), cells, maximum, f"obs/{field}")
+                categorical(
+                    child(obs, field, f"obs/{field}"), cells, maximum, f"obs/{field}"
+                )
             for field in ("draw", "library_size"):
                 array(child(obs, field, f"obs/{field}"), (cells,), f"obs/{field}", "iu")
+            if profile == "trajectory":
+                array(
+                    child(obs, "pseudotime", "obs/pseudotime"),
+                    (cells,),
+                    "obs/pseudotime",
+                    "f",
+                )
 
             marker_columns = tuple(
                 field
@@ -759,19 +792,28 @@ def _validate_scaling_h5ad_structure(path: Path, cells: int, genes: int) -> None
             var_attributes = var.attrs  # type: ignore[attr-defined]
             raw_order = np.asarray(var_attributes.get("column-order", []))
             var_columns = tuple(text(value, "var column") for value in raw_order)
-            if var_columns not in {(), marker_columns}:
+            allowed_var_columns = (
+                {()} if profile == "trajectory" else {(), marker_columns}
+            )
+            if var_columns not in allowed_var_columns:
                 raise ScalingContractError("H5AD HDF5 var structure is invalid")
             dataframe(var, genes, var_columns, "var")
             for field in var_columns:
                 kinds = "fiu" if field.startswith("theoretical_") else "biu"
-                array(child(var, field, f"var/{field}"), (genes,), f"var/{field}", kinds)
+                array(
+                    child(var, field, f"var/{field}"), (genes,), f"var/{field}", kinds
+                )
 
             for field in ("obsm", "obsp", "varm", "varp"):
                 dictionary(child(handle, field, field), set(), field)
 
             uns = child(handle, "uns", "uns")
             uns_names = set(names(uns, 5, "uns"))
-            required_uns = {"truth_kind", "primary_truth_layer", "provenance"}
+            required_uns = (
+                {"truth_kind", "primary_truth_layer", "provenance"}
+                if profile == "scaling"
+                else {"truth_kind", "provenance"}
+            )
             if not required_uns <= uns_names or not uns_names <= required_uns | {
                 "normalization",
                 "allowed_covariates",
@@ -1108,14 +1150,10 @@ def _expected_scaling_dataset_authority(
     cells: int,
 ) -> dict[str, object]:
     protocol = scaling_protocol(base_protocol, contract, cells)
-    moderate, _severe = scaling_requests(
-        contract, protocol, output_dir / "generated"
-    )
+    moderate, _severe = scaling_requests(contract, protocol, output_dir / "generated")
     seeds = derive_scaling_seeds(contract, cells)
     try:
-        relative = moderate.output_path.absolute().relative_to(
-            output_dir.absolute()
-        )
+        relative = moderate.output_path.absolute().relative_to(output_dir.absolute())
     except ValueError as error:  # pragma: no cover - constructed from output_dir
         raise ScalingContractError(
             "derived scaling dataset path escaped its result root"
@@ -1367,9 +1405,7 @@ def _parse_executor_receipt(raw: bytes) -> Mapping[str, object]:
         or raw != _canonical_bytes(payload) + b"\n"
     ):
         raise ScalingContractError("scaling executor receipt fields are not closed")
-    unsigned = {
-        key: value for key, value in payload.items() if key != "receipt_sha256"
-    }
+    unsigned = {key: value for key, value in payload.items() if key != "receipt_sha256"}
     if payload.get("receipt_sha256") != canonical_sha256(unsigned):
         raise ScalingContractError("scaling executor receipt checksum mismatch")
     return MappingProxyType(payload)
@@ -1461,18 +1497,15 @@ class ScalingResultStore:
         protocol_path = repository / "study/protocol.json"
         self.contract = load_scaling_contract(contract_path)
         self.base_protocol = load_protocol(protocol_path)
-        if (
-            plan.input_hashes.get("scaling_contract_sha256")
-            != self.contract.file_sha256
-            or plan.input_hashes.get("protocol_file_sha256")
-            != _file_sha256(protocol_path)
-        ):
+        if plan.input_hashes.get(
+            "scaling_contract_sha256"
+        ) != self.contract.file_sha256 or plan.input_hashes.get(
+            "protocol_file_sha256"
+        ) != _file_sha256(protocol_path):
             raise ScalingContractError(
                 "scaling store authority differs from the tracked design"
             )
-        self._prepared_datasets: dict[
-            int, tuple[str, str, PreparedDataset]
-        ] = {}
+        self._prepared_datasets: dict[int, tuple[str, str, PreparedDataset]] = {}
         self._metric_authorities: dict[int, dict[str, object]] = {}
         self._snapshot: ScalingCheckpoint | None | object = _UNLOADED
         self._checkpoint_file_sha256: tuple[int, str, str] | None | object = _UNLOADED
@@ -1511,9 +1544,7 @@ class ScalingResultStore:
                 != (opened_before.st_dev, opened_before.st_ino)
                 or stat.S_ISLNK(named_after.st_mode)
             ):
-                raise ScalingContractError(
-                    "scaling operation lock directory changed"
-                )
+                raise ScalingContractError("scaling operation lock directory changed")
         except ScalingContractError:
             raise
         except OSError as error:
@@ -1565,15 +1596,9 @@ class ScalingResultStore:
             ) from error
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
             raise ScalingContractError("scaling checkpoint directory is invalid")
-        expected = tuple(
-            f"{index:08d}.json" for index in range(1, len(paths) + 1)
-        )
-        if (
-            tuple(path.name for path in paths) != expected
-            or any(
-                _SCALING_CHECKPOINT_FILE.fullmatch(path.name) is None
-                for path in paths
-            )
+        expected = tuple(f"{index:08d}.json" for index in range(1, len(paths) + 1))
+        if tuple(path.name for path in paths) != expected or any(
+            _SCALING_CHECKPOINT_FILE.fullmatch(path.name) is None for path in paths
         ):
             raise ScalingContractError(
                 "scaling checkpoint history is not a contiguous prefix"
@@ -1769,8 +1794,7 @@ class ScalingResultStore:
             self.contract, self.base_protocol, self.output_dir, expected_cells
         )
         if any(
-            value.get(name) != expected
-            for name, expected in expected_authority.items()
+            value.get(name) != expected for name, expected in expected_authority.items()
         ):
             raise ScalingContractError(
                 "scaling dataset seed, design, or protocol authority differs"
@@ -1895,9 +1919,7 @@ class ScalingResultStore:
                 "variance_distortion": int(truth.shape[1]),
                 "mean_gene_wasserstein_distance": int(truth.shape[1]),
                 "n_corr_genes": int(truth.shape[1]),
-                "correlation_pairs": int(
-                    truth.shape[1] * (truth.shape[1] - 1) // 2
-                ),
+                "correlation_pairs": int(truth.shape[1] * (truth.shape[1] - 1) // 2),
             }
         return MappingProxyType(dict(value))
 
@@ -1939,7 +1961,8 @@ class ScalingResultStore:
         status = receipt.get("status")
         reason = receipt.get("reason")
         if (
-            status not in {
+            status
+            not in {
                 "completed",
                 "unavailable",
                 "failed",
@@ -1950,10 +1973,7 @@ class ScalingResultStore:
                 "budget_exhausted",
             }
             or (status == "completed" and reason is not None)
-            or (
-                status != "completed"
-                and (not isinstance(reason, str) or not reason)
-            )
+            or (status != "completed" and (not isinstance(reason, str) or not reason))
             or isinstance(receipt.get("runtime_seconds"), bool)
             or not isinstance(receipt.get("runtime_seconds"), (int, float))
             or not np.isfinite(float(receipt["runtime_seconds"]))
@@ -2057,9 +2077,7 @@ class ScalingResultStore:
             max_bytes=maximum_compressed,
             artifact_directory=artifact_directory,
         )
-        raw = self._decompress_matrix_bytes(
-            path, expected_nbytes, raw_sha256, "native"
-        )
+        raw = self._decompress_matrix_bytes(path, expected_nbytes, raw_sha256, "native")
         output = np.frombuffer(raw, dtype="<f8").reshape(expected_shape)
         if not np.isfinite(output).all() or bool((output < 0).any()):
             raise ScalingContractError("scaling native output values are invalid")
@@ -2198,9 +2216,7 @@ class ScalingResultStore:
             if artifact_directory is None
             else artifact_directory
         )
-        _reject_symlink_components(
-            self.output_dir, directory, "scaling run directory"
-        )
+        _reject_symlink_components(self.output_dir, directory, "scaling run directory")
         try:
             metadata = directory.lstat()
             entries = tuple(directory.iterdir())
@@ -2343,9 +2359,7 @@ class ScalingResultStore:
             "observed_zero_count": int((prepared.method_input.counts == 0).sum()),
         }
         if any(run.get(name) != expected for name, expected in expected_run.items()):
-            raise ScalingContractError(
-                "stored scaling record dataset identity differs"
-            )
+            raise ScalingContractError("stored scaling record dataset identity differs")
         executor_receipt = self._load_executor_receipt(
             run,
             entry,
@@ -2385,12 +2399,9 @@ class ScalingResultStore:
                 raise ScalingContractError(
                     "stored scaling run differs from its executor receipt"
                 )
-        if (
-            run.get("stdout_size_bytes")
-            != executor_receipt.get("stdout_size_bytes")
-            or run.get("stderr_size_bytes")
-            != executor_receipt.get("stderr_size_bytes")
-        ):
+        if run.get("stdout_size_bytes") != executor_receipt.get(
+            "stdout_size_bytes"
+        ) or run.get("stderr_size_bytes") != executor_receipt.get("stderr_size_bytes"):
             raise ScalingContractError(
                 "stored scaling logs differ from their executor receipt"
             )
@@ -2449,9 +2460,7 @@ class ScalingResultStore:
                 "noncompleted scaling run lacks its terminal reason"
             )
         if status == "timeout" and run.get("reason") != "timeout":
-            raise ScalingContractError(
-                "timeout scaling run has a noncanonical reason"
-            )
+            raise ScalingContractError("timeout scaling run has a noncanonical reason")
         if (
             run.get("calibration_artifact_sha256") is not None
             or run.get("calibration_context_sha256") is not None
@@ -2463,13 +2472,8 @@ class ScalingResultStore:
                 "scaling run contains an unauthorized fold-calibration receipt"
             )
         for name in ("stdout", "stderr"):
-            if (
-                run.get(f"{name}_sha256")
-                != run.get(f"{name}_file_sha256")
-            ):
-                raise ScalingContractError(
-                    f"scaling {name} content receipt differs"
-                )
+            if run.get(f"{name}_sha256") != run.get(f"{name}_file_sha256"):
+                raise ScalingContractError(f"scaling {name} content receipt differs")
         for name in ("native_output_sha256", "evaluator_output_sha256"):
             if run.get(name) is not None:
                 _sha256(run[name], f"scaling {name}")
@@ -2573,7 +2577,12 @@ class ScalingResultStore:
                 )
                 expected_status = "completed"
                 expected_reason = None
-            except (AdapterUnavailableError, TypeError, ValueError, OverflowError) as error:
+            except (
+                AdapterUnavailableError,
+                TypeError,
+                ValueError,
+                OverflowError,
+            ) as error:
                 expected_status = "unavailable"
                 expected_reason = _evaluator_conversion_failure_reason(error)
             del native_output
@@ -2691,9 +2700,7 @@ class ScalingResultStore:
                     "scaling correlation distortion exceeds its range"
                 )
             if metric_name == "n_corr_genes" and float(value_number) != gene_count:
-                raise ScalingContractError(
-                    "scaling correlation gene count differs"
-                )
+                raise ScalingContractError("scaling correlation gene count differs")
         if evaluator_output is not None:
             from .runner import _evaluator_targets
 
@@ -2707,9 +2714,7 @@ class ScalingResultStore:
                 for metric in _scaling_metric_rows(
                     entry,
                     _run_plan_entry(entry, prepared.binding),
-                    _bounded_scaling_metric_values(
-                        evaluator_output, observed, truth
-                    ),
+                    _bounded_scaling_metric_values(evaluator_output, observed, truth),
                 )
             ]
             if metrics != replayed:
@@ -2785,14 +2790,10 @@ class ScalingResultStore:
         if len(datasets) > len(expected_cells) or len(records) > len(self.plan.entries):
             raise ScalingContractError("scaling checkpoint exceeds its denominator")
         dataset_values = tuple(
-            self._validate_dataset_receipt(
-                value, cells, verify_generator=True
-            )
+            self._validate_dataset_receipt(value, cells, verify_generator=True)
             for value, cells in zip(datasets, expected_cells, strict=False)
         )
-        receipts_by_cells = {
-            int(value["cells"]): value for value in dataset_values
-        }
+        receipts_by_cells = {int(value["cells"]): value for value in dataset_values}
         record_values = tuple(
             self._validate_record(value, entry, receipts_by_cells[entry.cells])
             for value, entry in zip(records, self.plan.entries, strict=False)
@@ -2950,7 +2951,7 @@ class ScalingResultStore:
         with self._exclusive_operation():
             report = self._load_unlocked(force_validate=True)
             self._require_checkpoint_unchanged()
-            for receipt in (() if report is None else report.datasets):
+            for receipt in () if report is None else report.datasets:
                 _cleanup_discarded_scaling_inputs(
                     self.output_dir,
                     int(receipt["cells"]),
@@ -2973,9 +2974,7 @@ class ScalingResultStore:
                     "scaling run recovery directory is unavailable"
                 ) from error
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                raise ScalingContractError(
-                    "scaling run recovery path is invalid"
-                )
+                raise ScalingContractError("scaling run recovery path is invalid")
             by_run_id = {entry.run_id: entry for entry in self.plan.entries}
             removed: list[str] = []
             for path in children:
@@ -2986,9 +2985,9 @@ class ScalingResultStore:
                     run_id = path.name
                 else:
                     for candidate in by_run_id:
-                        if path.name.startswith(f".{candidate}.") and path.name.endswith(
-                            ".tmp"
-                        ):
+                        if path.name.startswith(
+                            f".{candidate}."
+                        ) and path.name.endswith(".tmp"):
                             run_id = candidate
                             break
                 if run_id is None or run_id in referenced:
@@ -3032,9 +3031,7 @@ class ScalingResultStore:
             if child.name.startswith(prefix) and child.name.endswith(".tmp"):
                 self._remove_closed_run_directory(child)
         try:
-            stage = Path(
-                tempfile.mkdtemp(prefix=prefix, suffix=".tmp", dir=runs)
-            )
+            stage = Path(tempfile.mkdtemp(prefix=prefix, suffix=".tmp", dir=runs))
         except OSError as error:
             raise ScalingContractError(
                 "scaling run transaction cannot be staged"
@@ -3149,14 +3146,18 @@ class ScalingResultStore:
             try:
                 native = np.asarray(native_output, dtype="<f8", order="C")
             except (TypeError, ValueError, OverflowError) as error:
-                raise ScalingContractError("scaling native output is invalid") from error
+                raise ScalingContractError(
+                    "scaling native output is invalid"
+                ) from error
             expected_attempt_shape = (
                 run.get("retained_cell_count"),
                 run.get("retained_gene_count"),
             )
             if (
                 executor_receipt.get("status") != "completed"
-                or not all(type(item) is int and item > 0 for item in expected_attempt_shape)
+                or not all(
+                    type(item) is int and item > 0 for item in expected_attempt_shape
+                )
                 or native.shape != expected_attempt_shape
                 or not np.isfinite(native).all()
                 or bool((native < 0).any())
@@ -3289,9 +3290,7 @@ class ScalingResultStore:
             None,
         )
         if receipt is None:
-            raise ScalingContractError(
-                "scaling attempt lacks its dataset receipt"
-            )
+            raise ScalingContractError("scaling attempt lacks its dataset receipt")
         stage, final = self._prepare_run_transaction(entry)
         published = False
         try:
@@ -3368,9 +3367,7 @@ def _dataset_receipt_from_artifacts(
         raise ScalingContractError("scaling output escaped its result root") from error
     seeds = derive_scaling_seeds(contract, protocol.development.cells)
     request = moderate_artifact.request
-    design_sha256 = _scaling_dataset_design_sha256(
-        contract, protocol, request, seeds
-    )
+    design_sha256 = _scaling_dataset_design_sha256(contract, protocol, request, seeds)
     unsigned: dict[str, object] = {
         "schema_version": 1,
         "cells": request.cells,
@@ -3790,9 +3787,7 @@ def _evaluate_scaling_outcome(
     )
     from .methods import AdapterUnavailableError
 
-    executor_receipt = _executor_receipt_bytes(
-        entry, run_entry, prepared, outcome
-    )
+    executor_receipt = _executor_receipt_bytes(entry, run_entry, prepared, outcome)
     status = outcome.status
     reason = outcome.reason
     native_output_sha256: str | None = None
@@ -3897,9 +3892,7 @@ def _evaluate_scaling_outcome(
         stdout=outcome.stdout,
         stderr=outcome.stderr,
         native_output=(
-            None
-            if outcome.execution is None
-            else outcome.execution.snapshot.matrix
+            None if outcome.execution is None else outcome.execution.snapshot.matrix
         ),
         native_output_scale=(
             None
@@ -3925,18 +3918,14 @@ def execute_scaling_plan(
         raise TypeError("authority must be a ScalingExecutionAuthority")
     if not isinstance(output_dir, Path):
         raise TypeError("output_dir must be a pathlib.Path")
-    if on_checkpoint_published is not None and not callable(
-        on_checkpoint_published
-    ):
+    if on_checkpoint_published is not None and not callable(on_checkpoint_published):
         raise TypeError("on_checkpoint_published must be callable")
 
     def publish_checkpoint() -> None:
         if on_checkpoint_published is not None:
             on_checkpoint_published()
 
-    store = ScalingResultStore(
-        output_dir, authority.plan, simulator=simulator
-    )
+    store = ScalingResultStore(output_dir, authority.plan, simulator=simulator)
     report = store.load()
     configuration_by_method = {
         value.method_id: value for value in authority.plan.configurations
@@ -4106,9 +4095,7 @@ def load_publication_scaling_evidence(
             expected_state="evaluated",
         )
         if not isinstance(receipt, Mapping):
-            raise ScalingContractError(
-                "evaluated scaling lifecycle lacks its receipt"
-            )
+            raise ScalingContractError("evaluated scaling lifecycle lacks its receipt")
         evaluation = receipt.get("result_manifest")
         required_evaluation_fields = {
             "schema_version",
@@ -4134,9 +4121,7 @@ def load_publication_scaling_evidence(
             or receipt.get("result_manifest_sha256")
             != canonical_sha256(dict(evaluation))
         ):
-            raise ScalingContractError(
-                "evaluated scaling receipt manifest is invalid"
-            )
+            raise ScalingContractError("evaluated scaling receipt manifest is invalid")
         allowed_paths = _validate_result_files(selected, destination, evaluation)
         _verify_frozen_repository(
             selected,
@@ -4194,21 +4179,16 @@ def load_publication_scaling_evidence(
         ) from error
     if (
         len(raw) > _MAX_CHECKPOINT_BYTES
-        or evidence.get("checkpoint_file_sha256")
-        != hashlib.sha256(raw).hexdigest()
+        or evidence.get("checkpoint_file_sha256") != hashlib.sha256(raw).hexdigest()
         or not isinstance(evidence.get("checkpoint_payload"), Mapping)
         or raw != _canonical_bytes(evidence["checkpoint_payload"]) + b"\n"
     ):
-        raise ScalingContractError(
-            "evaluated scaling checkpoint binding is invalid"
-        )
+        raise ScalingContractError("evaluated scaling checkpoint binding is invalid")
 
     global_files = evaluation.get("result_files")
     evidence_files = evidence.get("result_files")
     if not isinstance(global_files, list) or not isinstance(evidence_files, list):
-        raise ScalingContractError(
-            "evaluated scaling result inventory is invalid"
-        )
+        raise ScalingContractError("evaluated scaling result inventory is invalid")
 
     def bindings(rows: Sequence[object], *, scaling_only: bool) -> dict[str, str]:
         result: dict[str, str] = {}

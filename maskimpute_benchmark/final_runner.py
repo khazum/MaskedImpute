@@ -45,20 +45,28 @@ from .runner import (
     RunPlanEntry,
     SpawnedRepositoryExecutor,
     _prezero_evaluator_targets,
+    _prepare_dataset_with_exclusions,
     _unlink_owned_staging_temporary,
     enforce_calibration_fold_receipt,
     evaluate_adapter_outcome,
+    method_input_sha256,
     prepare_dataset_pair_for_execution,
+)
+from .trajectory_dataset import (
+    REGISTERED_TRAJECTORY_DATASET_ID,
+    RegisteredTrajectoryBinding,
+    TrajectoryPreparedDataset,
+    generate_registered_trajectory_dataset,
+    load_trajectory_authority,
 )
 
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
-_STAGING_FILE = re.compile(
-    r"\.(?P<canonical>.+)\.(?P<token>[a-z0-9_]{8})\.tmp\Z"
-)
+_STAGING_FILE = re.compile(r"\.(?P<canonical>.+)\.(?P<token>[a-z0-9_]{8})\.tmp\Z")
 _TRANSACTION_FILE = re.compile(r"[0-9]{8}\.json\Z")
 _FINAL_RUN_ID = re.compile(r"final-[a-z0-9-]+\Z")
+_TRAJECTORY_RUN_ID = re.compile(r"trajectory-[a-z0-9-]+\Z")
 _FINAL_DRAWS = tuple(f"draw-{draw:02d}" for draw in range(1, 6))
 _FINAL_OUTPUT_ENCODING = "zlib_raw_f64_v1"
 _FINAL_OUTPUT_COMPRESSION_LEVEL = 6
@@ -220,15 +228,27 @@ def _stable_file_identity(value: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def _read_bound_h5ad(path: Path, binding: DatasetBinding):
+def _read_bound_h5ad(
+    path: Path,
+    binding: DatasetBinding | RegisteredTrajectoryBinding,
+    *,
+    max_bytes: int | None = None,
+    structure_validator: Callable[[Path], None] | None = None,
+):
     """Open one exact H5AD inode and recheck its byte and semantic bindings."""
 
     import anndata as ad
 
     from .schema import benchmark_dataset_sha256
 
-    if not isinstance(path, Path) or not isinstance(binding, DatasetBinding):
+    if not isinstance(path, Path) or not isinstance(
+        binding, (DatasetBinding, RegisteredTrajectoryBinding)
+    ):
         raise TypeError("path and binding must be canonical values")
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes <= 0):
+        raise ValueError("max_bytes must be a positive integer or None")
+    if structure_validator is not None and not callable(structure_validator):
+        raise TypeError("structure_validator must be callable or None")
     descriptor = -1
     try:
         if path.resolve(strict=True) != path.absolute():
@@ -246,15 +266,25 @@ def _read_bound_h5ad(path: Path, binding: DatasetBinding):
             != _stable_file_identity(named_before)
         ):
             raise FinalRunnerContractError("final dataset is not a unique regular file")
+        if max_bytes is not None and opened_before.st_size > max_bytes:
+            raise FinalRunnerContractError("final dataset exceeds its size bound")
         digest = hashlib.sha256()
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
             if not chunk:
                 break
             digest.update(chunk)
-        if digest.hexdigest() != binding.output_file_sha256:
+        expected_file_sha256 = (
+            binding.output_file_sha256
+            if isinstance(binding, DatasetBinding)
+            else binding.dataset_file_sha256
+        )
+        if digest.hexdigest() != expected_file_sha256:
             raise FinalRunnerContractError("final dataset file checksum differs")
-        dataset = ad.read_h5ad(Path(f"/proc/self/fd/{descriptor}"))
+        opened_path = Path(f"/proc/self/fd/{descriptor}")
+        if structure_validator is not None:
+            structure_validator(opened_path)
+        dataset = ad.read_h5ad(opened_path)
         opened_after = os.fstat(descriptor)
         named_after = path.lstat()
         if _stable_file_identity(opened_before) != _stable_file_identity(
@@ -308,6 +338,28 @@ def load_prepared_final_panel(
         raise FinalRunnerContractError(
             "final dataset status failed byte-level revalidation"
         ) from error
+    prepared = _prepare_final_panel_bindings(destination, bindings)
+    try:
+        status_after = validate_dataset_status(
+            status_path, repo=selected_repository, round_dir=destination
+        )
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "final dataset status changed during panel preparation"
+        ) from error
+    if status_after != status:
+        raise FinalRunnerContractError(
+            "final dataset status changed during panel preparation"
+        )
+    return bindings, prepared
+
+
+def _prepare_final_panel_bindings(
+    destination: Path,
+    bindings: tuple[DatasetBinding, ...],
+) -> Mapping[str, PreparedDataset]:
+    """Prepare already-validated bindings without consulting lifecycle state."""
+
     policy = DatasetQCPolicy.fixed()
     prepared: dict[str, PreparedDataset] = {}
     results_root = destination / "results"
@@ -340,19 +392,424 @@ def load_prepared_final_panel(
         raise FinalRunnerContractError(
             "prepared final panel order or cardinality drifted"
         )
+    return MappingProxyType(prepared)
+
+
+def _load_unclaimed_prepared_final_panel(
+    repository: Path,
+    round_dir: Path,
+) -> tuple[tuple[DatasetBinding, ...], Mapping[str, PreparedDataset]]:
+    """Load a final panel before claim validation during exact resume recovery.
+
+    Lifecycle validation cannot run while runner-owned bytes are not yet present in
+    the result journal.  This path therefore validates the canonical status and
+    every bound H5AD directly; the caller must validate all other observed result
+    scopes before adding the cumulative inventory to the journal.
+    """
+
+    selected_repository, destination = _canonical_round(repository, round_dir)
+    status_path = destination / "results/dataset_status.json"
+    raw = _read_unique_file(status_path, "final dataset status")
+    status = _strict_json(raw, "final dataset status")
+    if raw != _canonical_bytes(status) + b"\n":
+        raise FinalRunnerContractError("final dataset status is not canonical")
     try:
-        status_after = validate_dataset_status(
-            status_path, repo=selected_repository, round_dir=destination
+        bindings = validate_final_manifest_payload(status)
+    except (TypeError, ValueError) as error:
+        raise FinalRunnerContractError(
+            "final dataset status failed direct revalidation"
+        ) from error
+    prepared = _prepare_final_panel_bindings(destination, bindings)
+    if _read_unique_file(
+        status_path, "final dataset status"
+    ) != raw or selected_repository != repository.resolve(strict=True):
+        raise FinalRunnerContractError(
+            "final dataset status changed during direct preparation"
         )
+    return bindings, prepared
+
+
+def _validate_trajectory_h5ad_structure(path: Path) -> None:
+    """Reject non-self-contained or structurally unbounded trajectory H5ADs."""
+
+    from .scaling import ScalingContractError, _validate_scaling_h5ad_structure
+
+    try:
+        _validate_scaling_h5ad_structure(
+            path,
+            2_700,
+            120,
+            profile="trajectory",
+        )
+    except ScalingContractError as error:
+        raise FinalRunnerContractError(str(error)) from error
+
+
+def _trajectory_binding(
+    authority: object,
+    *,
+    authority_file_sha256: str,
+    dataset_file_sha256: str,
+) -> RegisteredTrajectoryBinding:
+    from .trajectory_dataset import TrajectoryAuthority
+
+    if not isinstance(authority, TrajectoryAuthority):
+        raise TypeError("authority must be a TrajectoryAuthority")
+    return RegisteredTrajectoryBinding(
+        schema_version="trajectory-execution-dataset-binding-v1",
+        dataset_id=REGISTERED_TRAJECTORY_DATASET_ID,
+        mechanism=authority.mechanism,
+        biological_id=authority.biological_id,
+        technical_view=authority.technical_view,
+        condition=authority.condition,
+        draw=authority.draw,
+        cells=authority.cells,
+        genes=authority.genes,
+        source_id=authority.source_id,
+        root_cell_id=authority.root_cell_id,
+        seed=authority.seed,
+        dataset_sha256=authority.expected_dataset_sha256,
+        dataset_file_path="results/trajectory/dataset/evaluator.h5ad",
+        dataset_file_sha256=dataset_file_sha256,
+        authority_path="study/trajectory_panel.json",
+        authority_file_sha256=authority_file_sha256,
+        authority_sha256=authority.authority_sha256,
+        registered_binding_sha256=authority.binding_sha256,
+    )
+
+
+def _prepare_registered_trajectory_dataset(
+    dataset: object,
+    binding: RegisteredTrajectoryBinding,
+) -> PreparedDataset:
+    prepared = _prepare_dataset_with_exclusions(
+        dataset,
+        binding,
+        DatasetQCPolicy.fixed(),
+        None,
+    )
+    evaluator_columns = set(prepared.evaluator_dataset.obs.columns)
+    provenance = prepared.evaluator_dataset.uns.get("provenance")
+    parameters = (
+        provenance.get("parameters") if isinstance(provenance, Mapping) else None
+    )
+    if (
+        prepared.method_input.obs_covariates
+        or prepared.method_input.var_covariates
+        or not {"pseudotime", "group"}.issubset(evaluator_columns)
+        or not isinstance(parameters, Mapping)
+        or parameters.get("root_cell_id") != binding.root_cell_id
+        or parameters.get("source_id") != binding.source_id
+    ):
+        raise FinalRunnerContractError(
+            "trajectory evaluator targets crossed the method-input boundary"
+        )
+    return prepared
+
+
+def _trajectory_dataset_receipt(
+    binding: RegisteredTrajectoryBinding,
+    prepared: PreparedDataset,
+) -> dict[str, object]:
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "scope": "supplementary_trajectory",
+        "binding": asdict(binding),
+        "method_input_sha256": method_input_sha256(prepared.method_input),
+        "excluded_cell_count": prepared.audit.excluded_cell_count,
+        "excluded_cell_ids_sha256": prepared.audit.excluded_cell_ids_sha256,
+        "retained_cell_count": prepared.audit.retained_cell_count,
+        "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
+    }
+    return {**body, "receipt_sha256": canonical_sha256(body)}
+
+
+def _remove_unreceipted_trajectory_dataset(round_dir: Path) -> bool:
+    """Remove only the owned dataset half of an interrupted two-file publish."""
+
+    if not isinstance(round_dir, Path):
+        raise TypeError("round_dir must be a pathlib.Path")
+    try:
+        destination = round_dir.resolve(strict=True)
+    except OSError as error:
+        raise FinalRunnerContractError("final round is unavailable") from error
+    if destination != round_dir.absolute():
+        raise FinalRunnerContractError("final round path is not canonical")
+    dataset = destination / "results/trajectory/dataset/evaluator.h5ad"
+    receipt = destination / "results/trajectory/dataset/dataset_receipt.json"
+    dataset_exists = os.path.lexists(dataset)
+    receipt_exists = os.path.lexists(receipt)
+    if receipt_exists and not dataset_exists:
+        raise FinalRunnerContractError(
+            "registered trajectory receipt exists without its dataset"
+        )
+    if not dataset_exists or receipt_exists:
+        return False
+    parent_descriptor = -1
+    dataset_descriptor = -1
+    try:
+        parent_named = dataset.parent.lstat()
+        if dataset.parent.resolve(strict=True) != dataset.parent.absolute():
+            raise FinalRunnerContractError(
+                "unreceipted trajectory dataset parent is unsafe"
+            )
+        parent_descriptor = os.open(
+            dataset.parent,
+            os.O_RDONLY
+            | os.O_DIRECTORY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+        parent_opened = os.fstat(parent_descriptor)
+        if (
+            not stat.S_ISDIR(parent_opened.st_mode)
+            or (parent_opened.st_dev, parent_opened.st_ino)
+            != (parent_named.st_dev, parent_named.st_ino)
+            or parent_opened.st_uid != os.geteuid()
+        ):
+            raise FinalRunnerContractError(
+                "unreceipted trajectory dataset parent is unsafe"
+            )
+        named_before = os.stat(
+            dataset.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        dataset_descriptor = os.open(
+            dataset.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent_descriptor,
+        )
+        opened = os.fstat(dataset_descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_uid != os.geteuid()
+            or _stable_file_identity(opened) != _stable_file_identity(named_before)
+        ):
+            raise FinalRunnerContractError(
+                "unreceipted trajectory evaluator dataset is unsafe"
+            )
+        named_immediately_before = os.stat(
+            dataset.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if _stable_file_identity(named_immediately_before) != _stable_file_identity(
+            opened
+        ):
+            raise FinalRunnerContractError(
+                "unreceipted trajectory evaluator dataset changed"
+            )
+        try:
+            os.stat(
+                receipt.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise FinalRunnerContractError(
+                "registered trajectory receipt appeared before dataset recovery"
+            )
+        os.unlink(dataset.name, dir_fd=parent_descriptor)
+        if os.fstat(dataset_descriptor).st_nlink != 0:
+            raise FinalRunnerContractError(
+                "unreceipted trajectory evaluator dataset unlink raced"
+            )
+        try:
+            os.stat(
+                dataset.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise FinalRunnerContractError(
+                "unreceipted trajectory evaluator dataset was replaced"
+            )
+        os.fsync(parent_descriptor)
+    except FinalRunnerContractError:
+        raise
+    except OSError as error:
+        raise FinalRunnerContractError(
+            "unreceipted trajectory evaluator dataset cannot be removed"
+        ) from error
+    finally:
+        if dataset_descriptor >= 0:
+            os.close(dataset_descriptor)
+        if parent_descriptor >= 0:
+            os.close(parent_descriptor)
+    return True
+
+
+def materialize_prepared_trajectory_dataset(
+    repository: Path,
+    round_dir: Path,
+) -> TrajectoryPreparedDataset:
+    """Persist and prepare the exact registered evaluator-only trajectory dataset."""
+
+    from .scaling import _scaling_h5ad_size_ceiling
+
+    selected_repository, destination = _canonical_round(repository, round_dir)
+    authority_path = selected_repository / "study/trajectory_panel.json"
+    authority_raw = _read_unique_file(
+        authority_path,
+        "registered trajectory authority",
+        max_bytes=1024 * 1024,
+    )
+    authority_payload = _strict_json(authority_raw, "registered trajectory authority")
+    exact_authority_raw = (
+        json.dumps(
+            authority_payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    if authority_raw != exact_authority_raw:
+        raise FinalRunnerContractError(
+            "registered trajectory authority is not canonical"
+        )
+    authority_file_sha256 = hashlib.sha256(authority_raw).hexdigest()
+    try:
+        authority = load_trajectory_authority(authority_path)
+        generated = generate_registered_trajectory_dataset(authority=authority)
     except Exception as error:
         raise FinalRunnerContractError(
-            "final dataset status changed during panel preparation"
+            "registered trajectory dataset authority is invalid"
         ) from error
-    if status_after != status:
-        raise FinalRunnerContractError(
-            "final dataset status changed during panel preparation"
+    if (
+        _read_unique_file(
+            authority_path,
+            "registered trajectory authority",
+            max_bytes=1024 * 1024,
         )
-    return bindings, MappingProxyType(prepared)
+        != authority_raw
+    ):
+        raise FinalRunnerContractError(
+            "registered trajectory authority changed during preparation"
+        )
+
+    artifacts = CheckpointStore(
+        destination,
+        authority_repository=selected_repository,
+    )
+    dataset_relative = "results/trajectory/dataset/evaluator.h5ad"
+    receipt_relative = "results/trajectory/dataset/dataset_receipt.json"
+    dataset_path = destination / dataset_relative
+    receipt_path = destination / receipt_relative
+    size_ceiling = _scaling_h5ad_size_ceiling(authority.cells, authority.genes)
+
+    if os.path.lexists(receipt_path):
+        receipt_raw = _read_unique_file(
+            receipt_path,
+            "registered trajectory dataset receipt",
+            max_bytes=1024 * 1024,
+        )
+        receipt = _strict_json(receipt_raw, "registered trajectory dataset receipt")
+        if receipt_raw != _canonical_bytes(receipt) + b"\n":
+            raise FinalRunnerContractError(
+                "registered trajectory dataset receipt is not canonical"
+            )
+        binding_payload = receipt.get("binding")
+        try:
+            if not isinstance(binding_payload, Mapping):
+                raise TypeError("binding is not a mapping")
+            binding = RegisteredTrajectoryBinding(**dict(binding_payload))
+        except (TypeError, ValueError) as error:
+            raise FinalRunnerContractError(
+                "registered trajectory dataset receipt binding is invalid"
+            ) from error
+        expected_binding = _trajectory_binding(
+            authority,
+            authority_file_sha256=authority_file_sha256,
+            dataset_file_sha256=binding.dataset_file_sha256,
+        )
+        if binding != expected_binding:
+            raise FinalRunnerContractError(
+                "registered trajectory dataset receipt identity differs"
+            )
+        expected_prepared = _prepare_registered_trajectory_dataset(generated, binding)
+        expected_receipt = _trajectory_dataset_receipt(binding, expected_prepared)
+        if receipt != expected_receipt:
+            raise FinalRunnerContractError(
+                "registered trajectory dataset receipt differs from regeneration"
+            )
+        if not os.path.lexists(dataset_path):
+            raise FinalRunnerContractError(
+                "registered trajectory evaluator dataset is unavailable"
+            )
+    else:
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="maskimpute-trajectory-dataset-stage-"
+            ) as staging_name:
+                staged_path = Path(staging_name) / "evaluator.h5ad"
+                generated.write_h5ad(staged_path)
+                _validate_trajectory_h5ad_structure(staged_path)
+                raw = _read_unique_file(
+                    staged_path,
+                    "staged registered trajectory dataset",
+                    max_bytes=size_ceiling,
+                )
+            _remove_unreceipted_trajectory_dataset(destination)
+            artifacts._publish_immutable(dataset_relative, raw)
+        except FinalRunnerContractError:
+            raise
+        except (OSError, RunnerContractError, ValueError) as error:
+            raise FinalRunnerContractError(
+                "registered trajectory evaluator dataset cannot be persisted"
+            ) from error
+        binding = _trajectory_binding(
+            authority,
+            authority_file_sha256=authority_file_sha256,
+            dataset_file_sha256=hashlib.sha256(raw).hexdigest(),
+        )
+        expected_prepared = _prepare_registered_trajectory_dataset(generated, binding)
+        receipt = _trajectory_dataset_receipt(binding, expected_prepared)
+        receipt_raw = _canonical_bytes(receipt) + b"\n"
+        try:
+            artifacts._publish_immutable(receipt_relative, receipt_raw)
+        except (OSError, RunnerContractError) as error:
+            raise FinalRunnerContractError(
+                "registered trajectory dataset receipt cannot be persisted"
+            ) from error
+
+    try:
+        evaluator_dataset = _read_bound_h5ad(
+            dataset_path,
+            binding,
+            max_bytes=size_ceiling,
+            structure_validator=_validate_trajectory_h5ad_structure,
+        )
+        prepared = _prepare_registered_trajectory_dataset(
+            evaluator_dataset,
+            binding,
+        )
+    except FinalRunnerContractError:
+        raise
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "registered trajectory evaluator dataset failed preparation"
+        ) from error
+    if _trajectory_dataset_receipt(binding, prepared) != receipt:
+        raise FinalRunnerContractError(
+            "registered trajectory prepared input differs from its receipt"
+        )
+    receipt_file_sha256 = hashlib.sha256(receipt_raw).hexdigest()
+    return TrajectoryPreparedDataset(
+        authority=authority,
+        binding=binding,
+        prepared=prepared,
+        receipt=MappingProxyType(receipt),
+        receipt_file_path=receipt_relative,
+        receipt_file_sha256=receipt_file_sha256,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,6 +839,18 @@ class FinalExecutionPlan:
     """Hash-bound frozen method x final dataset x nested seed denominator."""
 
     schema_version: int
+    input_hashes: Mapping[str, str]
+    entries: tuple[FinalPlanEntry, ...]
+    configurations: tuple[AuthorizedConfiguration, ...]
+    plan_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class TrajectoryExecutionPlan:
+    """Exact one-dataset supplementary trajectory execution denominator."""
+
+    schema_version: int
+    scope: Literal["supplementary_trajectory"]
     input_hashes: Mapping[str, str]
     entries: tuple[FinalPlanEntry, ...]
     configurations: tuple[AuthorizedConfiguration, ...]
@@ -580,6 +1049,120 @@ def _validate_final_storage_capacity(
     }
 
 
+def _execution_storage_component(
+    plan: FinalExecutionPlan | TrajectoryExecutionPlan,
+    *,
+    completed_records: int,
+    cells: int,
+    genes: int,
+) -> dict[str, int]:
+    """Derive a reserve-free compressed-output bound for one execution scope."""
+
+    if not isinstance(plan, (FinalExecutionPlan, TrajectoryExecutionPlan)):
+        raise TypeError("plan must be a frozen execution plan")
+    if (
+        type(completed_records) is not int
+        or not 0 <= completed_records <= len(plan.entries)
+        or type(cells) is not int
+        or cells <= 0
+        or type(genes) is not int
+        or genes <= 0
+    ):
+        raise ValueError("execution storage component inputs are invalid")
+    remaining = plan.entries[completed_records:]
+    execution_count = sum(entry.action == "execute" for entry in remaining)
+    score_count = sum(
+        entry.action == "execute" and entry.run.method_id == "maskimpute"
+        for entry in remaining
+    )
+    matrix_nbytes = cells * genes * 8
+    matrix_bound = _zlib_compress_bound(matrix_nbytes)
+    score_bound = _prezero_zlib_compress_bound(matrix_nbytes)
+    required = (
+        execution_count * matrix_bound
+        + score_count * score_bound
+        + len(remaining) * _FINAL_RECORD_OVERHEAD_BYTES
+    )
+    return {
+        "completed_record_count": completed_records,
+        "remaining_entry_count": len(remaining),
+        "remaining_execution_count": execution_count,
+        "remaining_p_pre_zero_execution_count": score_count,
+        "cells": cells,
+        "genes": genes,
+        "per_execution_compressed_bound_bytes": matrix_bound,
+        "per_p_pre_zero_compressed_bound_bytes": score_bound,
+        "required_free_bytes": required,
+    }
+
+
+def _validate_combined_storage_capacity(
+    primary_plan: FinalExecutionPlan,
+    trajectory_plan: TrajectoryExecutionPlan,
+    scaling_authority: object,
+    round_dir: Path,
+    *,
+    primary_completed_records: int = 0,
+    trajectory_completed_records: int = 0,
+) -> dict[str, object]:
+    """Preflight all retained round outputs with one shared safety reserve."""
+
+    if not isinstance(primary_plan, FinalExecutionPlan):
+        raise TypeError("primary_plan must be a FinalExecutionPlan")
+    if not isinstance(trajectory_plan, TrajectoryExecutionPlan):
+        raise TypeError("trajectory_plan must be a TrajectoryExecutionPlan")
+    if not isinstance(round_dir, Path):
+        raise TypeError("round_dir must be a pathlib.Path")
+    from .scaling import scaling_storage_preflight
+
+    primary = _execution_storage_component(
+        primary_plan,
+        completed_records=primary_completed_records,
+        cells=2_700,
+        genes=1_200,
+    )
+    trajectory = _execution_storage_component(
+        trajectory_plan,
+        completed_records=trajectory_completed_records,
+        cells=2_700,
+        genes=120,
+    )
+    try:
+        scaling = scaling_storage_preflight(scaling_authority)
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "supplementary scaling storage authority is invalid"
+        ) from error
+    scaling_required = scaling.get("required_free_bytes")
+    if type(scaling_required) is not int or scaling_required < 0:
+        raise FinalRunnerContractError("supplementary scaling storage bound is invalid")
+    required = (
+        primary["required_free_bytes"]
+        + trajectory["required_free_bytes"]
+        + scaling_required
+        + _FINAL_STORAGE_RESERVE_BYTES
+    )
+    try:
+        free = shutil.disk_usage(round_dir).free
+    except OSError as error:
+        raise FinalRunnerContractError(
+            "combined final free storage cannot be measured"
+        ) from error
+    if free < required:
+        raise FinalRunnerContractError(
+            "final free storage is below the combined fail-closed output bound"
+        )
+    return {
+        "schema": "maskimpute-combined-final-storage-preflight-v1",
+        "primary": primary,
+        "trajectory": trajectory,
+        "scaling": dict(scaling),
+        "reserve_bytes": _FINAL_STORAGE_RESERVE_BYTES,
+        "required_free_bytes": required,
+        "observed_free_bytes": free,
+    }
+
+
 def materialize_final_execution_authority(
     repository: Path,
     round_dir: Path,
@@ -765,6 +1348,216 @@ def materialize_final_execution_authority(
         base_configuration_sha256=base_configuration_sha256,
         count_model_config_json=_canonical_bytes(dict(count_config)).decode(),
         count_model_config_sha256=str(count_config_sha256),
+        count_score_manifest_path=score_repo_path,
+        count_score_manifest_sha256=score_file_sha256,
+        retained_calibration_path=calibration_repo_path,
+        retained_calibration_sha256=calibration_file_sha256,
+    )
+
+
+def _read_repository_authority_file(
+    repository: Path,
+    relative_value: str,
+    expected_sha256: str | None,
+    name: str,
+) -> bytes:
+    """Read one context-bound authority file without following path aliases."""
+
+    relative = PurePosixPath(relative_value)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise FinalRunnerContractError(f"{name} path is unsafe")
+    path = repository.joinpath(*relative.parts)
+    try:
+        if path.resolve(strict=True) != path.absolute():
+            raise FinalRunnerContractError(f"{name} path contains a symlink")
+    except OSError as error:
+        raise FinalRunnerContractError(f"{name} is unavailable") from error
+    raw = _read_unique_file(path, name, max_bytes=32 * 1024 * 1024)
+    if hashlib.sha256(raw).hexdigest() != _sha256(expected_sha256, f"{name} file"):
+        raise FinalRunnerContractError(f"{name} file checksum differs")
+    return raw
+
+
+def materialize_trajectory_execution_authority(
+    repository: Path,
+    round_dir: Path,
+    frozen_method: Mapping[str, object],
+    registered: TrajectoryPreparedDataset,
+    primary_authority: ExecutionAuthorityContext,
+    *,
+    execution_claim_sha256: str,
+    execution_environment_sha256: str,
+    primary_final_plan_sha256: str,
+) -> ExecutionAuthorityContext:
+    """Publish a distinct authority for the one registered trajectory input."""
+
+    selected_repository, destination = _canonical_round(repository, round_dir)
+    if not isinstance(frozen_method, Mapping):
+        raise TypeError("frozen_method must be a mapping")
+    if not isinstance(registered, TrajectoryPreparedDataset):
+        raise TypeError("registered must be a TrajectoryPreparedDataset")
+    if not isinstance(primary_authority, ExecutionAuthorityContext):
+        raise TypeError("primary_authority must be an ExecutionAuthorityContext")
+    unsigned_frozen = {
+        key: value for key, value in frozen_method.items() if key != "payload_sha256"
+    }
+    frozen_sha256 = frozen_method.get("payload_sha256")
+    if frozen_sha256 != canonical_sha256(unsigned_frozen):
+        raise FinalRunnerContractError("frozen method receipt is invalid")
+    _sha256(frozen_sha256, "frozen method")
+    runtime_lock_sha256 = _sha256(
+        frozen_method.get("runtime_lock_sha256"), "frozen runtime lock"
+    )
+    claim_sha256 = _sha256(execution_claim_sha256, "execution claim")
+    environment_sha256 = _sha256(execution_environment_sha256, "execution environment")
+    primary_plan_sha256 = _sha256(primary_final_plan_sha256, "primary final plan")
+
+    binding = registered.binding
+    prepared = registered.prepared
+    if not isinstance(binding, RegisteredTrajectoryBinding) or not isinstance(
+        prepared, PreparedDataset
+    ):
+        raise FinalRunnerContractError("registered trajectory dataset is invalid")
+    expected_binding = _trajectory_binding(
+        registered.authority,
+        authority_file_sha256=binding.authority_file_sha256,
+        dataset_file_sha256=binding.dataset_file_sha256,
+    )
+    expected_receipt = _trajectory_dataset_receipt(binding, prepared)
+    if (
+        binding != expected_binding
+        or prepared.binding != binding
+        or dict(registered.receipt) != expected_receipt
+        or registered.receipt_file_sha256
+        != hashlib.sha256(_canonical_bytes(expected_receipt) + b"\n").hexdigest()
+        or registered.receipt_file_path
+        != "results/trajectory/dataset/dataset_receipt.json"
+    ):
+        raise FinalRunnerContractError("registered trajectory identity differs")
+
+    selected_configuration = frozen_method.get("selected_configuration")
+    if not isinstance(selected_configuration, Mapping):
+        raise FinalRunnerContractError("selected final configuration is invalid")
+    base_configuration = selected_configuration.get("hyperparameters")
+    try:
+        primary_base = json.loads(primary_authority.base_configuration_json)
+        count_config = json.loads(primary_authority.count_model_config_json)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise FinalRunnerContractError(
+            "primary execution authority is invalid"
+        ) from error
+    if (
+        not isinstance(base_configuration, Mapping)
+        or dict(base_configuration) != primary_base
+        or canonical_sha256(primary_base) != primary_authority.base_configuration_sha256
+        or not isinstance(count_config, dict)
+        or canonical_sha256(count_config) != primary_authority.count_model_config_sha256
+    ):
+        raise FinalRunnerContractError(
+            "trajectory configuration differs from primary frozen authority"
+        )
+
+    calibration_raw = _read_repository_authority_file(
+        selected_repository,
+        primary_authority.retained_calibration_path,
+        primary_authority.retained_calibration_sha256,
+        "primary retained calibration authority",
+    )
+    _read_repository_authority_file(
+        selected_repository,
+        primary_authority.count_score_manifest_path,
+        primary_authority.count_score_manifest_sha256,
+        "primary count-score authority",
+    )
+    results_store = CheckpointStore(destination / "results")
+    calibration_relative, calibration_file_sha256 = results_store._publish_immutable(
+        "trajectory/execution_authority/retained_calibration.json",
+        calibration_raw,
+    )
+    calibration_repo_path = (
+        (destination / "results" / calibration_relative)
+        .relative_to(selected_repository)
+        .as_posix()
+    )
+    method_input_digest = method_input_sha256(prepared.method_input)
+    score_body: dict[str, object] = {
+        "schema_version": 1,
+        "artifact_type": "maskimpute_trajectory_count_score_authority",
+        "status": "ready",
+        "scope": "truth_free_registered_trajectory_inference",
+        "frozen_method_sha256": frozen_sha256,
+        "primary_final_plan_sha256": primary_plan_sha256,
+        "primary_execution_authority_sha256": primary_authority.authority_sha256,
+        "primary_count_score_authority_file_sha256": (
+            primary_authority.count_score_manifest_sha256
+        ),
+        "execution_claim_sha256": claim_sha256,
+        "execution_environment_sha256": environment_sha256,
+        "trajectory_authority_file_sha256": binding.authority_file_sha256,
+        "trajectory_authority_sha256": binding.authority_sha256,
+        "trajectory_binding_sha256": binding.registered_binding_sha256,
+        "trajectory_dataset_sha256": binding.dataset_sha256,
+        "trajectory_dataset_file_sha256": binding.dataset_file_sha256,
+        "trajectory_dataset_receipt_sha256": registered.receipt["receipt_sha256"],
+        "trajectory_dataset_receipt_file_sha256": registered.receipt_file_sha256,
+        "trajectory_method_input_sha256": method_input_digest,
+        "trajectory_retained_cell_ids_sha256": (
+            prepared.audit.retained_cell_ids_sha256
+        ),
+        "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+        "count_model_config": count_config,
+        "count_model_config_sha256": primary_authority.count_model_config_sha256,
+        "retained_calibration_file_sha256": calibration_file_sha256,
+    }
+    score_payload = {
+        **score_body,
+        "payload_sha256": canonical_sha256(score_body),
+    }
+    score_relative, score_file_sha256 = results_store._publish_immutable(
+        "trajectory/execution_authority/count_score_authority.json",
+        _canonical_bytes(score_payload) + b"\n",
+    )
+    score_repo_path = (
+        (destination / "results" / score_relative)
+        .relative_to(selected_repository)
+        .as_posix()
+    )
+    authority_body: dict[str, object] = {
+        "schema_version": 1,
+        "authority_type": "maskimpute_frozen_trajectory_execution",
+        "scope": "supplementary_trajectory",
+        "frozen_method_sha256": frozen_sha256,
+        "runtime_lock_sha256": runtime_lock_sha256,
+        "primary_final_plan_sha256": primary_plan_sha256,
+        "primary_execution_authority_sha256": primary_authority.authority_sha256,
+        "execution_claim_sha256": claim_sha256,
+        "execution_environment_sha256": environment_sha256,
+        "trajectory_authority_sha256": binding.authority_sha256,
+        "trajectory_binding_sha256": binding.registered_binding_sha256,
+        "trajectory_dataset_sha256": binding.dataset_sha256,
+        "trajectory_method_input_sha256": method_input_digest,
+        "base_configuration": primary_base,
+        "base_configuration_sha256": primary_authority.base_configuration_sha256,
+        "count_model_config": count_config,
+        "count_model_config_sha256": primary_authority.count_model_config_sha256,
+        "count_score_authority_path": score_repo_path,
+        "count_score_authority_sha256": score_file_sha256,
+        "retained_calibration_path": calibration_repo_path,
+        "retained_calibration_sha256": calibration_file_sha256,
+        "calibration_usage": "retained_all_development_calibrator",
+    }
+    authority_sha256 = canonical_sha256(authority_body)
+    results_store._publish_immutable(
+        "trajectory/execution_authority/authority.json",
+        _canonical_bytes({**authority_body, "authority_sha256": authority_sha256})
+        + b"\n",
+    )
+    return ExecutionAuthorityContext(
+        authority_sha256=authority_sha256,
+        base_configuration_json=_canonical_bytes(primary_base).decode(),
+        base_configuration_sha256=primary_authority.base_configuration_sha256,
+        count_model_config_json=_canonical_bytes(count_config).decode(),
+        count_model_config_sha256=primary_authority.count_model_config_sha256,
         count_score_manifest_path=score_repo_path,
         count_score_manifest_sha256=score_file_sha256,
         retained_calibration_path=calibration_repo_path,
@@ -963,9 +1756,9 @@ def _scaling_checkpoint_file_bindings(round_dir: Path) -> dict[str, str]:
             )
         previous_datasets = datasets
         previous_records = records
-        bindings[
-            f"results/scaling/checkpoints/{checkpoint_path.name}"
-        ] = hashlib.sha256(raw).hexdigest()
+        bindings[f"results/scaling/checkpoints/{checkpoint_path.name}"] = (
+            hashlib.sha256(raw).hexdigest()
+        )
     assert checkpoint is not None
     datasets = previous_datasets
     records = previous_records
@@ -1026,10 +1819,10 @@ def _scaling_checkpoint_file_bindings(round_dir: Path) -> dict[str, str]:
             or not isinstance(record.get("run"), Mapping)
             or not isinstance(record.get("metrics"), list)
         ):
-            raise FinalRunnerContractError(
-                "supplementary scaling record is invalid"
-            )
-        unsigned = {key: value for key, value in record.items() if key != "record_sha256"}
+            raise FinalRunnerContractError("supplementary scaling record is invalid")
+        unsigned = {
+            key: value for key, value in record.items() if key != "record_sha256"
+        }
         if record.get("record_sha256") != canonical_sha256(unsigned):
             raise FinalRunnerContractError(
                 "supplementary scaling record binding is invalid"
@@ -1220,6 +2013,165 @@ def _owned_final_result_paths(round_dir: Path) -> frozenset[str]:
     execution_manifest = execution_root / "execution_manifest.json"
     if os.path.lexists(execution_manifest):
         owned.add("results/final/execution/execution_manifest.json")
+
+    trajectory_dataset_root = results / "trajectory/dataset"
+    trajectory_dataset = trajectory_dataset_root / "evaluator.h5ad"
+    trajectory_receipt_path = trajectory_dataset_root / "dataset_receipt.json"
+    if os.path.lexists(trajectory_dataset) or os.path.lexists(trajectory_receipt_path):
+        if not (
+            os.path.lexists(trajectory_dataset)
+            and os.path.lexists(trajectory_receipt_path)
+        ):
+            raise FinalRunnerContractError(
+                "registered trajectory dataset receipt is incomplete"
+            )
+        receipt_raw = _read_unique_file(
+            trajectory_receipt_path,
+            "registered trajectory dataset receipt",
+            max_bytes=1024 * 1024,
+        )
+        receipt = _strict_json(
+            receipt_raw,
+            "registered trajectory dataset receipt",
+        )
+        receipt_body = {
+            key: value for key, value in receipt.items() if key != "receipt_sha256"
+        }
+        receipt_binding = receipt.get("binding")
+        if (
+            receipt_raw != _canonical_bytes(receipt) + b"\n"
+            or receipt.get("schema_version") != 1
+            or receipt.get("scope") != "supplementary_trajectory"
+            or receipt.get("receipt_sha256") != canonical_sha256(receipt_body)
+            or not isinstance(receipt_binding, Mapping)
+            or receipt_binding.get("dataset_file_path")
+            != "results/trajectory/dataset/evaluator.h5ad"
+            or receipt_binding.get("dataset_file_sha256")
+            != _hash_unique_file(
+                trajectory_dataset,
+                "registered trajectory evaluator dataset",
+            )
+        ):
+            raise FinalRunnerContractError(
+                "registered trajectory dataset receipt differs"
+            )
+        owned.update(
+            {
+                "results/trajectory/dataset/evaluator.h5ad",
+                "results/trajectory/dataset/dataset_receipt.json",
+            }
+        )
+
+    trajectory_authority_root = results / "trajectory/execution_authority"
+    for name in (
+        "retained_calibration.json",
+        "count_score_authority.json",
+        "authority.json",
+    ):
+        path = trajectory_authority_root / name
+        if os.path.lexists(path):
+            owned.add(f"results/trajectory/execution_authority/{name}")
+
+    trajectory_execution_root = results / "trajectory/execution"
+    trajectory_records_root = trajectory_execution_root / "records"
+    if os.path.lexists(trajectory_records_root):
+        try:
+            metadata = trajectory_records_root.lstat()
+            names = tuple(
+                sorted(path.name for path in trajectory_records_root.iterdir())
+            )
+        except OSError as error:
+            raise FinalRunnerContractError(
+                "trajectory execution record paths cannot be enumerated"
+            ) from error
+        if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise FinalRunnerContractError(
+                "trajectory execution record path is not a directory"
+            )
+        if list(names) != [
+            f"{ordinal:08d}.json" for ordinal in range(1, len(names) + 1)
+        ]:
+            raise FinalRunnerContractError(
+                "trajectory execution records are not a canonical prefix"
+            )
+        for name in names:
+            record_path = trajectory_records_root / name
+            raw = _read_unique_file(record_path, "trajectory execution record")
+            record = _strict_json(raw, "trajectory execution record")
+            run = record.get("run")
+            if (
+                raw != _canonical_bytes(record) + b"\n"
+                or set(record)
+                != {
+                    "run",
+                    "metrics",
+                    "p_pre_zero_evidence",
+                    "execution_request",
+                }
+                or not isinstance(run, Mapping)
+                or not isinstance(run.get("run_id"), str)
+                or _TRAJECTORY_RUN_ID.fullmatch(str(run.get("run_id"))) is None
+            ):
+                raise FinalRunnerContractError("trajectory execution record is invalid")
+            owned.add(f"results/trajectory/execution/records/{name}")
+            for prefix in (
+                "stdout",
+                "stderr",
+                "native_output",
+                "evaluator_output",
+            ):
+                relative = run.get(f"{prefix}_path")
+                if relative is None:
+                    continue
+                _sha256(
+                    run.get(f"{prefix}_file_sha256"),
+                    f"trajectory execution {prefix} file",
+                )
+                safe = PurePosixPath(str(relative))
+                if (
+                    not isinstance(relative, str)
+                    or safe.is_absolute()
+                    or ".." in safe.parts
+                    or not safe.parts
+                    or safe.parts[0] != "runs"
+                ):
+                    raise FinalRunnerContractError(
+                        f"trajectory execution {prefix} path is unsafe"
+                    )
+                owned.add(f"results/trajectory/execution/{safe.as_posix()}")
+            score_evidence = record.get("p_pre_zero_evidence")
+            score_storage = (
+                score_evidence.get("storage")
+                if isinstance(score_evidence, Mapping)
+                else None
+            )
+            if not isinstance(score_storage, Mapping):
+                raise FinalRunnerContractError(
+                    "trajectory p_pre_zero storage receipt is invalid"
+                )
+            score_relative = score_storage.get("path")
+            if score_relative is not None:
+                _sha256(
+                    score_storage.get("compressed_sha256"),
+                    "trajectory p_pre_zero compressed file",
+                )
+                safe_score = PurePosixPath(str(score_relative))
+                if (
+                    not isinstance(score_relative, str)
+                    or safe_score.is_absolute()
+                    or ".." in safe_score.parts
+                    or not safe_score.parts
+                    or safe_score.parts[0] != "runs"
+                ):
+                    raise FinalRunnerContractError(
+                        "trajectory p_pre_zero path is unsafe"
+                    )
+                owned.add(f"results/trajectory/execution/{safe_score.as_posix()}")
+    trajectory_execution_manifest = (
+        trajectory_execution_root / "execution_manifest.json"
+    )
+    if os.path.lexists(trajectory_execution_manifest):
+        owned.add("results/trajectory/execution/execution_manifest.json")
     owned.update(_scaling_checkpoint_file_bindings(destination))
     return frozenset(owned)
 
@@ -1250,6 +2202,8 @@ def _remove_stale_result_temporaries(round_dir: Path) -> tuple[str, ...]:
     try:
         destination = round_dir.resolve(strict=True)
         results = destination / "results"
+        if not os.path.lexists(results):
+            return ()
         if (
             destination != round_dir.absolute()
             or results.resolve(strict=True) != results.absolute()
@@ -1278,6 +2232,9 @@ def _remove_stale_result_temporaries(round_dir: Path) -> tuple[str, ...]:
         if result_relative.parts[:2] not in {
             ("final", "execution"),
             ("final", "execution_authority"),
+            ("trajectory", "dataset"),
+            ("trajectory", "execution"),
+            ("trajectory", "execution_authority"),
         }:
             continue
         try:
@@ -1299,11 +2256,15 @@ def _remove_stale_result_temporaries(round_dir: Path) -> tuple[str, ...]:
     return tuple(removed)
 
 
-def _recover_interrupted_final_transactions(round_dir: Path) -> tuple[int, ...]:
+def _recover_interrupted_execution_transactions(
+    round_dir: Path,
+    scope: Literal["final", "trajectory"],
+) -> tuple[int, ...]:
     """Roll back artifacts lacking a committed record; retain committed attempts."""
 
     destination = round_dir.resolve(strict=True)
-    execution = destination / "results/final/execution"
+    execution = destination / f"results/{scope}/execution"
+    run_pattern = _FINAL_RUN_ID if scope == "final" else _TRAJECTORY_RUN_ID
     transactions = execution / "transactions"
     if not os.path.lexists(transactions):
         return ()
@@ -1349,7 +2310,7 @@ def _recover_interrupted_final_transactions(round_dir: Path) -> tuple[int, ...]:
             or intent.get("schema_version") != 1
             or intent.get("ordinal") != ordinal
             or not isinstance(run_id, str)
-            or _FINAL_RUN_ID.fullmatch(run_id) is None
+            or run_pattern.fullmatch(run_id) is None
             or intent.get("record_path") != record_relative
             or not isinstance(artifact_paths, list)
             or not all(isinstance(path, str) for path in artifact_paths)
@@ -1426,6 +2387,18 @@ def _recover_interrupted_final_transactions(round_dir: Path) -> tuple[int, ...]:
     return tuple(recovered)
 
 
+def _recover_interrupted_final_transactions(round_dir: Path) -> tuple[int, ...]:
+    """Recover only primary final execution transactions."""
+
+    return _recover_interrupted_execution_transactions(round_dir, "final")
+
+
+def _recover_interrupted_trajectory_transactions(round_dir: Path) -> tuple[int, ...]:
+    """Recover only supplementary trajectory execution transactions."""
+
+    return _recover_interrupted_execution_transactions(round_dir, "trajectory")
+
+
 def _record_incremental_results_if_changed(
     repository: Path,
     round_dir: Path,
@@ -1471,13 +2444,165 @@ def _recover_scaling_transactions_for_resume(
         ) from error
 
 
+def _validate_scaling_publications_for_reconciliation(
+    repository: Path,
+    round_dir: Path,
+) -> object | None:
+    """Replay the exact frozen scaling checkpoint prefix before journaling it."""
+
+    scaling_root = round_dir / "results/scaling"
+    if not os.path.lexists(scaling_root):
+        return None
+    from .scaling import ScalingResultStore, load_scaling_execution_authority
+
+    try:
+        authority = load_scaling_execution_authority(repository)
+        return ScalingResultStore(scaling_root, authority.plan).load(
+            force_validate=True
+        )
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "supplementary scaling publications are not resumable"
+        ) from error
+
+
+def _reconcile_interrupted_final_publications(
+    repository: Path,
+    round_dir: Path,
+    frozen_method: Mapping[str, object],
+    recorder: Callable[..., object],
+) -> object | None:
+    """Validate every observed owned publication, then journal them atomically.
+
+    This runs before lifecycle claim validation because the claim verifier must
+    reject unjournaled files.  No observed known-path byte is added to the journal
+    until its exact frozen authority, plan, record, and manifest bindings have all
+    been replayed successfully.
+    """
+
+    from . import study
+    from .methods import load_method_registry
+
+    selected_repository, destination = _canonical_round(repository, round_dir)
+    if not callable(recorder):
+        raise TypeError("recorder must be callable")
+    results = destination / "results"
+    status_path = results / "dataset_status.json"
+    if not os.path.lexists(status_path):
+        if not os.path.lexists(results):
+            return None
+        inventory = final_result_file_manifest(destination)
+        if inventory["result_files"]:
+            raise FinalRunnerContractError(
+                "interrupted final publications lack their dataset status authority"
+            )
+        return None
+
+    try:
+        freeze = study._validate_freeze(destination, selected_repository)
+        materialization, _seed_manifest = study._validate_seed_manifest(
+            destination,
+            freeze,
+        )
+        execution = study._validate_execution_claim_record(
+            destination,
+            freeze,
+            materialization,
+        )
+        journal = study._validate_result_journal(
+            selected_repository,
+            destination,
+            freeze,
+            materialization,
+            execution,
+        )
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "existing final result journal is not resumable"
+        ) from error
+    observed_inventory = final_result_file_manifest(destination)
+    if observed_inventory["result_files"] == journal["cumulative_result_files"]:
+        return None
+
+    _remove_unreceipted_trajectory_dataset(destination)
+    claim_path = destination / "execution_claim.json"
+    claim = _strict_json(
+        _read_unique_file(claim_path, "final execution claim"),
+        "final execution claim",
+    )
+    claim_sha256 = canonical_sha256(claim)
+    bindings, prepared = _load_unclaimed_prepared_final_panel(
+        selected_repository,
+        destination,
+    )
+    registry = load_method_registry(selected_repository / "study/methods.json")
+    environments = ExecutionEnvironmentRegistry.fixed(
+        selected_repository,
+        runtime_lock_path=(
+            selected_repository / "environments/development-runtime.lock.json"
+        ),
+        benchmark_python=Path(sys.executable),
+        r_library_paths={
+            "saver": (selected_repository / "artifacts/envs/saver-r/library",)
+        },
+    )
+    _validate_final_runtime_lock(frozen_method, environments)
+    (
+        registered,
+        authority,
+        plan,
+        trajectory_authority,
+        trajectory_plan,
+    ) = _materialize_final_execution_inputs(
+        selected_repository,
+        destination,
+        frozen_method,
+        registry,
+        bindings,
+        execution_claim_sha256=claim_sha256,
+        execution_environment_sha256=environments.registry_sha256,
+        publish_results=lambda: None,
+    )
+    store = FinalResultStore(
+        destination / "results/final/execution",
+        plan,
+        prepared,
+        authority,
+        authority_repository=selected_repository,
+    )
+    records = store.load_records()
+    store._records_cache = records
+    if os.path.lexists(store.manifest_path):
+        store.load_manifest()
+    trajectory_store = FinalResultStore(
+        destination / "results/trajectory/execution",
+        trajectory_plan,
+        {registered.binding.dataset_id: registered.prepared},
+        trajectory_authority,
+        authority_repository=selected_repository,
+    )
+    trajectory_records = trajectory_store.load_records()
+    trajectory_store._records_cache = trajectory_records
+    if os.path.lexists(trajectory_store.manifest_path):
+        trajectory_store.load_manifest()
+    _validate_scaling_publications_for_reconciliation(
+        selected_repository,
+        destination,
+    )
+    return _record_incremental_results_if_changed(
+        selected_repository,
+        destination,
+        recorder,
+    )
+
+
 class FinalResultStore:
     """Append-only per-attempt artifacts plus one immutable completion manifest."""
 
     def __init__(
         self,
         output_dir: Path,
-        plan: FinalExecutionPlan,
+        plan: FinalExecutionPlan | TrajectoryExecutionPlan,
         prepared_datasets: Mapping[str, PreparedDataset],
         execution_authority: ExecutionAuthorityContext,
         *,
@@ -1485,14 +2610,14 @@ class FinalResultStore:
     ) -> None:
         if not isinstance(output_dir, Path):
             raise TypeError("output_dir must be a pathlib.Path")
-        if not isinstance(plan, FinalExecutionPlan):
-            raise TypeError("plan must be a FinalExecutionPlan")
+        if not isinstance(plan, (FinalExecutionPlan, TrajectoryExecutionPlan)):
+            raise TypeError(
+                "plan must be a FinalExecutionPlan or TrajectoryExecutionPlan"
+            )
         if not isinstance(prepared_datasets, Mapping):
             raise TypeError("prepared_datasets must be a mapping")
         if not isinstance(execution_authority, ExecutionAuthorityContext):
-            raise TypeError(
-                "execution_authority must be an ExecutionAuthorityContext"
-            )
+            raise TypeError("execution_authority must be an ExecutionAuthorityContext")
         if (
             plan.input_hashes.get("execution_authority_sha256")
             != execution_authority.authority_sha256
@@ -1502,6 +2627,9 @@ class FinalResultStore:
             )
         self.output_dir = output_dir.absolute()
         self.plan = plan
+        self.scope = (
+            "primary_final" if isinstance(plan, FinalExecutionPlan) else plan.scope
+        )
         self.prepared_datasets = MappingProxyType(
             self._validate_prepared_datasets(prepared_datasets)
         )
@@ -1552,14 +2680,43 @@ class FinalResultStore:
                 or expected_binding != {actual_binding}
                 or prepared.method_input.source_dataset_sha256
                 != prepared.binding.dataset_sha256
-                or prepared.method_input.shape[0]
-                != prepared.audit.retained_cell_count
-                or prepared.method_input.obs_ids
-                != prepared.audit.retained_cell_ids
+                or prepared.method_input.shape[0] != prepared.audit.retained_cell_count
+                or prepared.method_input.obs_ids != prepared.audit.retained_cell_ids
             ):
                 raise FinalRunnerContractError(
                     f"prepared final dataset differs from plan binding {dataset_id}"
                 )
+            if isinstance(self.plan, FinalExecutionPlan):
+                if type(prepared.binding) is not DatasetBinding:
+                    raise FinalRunnerContractError(
+                        "primary final store requires exact final dataset bindings"
+                    )
+            else:
+                binding = prepared.binding
+                if (
+                    len(planned_dataset_ids) != 1
+                    or not isinstance(binding, RegisteredTrajectoryBinding)
+                    or self.plan.scope != "supplementary_trajectory"
+                    or self.plan.input_hashes.get("trajectory_binding_sha256")
+                    != binding.registered_binding_sha256
+                    or self.plan.input_hashes.get("trajectory_authority_sha256")
+                    != binding.authority_sha256
+                    or self.plan.input_hashes.get("trajectory_authority_file_sha256")
+                    != binding.authority_file_sha256
+                    or self.plan.input_hashes.get("trajectory_dataset_sha256")
+                    != binding.dataset_sha256
+                    or self.plan.input_hashes.get("trajectory_dataset_file_sha256")
+                    != binding.dataset_file_sha256
+                    or self.plan.input_hashes.get("trajectory_method_input_sha256")
+                    != method_input_sha256(prepared.method_input)
+                    or self.plan.input_hashes.get("trajectory_retained_cell_ids_sha256")
+                    != prepared.audit.retained_cell_ids_sha256
+                    or self.plan.input_hashes.get("dataset_qc_policy_sha256")
+                    != DatasetQCPolicy.fixed().sha256
+                ):
+                    raise FinalRunnerContractError(
+                        "registered trajectory prepared dataset differs from plan"
+                    )
             observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
             if observed.shape != prepared.method_input.shape or not np.array_equal(
                 observed, prepared.method_input.counts
@@ -1861,8 +3018,7 @@ class FinalResultStore:
             or value.get("retained_calibration_sha256")
             != (
                 self.execution_authority.retained_calibration_sha256
-                if plan_entry.run.method_id
-                in {"maskimpute", "capacity-matched-ae"}
+                if plan_entry.run.method_id in {"maskimpute", "capacity-matched-ae"}
                 else None
             )
         ):
@@ -2156,6 +3312,17 @@ class FinalResultStore:
             "records": references,
             "artifact_storage": dict(_FINAL_STORAGE_POLICY),
         }
+        if isinstance(self.plan, TrajectoryExecutionPlan):
+            body.update(
+                {
+                    "scope": self.plan.scope,
+                    "plan_entries": [entry.to_dict() for entry in self.plan.entries],
+                    "configurations": [
+                        value.to_dict() for value in self.plan.configurations
+                    ],
+                    "model_seed_policy": list(DEVELOPMENT_MODEL_SEEDS),
+                }
+            )
         manifest = {**body, "manifest_sha256": canonical_sha256(body)}
         try:
             self._artifacts._publish_immutable(
@@ -2175,21 +3342,30 @@ class FinalResultStore:
             raise FinalRunnerContractError(
                 "final execution manifest is invalid"
             ) from error
+        expected_fields = {
+            "schema_version",
+            "status",
+            "plan_sha256",
+            "input_hashes",
+            "planned_run_count",
+            "recorded_run_count",
+            "records",
+            "artifact_storage",
+            "manifest_sha256",
+        }
+        if isinstance(self.plan, TrajectoryExecutionPlan):
+            expected_fields.update(
+                {
+                    "scope",
+                    "plan_entries",
+                    "configurations",
+                    "model_seed_policy",
+                }
+            )
         if (
             not isinstance(value, dict)
             or raw != _canonical_bytes(value) + b"\n"
-            or set(value)
-            != {
-                "schema_version",
-                "status",
-                "plan_sha256",
-                "input_hashes",
-                "planned_run_count",
-                "recorded_run_count",
-                "records",
-                "artifact_storage",
-                "manifest_sha256",
-            }
+            or set(value) != expected_fields
         ):
             raise FinalRunnerContractError("final execution manifest is not canonical")
         body = {
@@ -2206,6 +3382,17 @@ class FinalResultStore:
             or value.get("recorded_run_count") != len(records)
             or len(records) != len(self.plan.entries)
             or value.get("artifact_storage") != _FINAL_STORAGE_POLICY
+            or (
+                isinstance(self.plan, TrajectoryExecutionPlan)
+                and (
+                    value.get("scope") != self.plan.scope
+                    or value.get("plan_entries")
+                    != [entry.to_dict() for entry in self.plan.entries]
+                    or value.get("configurations")
+                    != [value.to_dict() for value in self.plan.configurations]
+                    or value.get("model_seed_policy") != list(DEVELOPMENT_MODEL_SEEDS)
+                )
+            )
             or value.get("manifest_sha256") != canonical_sha256(body)
             or not isinstance(references, list)
             or len(references) != len(records)
@@ -2317,16 +3504,14 @@ def _configuration_for_method(
     return AuthorizedConfiguration.registry_default(spec)
 
 
-def build_final_execution_plan(
+def _frozen_method_plan_authority(
     frozen_method: Mapping[str, object],
     registry: MethodRegistry,
-    datasets: Sequence[DatasetBinding],
-    *,
-    execution_claim_sha256: str,
-    execution_environment_sha256: str,
-    execution_authority_sha256: str,
-) -> FinalExecutionPlan:
-    """Derive the final denominator without accepting design or tuning overrides."""
+) -> tuple[
+    dict[str, Mapping[str, object]],
+    tuple[AuthorizedConfiguration, ...],
+]:
+    """Validate the one frozen method/configuration/applicability authority."""
 
     if not isinstance(frozen_method, Mapping):
         raise TypeError("frozen_method must be a mapping")
@@ -2341,19 +3526,6 @@ def build_final_execution_plan(
         or frozen_method.get("payload_sha256") != canonical_sha256(unsigned)
     ):
         raise FinalRunnerContractError("frozen method receipt is invalid")
-    dataset_values = tuple(datasets)
-    if len(dataset_values) != 40 or not all(
-        isinstance(value, DatasetBinding) for value in dataset_values
-    ):
-        raise FinalRunnerContractError("final plan requires exactly 40 datasets")
-    for name, values in (
-        ("manifest", {item.manifest_sha256 for item in dataset_values}),
-        ("protocol", {item.protocol_sha256 for item in dataset_values}),
-        ("design", {item.design_sha256 for item in dataset_values}),
-        ("seed", {item.seed_source_sha256 for item in dataset_values}),
-    ):
-        if len(values) != 1:
-            raise FinalRunnerContractError(f"final dataset {name} authority differs")
     denominator = frozen_method.get("method_denominator")
     if not isinstance(denominator, list) or len(denominator) != len(registry.methods):
         raise FinalRunnerContractError("frozen method denominator is incomplete")
@@ -2372,13 +3544,124 @@ def build_final_execution_plan(
         registry_payload
     ):
         raise FinalRunnerContractError("method registry differs from frozen receipt")
-    claim_sha256 = _sha256(execution_claim_sha256, "execution claim")
-    environment_sha256 = _sha256(execution_environment_sha256, "execution environment")
-    authority_sha256 = _sha256(execution_authority_sha256, "execution authority")
     configurations = tuple(
         _configuration_for_method(spec.id, spec, frozen_method)
         for spec in registry.methods
     )
+    return frozen_by_id, configurations
+
+
+def _frozen_final_applicability(
+    spec: object,
+    row: Mapping[str, object],
+) -> tuple[
+    Literal["execute", "not_applicable"],
+    str | None,
+    tuple[int | None, ...],
+]:
+    """Derive one frozen applicability disposition with no caller override."""
+
+    from .methods.base import MethodSpec
+
+    if not isinstance(spec, MethodSpec):
+        raise TypeError("spec must be a MethodSpec")
+    applicability = row.get("final_applicability")
+    if not isinstance(applicability, Mapping) or set(applicability) != {
+        "rule",
+        "non_run_reason",
+        "required_reference",
+    }:
+        raise FinalRunnerContractError(
+            f"method {spec.id} final applicability is invalid"
+        )
+    rule = applicability.get("rule")
+    integration_status = row.get("integration_status")
+    if rule == "all_final_datasets":
+        if (
+            integration_status != "implemented"
+            or applicability.get("non_run_reason") is not None
+            or applicability.get("required_reference") is not None
+        ):
+            raise FinalRunnerContractError(
+                f"method {spec.id} executable disposition is not implemented"
+            )
+        return (
+            "execute",
+            None,
+            DEVELOPMENT_MODEL_SEEDS if spec.stochastic else (None,),
+        )
+    if rule not in {"never", "matched_bulk_reference_present"}:
+        raise FinalRunnerContractError(
+            f"method {spec.id} has an unknown final applicability rule"
+        )
+    raw_reason = applicability.get("non_run_reason")
+    if not isinstance(raw_reason, str) or not raw_reason:
+        raise FinalRunnerContractError(f"method {spec.id} lacks a final non-run reason")
+    if rule == "never":
+        if applicability.get("required_reference") is not None:
+            raise FinalRunnerContractError(
+                f"method {spec.id} non-run reference binding is invalid"
+            )
+        if raw_reason == "historical_method_not_rerun":
+            if integration_status != "historical":
+                raise FinalRunnerContractError(
+                    f"method {spec.id} historical integration status differs"
+                )
+        elif integration_status != "unavailable":
+            raise FinalRunnerContractError(
+                f"method {spec.id} unavailable integration status differs"
+            )
+    else:
+        required_reference = applicability.get("required_reference")
+        if required_reference != {
+            "kind": "prespecified_matched_bulk_expression",
+            "binding": "final_dataset_manifest_external_reference",
+            "evaluator_truth_as_reference": "forbidden",
+        }:
+            raise FinalRunnerContractError(
+                f"method {spec.id} matched-bulk reference binding is invalid"
+            )
+        if (
+            integration_status != "implemented"
+            or raw_reason != "matched_bulk_reference_absent"
+        ):
+            raise FinalRunnerContractError(
+                f"method {spec.id} matched-bulk disposition is invalid"
+            )
+    return "not_applicable", raw_reason, (None,)
+
+
+def build_final_execution_plan(
+    frozen_method: Mapping[str, object],
+    registry: MethodRegistry,
+    datasets: Sequence[DatasetBinding],
+    *,
+    execution_claim_sha256: str,
+    execution_environment_sha256: str,
+    execution_authority_sha256: str,
+) -> FinalExecutionPlan:
+    """Derive the final denominator without accepting design or tuning overrides."""
+
+    frozen_by_id, configurations = _frozen_method_plan_authority(
+        frozen_method,
+        registry,
+    )
+    dataset_values = tuple(datasets)
+    if len(dataset_values) != 40 or not all(
+        isinstance(value, DatasetBinding) for value in dataset_values
+    ):
+        raise FinalRunnerContractError("final plan requires exactly 40 datasets")
+    for name, values in (
+        ("manifest", {item.manifest_sha256 for item in dataset_values}),
+        ("protocol", {item.protocol_sha256 for item in dataset_values}),
+        ("design", {item.design_sha256 for item in dataset_values}),
+        ("seed", {item.seed_source_sha256 for item in dataset_values}),
+    ):
+        if len(values) != 1:
+            raise FinalRunnerContractError(f"final dataset {name} authority differs")
+    claim_sha256 = _sha256(execution_claim_sha256, "execution claim")
+    environment_sha256 = _sha256(execution_environment_sha256, "execution environment")
+    authority_sha256 = _sha256(execution_authority_sha256, "execution authority")
     configuration_by_id = {
         configuration.method_id: configuration for configuration in configurations
     }
@@ -2387,75 +3670,7 @@ def build_final_execution_plan(
     for binding in dataset_values:
         for spec in registry.methods:
             row = frozen_by_id[spec.id]
-            applicability = row.get("final_applicability")
-            if not isinstance(applicability, Mapping) or set(applicability) != {
-                "rule",
-                "non_run_reason",
-                "required_reference",
-            }:
-                raise FinalRunnerContractError(
-                    f"method {spec.id} final applicability is invalid"
-                )
-            rule = applicability.get("rule")
-            integration_status = row.get("integration_status")
-            if rule == "all_final_datasets":
-                if (
-                    integration_status != "implemented"
-                    or applicability.get("non_run_reason") is not None
-                    or applicability.get("required_reference") is not None
-                ):
-                    raise FinalRunnerContractError(
-                        f"method {spec.id} executable disposition is not implemented"
-                    )
-                action: Literal["execute", "not_applicable"] = "execute"
-                reason: str | None = None
-                seeds: tuple[int | None, ...] = (
-                    DEVELOPMENT_MODEL_SEEDS if spec.stochastic else (None,)
-                )
-            elif rule in {"never", "matched_bulk_reference_present"}:
-                action = "not_applicable"
-                raw_reason = applicability.get("non_run_reason")
-                if not isinstance(raw_reason, str) or not raw_reason:
-                    raise FinalRunnerContractError(
-                        f"method {spec.id} lacks a final non-run reason"
-                    )
-                reason = raw_reason
-                if rule == "never":
-                    if applicability.get("required_reference") is not None:
-                        raise FinalRunnerContractError(
-                            f"method {spec.id} non-run reference binding is invalid"
-                        )
-                    if reason == "historical_method_not_rerun":
-                        if integration_status != "historical":
-                            raise FinalRunnerContractError(
-                                f"method {spec.id} historical integration status differs"
-                            )
-                    elif integration_status != "unavailable":
-                        raise FinalRunnerContractError(
-                            f"method {spec.id} unavailable integration status differs"
-                        )
-                else:
-                    required_reference = applicability.get("required_reference")
-                    if required_reference != {
-                        "kind": "prespecified_matched_bulk_expression",
-                        "binding": "final_dataset_manifest_external_reference",
-                        "evaluator_truth_as_reference": "forbidden",
-                    }:
-                        raise FinalRunnerContractError(
-                            f"method {spec.id} matched-bulk reference binding is invalid"
-                        )
-                    if (
-                        integration_status != "implemented"
-                        or reason != "matched_bulk_reference_absent"
-                    ):
-                        raise FinalRunnerContractError(
-                            f"method {spec.id} matched-bulk disposition is invalid"
-                        )
-                seeds = (None,)
-            else:
-                raise FinalRunnerContractError(
-                    f"method {spec.id} has an unknown final applicability rule"
-                )
+            action, reason, seeds = _frozen_final_applicability(spec, row)
             configuration = configuration_by_id[spec.id]
             for seed in seeds:
                 ordinal += 1
@@ -2513,8 +3728,253 @@ def build_final_execution_plan(
     )
 
 
-def execute_final_plan(
-    plan: FinalExecutionPlan,
+def _trajectory_run_id(
+    method_id: str,
+    dataset_id: str,
+    model_seed: int | None,
+    configuration_sha256: str,
+) -> str:
+    seed = "deterministic" if model_seed is None else f"seed-{model_seed}"
+    return f"trajectory-{method_id}-{dataset_id}-{seed}-{configuration_sha256[:12]}"
+
+
+def build_trajectory_execution_plan(
+    frozen_method: Mapping[str, object],
+    registry: MethodRegistry,
+    registered: TrajectoryPreparedDataset,
+    *,
+    execution_claim_sha256: str,
+    execution_environment_sha256: str,
+    execution_authority_sha256: str,
+    primary_final_plan_sha256: str,
+) -> TrajectoryExecutionPlan:
+    """Derive the exact supplementary denominator from frozen authorities only."""
+
+    frozen_by_id, configurations = _frozen_method_plan_authority(
+        frozen_method,
+        registry,
+    )
+    if not isinstance(registered, TrajectoryPreparedDataset):
+        raise TypeError("registered must be a TrajectoryPreparedDataset")
+    binding = registered.binding
+    prepared = registered.prepared
+    if not isinstance(binding, RegisteredTrajectoryBinding) or not isinstance(
+        prepared, PreparedDataset
+    ):
+        raise FinalRunnerContractError("registered trajectory dataset is invalid")
+    expected_binding = _trajectory_binding(
+        registered.authority,
+        authority_file_sha256=binding.authority_file_sha256,
+        dataset_file_sha256=binding.dataset_file_sha256,
+    )
+    expected_receipt = _trajectory_dataset_receipt(binding, prepared)
+    expected_receipt_raw = _canonical_bytes(expected_receipt) + b"\n"
+    if (
+        binding != expected_binding
+        or prepared.binding != binding
+        or prepared.method_input.source_dataset_sha256 != binding.dataset_sha256
+        or prepared.method_input.shape != (binding.cells, binding.genes)
+        or prepared.method_input.obs_ids != prepared.audit.retained_cell_ids
+        or dict(registered.receipt) != expected_receipt
+        or registered.receipt_file_path
+        != "results/trajectory/dataset/dataset_receipt.json"
+        or registered.receipt_file_sha256
+        != hashlib.sha256(expected_receipt_raw).hexdigest()
+    ):
+        raise FinalRunnerContractError("registered trajectory identity differs")
+    claim_sha256 = _sha256(execution_claim_sha256, "execution claim")
+    environment_sha256 = _sha256(
+        execution_environment_sha256,
+        "execution environment",
+    )
+    authority_sha256 = _sha256(
+        execution_authority_sha256,
+        "trajectory execution authority",
+    )
+    primary_plan_sha256 = _sha256(
+        primary_final_plan_sha256,
+        "primary final plan",
+    )
+    configuration_by_id = {
+        configuration.method_id: configuration for configuration in configurations
+    }
+    entries: list[FinalPlanEntry] = []
+    ordinal = 0
+    for spec in registry.methods:
+        action, reason, seeds = _frozen_final_applicability(
+            spec,
+            frozen_by_id[spec.id],
+        )
+        configuration = configuration_by_id[spec.id]
+        for seed in seeds:
+            ordinal += 1
+            run = RunPlanEntry(
+                ordinal=ordinal,
+                run_id=_trajectory_run_id(
+                    spec.id,
+                    binding.dataset_id,
+                    seed,
+                    configuration.configuration_sha256,
+                ),
+                method_id=spec.id,
+                dataset_id=binding.dataset_id,
+                source_dataset_sha256=binding.dataset_sha256,
+                mechanism=binding.mechanism,
+                biological_id=binding.biological_id,
+                technical_view=binding.technical_view,
+                model_seed=seed,
+                configuration_id=configuration.configuration_id,
+                configuration_sha256=configuration.configuration_sha256,
+                preflight_status="planned",
+                preflight_reason=None,
+                configuration_kind=configuration.kind,
+                requires_count_score=configuration.requires_count_score,
+                requires_calibration=configuration.requires_calibration,
+            )
+            entries.append(FinalPlanEntry(run=run, action=action, reason=reason))
+    input_hashes = {
+        "frozen_method_sha256": str(frozen_method["payload_sha256"]),
+        "method_registry_sha256": str(frozen_method["method_registry_sha256"]),
+        "runtime_lock_sha256": _sha256(
+            frozen_method.get("runtime_lock_sha256"),
+            "frozen runtime lock",
+        ),
+        "primary_final_plan_sha256": primary_plan_sha256,
+        "trajectory_authority_file_sha256": binding.authority_file_sha256,
+        "trajectory_authority_sha256": binding.authority_sha256,
+        "trajectory_binding_sha256": binding.registered_binding_sha256,
+        "trajectory_dataset_sha256": binding.dataset_sha256,
+        "trajectory_dataset_file_sha256": binding.dataset_file_sha256,
+        "trajectory_dataset_receipt_sha256": str(registered.receipt["receipt_sha256"]),
+        "trajectory_dataset_receipt_file_sha256": (registered.receipt_file_sha256),
+        "trajectory_method_input_sha256": method_input_sha256(prepared.method_input),
+        "trajectory_retained_cell_ids_sha256": (
+            prepared.audit.retained_cell_ids_sha256
+        ),
+        "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+        "execution_claim_sha256": claim_sha256,
+        "execution_environment_sha256": environment_sha256,
+        "execution_authority_sha256": authority_sha256,
+    }
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "scope": "supplementary_trajectory",
+        "input_hashes": input_hashes,
+        "entries": [entry.to_dict() for entry in entries],
+        "configurations": [value.to_dict() for value in configurations],
+        "model_seed_policy": list(DEVELOPMENT_MODEL_SEEDS),
+    }
+    return TrajectoryExecutionPlan(
+        schema_version=1,
+        scope="supplementary_trajectory",
+        input_hashes=MappingProxyType(input_hashes),
+        entries=tuple(entries),
+        configurations=configurations,
+        plan_sha256=canonical_sha256(body),
+    )
+
+
+def _materialize_final_execution_inputs(
+    repository: Path,
+    round_dir: Path,
+    frozen_method: Mapping[str, object],
+    registry: MethodRegistry,
+    bindings: tuple[DatasetBinding, ...],
+    *,
+    execution_claim_sha256: str,
+    execution_environment_sha256: str,
+    publish_results: Callable[[], object],
+) -> tuple[
+    TrajectoryPreparedDataset,
+    ExecutionAuthorityContext,
+    FinalExecutionPlan,
+    ExecutionAuthorityContext,
+    TrajectoryExecutionPlan,
+]:
+    """Materialize and durably journal each immutable final input stage."""
+
+    if not callable(publish_results):
+        raise TypeError("publish_results must be callable")
+    provisional_plan = build_final_execution_plan(
+        frozen_method,
+        registry,
+        bindings,
+        execution_claim_sha256=execution_claim_sha256,
+        execution_environment_sha256=execution_environment_sha256,
+        execution_authority_sha256="0" * 64,
+    )
+    registered = materialize_prepared_trajectory_dataset(repository, round_dir)
+    publish_results()
+    authority = materialize_final_execution_authority(
+        repository,
+        round_dir,
+        frozen_method,
+        execution_claim_sha256=execution_claim_sha256,
+        execution_environment_sha256=execution_environment_sha256,
+        dataset_manifest_sha256=bindings[0].manifest_sha256,
+    )
+    publish_results()
+    plan = build_final_execution_plan(
+        frozen_method,
+        registry,
+        bindings,
+        execution_claim_sha256=execution_claim_sha256,
+        execution_environment_sha256=execution_environment_sha256,
+        execution_authority_sha256=authority.authority_sha256,
+    )
+    if getattr(plan, "entries", None) != getattr(
+        provisional_plan, "entries", None
+    ) or getattr(plan, "configurations", None) != getattr(
+        provisional_plan, "configurations", None
+    ):
+        raise FinalRunnerContractError(
+            "final plan changed while materializing execution authority"
+        )
+    trajectory_authority = materialize_trajectory_execution_authority(
+        repository,
+        round_dir,
+        frozen_method,
+        registered,
+        authority,
+        execution_claim_sha256=execution_claim_sha256,
+        execution_environment_sha256=execution_environment_sha256,
+        primary_final_plan_sha256=plan.plan_sha256,
+    )
+    publish_results()
+    trajectory_plan = build_trajectory_execution_plan(
+        frozen_method,
+        registry,
+        registered,
+        execution_claim_sha256=execution_claim_sha256,
+        execution_environment_sha256=execution_environment_sha256,
+        execution_authority_sha256=trajectory_authority.authority_sha256,
+        primary_final_plan_sha256=plan.plan_sha256,
+    )
+    return registered, authority, plan, trajectory_authority, trajectory_plan
+
+
+def trajectory_execution_plan_payload(
+    plan: TrajectoryExecutionPlan,
+) -> dict[str, object]:
+    """Return and verify the complete registered-trajectory plan payload."""
+
+    if not isinstance(plan, TrajectoryExecutionPlan):
+        raise TypeError("plan must be a TrajectoryExecutionPlan")
+    body: dict[str, object] = {
+        "schema_version": plan.schema_version,
+        "scope": plan.scope,
+        "input_hashes": dict(plan.input_hashes),
+        "entries": [entry.to_dict() for entry in plan.entries],
+        "configurations": [value.to_dict() for value in plan.configurations],
+        "model_seed_policy": list(DEVELOPMENT_MODEL_SEEDS),
+    }
+    if plan.schema_version != 1 or canonical_sha256(body) != plan.plan_sha256:
+        raise FinalRunnerContractError("trajectory plan payload binding is invalid")
+    return {**body, "plan_sha256": plan.plan_sha256}
+
+
+def _execute_frozen_plan(
+    plan: FinalExecutionPlan | TrajectoryExecutionPlan,
     registry: MethodRegistry,
     prepared_datasets: Mapping[str, PreparedDataset],
     authority: ExecutionAuthorityContext,
@@ -2525,8 +3985,8 @@ def execute_final_plan(
 ) -> dict[str, object]:
     """Execute/resume an exact plan and journal its complete immutable manifest."""
 
-    if not isinstance(plan, FinalExecutionPlan):
-        raise TypeError("plan must be a FinalExecutionPlan")
+    if not isinstance(plan, (FinalExecutionPlan, TrajectoryExecutionPlan)):
+        raise TypeError("plan must be a FinalExecutionPlan or TrajectoryExecutionPlan")
     if not isinstance(registry, MethodRegistry):
         raise TypeError("registry must be a MethodRegistry")
     if not isinstance(prepared_datasets, Mapping):
@@ -2606,16 +4066,66 @@ def execute_final_plan(
     return manifest
 
 
-def validate_final_execution_for_evaluation(
+def execute_final_plan(
     plan: FinalExecutionPlan,
+    registry: MethodRegistry,
+    prepared_datasets: Mapping[str, PreparedDataset],
+    authority: ExecutionAuthorityContext,
+    executor: Callable[[ExecutionRequest], AdapterOutcome],
+    store: FinalResultStore,
+    *,
+    on_record_published: Callable[[], object],
+) -> dict[str, object]:
+    """Execute/resume the strict 40-dataset primary final plan."""
+
+    if not isinstance(plan, FinalExecutionPlan):
+        raise TypeError("plan must be a FinalExecutionPlan")
+    return _execute_frozen_plan(
+        plan,
+        registry,
+        prepared_datasets,
+        authority,
+        executor,
+        store,
+        on_record_published=on_record_published,
+    )
+
+
+def execute_trajectory_plan(
+    plan: TrajectoryExecutionPlan,
+    registry: MethodRegistry,
+    prepared_datasets: Mapping[str, PreparedDataset],
+    authority: ExecutionAuthorityContext,
+    executor: Callable[[ExecutionRequest], AdapterOutcome],
+    store: FinalResultStore,
+    *,
+    on_record_published: Callable[[], object],
+) -> dict[str, object]:
+    """Execute/resume the separately scoped registered trajectory plan."""
+
+    if not isinstance(plan, TrajectoryExecutionPlan):
+        raise TypeError("plan must be a TrajectoryExecutionPlan")
+    return _execute_frozen_plan(
+        plan,
+        registry,
+        prepared_datasets,
+        authority,
+        executor,
+        store,
+        on_record_published=on_record_published,
+    )
+
+
+def _validate_frozen_execution_for_evaluation(
+    plan: FinalExecutionPlan | TrajectoryExecutionPlan,
     records: Sequence[Mapping[str, object]],
 ) -> dict[str, object]:
     """Require a complete terminal denominator without success-conditioned exclusion."""
 
     from .runner import _RECONSTRUCTION_METRIC_NAMES
 
-    if not isinstance(plan, FinalExecutionPlan):
-        raise TypeError("plan must be a FinalExecutionPlan")
+    if not isinstance(plan, (FinalExecutionPlan, TrajectoryExecutionPlan)):
+        raise TypeError("plan must be a FinalExecutionPlan or TrajectoryExecutionPlan")
     values = tuple(records)
     if len(values) != len(plan.entries):
         raise FinalRunnerContractError(
@@ -2712,7 +4222,6 @@ def validate_final_execution_for_evaluation(
     body: dict[str, object] = {
         "schema_version": 1,
         "status": "eligible_for_final_evaluation_complete_terminal_denominator",
-        "final_plan_sha256": plan.plan_sha256,
         "planned_run_count": len(plan.entries),
         "executed_completed_count": completed,
         "executed_algorithmic_failure_count": algorithmic_failures,
@@ -2723,7 +4232,730 @@ def validate_final_execution_for_evaluation(
         "not_applicable_count": nonruns,
         "record_payload_sha256s": record_sha256s,
     }
+    if isinstance(plan, FinalExecutionPlan):
+        body["final_plan_sha256"] = plan.plan_sha256
+    else:
+        body["scope"] = plan.scope
+        body["trajectory_plan_sha256"] = plan.plan_sha256
     return {**body, "validation_sha256": canonical_sha256(body)}
+
+
+def validate_final_execution_for_evaluation(
+    plan: FinalExecutionPlan,
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Require the complete terminal primary final denominator."""
+
+    if not isinstance(plan, FinalExecutionPlan):
+        raise TypeError("plan must be a FinalExecutionPlan")
+    return _validate_frozen_execution_for_evaluation(plan, records)
+
+
+def validate_trajectory_execution_for_evaluation(
+    plan: TrajectoryExecutionPlan,
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Require the complete terminal supplementary trajectory denominator."""
+
+    if not isinstance(plan, TrajectoryExecutionPlan):
+        raise TypeError("plan must be a TrajectoryExecutionPlan")
+    return _validate_frozen_execution_for_evaluation(plan, records)
+
+
+def _trajectory_evaluation_evidence(
+    round_dir: Path,
+    plan: TrajectoryExecutionPlan,
+    registered: TrajectoryPreparedDataset,
+    authority: ExecutionAuthorityContext,
+    store: FinalResultStore,
+    validation: Mapping[str, object],
+    result_files: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    """Bind every trajectory-only byte and independently derived denominator."""
+
+    if not isinstance(round_dir, Path):
+        raise TypeError("round_dir must be a pathlib.Path")
+    if not isinstance(plan, TrajectoryExecutionPlan):
+        raise TypeError("plan must be a TrajectoryExecutionPlan")
+    if not isinstance(registered, TrajectoryPreparedDataset):
+        raise TypeError("registered must be a TrajectoryPreparedDataset")
+    if not isinstance(authority, ExecutionAuthorityContext):
+        raise TypeError("authority must be an ExecutionAuthorityContext")
+    if not isinstance(store, FinalResultStore) or store.plan != plan:
+        raise FinalRunnerContractError("trajectory evidence store differs from plan")
+    expected_validation = validate_trajectory_execution_for_evaluation(
+        plan,
+        store.load_records(),
+    )
+    if dict(validation) != expected_validation:
+        raise FinalRunnerContractError(
+            "trajectory execution validation differs from stored records"
+        )
+    destination = round_dir.resolve(strict=True)
+    observed: dict[str, str] = {}
+    for row in result_files:
+        if not isinstance(row, Mapping):
+            raise FinalRunnerContractError("final result inventory is invalid")
+        path = row.get("path")
+        digest = row.get("sha256")
+        if isinstance(path, str) and path.startswith("results/trajectory/"):
+            if path in observed:
+                raise FinalRunnerContractError(
+                    "trajectory result inventory path is duplicated"
+                )
+            observed[path] = _sha256(digest, f"trajectory result {path}")
+    expected_paths = {
+        path
+        for path in _owned_final_result_paths(destination)
+        if path.startswith("results/trajectory/")
+    }
+    if set(observed) != expected_paths:
+        raise FinalRunnerContractError(
+            "trajectory result inventory differs from its owned files"
+        )
+    trajectory_files = [
+        {"path": path, "sha256": observed[path]} for path in sorted(observed)
+    ]
+
+    binding = registered.binding
+    receipt_path = destination / registered.receipt_file_path
+    receipt_raw = _read_unique_file(
+        receipt_path,
+        "registered trajectory dataset receipt",
+        max_bytes=1024 * 1024,
+    )
+    h5ad_path = destination / binding.dataset_file_path
+    h5ad_file_sha256 = _hash_unique_file(
+        h5ad_path,
+        "registered trajectory evaluator dataset",
+    )
+    if (
+        receipt_raw != _canonical_bytes(dict(registered.receipt)) + b"\n"
+        or hashlib.sha256(receipt_raw).hexdigest() != registered.receipt_file_sha256
+        or h5ad_file_sha256 != binding.dataset_file_sha256
+    ):
+        raise FinalRunnerContractError(
+            "registered trajectory dataset bytes changed before receipt"
+        )
+    dataset_evidence: dict[str, object] = {
+        "binding": asdict(binding),
+        "dataset_path": binding.dataset_file_path,
+        "dataset_file_sha256": h5ad_file_sha256,
+        "dataset_sha256": binding.dataset_sha256,
+        "receipt_path": registered.receipt_file_path,
+        "receipt_file_sha256": registered.receipt_file_sha256,
+        "receipt_payload_sha256": registered.receipt["receipt_sha256"],
+    }
+
+    authority_path = (
+        destination / "results/trajectory/execution_authority/authority.json"
+    )
+    authority_raw = _read_unique_file(
+        authority_path,
+        "trajectory execution authority",
+        max_bytes=1024 * 1024,
+    )
+    authority_payload = _strict_json(
+        authority_raw,
+        "trajectory execution authority",
+    )
+    authority_body = {
+        key: value
+        for key, value in authority_payload.items()
+        if key != "authority_sha256"
+    }
+    if (
+        authority_raw != _canonical_bytes(authority_payload) + b"\n"
+        or authority_payload.get("authority_sha256") != authority.authority_sha256
+        or canonical_sha256(authority_body) != authority.authority_sha256
+    ):
+        raise FinalRunnerContractError(
+            "trajectory execution authority bytes changed before receipt"
+        )
+    authority_files = [
+        row
+        for row in trajectory_files
+        if str(row["path"]).startswith("results/trajectory/execution_authority/")
+    ]
+    if len(authority_files) != 3:
+        raise FinalRunnerContractError(
+            "trajectory execution authority inventory is incomplete"
+        )
+    authority_evidence: dict[str, object] = {
+        "authority_path": "results/trajectory/execution_authority/authority.json",
+        "authority_file_sha256": hashlib.sha256(authority_raw).hexdigest(),
+        "authority_sha256": authority.authority_sha256,
+        "count_score_authority_path": authority.count_score_manifest_path,
+        "count_score_authority_file_sha256": (authority.count_score_manifest_sha256),
+        "retained_calibration_path": authority.retained_calibration_path,
+        "retained_calibration_file_sha256": (authority.retained_calibration_sha256),
+        "files": authority_files,
+    }
+
+    manifest = store.load_manifest()
+    manifest_raw = _read_unique_file(
+        store.manifest_path,
+        "trajectory execution manifest",
+        max_bytes=32 * 1024 * 1024,
+    )
+    manifest_relative = store.manifest_path.relative_to(destination).as_posix()
+    manifest_evidence: dict[str, object] = {
+        "path": manifest_relative,
+        "file_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "payload_sha256": manifest["manifest_sha256"],
+    }
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "status": "completed",
+        "scope": plan.scope,
+        "plan": trajectory_execution_plan_payload(plan),
+        "dataset": dataset_evidence,
+        "execution_authority": authority_evidence,
+        "execution_manifest": manifest_evidence,
+        "execution_validation": dict(validation),
+        "result_files": trajectory_files,
+    }
+    return {**body, "evidence_sha256": canonical_sha256(body)}
+
+
+def _validate_trajectory_primary_authority_chain(
+    repository: Path,
+    round_dir: Path,
+    *,
+    primary_final_plan_sha256: str,
+) -> Mapping[str, str]:
+    """Purely validate trajectory provenance back to the claimed primary run."""
+
+    selected_repository, destination = _canonical_round(repository, round_dir)
+    primary_plan_sha256 = _sha256(
+        primary_final_plan_sha256,
+        "primary final plan",
+    )
+    claim = _strict_json(
+        _read_unique_file(
+            destination / "execution_claim.json",
+            "final execution claim",
+            max_bytes=1024 * 1024,
+        ),
+        "final execution claim",
+    )
+    claim_sha256 = canonical_sha256(claim)
+
+    primary_path = destination / "results/final/execution_authority/authority.json"
+    primary_raw = _read_unique_file(
+        primary_path,
+        "primary execution authority",
+        max_bytes=1024 * 1024,
+    )
+    primary = _strict_json(primary_raw, "primary execution authority")
+    primary_fields = {
+        "schema_version",
+        "authority_type",
+        "frozen_method_sha256",
+        "runtime_lock_sha256",
+        "execution_claim_sha256",
+        "execution_environment_sha256",
+        "dataset_manifest_sha256",
+        "base_configuration",
+        "base_configuration_sha256",
+        "count_model_config",
+        "count_model_config_sha256",
+        "count_score_authority_path",
+        "count_score_authority_sha256",
+        "retained_calibration_path",
+        "retained_calibration_sha256",
+        "calibration_usage",
+        "authority_sha256",
+    }
+    primary_body = {
+        key: value for key, value in primary.items() if key != "authority_sha256"
+    }
+    if (
+        set(primary) != primary_fields
+        or primary_raw != _canonical_bytes(primary) + b"\n"
+        or type(primary.get("schema_version")) is not int
+        or primary.get("schema_version") != 1
+        or primary.get("authority_type") != "maskimpute_frozen_final_execution"
+        or primary.get("execution_claim_sha256") != claim_sha256
+        or primary.get("authority_sha256") != canonical_sha256(primary_body)
+        or not isinstance(primary.get("base_configuration"), Mapping)
+        or primary.get("base_configuration_sha256")
+        != canonical_sha256(primary["base_configuration"])
+        or not isinstance(primary.get("count_model_config"), Mapping)
+        or primary.get("count_model_config_sha256")
+        != canonical_sha256(primary["count_model_config"])
+    ):
+        raise FinalRunnerContractError(
+            "primary execution authority cannot anchor trajectory evidence"
+        )
+    primary_authority_sha256 = _sha256(
+        primary.get("authority_sha256"),
+        "primary execution authority",
+    )
+    environment_sha256 = _sha256(
+        primary.get("execution_environment_sha256"),
+        "primary execution environment",
+    )
+    for name in (
+        "frozen_method_sha256",
+        "runtime_lock_sha256",
+        "dataset_manifest_sha256",
+        "base_configuration_sha256",
+        "count_model_config_sha256",
+        "count_score_authority_sha256",
+        "retained_calibration_sha256",
+    ):
+        _sha256(primary.get(name), f"primary authority {name}")
+
+    primary_manifest_raw = _read_unique_file(
+        destination / "results/final/execution/execution_manifest.json",
+        "primary execution manifest",
+        max_bytes=32 * 1024 * 1024,
+    )
+    primary_manifest = _strict_json(
+        primary_manifest_raw,
+        "primary execution manifest",
+    )
+    primary_manifest_fields = {
+        "schema_version",
+        "status",
+        "plan_sha256",
+        "input_hashes",
+        "planned_run_count",
+        "recorded_run_count",
+        "records",
+        "artifact_storage",
+        "manifest_sha256",
+    }
+    primary_manifest_body = {
+        key: value
+        for key, value in primary_manifest.items()
+        if key != "manifest_sha256"
+    }
+    primary_inputs = primary_manifest.get("input_hashes")
+    primary_input_fields = {
+        "frozen_method_sha256",
+        "method_registry_sha256",
+        "runtime_lock_sha256",
+        "dataset_manifest_sha256",
+        "dataset_design_sha256",
+        "dataset_seed_source_sha256",
+        "protocol_sha256",
+        "execution_claim_sha256",
+        "execution_environment_sha256",
+        "execution_authority_sha256",
+    }
+    primary_records = primary_manifest.get("records")
+    if (
+        set(primary_manifest) != primary_manifest_fields
+        or primary_manifest_raw != _canonical_bytes(primary_manifest) + b"\n"
+        or type(primary_manifest.get("schema_version")) is not int
+        or primary_manifest.get("schema_version") != 1
+        or primary_manifest.get("status") != "completed"
+        or primary_manifest.get("plan_sha256") != primary_plan_sha256
+        or primary_manifest.get("manifest_sha256")
+        != canonical_sha256(primary_manifest_body)
+        or not isinstance(primary_inputs, Mapping)
+        or set(primary_inputs) != primary_input_fields
+        or any(
+            not isinstance(digest, str) or _SHA256.fullmatch(digest) is None
+            for digest in primary_inputs.values()
+        )
+        or type(primary_manifest.get("planned_run_count")) is not int
+        or type(primary_manifest.get("recorded_run_count")) is not int
+        or not isinstance(primary_records, list)
+        or primary_manifest.get("planned_run_count") != len(primary_records)
+        or primary_manifest.get("recorded_run_count") != len(primary_records)
+        or primary_manifest.get("artifact_storage") != _FINAL_STORAGE_POLICY
+        or primary_inputs.get("execution_claim_sha256") != claim_sha256
+        or primary_inputs.get("execution_environment_sha256") != environment_sha256
+        or primary_inputs.get("execution_authority_sha256") != primary_authority_sha256
+        or primary_inputs.get("frozen_method_sha256")
+        != primary.get("frozen_method_sha256")
+        or primary_inputs.get("runtime_lock_sha256")
+        != primary.get("runtime_lock_sha256")
+        or primary_inputs.get("dataset_manifest_sha256")
+        != primary.get("dataset_manifest_sha256")
+    ):
+        raise FinalRunnerContractError(
+            "primary execution manifest cannot anchor trajectory evidence"
+        )
+
+    primary_score_raw = _read_repository_authority_file(
+        selected_repository,
+        str(primary.get("count_score_authority_path")),
+        str(primary.get("count_score_authority_sha256")),
+        "primary count-score authority",
+    )
+    primary_calibration_raw = _read_repository_authority_file(
+        selected_repository,
+        str(primary.get("retained_calibration_path")),
+        str(primary.get("retained_calibration_sha256")),
+        "primary retained calibration authority",
+    )
+
+    trajectory_path = (
+        destination / "results/trajectory/execution_authority/authority.json"
+    )
+    trajectory_raw = _read_unique_file(
+        trajectory_path,
+        "trajectory execution authority",
+        max_bytes=1024 * 1024,
+    )
+    trajectory = _strict_json(trajectory_raw, "trajectory execution authority")
+    trajectory_fields = {
+        "schema_version",
+        "authority_type",
+        "scope",
+        "frozen_method_sha256",
+        "runtime_lock_sha256",
+        "primary_final_plan_sha256",
+        "primary_execution_authority_sha256",
+        "execution_claim_sha256",
+        "execution_environment_sha256",
+        "trajectory_authority_sha256",
+        "trajectory_binding_sha256",
+        "trajectory_dataset_sha256",
+        "trajectory_method_input_sha256",
+        "base_configuration",
+        "base_configuration_sha256",
+        "count_model_config",
+        "count_model_config_sha256",
+        "count_score_authority_path",
+        "count_score_authority_sha256",
+        "retained_calibration_path",
+        "retained_calibration_sha256",
+        "calibration_usage",
+        "authority_sha256",
+    }
+    trajectory_body = {
+        key: value for key, value in trajectory.items() if key != "authority_sha256"
+    }
+    if (
+        set(trajectory) != trajectory_fields
+        or trajectory_raw != _canonical_bytes(trajectory) + b"\n"
+        or type(trajectory.get("schema_version")) is not int
+        or trajectory.get("schema_version") != 1
+        or trajectory.get("authority_type") != "maskimpute_frozen_trajectory_execution"
+        or trajectory.get("scope") != "supplementary_trajectory"
+        or trajectory.get("primary_final_plan_sha256") != primary_plan_sha256
+        or trajectory.get("primary_execution_authority_sha256")
+        != primary_authority_sha256
+        or trajectory.get("execution_claim_sha256") != claim_sha256
+        or trajectory.get("execution_environment_sha256") != environment_sha256
+        or trajectory.get("frozen_method_sha256") != primary.get("frozen_method_sha256")
+        or trajectory.get("runtime_lock_sha256") != primary.get("runtime_lock_sha256")
+        or _canonical_bytes(trajectory.get("base_configuration"))
+        != _canonical_bytes(primary.get("base_configuration"))
+        or trajectory.get("base_configuration_sha256")
+        != primary.get("base_configuration_sha256")
+        or _canonical_bytes(trajectory.get("count_model_config"))
+        != _canonical_bytes(primary.get("count_model_config"))
+        or trajectory.get("count_model_config_sha256")
+        != primary.get("count_model_config_sha256")
+        or trajectory.get("calibration_usage") != "retained_all_development_calibrator"
+        or trajectory.get("authority_sha256") != canonical_sha256(trajectory_body)
+    ):
+        raise FinalRunnerContractError(
+            "trajectory authority is not derived from the primary authority"
+        )
+    trajectory_authority_sha256 = _sha256(
+        trajectory.get("authority_sha256"),
+        "trajectory execution authority",
+    )
+    trajectory_score_sha256 = _sha256(
+        trajectory.get("count_score_authority_sha256"),
+        "trajectory count-score authority file",
+    )
+    trajectory_calibration_sha256 = _sha256(
+        trajectory.get("retained_calibration_sha256"),
+        "trajectory retained calibration file",
+    )
+    trajectory_score_raw = _read_repository_authority_file(
+        selected_repository,
+        str(trajectory.get("count_score_authority_path")),
+        trajectory_score_sha256,
+        "trajectory count-score authority",
+    )
+    trajectory_calibration_raw = _read_repository_authority_file(
+        selected_repository,
+        str(trajectory.get("retained_calibration_path")),
+        trajectory_calibration_sha256,
+        "trajectory retained calibration authority",
+    )
+    trajectory_score = _strict_json(
+        trajectory_score_raw,
+        "trajectory count-score authority",
+    )
+    trajectory_score_body = {
+        key: value for key, value in trajectory_score.items() if key != "payload_sha256"
+    }
+    trajectory_score_fields = {
+        "schema_version",
+        "artifact_type",
+        "status",
+        "scope",
+        "frozen_method_sha256",
+        "primary_final_plan_sha256",
+        "primary_execution_authority_sha256",
+        "primary_count_score_authority_file_sha256",
+        "execution_claim_sha256",
+        "execution_environment_sha256",
+        "trajectory_authority_file_sha256",
+        "trajectory_authority_sha256",
+        "trajectory_binding_sha256",
+        "trajectory_dataset_sha256",
+        "trajectory_dataset_file_sha256",
+        "trajectory_dataset_receipt_sha256",
+        "trajectory_dataset_receipt_file_sha256",
+        "trajectory_method_input_sha256",
+        "trajectory_retained_cell_ids_sha256",
+        "dataset_qc_policy_sha256",
+        "count_model_config",
+        "count_model_config_sha256",
+        "retained_calibration_file_sha256",
+        "payload_sha256",
+    }
+    if (
+        set(trajectory_score) != trajectory_score_fields
+        or trajectory_score_raw != _canonical_bytes(trajectory_score) + b"\n"
+        or type(trajectory_score.get("schema_version")) is not int
+        or trajectory_score.get("schema_version") != 1
+        or trajectory_score.get("artifact_type")
+        != "maskimpute_trajectory_count_score_authority"
+        or trajectory_score.get("status") != "ready"
+        or trajectory_score.get("scope") != "truth_free_registered_trajectory_inference"
+        or trajectory_score.get("frozen_method_sha256")
+        != primary.get("frozen_method_sha256")
+        or trajectory_score.get("primary_final_plan_sha256") != primary_plan_sha256
+        or trajectory_score.get("primary_execution_authority_sha256")
+        != primary_authority_sha256
+        or trajectory_score.get("primary_count_score_authority_file_sha256")
+        != hashlib.sha256(primary_score_raw).hexdigest()
+        or trajectory_score.get("execution_claim_sha256") != claim_sha256
+        or trajectory_score.get("execution_environment_sha256") != environment_sha256
+        or _canonical_bytes(trajectory_score.get("count_model_config"))
+        != _canonical_bytes(primary.get("count_model_config"))
+        or trajectory_score.get("count_model_config_sha256")
+        != primary.get("count_model_config_sha256")
+        or trajectory_score.get("retained_calibration_file_sha256")
+        != hashlib.sha256(primary_calibration_raw).hexdigest()
+        or trajectory_score.get("payload_sha256")
+        != canonical_sha256(trajectory_score_body)
+        or trajectory_calibration_raw != primary_calibration_raw
+        or trajectory_calibration_sha256
+        != hashlib.sha256(primary_calibration_raw).hexdigest()
+    ):
+        raise FinalRunnerContractError(
+            "trajectory authority copies differ from the primary authority"
+        )
+    return MappingProxyType(
+        {
+            "execution_claim_sha256": claim_sha256,
+            "execution_environment_sha256": environment_sha256,
+            "primary_execution_authority_sha256": primary_authority_sha256,
+            "trajectory_execution_authority_sha256": (trajectory_authority_sha256),
+        }
+    )
+
+
+def _rederive_trajectory_evidence_before_receipt(
+    repository: Path,
+    round_dir: Path,
+    evidence: Mapping[str, object],
+    result_files: Sequence[Mapping[str, object]],
+    *,
+    primary_final_plan_sha256: str,
+) -> dict[str, object]:
+    """Rebuild trajectory authority, plan, records, and inventory from fresh bytes."""
+
+    from .methods import load_method_registry
+    from .publication_freeze import validate_frozen_method
+
+    selected_repository, destination = _canonical_round(repository, round_dir)
+    primary_plan_sha256 = _sha256(
+        primary_final_plan_sha256,
+        "primary final plan",
+    )
+    if not isinstance(evidence, Mapping):
+        raise FinalRunnerContractError("trajectory evidence is unavailable")
+    evidence_plan = evidence.get("plan")
+    if not isinstance(evidence_plan, Mapping):
+        raise FinalRunnerContractError("trajectory evidence plan is unavailable")
+    evidence_inputs = evidence_plan.get("input_hashes")
+    if (
+        not isinstance(evidence_inputs, Mapping)
+        or evidence_inputs.get("primary_final_plan_sha256") != primary_plan_sha256
+    ):
+        raise FinalRunnerContractError(
+            "trajectory evidence primary-plan binding differs"
+        )
+    authority_chain = _validate_trajectory_primary_authority_chain(
+        selected_repository,
+        destination,
+        primary_final_plan_sha256=primary_plan_sha256,
+    )
+    if (
+        evidence_inputs.get("execution_claim_sha256")
+        != authority_chain["execution_claim_sha256"]
+        or evidence_inputs.get("execution_environment_sha256")
+        != authority_chain["execution_environment_sha256"]
+        or evidence_inputs.get("execution_authority_sha256")
+        != authority_chain["trajectory_execution_authority_sha256"]
+    ):
+        raise FinalRunnerContractError(
+            "trajectory evidence differs from the primary execution authority"
+        )
+
+    try:
+        frozen_method = validate_frozen_method(selected_repository)
+        registry = load_method_registry(selected_repository / "study/methods.json")
+        registered = materialize_prepared_trajectory_dataset(
+            selected_repository,
+            destination,
+        )
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "registered trajectory authority cannot be rederived before receipt"
+        ) from error
+
+    authority_path = (
+        destination / "results/trajectory/execution_authority/authority.json"
+    )
+    authority_raw = _read_unique_file(
+        authority_path,
+        "trajectory execution authority",
+        max_bytes=1024 * 1024,
+    )
+    authority_payload = _strict_json(
+        authority_raw,
+        "trajectory execution authority",
+    )
+    authority_body = {
+        key: value
+        for key, value in authority_payload.items()
+        if key != "authority_sha256"
+    }
+    expected_authority_fields = {
+        "schema_version",
+        "authority_type",
+        "scope",
+        "frozen_method_sha256",
+        "runtime_lock_sha256",
+        "primary_final_plan_sha256",
+        "primary_execution_authority_sha256",
+        "execution_claim_sha256",
+        "execution_environment_sha256",
+        "trajectory_authority_sha256",
+        "trajectory_binding_sha256",
+        "trajectory_dataset_sha256",
+        "trajectory_method_input_sha256",
+        "base_configuration",
+        "base_configuration_sha256",
+        "count_model_config",
+        "count_model_config_sha256",
+        "count_score_authority_path",
+        "count_score_authority_sha256",
+        "retained_calibration_path",
+        "retained_calibration_sha256",
+        "calibration_usage",
+        "authority_sha256",
+    }
+    if (
+        set(authority_payload) != expected_authority_fields
+        or authority_raw != _canonical_bytes(authority_payload) + b"\n"
+        or authority_payload.get("schema_version") != 1
+        or authority_payload.get("authority_type")
+        != "maskimpute_frozen_trajectory_execution"
+        or authority_payload.get("scope") != "supplementary_trajectory"
+        or authority_payload.get("primary_final_plan_sha256") != primary_plan_sha256
+        or authority_payload.get("frozen_method_sha256")
+        != frozen_method.get("payload_sha256")
+        or authority_payload.get("trajectory_authority_sha256")
+        != registered.binding.authority_sha256
+        or authority_payload.get("trajectory_binding_sha256")
+        != registered.binding.registered_binding_sha256
+        or authority_payload.get("trajectory_dataset_sha256")
+        != registered.binding.dataset_sha256
+        or authority_payload.get("trajectory_method_input_sha256")
+        != method_input_sha256(registered.prepared.method_input)
+        or authority_payload.get("authority_sha256") != canonical_sha256(authority_body)
+    ):
+        raise FinalRunnerContractError(
+            "trajectory execution authority cannot be rederived before receipt"
+        )
+    try:
+        execution_authority = ExecutionAuthorityContext(
+            authority_sha256=str(authority_payload["authority_sha256"]),
+            base_configuration_json=_canonical_bytes(
+                authority_payload["base_configuration"]
+            ).decode(),
+            base_configuration_sha256=str(
+                authority_payload["base_configuration_sha256"]
+            ),
+            count_model_config_json=_canonical_bytes(
+                authority_payload["count_model_config"]
+            ).decode(),
+            count_model_config_sha256=str(
+                authority_payload["count_model_config_sha256"]
+            ),
+            count_score_manifest_path=str(
+                authority_payload["count_score_authority_path"]
+            ),
+            count_score_manifest_sha256=str(
+                authority_payload["count_score_authority_sha256"]
+            ),
+            retained_calibration_path=str(
+                authority_payload["retained_calibration_path"]
+            ),
+            retained_calibration_sha256=str(
+                authority_payload["retained_calibration_sha256"]
+            ),
+        )
+        plan = build_trajectory_execution_plan(
+            frozen_method,
+            registry,
+            registered,
+            execution_claim_sha256=authority_chain["execution_claim_sha256"],
+            execution_environment_sha256=(
+                authority_chain["execution_environment_sha256"]
+            ),
+            execution_authority_sha256=execution_authority.authority_sha256,
+            primary_final_plan_sha256=primary_plan_sha256,
+        )
+    except (TypeError, ValueError, RunnerContractError) as error:
+        raise FinalRunnerContractError(
+            "trajectory execution plan cannot be rederived before receipt"
+        ) from error
+    if trajectory_execution_plan_payload(plan) != dict(evidence_plan):
+        raise FinalRunnerContractError(
+            "trajectory execution plan changed before receipt"
+        )
+    store = FinalResultStore(
+        destination / "results/trajectory/execution",
+        plan,
+        {registered.binding.dataset_id: registered.prepared},
+        execution_authority,
+        authority_repository=selected_repository,
+    )
+    validation = validate_trajectory_execution_for_evaluation(
+        plan,
+        store.load_records(),
+    )
+    rederived = _trajectory_evaluation_evidence(
+        destination,
+        plan,
+        registered,
+        execution_authority,
+        store,
+        validation,
+        result_files,
+    )
+    if rederived != dict(evidence):
+        raise FinalRunnerContractError(
+            "trajectory evidence changed before the final evaluation receipt"
+        )
+    return rederived
 
 
 def _scaling_evaluation_evidence(
@@ -2825,6 +5057,40 @@ def _record_final_evaluation_after_scaling(
 
     from .study import record_final_evaluation
 
+    trajectory_evidence = evaluation_manifest.get("trajectory_evidence")
+    trajectory_body = (
+        {
+            key: value
+            for key, value in trajectory_evidence.items()
+            if key != "evidence_sha256"
+        }
+        if isinstance(trajectory_evidence, Mapping)
+        else {}
+    )
+    if (
+        not isinstance(trajectory_evidence, Mapping)
+        or set(trajectory_evidence)
+        != {
+            "schema_version",
+            "status",
+            "scope",
+            "plan",
+            "dataset",
+            "execution_authority",
+            "execution_manifest",
+            "execution_validation",
+            "result_files",
+            "evidence_sha256",
+        }
+        or trajectory_evidence.get("schema_version") != 1
+        or trajectory_evidence.get("status") != "completed"
+        or trajectory_evidence.get("scope") != "supplementary_trajectory"
+        or trajectory_evidence.get("evidence_sha256")
+        != canonical_sha256(trajectory_body)
+    ):
+        raise FinalRunnerContractError(
+            "supplementary trajectory evidence is incomplete"
+        )
     supplementary = _run_pre_receipt_supplementary_phases(repository, round_dir)
     checkpoint = supplementary.get("scaling")
     if (
@@ -2839,6 +5105,21 @@ def _record_final_evaluation_after_scaling(
     cumulative = _owned_final_result_file_manifest(round_dir)
     result_files = cumulative["result_files"]
     assert isinstance(result_files, list)
+    final_plan_sha256 = _sha256(
+        evaluation_manifest.get("final_plan_sha256"),
+        "primary final plan",
+    )
+    rederived_trajectory_evidence = _rederive_trajectory_evidence_before_receipt(
+        repository,
+        round_dir,
+        trajectory_evidence,
+        result_files,
+        primary_final_plan_sha256=final_plan_sha256,
+    )
+    if rederived_trajectory_evidence != dict(trajectory_evidence):
+        raise FinalRunnerContractError(
+            "supplementary trajectory evidence changed before receipt"
+        )
     evidence = _scaling_evaluation_evidence(
         repository,
         round_dir,
@@ -2883,20 +5164,18 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
     if resuming:
         _remove_stale_result_temporaries(destination)
         _recover_interrupted_final_transactions(destination)
+        _recover_interrupted_trajectory_transactions(destination)
         _recover_scaling_transactions_for_resume(
             selected_repository,
             destination,
         )
-        results = destination / "results/final"
-        if os.path.lexists(results / "execution_authority") or os.path.lexists(
-            results / "execution"
-        ) or os.path.lexists(destination / "results/scaling/checkpoints"):
-            _record_incremental_results_if_changed(
+        try:
+            _reconcile_interrupted_final_publications(
                 selected_repository,
                 destination,
+                frozen_method,
                 record_incremental_results,
             )
-        try:
             load_final_manifest_claim(selected_repository, destination)
         except Exception as error:
             raise FinalRunnerContractError(
@@ -2950,49 +5229,32 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
         },
     )
     _validate_final_runtime_lock(frozen_method, environments)
-    provisional_plan = build_final_execution_plan(
+
+    def publish_results() -> object:
+        return _record_incremental_results_if_changed(
+            selected_repository,
+            destination,
+            record_incremental_results,
+        )
+
+    (
+        registered_trajectory,
+        authority,
+        plan,
+        trajectory_authority,
+        trajectory_plan,
+    ) = _materialize_final_execution_inputs(
+        selected_repository,
+        destination,
         frozen_method,
         registry,
         bindings,
         execution_claim_sha256=claim_sha256,
         execution_environment_sha256=environments.registry_sha256,
-        execution_authority_sha256="0" * 64,
-    )
-    storage_preflight: dict[str, int | str] | None = None
-    if not resuming:
-        storage_preflight = _validate_final_storage_capacity(
-            provisional_plan, destination
-        )
-    authority = materialize_final_execution_authority(
-        selected_repository,
-        destination,
-        frozen_method,
-        execution_claim_sha256=claim_sha256,
-        execution_environment_sha256=environments.registry_sha256,
-        dataset_manifest_sha256=bindings[0].manifest_sha256,
+        publish_results=publish_results,
     )
     executor: SpawnedRepositoryExecutor | None = None
     try:
-        _record_incremental_results_if_changed(
-            selected_repository,
-            destination,
-            record_incremental_results,
-        )
-        plan = build_final_execution_plan(
-            frozen_method,
-            registry,
-            bindings,
-            execution_claim_sha256=claim_sha256,
-            execution_environment_sha256=environments.registry_sha256,
-            execution_authority_sha256=authority.authority_sha256,
-        )
-        if (
-            plan.entries != provisional_plan.entries
-            or plan.configurations != provisional_plan.configurations
-        ):
-            raise FinalRunnerContractError(
-                "final plan changed while materializing execution authority"
-            )
         store = FinalResultStore(
             destination / "results/final/execution",
             plan,
@@ -3000,23 +5262,32 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
             authority,
             authority_repository=selected_repository,
         )
-        if resuming:
-            existing_records = store.load_records()
-            store._records_cache = existing_records
-            storage_preflight = _validate_final_storage_capacity(
-                plan,
-                destination,
-                completed_records=len(existing_records),
-            )
-        assert storage_preflight is not None
-        dispatcher = RepositoryAdapterDispatcher(selected_repository, environments)
+        trajectory_prepared = {
+            registered_trajectory.binding.dataset_id: (registered_trajectory.prepared)
+        }
+        trajectory_store = FinalResultStore(
+            destination / "results/trajectory/execution",
+            trajectory_plan,
+            trajectory_prepared,
+            trajectory_authority,
+            authority_repository=selected_repository,
+        )
+        existing_records = store.load_records()
+        store._records_cache = existing_records
+        existing_trajectory_records = trajectory_store.load_records()
+        trajectory_store._records_cache = existing_trajectory_records
+        from .scaling import load_scaling_execution_authority
 
-        def publish_results() -> object:
-            return _record_incremental_results_if_changed(
-                selected_repository,
-                destination,
-                record_incremental_results,
-            )
+        scaling_authority = load_scaling_execution_authority(selected_repository)
+        storage_preflight = _validate_combined_storage_capacity(
+            plan,
+            trajectory_plan,
+            scaling_authority,
+            destination,
+            primary_completed_records=len(existing_records),
+            trajectory_completed_records=len(existing_trajectory_records),
+        )
+        dispatcher = RepositoryAdapterDispatcher(selected_repository, environments)
 
         executor = SpawnedRepositoryExecutor(dispatcher)
         execution_manifest = execute_final_plan(
@@ -3031,6 +5302,31 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
         evaluation_validation = validate_final_execution_for_evaluation(
             plan, store._cached_records()
         )
+        trajectory_execution_manifest = execute_trajectory_plan(
+            trajectory_plan,
+            registry,
+            trajectory_prepared,
+            trajectory_authority,
+            executor,
+            trajectory_store,
+            on_record_published=publish_results,
+        )
+        trajectory_evaluation_validation = validate_trajectory_execution_for_evaluation(
+            trajectory_plan,
+            trajectory_store._cached_records(),
+        )
+        pre_scaling_inventory = _owned_final_result_file_manifest(destination)
+        pre_scaling_result_files = pre_scaling_inventory["result_files"]
+        assert isinstance(pre_scaling_result_files, list)
+        trajectory_evidence = _trajectory_evaluation_evidence(
+            destination,
+            trajectory_plan,
+            registered_trajectory,
+            trajectory_authority,
+            trajectory_store,
+            trajectory_evaluation_validation,
+            pre_scaling_result_files,
+        )
         evaluation_manifest: dict[str, object] = {
             "schema_version": 1,
             "status": "completed",
@@ -3043,6 +5339,7 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
             ),
             "final_execution_payload_sha256": execution_manifest["manifest_sha256"],
             "execution_validation": evaluation_validation,
+            "trajectory_evidence": trajectory_evidence,
             "storage_preflight": storage_preflight,
         }
         evaluation_receipt = _record_final_evaluation_after_scaling(
@@ -3055,6 +5352,7 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
             executor.close()
     return {
         "execution_manifest": execution_manifest,
+        "trajectory_execution_manifest": trajectory_execution_manifest,
         "evaluation_receipt": evaluation_receipt,
     }
 
@@ -3063,12 +5361,19 @@ __all__ = [
     "FinalExecutionPlan",
     "FinalPlanEntry",
     "FinalRunnerContractError",
+    "TrajectoryExecutionPlan",
     "build_final_execution_plan",
+    "build_trajectory_execution_plan",
     "execute_final_plan",
+    "execute_trajectory_plan",
     "final_result_file_manifest",
     "load_prepared_final_panel",
     "materialize_final_execution_authority",
+    "materialize_prepared_trajectory_dataset",
+    "materialize_trajectory_execution_authority",
     "run_frozen_final_round",
+    "trajectory_execution_plan_payload",
     "validate_final_execution_for_evaluation",
     "validate_final_manifest_payload",
+    "validate_trajectory_execution_for_evaluation",
 ]
