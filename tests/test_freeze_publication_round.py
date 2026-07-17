@@ -160,7 +160,11 @@ def _execution_evidence(
             "artifact": (
                 "external_reference_checkpoint"
                 if external
-                else "base_reconstruction_checkpoint"
+                else (
+                    "v28_reconstruction_checkpoint"
+                    if method_id == "maskimpute"
+                    else "base_reconstruction_checkpoint"
+                )
             ),
             "execution_track": "external_reference" if external else "same_input",
             "checkpoint_payload_sha256": hashlib.sha256(
@@ -265,21 +269,123 @@ def _ablation_registry() -> dict[str, object]:
     return {"schema_version": 1, "reference": reference, "variants": [capacity]}
 
 
-def _minimum_artifact_bindings() -> dict[str, dict[str, str]]:
+def _minimum_artifact_bindings(
+    *, include_external: bool = False
+) -> dict[str, dict[str, str]]:
+    from maskimpute_benchmark.publication_freeze import (
+        _publication_artifact_paths,
+        _publication_layout_for_active_stage,
+    )
+
+    paths = _publication_artifact_paths(
+        _publication_layout_for_active_stage("v28"),
+        include_external_reference=include_external,
+    )
+    result = {
+        name: {
+            "path": path,
+            "sha256": hashlib.sha256(name.encode()).hexdigest(),
+        }
+        for name, path in paths.items()
+    }
+    result["runtime_lock"]["sha256"] = "4" * 64
+    result["retained_calibration"]["sha256"] = "7" * 64
+    result["ablation_registry"]["sha256"] = "b" * 64
+    return result
+
+
+def _minimum_stage_receipt() -> dict[str, object]:
+    bindings = _minimum_artifact_bindings()
+    rows = []
+    for stage in ("base", "v28"):
+        activation = None
+        if stage == "v28":
+            activation = {
+                "version": "v28",
+                "trigger": "v28",
+                "revision_authority_artifact": "v28_revision",
+                "preceding_complete_input_artifact": (
+                    "base_selection_complete_input"
+                ),
+                "preceding_report_artifact": "base_selection_report",
+                "selection_input_file_sha256": "1" * 64,
+                "selection_result_sha256": "2" * 64,
+                "selection_report_file_sha256": "3" * 64,
+            }
+        rows.append(
+            {
+                "stage": stage,
+                "source_input_artifact": f"{stage}_selection_source_input",
+                "complete_input_artifact": f"{stage}_selection_complete_input",
+                "report_artifact": f"{stage}_selection_report",
+                "evaluation_manifest_artifact": f"{stage}_evaluation_manifest",
+                "reconstruction_checkpoint_artifact": (
+                    f"{stage}_reconstruction_checkpoint"
+                ),
+                "orthogonal_manifest_artifact": f"{stage}_orthogonal_manifest",
+                "downstream_plan_artifact": f"{stage}_downstream_plan",
+                "downstream_manifest_artifact": f"{stage}_downstream_manifest",
+                "source_result_sha256": hashlib.sha256(
+                    f"{stage}:source".encode()
+                ).hexdigest(),
+                "complete_result_sha256": hashlib.sha256(
+                    f"{stage}:complete".encode()
+                ).hexdigest(),
+                "downstream_plan_sha256": hashlib.sha256(
+                    f"{stage}:plan".encode()
+                ).hexdigest(),
+                "downstream_manifest_sha256": hashlib.sha256(
+                    f"{stage}:manifest".encode()
+                ).hexdigest(),
+                "reconstruction_tree_sha256": hashlib.sha256(
+                    f"{stage}:reconstruction-tree".encode()
+                ).hexdigest(),
+                "orthogonal_tree_sha256": hashlib.sha256(
+                    f"{stage}:orthogonal-tree".encode()
+                ).hexdigest(),
+                "downstream_tree_sha256": hashlib.sha256(
+                    f"{stage}:downstream-tree".encode()
+                ).hexdigest(),
+                "activation": activation,
+            }
+        )
+    names = sorted(
+        f"{stage}_{suffix}"
+        for stage in ("base", "v28")
+        for suffix in (
+            "selection_source_input",
+            "selection_complete_input",
+            "selection_report",
+            "evaluation_manifest",
+            "reconstruction_checkpoint",
+            "orthogonal_manifest",
+            "downstream_plan",
+            "downstream_manifest",
+        )
+    )
+    unsigned = {
+        "schema_version": 1,
+        "active_stage": "v28",
+        "revision_versions": ["v28"],
+        "stage_order": ["base", "v28"],
+        "stages": rows,
+        "artifact_names": names,
+    }
     return {
-        "retained_calibration": {
-            "path": "artifacts/study/development/calibration/retained_calibration.json",
-            "sha256": "7" * 64,
-        },
-        "ablation_registry": {
-            "path": "study/ablations.json",
-            "sha256": "b" * 64,
-        },
+        **unsigned,
+        "inventory_sha256": canonical_sha256(
+            {
+                "receipt": unsigned,
+                "artifact_bindings": {name: bindings[name] for name in names},
+            }
+        ),
     }
 
 
 def _payload(
-    *, selected_calibrator_summary: dict[str, object] | None = None
+    *,
+    selected_calibrator_summary: dict[str, object] | None = None,
+    method_execution_evidence: dict[str, dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return build_frozen_method_payload(
         preparation_commit="f" * 40,
@@ -294,7 +400,11 @@ def _payload(
             ],
         },
         required_comparator_ids=("observed", "magic"),
-        method_execution_evidence=_execution_evidence(),
+        method_execution_evidence=(
+            _execution_evidence()
+            if method_execution_evidence is None
+            else method_execution_evidence
+        ),
         selected_calibrator_summary=(
             _calibrator_summary()
             if selected_calibrator_summary is None
@@ -304,23 +414,13 @@ def _payload(
         runtime_lock_sha256="4" * 64,
         runtime_environment_summary=_runtime_summary(),
         artifact_bindings={
-            "selection_input": {
-                "path": (
-                    "artifacts/study/development/evaluation/"
-                    "development_selection_input-downstream.json"
-                ),
-                "sha256": "5" * 64,
-            },
-            "selection_report": {
-                "path": "artifacts/study/development/evaluation/development_selection_report.json",
-                "sha256": "6" * 64,
-            },
+            **_minimum_artifact_bindings(),
             "runtime_lock": {
                 "path": "environments/development-runtime.lock.json",
                 "sha256": "4" * 64,
             },
-            **_minimum_artifact_bindings(),
         },
+        development_stage_receipt=_minimum_stage_receipt(),
     )
 
 
@@ -387,6 +487,7 @@ def test_in_tree_pending_citation_is_recorded_as_self_citation() -> None:
         runtime_lock_sha256="4" * 64,
         runtime_environment_summary=_runtime_summary(),
         artifact_bindings=_minimum_artifact_bindings(),
+        development_stage_receipt=_minimum_stage_receipt(),
     )
 
     assert [row["citation_disposition"] for row in payload["method_denominator"]] == [
@@ -422,6 +523,7 @@ def test_in_tree_pending_project_license_remains_a_submission_blocker() -> None:
             runtime_lock_sha256="4" * 64,
             runtime_environment_summary=_runtime_summary(),
             artifact_bindings=_minimum_artifact_bindings(),
+            development_stage_receipt=_minimum_stage_receipt(),
         )
 
 
@@ -446,6 +548,7 @@ def test_external_method_pending_citation_remains_a_freeze_blocker() -> None:
             runtime_lock_sha256="4" * 64,
             runtime_environment_summary=_runtime_summary(),
             artifact_bindings=_minimum_artifact_bindings(),
+            development_stage_receipt=_minimum_stage_receipt(),
         )
 
 
@@ -503,7 +606,8 @@ def test_frozen_method_materializes_complete_ordered_applicability_denominator()
         runtime_environment_summary=_runtime_summary(
             environment_ids=("benchmark", "biaeimpute", "d3impute", "magic")
         ),
-        artifact_bindings=_minimum_artifact_bindings(),
+        artifact_bindings=_minimum_artifact_bindings(include_external=True),
+        development_stage_receipt=_minimum_stage_receipt(),
     )
 
     denominator = payload["method_denominator"]
@@ -548,6 +652,7 @@ def test_frozen_method_rejects_pending_historical_disposition() -> None:
             runtime_lock_sha256="4" * 64,
             runtime_environment_summary=_runtime_summary(),
             artifact_bindings=_minimum_artifact_bindings(),
+            development_stage_receipt=_minimum_stage_receipt(),
         )
 
 
@@ -579,6 +684,7 @@ def test_checkpoint_terminalizes_pending_registry_without_mutating_plan_authorit
         runtime_lock_sha256="4" * 64,
         runtime_environment_summary=_runtime_summary(),
         artifact_bindings=_minimum_artifact_bindings(),
+        development_stage_receipt=_minimum_stage_receipt(),
     )
 
     magic = payload["method_denominator"][2]
@@ -622,6 +728,7 @@ def test_frozen_method_accepts_explicit_reason_coded_unavailable_comparator() ->
         runtime_lock_sha256="4" * 64,
         runtime_environment_summary=_runtime_summary(),
         artifact_bindings=_minimum_artifact_bindings(),
+        development_stage_receipt=_minimum_stage_receipt(),
     )
 
     assert payload["method_denominator"][2]["disposition"] == (
@@ -668,6 +775,7 @@ def test_frozen_method_rejects_unavailable_disposition_with_any_completed_run() 
             runtime_lock_sha256="4" * 64,
             runtime_environment_summary=_runtime_summary(),
             artifact_bindings=_minimum_artifact_bindings(),
+            development_stage_receipt=_minimum_stage_receipt(),
         )
 
 
@@ -695,6 +803,7 @@ def test_frozen_method_rejects_implemented_method_without_dataset_coverage() -> 
             runtime_lock_sha256="4" * 64,
             runtime_environment_summary=_runtime_summary(),
             artifact_bindings=_minimum_artifact_bindings(),
+            development_stage_receipt=_minimum_stage_receipt(),
         )
 
 
@@ -728,6 +837,7 @@ def test_failed_checkpoint_terminalizes_pending_registry_reason() -> None:
         runtime_lock_sha256="4" * 64,
         runtime_environment_summary=_runtime_summary(),
         artifact_bindings=_minimum_artifact_bindings(),
+        development_stage_receipt=_minimum_stage_receipt(),
     )
 
     magic = payload["method_denominator"][2]
@@ -775,6 +885,7 @@ def test_frozen_method_rejects_pending_reason_inside_failed_attempt_evidence() -
             runtime_lock_sha256="4" * 64,
             runtime_environment_summary=_runtime_summary(),
             artifact_bindings=_minimum_artifact_bindings(),
+            development_stage_receipt=_minimum_stage_receipt(),
         )
 
 
@@ -808,6 +919,7 @@ def test_failed_checkpoint_overrides_unbound_registry_availability_claim() -> No
         runtime_lock_sha256="4" * 64,
         runtime_environment_summary=_runtime_summary(),
         artifact_bindings=_minimum_artifact_bindings(),
+        development_stage_receipt=_minimum_stage_receipt(),
     )
 
     magic = payload["method_denominator"][2]
@@ -842,6 +954,7 @@ def test_checkpoint_replaces_pre_execution_smoke_disposition() -> None:
         runtime_lock_sha256="4" * 64,
         runtime_environment_summary=_runtime_summary(),
         artifact_bindings=_minimum_artifact_bindings(),
+        development_stage_receipt=_minimum_stage_receipt(),
     )
 
     magic = payload["method_denominator"][2]
@@ -887,6 +1000,7 @@ def test_frozen_method_requires_completed_execution_for_in_tree_comparator() -> 
                 environment_ids=("benchmark",)
             ),
             artifact_bindings=_minimum_artifact_bindings(),
+            development_stage_receipt=_minimum_stage_receipt(),
         )
 
 
@@ -935,6 +1049,7 @@ def test_frozen_method_rejects_nonfreezable_or_mismatched_selection(
             runtime_lock_sha256="4" * 64,
             runtime_environment_summary=_runtime_summary(),
             artifact_bindings=_minimum_artifact_bindings(),
+            development_stage_receipt=_minimum_stage_receipt(),
         )
 
 
@@ -1081,10 +1196,26 @@ def _external_checkpoint_payload(repository: Path) -> dict[str, object]:
 
 
 def _repository_fixture(
-    tmp_path: Path, *, include_external: bool = False
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    include_external: bool = False,
 ) -> tuple[Path, dict[str, object]]:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    monkeypatch.setattr(
+        freeze_module,
+        "validate_downstream_selection_completeness",
+        lambda _repository, _records, binding: {
+            "downstream_manifest_file_sha256": binding["manifest_file_sha256"],
+            "downstream_manifest_sha256": binding["manifest_sha256"],
+            "downstream_plan_sha256": binding["plan_sha256"],
+        },
+    )
     repository = tmp_path / "repository"
-    selection_input = {
+    repository.mkdir()
+    _materialize_publication_stage_footprint(repository, "base")
+    source_core: dict[str, object] = {
         "schema_version": 2,
         "records": [],
         "orthogonal_intervals": [],
@@ -1092,9 +1223,62 @@ def _repository_fixture(
         "count_score_manifest_sha256": "8" * 64,
         "retained_calibration_artifact_sha256": "9" * 64,
         "evaluation_manifest_sha256": "a" * 64,
-        "result_sha256": "b" * 64,
     }
-    report = _selection_report()
+    source_input = {
+        **source_core,
+        "result_sha256": canonical_sha256(source_core),
+    }
+    source_path = (
+        repository
+        / "artifacts/study/development/evaluation/development_selection_input.json"
+    )
+    _write_json(source_path, source_input)
+    downstream_directory = (
+        "artifacts/study/development/evaluation/downstream"
+    )
+    downstream_manifest_path = (
+        repository / downstream_directory / "downstream_manifest.json"
+    )
+    downstream_binding = {
+        "path": downstream_directory,
+        "source_selection_input_path": source_path.relative_to(repository).as_posix(),
+        "source_selection_input_file_sha256": hashlib.sha256(
+            source_path.read_bytes()
+        ).hexdigest(),
+        "source_selection_result_sha256": source_input["result_sha256"],
+        "manifest_file_sha256": hashlib.sha256(
+            downstream_manifest_path.read_bytes()
+        ).hexdigest(),
+        "manifest_sha256": "b" * 64,
+        "plan_sha256": "c" * 64,
+    }
+    complete_core = {
+        **{
+            key: value
+            for key, value in source_input.items()
+            if key not in {"schema_version", "result_sha256"}
+        },
+        "schema_version": 4,
+        "revision_versions": [],
+        "downstream_evidence": downstream_binding,
+    }
+    selection_input = {
+        **complete_core,
+        "result_sha256": canonical_sha256(complete_core),
+    }
+    development_search = json.loads(
+        Path("study/development_search.json").read_text(encoding="utf-8")
+    )
+    selected_row = next(
+        row
+        for row in development_search["configurations"]
+        if row["configuration_id"] == "v27-c03-calibrated-r1-g1"
+    )
+    report = deepcopy(_selection_report())
+    report["selected_configuration"] = selected_row["configuration_id"]
+    report["pareto_set"] = [selected_row["configuration_id"]]
+    report["assessments"][0]["configuration_id"] = selected_row["configuration_id"]
+    report["assessments"][0]["version"] = "v27"
     methods = {
         "schema_version": 1,
         "methods": [
@@ -1128,46 +1312,27 @@ def _repository_fixture(
         "schema_version": 1,
         "required_comparator_ids": ["observed", "magic"],
     }
-    paths = {
-        "selection_input": (
-            "artifacts/study/development/evaluation/"
-            "development_selection_input-downstream.json"
-        ),
-        "selection_report": "artifacts/study/development/evaluation/development_selection_report.json",
-        "evaluation_manifest": "artifacts/study/development/evaluation/evaluation_manifest.json",
-        "reconstruction_checkpoint": "artifacts/study/development/competition-reconstruction/checkpoint.json",
-        "dataset_status": "artifacts/study/development/results/dataset_status.json",
-        "count_score_manifest": "artifacts/study/development/count_scores/manifest.json",
-        "retained_calibration": "artifacts/study/development/calibration/retained_calibration.json",
-        "runtime_lock": "environments/development-runtime.lock.json",
-        "method_registry": "study/methods.json",
-        "selection_contract": "study/selection_contract.json",
-        "development_search": "study/development_search.json",
-        "v28_revision": "study/v28_revision.json",
-        "ablation_registry": "study/ablations.json",
-        "scaling_panel": "study/scaling_panel.json",
-        "protocol": "study/protocol.json",
-        "saver_qualification": "environments/saver-r.qualification.json",
-        "saver_package_lock": "environments/saver-r.lock.json",
-        "saver_build_receipt": "environments/saver-r.build-receipt.json",
-    }
+    paths = freeze_module._publication_artifact_paths(
+        freeze_module._publication_layout_for_active_stage("base"),
+        include_external_reference=include_external,
+    )
     for name, relative in paths.items():
         payload: object = {"artifact": name}
-        if name == "selection_input":
+        if name == "base_selection_source_input":
+            payload = source_input
+        elif name == "base_selection_complete_input":
             payload = selection_input
-        elif name == "selection_report":
+        elif name == "base_selection_report":
             payload = report
         elif name == "method_registry":
             payload = methods
         elif name == "selection_contract":
             payload = selection_contract
         elif name == "development_search":
-            payload = json.loads(
-                Path("study/development_search.json").read_text(encoding="utf-8")
-            )
+            payload = development_search
         elif name == "runtime_lock":
             payload = runtime_lock
-        elif name == "reconstruction_checkpoint":
+        elif name == "base_reconstruction_checkpoint":
             payload = _checkpoint_payload()
         elif name == "dataset_status":
             payload = _dataset_status_payload()
@@ -1179,12 +1344,17 @@ def _repository_fixture(
             payload = json.loads(
                 Path("study/scaling_panel.json").read_text(encoding="utf-8")
             )
+        elif name == "trajectory_panel":
+            payload = json.loads(
+                Path("study/trajectory_panel.json").read_text(encoding="utf-8")
+            )
         elif name == "protocol":
             payload = json.loads(
                 Path("study/protocol.json").read_text(encoding="utf-8")
             )
         elif name in {
             "v28_revision",
+            "v29_revision",
             "saver_qualification",
             "saver_package_lock",
             "saver_build_receipt",
@@ -1192,6 +1362,10 @@ def _repository_fixture(
             destination = repository / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(Path(relative), destination)
+            continue
+        elif name == "external_reference_checkpoint":
+            continue
+        elif name in {"base_downstream_plan", "base_downstream_manifest"}:
             continue
         _write_json(repository / relative, payload)
     if include_external:
@@ -1226,7 +1400,7 @@ def test_prepare_and_validate_frozen_method_recompute_fixed_evidence(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     calls: list[tuple[Path, dict[str, object]]] = []
 
     def recompute(selected_repository: Path, payload: dict[str, object]):
@@ -1238,18 +1412,17 @@ def test_prepare_and_validate_frozen_method_recompute_fixed_evidence(
     prepared = prepare_frozen_method(repository)
     output = repository / "study/frozen_method.json"
 
-    assert calls == [
-        (
-            repository.resolve(),
-            json.loads(
-                (
-                    repository
-                    / "artifacts/study/development/evaluation/"
-                    "development_selection_input-downstream.json"
-                ).read_text(encoding="utf-8")
-            ),
-        )
-    ]
+    expected_call = (
+        repository.resolve(),
+        json.loads(
+            (
+                repository
+                / "artifacts/study/development/evaluation/"
+                "development_selection_input-downstream.json"
+            ).read_text(encoding="utf-8")
+        ),
+    )
+    assert calls == [expected_call, expected_call]
     assert json.loads(output.read_text(encoding="utf-8")) == prepared
     assert output.read_bytes() == (
         json.dumps(prepared, allow_nan=False, separators=(",", ":"), sort_keys=True)
@@ -1265,12 +1438,17 @@ def test_prepare_and_validate_frozen_method_recompute_fixed_evidence(
 
 
 def test_publication_freeze_consumes_only_base_selection_complete_input() -> None:
-    import maskimpute_benchmark.publication_freeze as freeze_module
+    from maskimpute_benchmark.publication_freeze import (
+        _publication_artifact_paths,
+        _publication_layout_for_active_stage,
+    )
     from maskimpute_benchmark.revisions import development_selection_stage_paths
 
-    assert freeze_module._FIXED_PATHS["selection_input"] == (
-        development_selection_stage_paths(None).selection_complete_input
-    )
+    paths = _publication_artifact_paths(_publication_layout_for_active_stage("base"))
+    stage = development_selection_stage_paths(None)
+    assert paths["base_selection_source_input"] == stage.source_selection_input
+    assert paths["base_selection_complete_input"] == stage.selection_complete_input
+    assert "selection_input" not in paths
 
 
 def test_prepare_rejects_saver_package_lock_outside_qualification_authority(
@@ -1278,7 +1456,7 @@ def test_prepare_rejects_saver_package_lock_outside_qualification_authority(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     qualification_path = repository / "environments/saver-r.qualification.json"
     qualification = json.loads(qualification_path.read_text(encoding="utf-8"))
     qualification["package_lock"]["sha256"] = "0" * 64
@@ -1304,7 +1482,9 @@ def test_prepare_binds_external_reference_execution_to_exact_measured_reference(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path, include_external=True)
+    repository, report = _repository_fixture(
+        tmp_path, monkeypatch, include_external=True
+    )
     from maskimpute_benchmark.external_reference_development import (
         ValidatedExternalReferenceEvidence,
     )
@@ -1366,7 +1546,7 @@ def test_prepare_binds_external_reference_execution_to_exact_measured_reference(
         "path"
     ].endswith("competition-external-reference/checkpoint.json")
     assert validate_frozen_method(repository) == prepared
-    assert calls == [repository.resolve(), repository.resolve(), repository.resolve()]
+    assert calls == [repository.resolve(), repository.resolve()]
 
 
 def test_prepare_propagates_production_external_reference_validation_failure(
@@ -1374,7 +1554,9 @@ def test_prepare_propagates_production_external_reference_validation_failure(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path, include_external=True)
+    repository, report = _repository_fixture(
+        tmp_path, monkeypatch, include_external=True
+    )
     from maskimpute_benchmark.external_reference_development import (
         ExternalReferenceDevelopmentError,
     )
@@ -1405,7 +1587,7 @@ def test_prepare_rejects_selection_report_different_from_recomputation(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     changed = deepcopy(report)
     changed["pareto_set"] = []
     monkeypatch.setattr(
@@ -1423,7 +1605,7 @@ def test_prepare_rejects_dirty_executable_repository(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     executable = repository / "selection_code.py"
     executable.write_text("VERSION = 1\n", encoding="utf-8")
     subprocess.run(["git", "add", "selection_code.py"], cwd=repository, check=True)
@@ -1453,7 +1635,7 @@ def test_prepare_rejects_incomplete_development_checkpoint(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     checkpoint_path = (
         repository
         / "artifacts/study/development/competition-reconstruction/checkpoint.json"
@@ -1480,7 +1662,7 @@ def test_prepare_rejects_fixed_evidence_changed_during_recomputation(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     protocol = repository / "study/protocol.json"
 
     def recompute(*_args):
@@ -1502,7 +1684,7 @@ def test_prepare_rejects_runtime_lock_with_extra_environment(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     runtime_path = repository / "environments/development-runtime.lock.json"
     runtime = _runtime_lock_payload(("benchmark", "extra", "magic"))
     _write_json(runtime_path, runtime)
@@ -1575,7 +1757,7 @@ def test_prepare_never_overwrites_concurrently_published_frozen_method(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(
         freeze_module,
         "_recompute_selection_report",
@@ -1643,7 +1825,7 @@ def test_validate_frozen_method_does_not_reopen_validated_config_path(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(
         freeze_module,
         "_recompute_selection_report",
@@ -1667,7 +1849,7 @@ def test_clean_phase_validation_does_not_require_ignored_development_evidence(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(
         freeze_module,
         "_recompute_selection_report",
@@ -1684,7 +1866,7 @@ def test_freeze_requires_raw_development_evidence_after_preparation_commit(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(
         freeze_module,
         "_recompute_selection_report",
@@ -1715,7 +1897,7 @@ def test_publication_freeze_receipts_realistic_ignored_operational_layout(
         materialize_final,
     )
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(
         freeze_module,
         "_recompute_selection_report",
@@ -1772,7 +1954,7 @@ def test_freeze_rejects_commit_that_changes_more_than_frozen_receipt(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(
         freeze_module,
         "_recompute_selection_report",
@@ -1800,7 +1982,7 @@ def test_freeze_publication_round_uses_only_fixed_tracked_authorities(
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
 
-    repository, report = _repository_fixture(tmp_path)
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(
         freeze_module,
         "_recompute_selection_report",
@@ -2147,6 +2329,8 @@ def test_unknown_stage_family_suffix_is_rejected(tmp_path: Path) -> None:
 def _schema_four_stage_chain(
     tmp_path: Path,
     active_stage: str,
+    *,
+    repository: Path | None = None,
 ) -> tuple[Path, dict[str, dict[str, object]]]:
     from maskimpute_benchmark.revisions import development_selection_stage_paths
 
@@ -2155,8 +2339,8 @@ def _schema_four_stage_chain(
         "v28": ("base", "v28"),
         "v29": ("base", "v28", "v29"),
     }[active_stage]
-    repository = tmp_path / "repository"
-    repository.mkdir()
+    repository = tmp_path / "repository" if repository is None else repository
+    repository.mkdir(exist_ok=True)
     reports: dict[str, dict[str, object]] = {}
     for index, stage in enumerate(order):
         _materialize_publication_stage_footprint(repository, stage)
@@ -2215,11 +2399,11 @@ def _schema_four_stage_chain(
             report = deepcopy(_selection_report())
             selected_version = "v27" if stage == "base" else stage
             selected_id = (
-                "v27-parent"
+                "v27-c03-calibrated-r1-g1"
                 if stage == "base"
                 else "v28-c01-nb-parent-c03"
                 if stage == "v28"
-                else "v29-structure-child"
+                else "v29-c01-structure-parent-v28-c01"
             )
             report["selected_configuration"] = selected_id
             report["pareto_set"] = [selected_id]
@@ -3023,3 +3207,190 @@ def test_base_comparator_denominator_remains_unchanged_for_base_selection() -> N
     assert {
         row["artifact"] for row in evidence.values()
     } == {"base_reconstruction_checkpoint"}
+
+
+def test_stage_receipt_payload_is_retained_by_outer_payload_checksum() -> None:
+    payload = _payload()
+
+    assert payload["development_stage_receipt"] == _minimum_stage_receipt()
+    unsigned = {key: value for key, value in payload.items() if key != "payload_sha256"}
+    assert payload["payload_sha256"] == canonical_sha256(unsigned)
+
+
+def test_stage_receipt_rejects_maskimpute_evidence_from_another_stage() -> None:
+    evidence = _execution_evidence()
+    evidence["maskimpute"]["artifact"] = "base_reconstruction_checkpoint"
+
+    with pytest.raises(PublicationFreezeError, match="selected stage"):
+        _payload(method_execution_evidence=evidence)
+
+
+@pytest.mark.parametrize("active_stage", ("v28", "v29"))
+def test_revision_prepare_and_clean_validate_exact_active_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    active_stage: str,
+) -> None:
+    repository, _base_report = _repository_fixture(tmp_path, monkeypatch)
+    repository, reports = _schema_four_stage_chain(
+        tmp_path,
+        active_stage,
+        repository=repository,
+    )
+    _write_json(
+        repository
+        / "artifacts/study/development/competition-reconstruction/checkpoint.json",
+        _checkpoint_payload(),
+    )
+    versions = ("v28",) if active_stage == "v28" else ("v28", "v29")
+    for version in versions:
+        revision = json.loads(
+            (repository / f"study/{version}_revision.json").read_text(encoding="utf-8")
+        )
+        _write_json(
+            repository
+            / f"artifacts/study/development/competition-{version}-revision/checkpoint.json",
+            _selected_stage_checkpoint(
+                [
+                    (
+                        "maskimpute",
+                        revision["configuration_id"],
+                        revision["configuration_sha256"],
+                    )
+                ]
+            ),
+        )
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+
+    prepared = prepare_frozen_method(repository)
+
+    assert prepared["development_stage_receipt"]["active_stage"] == active_stage
+    assert prepared["development_stage_receipt"]["revision_versions"] == list(
+        versions
+    )
+    assert prepared["selected_version"] == active_stage
+    denominator = {row["id"]: row for row in prepared["method_denominator"]}
+    assert denominator["maskimpute"]["development_execution_evidence"][
+        "artifact"
+    ] == f"{active_stage}_reconstruction_checkpoint"
+    assert denominator["observed"]["development_execution_evidence"][
+        "artifact"
+    ] == "base_reconstruction_checkpoint"
+    assert validate_frozen_method(repository) == prepared
+
+
+def test_stage_receipt_payload_rejects_coherent_outer_checksum_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    monkeypatch.setattr(
+        freeze_module,
+        "_recompute_selection_report",
+        lambda *_args: deepcopy(report),
+    )
+    prepare_frozen_method(repository)
+    path = repository / "study/frozen_method.json"
+    changed = json.loads(path.read_text(encoding="utf-8"))
+    changed["development_stage_receipt"]["inventory_sha256"] = "0" * 64
+    unsigned = {key: value for key, value in changed.items() if key != "payload_sha256"}
+    changed["payload_sha256"] = canonical_sha256(unsigned)
+    _write_json(path, changed)
+
+    with pytest.raises(PublicationFreezeError, match="stage receipt.*inventory"):
+        validate_frozen_method(repository)
+
+
+def test_raw_stage_drift_blocks_round_freeze_without_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        freeze_module,
+        "_recompute_selection_report",
+        lambda *_args: deepcopy(report),
+    )
+    prepare_frozen_method(repository)
+    subprocess.run(
+        ["git", "add", "-f", "study/frozen_method.json"],
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-qm", "freeze publication method"],
+        cwd=repository,
+        check=True,
+    )
+    _materialize_publication_stage_footprint(
+        repository,
+        "v28",
+        only="report",
+    )
+
+    with pytest.raises(PublicationFreezeError, match="stage.*differs|incomplete"):
+        freeze_publication_round(repository, repository / "artifacts/study/round-001")
+
+
+def test_stage_race_cannot_publish_stale_v28_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    repository, _base_report = _repository_fixture(tmp_path, monkeypatch)
+    repository, reports = _schema_four_stage_chain(
+        tmp_path,
+        "v28",
+        repository=repository,
+    )
+    _write_json(
+        repository
+        / "artifacts/study/development/competition-reconstruction/checkpoint.json",
+        _checkpoint_payload(),
+    )
+    revision = json.loads(
+        (repository / "study/v28_revision.json").read_text(encoding="utf-8")
+    )
+    _write_json(
+        repository
+        / "artifacts/study/development/competition-v28-revision/checkpoint.json",
+        _selected_stage_checkpoint(
+            [
+                (
+                    "maskimpute",
+                    revision["configuration_id"],
+                    revision["configuration_sha256"],
+                )
+            ]
+        ),
+    )
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+    original = freeze_module._validate_publication_stage_evidence
+    calls = 0
+
+    def introduce_v29(selected_repository: Path, layout: object):
+        nonlocal calls
+        result = original(selected_repository, layout)
+        calls += 1
+        if calls == 1:
+            _materialize_publication_stage_footprint(
+                repository,
+                "v29",
+                only="report",
+            )
+        return result
+
+    monkeypatch.setattr(
+        freeze_module,
+        "_validate_publication_stage_evidence",
+        introduce_v29,
+    )
+
+    with pytest.raises(PublicationFreezeError, match="stage.*changed|incomplete"):
+        prepare_frozen_method(repository)
+    assert not (repository / "study/frozen_method.json").exists()

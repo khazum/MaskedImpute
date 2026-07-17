@@ -98,29 +98,6 @@ _COMMON_DEVELOPMENT_PATHS = {
     ),
 }
 
-_FIXED_PATHS = {
-    "selection_input": (
-        "artifacts/study/development/evaluation/"
-        "development_selection_input-downstream.json"
-    ),
-    "selection_report": "artifacts/study/development/evaluation/development_selection_report.json",
-    "evaluation_manifest": "artifacts/study/development/evaluation/evaluation_manifest.json",
-    "reconstruction_checkpoint": "artifacts/study/development/competition-reconstruction/checkpoint.json",
-    "dataset_status": "artifacts/study/development/results/dataset_status.json",
-    "count_score_manifest": "artifacts/study/development/count_scores/manifest.json",
-    "retained_calibration": "artifacts/study/development/calibration/retained_calibration.json",
-    "runtime_lock": "environments/development-runtime.lock.json",
-    "method_registry": "study/methods.json",
-    "selection_contract": "study/selection_contract.json",
-    "development_search": "study/development_search.json",
-    "v28_revision": "study/v28_revision.json",
-    "ablation_registry": "study/ablations.json",
-    "scaling_panel": "study/scaling_panel.json",
-    "protocol": "study/protocol.json",
-    "saver_qualification": "environments/saver-r.qualification.json",
-    "saver_package_lock": "environments/saver-r.lock.json",
-    "saver_build_receipt": "environments/saver-r.build-receipt.json",
-}
 _FROZEN_METHOD_PATH = "study/frozen_method.json"
 _EXTERNAL_REFERENCE_CHECKPOINT_PATH = (
     "artifacts/study/development/competition-external-reference/checkpoint.json"
@@ -131,22 +108,6 @@ _PUBLICATION_OPERATIONAL_ROOTS = (
     "artifacts/method-sources",
     "artifacts/study/development",
 )
-_DEVELOPMENT_EVIDENCE_NAMES = frozenset(
-    {
-        "selection_input",
-        "selection_report",
-        "evaluation_manifest",
-        "reconstruction_checkpoint",
-        "dataset_status",
-        "count_score_manifest",
-        "retained_calibration",
-    }
-)
-_TRACKED_AUTHORITY_NAMES = tuple(
-    name for name in _FIXED_PATHS if name not in _DEVELOPMENT_EVIDENCE_NAMES
-)
-
-
 class PublicationFreezeError(ValueError):
     """Raised when development evidence cannot authorize a publication freeze."""
 
@@ -269,6 +230,21 @@ def _publication_stage_footprint(stage: PublicationStagePaths) -> tuple[str, ...
         stage.reconstruction_checkpoint,
         stage.orthogonal_directory,
         stage.orthogonal_manifest,
+    )
+
+
+def _publication_layout_for_active_stage(active_stage: str) -> PublicationStageLayout:
+    order = {
+        "base": ("base",),
+        "v28": ("base", "v28"),
+        "v29": ("base", "v28", "v29"),
+    }.get(active_stage)
+    if order is None:
+        raise PublicationFreezeError("development stage receipt active stage is invalid")
+    return PublicationStageLayout(
+        active_stage=active_stage,
+        revision_versions=tuple(stage for stage in order if stage != "base"),
+        stages=tuple(_publication_stage_paths(stage) for stage in order),
     )
 
 
@@ -473,11 +449,10 @@ def _resolve_publication_stage(repository: Path) -> PublicationStageLayout:
         ):
             active_stage = stage
             break
-    order = {
-        "base": ("base",),
-        "v28": ("base", "v28"),
-        "v29": ("base", "v28", "v29"),
-    }[active_stage]
+    order = tuple(
+        stage.stage
+        for stage in _publication_layout_for_active_stage(active_stage).stages
+    )
     directory_fields = {
         "downstream_directory",
         "reconstruction_directory",
@@ -504,10 +479,10 @@ def _resolve_publication_stage(repository: Path) -> PublicationStageLayout:
                 getattr(paths, field),
                 directory=field in directory_fields,
             )
-    revision_versions = tuple(stage for stage in order if stage != "base")
+    resolved = _publication_layout_for_active_stage(active_stage)
     return PublicationStageLayout(
-        active_stage=active_stage,
-        revision_versions=revision_versions,
+        active_stage=resolved.active_stage,
+        revision_versions=resolved.revision_versions,
         stages=tuple(candidates[stage] for stage in order),
     )
 
@@ -519,6 +494,14 @@ def _freeze_receipt_json(value: object) -> object:
         )
     if type(value) is list:
         return tuple(_freeze_receipt_json(nested) for nested in value)
+    return value
+
+
+def _thaw_receipt_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_receipt_json(nested) for key, nested in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_receipt_json(nested) for nested in value]
     return value
 
 
@@ -727,7 +710,7 @@ def _validate_publication_stage_evidence(
             ) from error
         if report != recomputed:
             raise PublicationFreezeError(
-                f"{paths.stage} selection report differs from recomputation"
+                f"{paths.stage} selection report differs from recomputed selection"
             )
 
         terminal = index == len(layout.stages) - 1
@@ -1555,6 +1538,17 @@ def _validate_development_stage_receipt(
     return copied
 
 
+def _layout_from_development_stage_receipt(value: object) -> PublicationStageLayout:
+    if not isinstance(value, Mapping):
+        raise PublicationFreezeError("development stage receipt is absent")
+    active_stage = value.get("active_stage")
+    if not isinstance(active_stage, str):
+        raise PublicationFreezeError(
+            "development stage receipt active stage is invalid"
+        )
+    return _publication_layout_for_active_stage(active_stage)
+
+
 def _build_development_stage_receipt(
     repository: Path,
     layout: PublicationStageLayout,
@@ -1708,9 +1702,11 @@ def _validate_saver_package_authority(
     if (
         not isinstance(expected_package, Mapping)
         or not isinstance(expected_build, Mapping)
-        or package_binding.get("path") != _FIXED_PATHS["saver_package_lock"]
+        or package_binding.get("path")
+        != _COMMON_TRACKED_PATHS["saver_package_lock"]
         or package_binding.get("sha256") != expected_package.get("sha256")
-        or build_binding.get("path") != _FIXED_PATHS["saver_build_receipt"]
+        or build_binding.get("path")
+        != _COMMON_TRACKED_PATHS["saver_build_receipt"]
         or build_binding.get("sha256") != expected_build.get("sha256")
     ):
         raise PublicationFreezeError(
@@ -2748,6 +2744,7 @@ def build_frozen_method_payload(
     runtime_lock_sha256: str,
     runtime_environment_summary: Mapping[str, object],
     artifact_bindings: Mapping[str, Mapping[str, str]],
+    development_stage_receipt: Mapping[str, object],
 ) -> dict[str, object]:
     """Build a self-authenticating final-method payload from validated evidence."""
 
@@ -2849,6 +2846,39 @@ def build_frozen_method_payload(
             f"runtime environment {environment_id} inventory checksum",
         )
     artifacts = _artifact_bindings(artifact_bindings)
+    stage_layout = _layout_from_development_stage_receipt(
+        development_stage_receipt
+    )
+    stage_receipt = _validate_development_stage_receipt(
+        development_stage_receipt,
+        stage_layout,
+        artifact_bindings,
+    )
+    expected_selected_version = (
+        "v27" if stage_layout.active_stage == "base" else stage_layout.active_stage
+    )
+    if version != expected_selected_version:
+        raise PublicationFreezeError(
+            "selected configuration version differs from development stage receipt"
+        )
+    for method_id, evidence in method_execution_evidence.items():
+        if isinstance(evidence, Mapping):
+            artifact_name = evidence.get("artifact")
+            if artifact_name not in artifacts:
+                raise PublicationFreezeError(
+                    f"method {method_id} execution artifact is not bound"
+                )
+    maskimpute_evidence = method_execution_evidence.get("maskimpute")
+    expected_candidate_artifact = (
+        f"{stage_layout.active_stage}_reconstruction_checkpoint"
+    )
+    if (
+        not isinstance(maskimpute_evidence, Mapping)
+        or maskimpute_evidence.get("artifact") != expected_candidate_artifact
+    ):
+        raise PublicationFreezeError(
+            "MaskImpute execution evidence differs from the selected stage"
+        )
     runtime_binding = artifacts.get("runtime_lock")
     if runtime_binding is not None and runtime_binding["sha256"] != runtime_digest:
         raise PublicationFreezeError("runtime lock artifact checksum is inconsistent")
@@ -2885,6 +2915,7 @@ def build_frozen_method_payload(
         "development_authority_bindings": _json_copy(
             bindings, "development authority bindings"
         ),
+        "development_stage_receipt": stage_receipt,
         "required_comparator_ids": list(required_ids),
         "method_denominator": _method_panel(
             method_registry,
@@ -3006,13 +3037,20 @@ def _candidate_configuration(
 def _expected_frozen_method(
     repository: Path, preparation_commit: str
 ) -> dict[str, object]:
+    layout = _resolve_publication_stage(repository)
     payloads: dict[str, dict[str, Any]] = {}
     artifact_bindings: dict[str, dict[str, str]] = {}
-    for name, relative in _FIXED_PATHS.items():
+    for name, relative in {
+        **_COMMON_TRACKED_PATHS,
+        **_COMMON_DEVELOPMENT_PATHS,
+    }.items():
         payload, digest = _secure_json(repository / relative, name.replace("_", " "))
         payloads[name] = payload
         artifact_bindings[name] = {"path": relative, "sha256": digest}
-    _validate_saver_package_authority(payloads, artifact_bindings)
+    stage_evidence, recomputed = _validate_publication_stage_evidence(
+        repository,
+        layout,
+    )
     method_rows = payloads["method_registry"].get("methods")
     if type(method_rows) is not list:
         raise PublicationFreezeError("method registry is invalid")
@@ -3025,6 +3063,17 @@ def _expected_frozen_method(
             and isinstance(row.get("id"), str)
         )
     )
+    artifact_paths = _publication_artifact_paths(
+        layout,
+        include_external_reference=bool(external_method_ids),
+    )
+    for name, relative in artifact_paths.items():
+        if name in payloads or name == "external_reference_checkpoint":
+            continue
+        payload, digest = _secure_json(repository / relative, name.replace("_", " "))
+        payloads[name] = payload
+        artifact_bindings[name] = {"path": relative, "sha256": digest}
+    _validate_saver_package_authority(payloads, artifact_bindings)
     external_validation = None
     if external_method_ids:
         try:
@@ -3059,11 +3108,41 @@ def _expected_frozen_method(
             "path": external_relative,
             "sha256": external_validation.checkpoint_file_sha256,
         }
-    recomputed = _recompute_selection_report(repository, payloads["selection_input"])
-    if payloads["selection_report"] != recomputed:
-        raise PublicationFreezeError(
-            "fixed selection report differs from the repository-recomputed report"
+    _validated_publication_artifact_bindings(layout, artifact_bindings)
+    for paths, retained in zip(layout.stages, stage_evidence.stages):
+        prefix = paths.stage
+        expected_core = (
+            (
+                f"{prefix}_selection_source_input",
+                _thaw_receipt_json(retained.source_input),
+                retained.source_input_file_sha256,
+            ),
+            (
+                f"{prefix}_selection_complete_input",
+                _thaw_receipt_json(retained.complete_input),
+                retained.complete_input_file_sha256,
+            ),
+            (
+                f"{prefix}_selection_report",
+                _thaw_receipt_json(retained.report),
+                retained.report_file_sha256,
+            ),
         )
+        for name, expected_payload, expected_digest in expected_core:
+            if (
+                payloads.get(name) != expected_payload
+                or artifact_bindings.get(name, {}).get("sha256") != expected_digest
+            ):
+                raise PublicationFreezeError(
+                    f"validated {prefix} stage differs from the artifact inventory"
+                )
+        if (
+            artifact_bindings[f"{prefix}_downstream_manifest"]["sha256"]
+            != retained.downstream_manifest_file_sha256
+        ):
+            raise PublicationFreezeError(
+                f"validated {prefix} downstream manifest differs from inventory"
+            )
     selected = recomputed.get("selected_configuration")
     if not isinstance(selected, str):
         raise PublicationFreezeError("selection report has no selected configuration")
@@ -3071,21 +3150,26 @@ def _expected_frozen_method(
         repository,
         selected,
         payloads["development_search"],
-        ("v28",),
+        layout.revision_versions,
     )
     required = payloads["selection_contract"].get("required_comparator_ids")
     if type(required) is not list:
         raise PublicationFreezeError("selection contract comparators are invalid")
     runtime_summary = _runtime_environment_summary(
-        repository / _FIXED_PATHS["runtime_lock"],
+        repository / _COMMON_TRACKED_PATHS["runtime_lock"],
         artifact_bindings["runtime_lock"]["sha256"],
         payloads["method_registry"],
     )
     development_dataset_ids = _development_dataset_ids(payloads["dataset_status"])
-    execution_evidence = _development_execution_evidence(
-        payloads["reconstruction_checkpoint"],
-        artifact="base_reconstruction_checkpoint",
-        execution_track="same_input",
+    execution_evidence = _active_execution_evidence(
+        payloads["base_reconstruction_checkpoint"],
+        active_stage=layout.active_stage,
+        selected_stage_checkpoint=(
+            None
+            if layout.active_stage == "base"
+            else payloads[f"{layout.active_stage}_reconstruction_checkpoint"]
+        ),
+        selected_configuration=configuration,
         eligible_dataset_ids=development_dataset_ids,
     )
     if external_method_ids:
@@ -3113,6 +3197,12 @@ def _expected_frozen_method(
         artifact_file_sha256=artifact_bindings["retained_calibration"]["sha256"],
         score_policy=configuration["configuration"].get("score_policy"),
     )
+    stage_receipt = _build_development_stage_receipt(
+        repository,
+        layout,
+        stage_evidence,
+        artifact_bindings,
+    )
     result = build_frozen_method_payload(
         preparation_commit=preparation_commit,
         selection_report=recomputed,
@@ -3125,8 +3215,23 @@ def _expected_frozen_method(
         runtime_lock_sha256=artifact_bindings["runtime_lock"]["sha256"],
         runtime_environment_summary=runtime_summary,
         artifact_bindings=artifact_bindings,
+        development_stage_receipt=stage_receipt,
     )
-    for name, relative in _FIXED_PATHS.items():
+    if _resolve_publication_stage(repository) != layout:
+        raise PublicationFreezeError(
+            "publication stage changed during freeze preparation"
+        )
+    stage_evidence_after, report_after = _validate_publication_stage_evidence(
+        repository,
+        layout,
+    )
+    if stage_evidence_after != stage_evidence or report_after != recomputed:
+        raise PublicationFreezeError(
+            "publication stage evidence changed during freeze preparation"
+        )
+    for name, relative in artifact_paths.items():
+        if name == "external_reference_checkpoint":
+            continue
         payload, digest = _secure_json(repository / relative, name.replace("_", " "))
         if payload != payloads[name] or digest != artifact_bindings[name]["sha256"]:
             raise PublicationFreezeError(
@@ -3156,6 +3261,18 @@ def _expected_frozen_method(
                 "fixed publication evidence changed during freeze preparation: "
                 "external_reference_checkpoint"
             )
+    if (
+        _build_development_stage_receipt(
+            repository,
+            layout,
+            stage_evidence_after,
+            artifact_bindings,
+        )
+        != stage_receipt
+    ):
+        raise PublicationFreezeError(
+            "publication stage inventory changed during freeze preparation"
+        )
     return result
 
 
@@ -3233,51 +3350,17 @@ def _validate_clean_frozen_method(
     raw_artifacts = observed.get("artifact_bindings")
     if not isinstance(raw_artifacts, Mapping):
         raise PublicationFreezeError("frozen method artifact bindings are invalid")
-    artifacts = _artifact_bindings(raw_artifacts)
-    allowed_artifacts = set(_FIXED_PATHS) | {"external_reference_checkpoint"}
-    if not set(_FIXED_PATHS).issubset(artifacts) or not set(artifacts).issubset(
-        allowed_artifacts
-    ):
-        raise PublicationFreezeError("frozen method artifact bindings are incomplete")
-    for name, relative in _FIXED_PATHS.items():
-        if artifacts[name]["path"] != relative:
-            raise PublicationFreezeError(
-                f"frozen method artifact path is not fixed: {name}"
-            )
-    if (
-        "external_reference_checkpoint" in artifacts
-        and artifacts["external_reference_checkpoint"]["path"]
-        != _EXTERNAL_REFERENCE_CHECKPOINT_PATH
-    ):
-        raise PublicationFreezeError(
-            "frozen method external-reference checkpoint path is not fixed"
-        )
-    external_validation = None
-    if "external_reference_checkpoint" in artifacts:
-        try:
-            external_validation = load_external_reference_evidence(repository)
-        except (
-            ExternalReferenceDevelopmentError,
-            OSError,
-            TypeError,
-            ValueError,
-        ) as error:
-            raise PublicationFreezeError(
-                f"frozen external-reference production evidence is invalid: {error}"
-            ) from error
-        if (
-            external_validation.checkpoint_path
-            != repository / _EXTERNAL_REFERENCE_CHECKPOINT_PATH
-            or external_validation.checkpoint_file_sha256
-            != artifacts["external_reference_checkpoint"]["sha256"]
-        ):
-            raise PublicationFreezeError(
-                "frozen external-reference checkpoint differs from production evidence"
-            )
+    stage_receipt_value = observed.get("development_stage_receipt")
+    layout = _layout_from_development_stage_receipt(stage_receipt_value)
+    artifacts = _validated_publication_artifact_bindings(layout, raw_artifacts)
+    stage_receipt = _validate_development_stage_receipt(
+        stage_receipt_value,
+        layout,
+        raw_artifacts,
+    )
 
     tracked_payloads: dict[str, dict[str, Any]] = {}
-    for name in _TRACKED_AUTHORITY_NAMES:
-        relative = _FIXED_PATHS[name]
+    for name, relative in _COMMON_TRACKED_PATHS.items():
         payload, file_digest = _secure_json(
             repository / relative, name.replace("_", " ")
         )
@@ -3295,7 +3378,7 @@ def _validate_clean_frozen_method(
         repository,
         selected,
         tracked_payloads["development_search"],
-        ("v28",),
+        layout.revision_versions,
     )
     required = tracked_payloads["selection_contract"].get("required_comparator_ids")
     if type(required) is not list:
@@ -3308,11 +3391,10 @@ def _validate_clean_frozen_method(
         and row.get("execution_scope") == "external_reference_only"
         for row in method_rows
     )
-    expected_artifacts = set(_FIXED_PATHS)
-    if has_external_methods:
-        expected_artifacts.add("external_reference_checkpoint")
-    if set(artifacts) != expected_artifacts:
-        raise PublicationFreezeError("frozen method artifact bindings are incomplete")
+    if has_external_methods != ("external_reference_checkpoint" in artifacts):
+        raise PublicationFreezeError(
+            "frozen method external-reference artifact membership differs"
+        )
     selection_report = {
         "trigger": observed.get("selection_trigger"),
         "selected_configuration": selected,
@@ -3322,7 +3404,7 @@ def _validate_clean_frozen_method(
         "pareto_set": observed.get("pareto_set"),
     }
     runtime_summary = _runtime_environment_summary(
-        repository / _FIXED_PATHS["runtime_lock"],
+        repository / _COMMON_TRACKED_PATHS["runtime_lock"],
         artifacts["runtime_lock"]["sha256"],
         tracked_payloads["method_registry"],
     )
@@ -3336,33 +3418,6 @@ def _validate_clean_frozen_method(
         and isinstance(row.get("id"), str)
         and row.get("development_execution_evidence") is not None
     }
-    if external_validation is not None:
-        external_method_ids = tuple(
-            sorted(
-                row["id"]
-                for row in frozen_denominator
-                if isinstance(row, Mapping)
-                and row.get("execution_scope") == "external_reference_only"
-                and isinstance(row.get("id"), str)
-            )
-        )
-        if external_method_ids != external_validation.method_ids:
-            raise PublicationFreezeError(
-                "frozen external-reference denominator differs from production evidence"
-            )
-        recomputed_external = _development_execution_evidence(
-            external_validation.checkpoint,
-            artifact="external_reference_checkpoint",
-            execution_track="external_reference",
-            eligible_dataset_ids=(external_validation.dataset_id,),
-        )
-        if any(
-            execution_evidence.get(method_id) != recomputed_external.get(method_id)
-            for method_id in external_method_ids
-        ):
-            raise PublicationFreezeError(
-                "frozen external-reference execution receipt differs from production evidence"
-            )
     rebuilt = build_frozen_method_payload(
         preparation_commit=_git_oid(
             observed.get("preparation_commit"), "frozen preparation commit"
@@ -3377,13 +3432,13 @@ def _validate_clean_frozen_method(
         runtime_lock_sha256=artifacts["runtime_lock"]["sha256"],
         runtime_environment_summary=runtime_summary,
         artifact_bindings=artifacts,
+        development_stage_receipt=stage_receipt,
     )
     if observed != rebuilt:
         raise PublicationFreezeError(
             "frozen method differs from its commit-bound tracked authorities"
         )
-    for name in _TRACKED_AUTHORITY_NAMES:
-        relative = _FIXED_PATHS[name]
+    for name, relative in _COMMON_TRACKED_PATHS.items():
         payload, file_digest = _secure_json(
             repository / relative, name.replace("_", " ")
         )
@@ -3422,11 +3477,29 @@ def _validate_development_evidence_package(
     raw_artifacts = payload.get("artifact_bindings")
     if not isinstance(raw_artifacts, Mapping):
         raise PublicationFreezeError("frozen method artifact bindings are invalid")
-    artifacts = _artifact_bindings(raw_artifacts)
+    stage_receipt_value = payload.get("development_stage_receipt")
+    expected_layout = _layout_from_development_stage_receipt(stage_receipt_value)
+    artifacts = _validated_publication_artifact_bindings(
+        expected_layout,
+        raw_artifacts,
+    )
+    expected_stage_receipt = _validate_development_stage_receipt(
+        stage_receipt_value,
+        expected_layout,
+        raw_artifacts,
+    )
+    raw_names = set(_COMMON_DEVELOPMENT_PATHS) | set(
+        _stage_artifact_names(expected_layout)
+    )
+    if "external_reference_checkpoint" in artifacts:
+        raw_names.add("external_reference_checkpoint")
 
     def validate_files() -> None:
-        for name in sorted(_DEVELOPMENT_EVIDENCE_NAMES):
-            relative = _FIXED_PATHS[name]
+        for name in sorted(raw_names):
+            row = artifacts[name]
+            assert isinstance(row, Mapping)
+            relative = row["path"]
+            assert isinstance(relative, str)
             try:
                 _value, observed_sha256 = _secure_json(
                     repository / relative, name.replace("_", " ")
@@ -3440,7 +3513,62 @@ def _validate_development_evidence_package(
                     f"raw development evidence differs from frozen receipt: {name}"
                 )
 
+    def validate_stage() -> None:
+        observed_layout = _resolve_publication_stage(repository)
+        if observed_layout != expected_layout:
+            raise PublicationFreezeError(
+                "raw publication stage differs from the frozen receipt"
+            )
+        evidence, active_report = _validate_publication_stage_evidence(
+            repository,
+            observed_layout,
+        )
+        if active_report.get("selected_configuration") != payload.get(
+            "selected_configuration_id"
+        ):
+            raise PublicationFreezeError(
+                "raw active selection differs from the frozen receipt"
+            )
+        rebuilt = _build_development_stage_receipt(
+            repository,
+            observed_layout,
+            evidence,
+            raw_artifacts,
+        )
+        if rebuilt != expected_stage_receipt:
+            raise PublicationFreezeError(
+                "raw development stage inventory differs from the frozen receipt"
+            )
+
+    def validate_external() -> None:
+        if "external_reference_checkpoint" not in artifacts:
+            return
+        try:
+            external = load_external_reference_evidence(repository)
+        except (
+            ExternalReferenceDevelopmentError,
+            OSError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise PublicationFreezeError(
+                f"raw external-reference evidence is invalid: {error}"
+            ) from error
+        external_binding = artifacts["external_reference_checkpoint"]
+        assert isinstance(external_binding, Mapping)
+        if (
+            external.checkpoint_path
+            != repository / _EXTERNAL_REFERENCE_CHECKPOINT_PATH
+            or external.checkpoint_file_sha256
+            != external_binding.get("sha256")
+        ):
+            raise PublicationFreezeError(
+                "raw external-reference evidence differs from the frozen receipt"
+            )
+
     validate_files()
+    validate_stage()
+    validate_external()
     try:
         receipts = _operational_root_receipts(repository, operational_roots)
     except (OSError, StudyStateError, TypeError, ValueError) as error:
@@ -3448,6 +3576,8 @@ def _validate_development_evidence_package(
             "publication operational evidence package is invalid"
         ) from error
     validate_files()
+    validate_stage()
+    validate_external()
     return canonical_sha256(receipts)
 
 
@@ -3501,8 +3631,10 @@ def freeze_publication_round(repository: Path, round_dir: Path) -> dict[str, obj
         selected_repository,
         round_dir,
         selected_repository / _FROZEN_METHOD_PATH,
-        selected_repository / _FIXED_PATHS["protocol"],
-        environment_path=selected_repository / _FIXED_PATHS["runtime_lock"],
+        selected_repository / _COMMON_TRACKED_PATHS["protocol"],
+        environment_path=(
+            selected_repository / _COMMON_TRACKED_PATHS["runtime_lock"]
+        ),
         expected_config_sha256=hashes["config_sha256"],
         expected_protocol_sha256=hashes["protocol_sha256"],
         expected_environment_sha256=hashes["environment_sha256"],
