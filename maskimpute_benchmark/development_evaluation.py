@@ -19,11 +19,13 @@ import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
+import shutil
 import stat
 import tarfile
 import tempfile
 from types import MappingProxyType
 from typing import Mapping, Sequence
+import zlib
 
 import numpy as np
 
@@ -32,6 +34,11 @@ BOOTSTRAP_SEED = 20_260_712
 NULL_DE_ALPHA = 0.05
 NULL_DE_MIN_GENES = 100
 CITE_METHOD_GENE_COUNT = 500
+_ORTHOGONAL_OUTPUT_ENCODING = "zlib_raw_f64_v1"
+_ORTHOGONAL_OUTPUT_COMPRESSION_LEVEL = 6
+_ORTHOGONAL_MAX_MATRIX_UNCOMPRESSED_NBYTES = 256 * 1024**2
+_ORTHOGONAL_RECORD_OVERHEAD_BYTES = 1024**2
+_ORTHOGONAL_STORAGE_RESERVE_BYTES = 1024**3
 
 
 class DevelopmentEvaluationError(RuntimeError):
@@ -313,8 +320,15 @@ class NullDEResult:
     reason: str | None = None
 
 
-def _read_stable_bytes(path: Path, name: str) -> tuple[bytes, str]:
+def _read_stable_bytes(
+    path: Path, name: str, *, max_bytes: int | None = None
+) -> tuple[bytes, str]:
     """Read one regular file once from an O_NOFOLLOW descriptor and recheck it."""
+
+    if max_bytes is not None and (
+        isinstance(max_bytes, bool) or type(max_bytes) is not int or max_bytes < 0
+    ):
+        raise ValueError("max_bytes must be a nonnegative integer or None")
 
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -325,11 +339,17 @@ def _read_stable_bytes(path: Path, name: str) -> tuple[bytes, str]:
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise DevelopmentEvaluationError(f"{name} is not a regular file")
+        if max_bytes is not None and before.st_size > max_bytes:
+            raise DevelopmentEvaluationError(f"{name} exceeds its byte bound")
         chunks: list[bytes] = []
+        observed_nbytes = 0
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
             if not chunk:
                 break
+            observed_nbytes += len(chunk)
+            if max_bytes is not None and observed_nbytes > max_bytes:
+                raise DevelopmentEvaluationError(f"{name} exceeds its byte bound")
             chunks.append(chunk)
         after = os.fstat(descriptor)
     finally:
@@ -1031,6 +1051,145 @@ def _replace_checkpoint_file(path: Path, data: bytes) -> str:
     return digest
 
 
+def _zlib_compress_bound(uncompressed_nbytes: int) -> int:
+    """Return zlib's documented single-call upper bound."""
+
+    return (
+        uncompressed_nbytes
+        + (uncompressed_nbytes >> 12)
+        + (uncompressed_nbytes >> 14)
+        + (uncompressed_nbytes >> 25)
+        + 13
+    )
+
+
+def _preflight_orthogonal_output_storage(
+    output_directory: Path,
+    *,
+    remaining_shapes: Sequence[tuple[int, int]],
+) -> dict[str, int | str]:
+    """Fail closed unless every remaining output fits its compressed upper bound."""
+
+    shapes = tuple(remaining_shapes)
+    uncompressed_sizes: list[int] = []
+    for shape in shapes:
+        if (
+            not isinstance(shape, tuple)
+            or len(shape) != 2
+            or any(type(value) is not int or value <= 0 for value in shape)
+        ):
+            raise DevelopmentEvaluationError(
+                "orthogonal storage preflight shape is invalid"
+            )
+        uncompressed_nbytes = shape[0] * shape[1] * 8
+        if uncompressed_nbytes > _ORTHOGONAL_MAX_MATRIX_UNCOMPRESSED_NBYTES:
+            raise DevelopmentEvaluationError(
+                "orthogonal output exceeds the fixed matrix byte bound"
+            )
+        uncompressed_sizes.append(uncompressed_nbytes)
+    required = (
+        sum(_zlib_compress_bound(value) for value in uncompressed_sizes)
+        + len(shapes) * _ORTHOGONAL_RECORD_OVERHEAD_BYTES
+        + _ORTHOGONAL_STORAGE_RESERVE_BYTES
+    )
+    try:
+        free = shutil.disk_usage(output_directory).free
+    except OSError as error:
+        raise DevelopmentEvaluationError(
+            "orthogonal free storage cannot be measured"
+        ) from error
+    if free < required:
+        raise DevelopmentEvaluationError(
+            "orthogonal free storage is below the fail-closed compressed-output bound"
+        )
+    return {
+        "schema": "maskimpute-orthogonal-storage-preflight-v1",
+        "remaining_output_count": len(shapes),
+        "required_free_bytes": required,
+        "observed_free_bytes": free,
+    }
+
+
+def _decode_orthogonal_output(
+    output_path: Path,
+    record: Mapping[str, object],
+) -> bytes:
+    """Revalidate one compressed output and decompress it within receipt bounds."""
+
+    shape = record.get("output_shape")
+    if (
+        not isinstance(shape, list)
+        or len(shape) != 2
+        or any(type(value) is not int or value <= 0 for value in shape)
+    ):
+        raise DevelopmentEvaluationError("orthogonal output shape is invalid")
+    expected_nbytes = shape[0] * shape[1] * 8
+    if expected_nbytes > _ORTHOGONAL_MAX_MATRIX_UNCOMPRESSED_NBYTES:
+        raise DevelopmentEvaluationError(
+            "orthogonal output exceeds the fixed matrix byte bound"
+        )
+    if (
+        record.get("output_encoding") != _ORTHOGONAL_OUTPUT_ENCODING
+        or record.get("output_dtype") != "<f8"
+        or record.get("output_scale") != "log2_cp10k_plus_1"
+        or record.get("output_uncompressed_nbytes") != expected_nbytes
+    ):
+        raise DevelopmentEvaluationError(
+            "orthogonal compressed output encoding or size differs"
+        )
+    compressed_nbytes = record.get("output_compressed_nbytes")
+    compressed_sha256 = record.get("output_file_sha256")
+    raw_sha256 = record.get("output_uncompressed_sha256")
+    maximum_compressed = _zlib_compress_bound(expected_nbytes)
+    if (
+        type(compressed_nbytes) is not int
+        or not 0 < compressed_nbytes <= maximum_compressed
+        or not isinstance(compressed_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", compressed_sha256) is None
+        or not isinstance(raw_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", raw_sha256) is None
+    ):
+        raise DevelopmentEvaluationError(
+            "orthogonal compressed output receipt is invalid"
+        )
+    compressed, actual_sha256 = _read_stable_bytes(
+        output_path,
+        "orthogonal compressed method output",
+        max_bytes=maximum_compressed,
+    )
+    if (
+        len(compressed) != compressed_nbytes
+        or actual_sha256 != compressed_sha256
+    ):
+        raise DevelopmentEvaluationError(
+            "orthogonal compressed output checksum or size mismatch"
+        )
+    try:
+        decompressor = zlib.decompressobj()
+        raw = decompressor.decompress(compressed, expected_nbytes + 1)
+        raw += decompressor.flush(max(1, expected_nbytes + 1 - len(raw)))
+    except zlib.error as error:
+        raise DevelopmentEvaluationError(
+            "orthogonal compressed output cannot be decompressed"
+        ) from error
+    if (
+        len(raw) != expected_nbytes
+        or not decompressor.eof
+        or decompressor.unconsumed_tail
+        or decompressor.unused_data
+        or hashlib.sha256(raw).hexdigest() != raw_sha256
+    ):
+        raise DevelopmentEvaluationError(
+            "orthogonal compressed output differs from its receipt"
+        )
+    values = np.frombuffer(raw, dtype="<f8")
+    if values.size != shape[0] * shape[1] or not np.isfinite(values).all():
+        raise DevelopmentEvaluationError(
+            "orthogonal compressed output contains invalid values"
+        )
+    return raw
+
+
 def _write_orthogonal_checkpoint(
     manifest_path: Path,
     authority: Mapping[str, object],
@@ -1041,7 +1200,7 @@ def _write_orthogonal_checkpoint(
 
     status = "completed" if len(records) == planned_record_count else "running"
     core = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_type": "maskimpute_orthogonal_method_outputs",
         "authority": dict(authority),
         "status": status,
@@ -1140,7 +1299,7 @@ def _load_orthogonal_evidence(
         )
     core = {key: value for key, value in payload.items() if key != "manifest_sha256"}
     if (
-        payload.get("schema_version") != 1
+        payload.get("schema_version") != 2
         or payload.get("artifact_type") != "maskimpute_orthogonal_method_outputs"
         or payload.get("authority") != dict(expected_authority)
         or payload.get("manifest_sha256") != canonical_sha256(core)
@@ -1201,6 +1360,10 @@ def _load_orthogonal_evidence(
         "reason",
         "output_path",
         "output_file_sha256",
+        "output_compressed_nbytes",
+        "output_encoding",
+        "output_uncompressed_nbytes",
+        "output_uncompressed_sha256",
         "output_shape",
         "output_dtype",
         "output_scale",
@@ -1228,7 +1391,7 @@ def _load_orthogonal_evidence(
         seed_token = "deterministic" if seed is None else f"seed-{seed}"
         expected_path = (
             f"outputs/{input_row.get('source_id')}--{configuration_id}--"
-            f"{seed_token}.log2-cp10k-f64"
+            f"{seed_token}.log2-cp10k-f64.zlib"
         )
         if record.get("status") == "completed":
             if (
@@ -1236,8 +1399,6 @@ def _load_orthogonal_evidence(
                 or not isinstance(digest, str)
                 or record.get("reason") is not None
                 or record.get("output_shape") != input_row.get("shape")
-                or record.get("output_dtype") != "<f8"
-                or record.get("output_scale") != "log2_cp10k_plus_1"
             ):
                 raise DevelopmentEvaluationError(
                     "completed orthogonal output binding is incomplete"
@@ -1252,10 +1413,7 @@ def _load_orthogonal_evidence(
                 raise DevelopmentEvaluationError("orthogonal output path is unsafe")
             output_path = output_directory.joinpath(*relative.parts)
             _require_regular_file(output_path, "orthogonal method output")
-            if _file_sha256(output_path) != digest:
-                raise DevelopmentEvaluationError(
-                    "orthogonal output file checksum mismatch"
-                )
+            _decode_orthogonal_output(output_path, record)
         elif (
             not isinstance(record.get("reason"), str)
             or not record.get("reason")
@@ -1264,6 +1422,10 @@ def _load_orthogonal_evidence(
                 for field in (
                     "output_path",
                     "output_file_sha256",
+                    "output_compressed_nbytes",
+                    "output_encoding",
+                    "output_uncompressed_nbytes",
+                    "output_uncompressed_sha256",
                     "output_shape",
                     "output_dtype",
                     "output_scale",
@@ -1368,6 +1530,12 @@ def produce_orthogonal_outputs(
                 )
     if len(tasks) != planned_record_count:
         raise DevelopmentEvaluationError("orthogonal task denominator is inconsistent")
+    _preflight_orthogonal_output_storage(
+        root,
+        remaining_shapes=tuple(
+            value.method_input.shape for value, *_rest in tasks[len(records) :]
+        ),
+    )
     input_sha = {
         str(row["source_id"]): str(row["method_input_sha256"])
         for row in authority["inputs"]
@@ -1403,15 +1571,26 @@ def produce_orthogonal_outputs(
         seed_token = "deterministic" if seed is None else f"seed-{seed}"
         relative = (
             f"outputs/{method_input.source_id}--{configuration_id}--"
-            f"{seed_token}.log2-cp10k-f64"
+            f"{seed_token}.log2-cp10k-f64.zlib"
         )
         if output is None:
             output_path = output_digest = output_shape = None
+            output_compressed_nbytes = None
+            output_encoding = None
+            output_uncompressed_nbytes = None
+            output_uncompressed_sha256 = None
             status = "failed"
         else:
             encoded = np.asarray(output, dtype="<f8", order="C").tobytes(order="C")
-            output_digest = _publish_bound_file(root / relative, encoded)
+            compressed = zlib.compress(
+                encoded, level=_ORTHOGONAL_OUTPUT_COMPRESSION_LEVEL
+            )
+            output_digest = _publish_bound_file(root / relative, compressed)
             output_path = relative
+            output_compressed_nbytes = len(compressed)
+            output_encoding = _ORTHOGONAL_OUTPUT_ENCODING
+            output_uncompressed_nbytes = len(encoded)
+            output_uncompressed_sha256 = hashlib.sha256(encoded).hexdigest()
             output_shape = list(output.shape)
             status = "completed"
         records.append(
@@ -1425,6 +1604,10 @@ def produce_orthogonal_outputs(
                 "reason": reason,
                 "output_path": output_path,
                 "output_file_sha256": output_digest,
+                "output_compressed_nbytes": output_compressed_nbytes,
+                "output_encoding": output_encoding,
+                "output_uncompressed_nbytes": output_uncompressed_nbytes,
+                "output_uncompressed_sha256": output_uncompressed_sha256,
                 "output_shape": output_shape,
                 "output_dtype": None if output is None else "<f8",
                 "output_scale": None if output is None else "log2_cp10k_plus_1",
@@ -1700,22 +1883,16 @@ def _orthogonal_output_matrix(
     if record.get("status") != "completed":
         return None
     path = record.get("output_path")
-    digest = record.get("output_file_sha256")
     shape = record.get("output_shape")
     if (
         not isinstance(path, str)
-        or not isinstance(digest, str)
         or not isinstance(shape, list)
         or len(shape) != 2
     ):
         raise DevelopmentEvaluationError("orthogonal output binding is malformed")
     output_path = evidence.output_directory.joinpath(*PurePosixPath(path).parts)
     _require_regular_file(output_path, "orthogonal evaluator output")
-    raw, actual_digest = _read_stable_bytes(output_path, "orthogonal evaluator output")
-    if actual_digest != digest:
-        raise DevelopmentEvaluationError(
-            "orthogonal evaluator output checksum mismatch"
-        )
+    raw = _decode_orthogonal_output(output_path, record)
     values = np.frombuffer(raw, dtype="<f8")
     if values.size != int(shape[0]) * int(shape[1]):
         raise DevelopmentEvaluationError("orthogonal evaluator output shape mismatch")

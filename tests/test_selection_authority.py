@@ -8,6 +8,7 @@ import shutil
 import importlib.util
 import subprocess
 from types import SimpleNamespace
+import zlib
 
 import pytest
 
@@ -499,11 +500,15 @@ def _reconstruction_inputs(authority, status, payload):
 def _minimal_orthogonal_evidence(repository: Path):
     from maskimpute_benchmark.selection import _canonical_sha256
 
-    output_relative = "outputs/source-test--observed--deterministic.log2-cp10k-f64"
+    output_relative = (
+        "outputs/source-test--observed--deterministic.log2-cp10k-f64.zlib"
+    )
     root = repository / "artifacts/study/development/evaluation/orthogonal"
     output_path = root / output_relative
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_bytes((1).to_bytes(8, "little"))
+    raw_output = (1).to_bytes(8, "little")
+    compressed_output = zlib.compress(raw_output, level=6)
+    output_path.write_bytes(compressed_output)
     record = {
         "source_id": "source-test",
         "configuration": "observed",
@@ -514,12 +519,16 @@ def _minimal_orthogonal_evidence(repository: Path):
         "reason": None,
         "output_path": output_relative,
         "output_file_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        "output_compressed_nbytes": len(compressed_output),
+        "output_encoding": "zlib_raw_f64_v1",
+        "output_uncompressed_nbytes": len(raw_output),
+        "output_uncompressed_sha256": hashlib.sha256(raw_output).hexdigest(),
         "output_shape": [1, 1],
         "output_dtype": "<f8",
         "output_scale": "log2_cp10k_plus_1",
     }
     manifest_core = {
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_type": "maskimpute_orthogonal_method_outputs",
         "authority": {
             "inputs": [

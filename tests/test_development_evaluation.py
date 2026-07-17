@@ -8,6 +8,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tarfile
+from types import SimpleNamespace
+import zlib
 
 import anndata as ad
 import numpy as np
@@ -809,6 +811,34 @@ def test_orthogonal_output_producer_exposes_only_truth_free_method_input(
     assert evidence.records[1]["configuration"] == "v27-test"
     assert all(record["status"] == "completed" for record in evidence.records)
     assert all(len(record["output_file_sha256"]) == 64 for record in evidence.records)
+    assert all(
+        record["output_encoding"] == "zlib_raw_f64_v1"
+        for record in evidence.records
+    )
+    assert all(
+        str(record["output_path"]).endswith(".log2-cp10k-f64.zlib")
+        for record in evidence.records
+    )
+    completed_record = evidence.records[1]
+    compressed_path = evidence.output_directory / str(
+        completed_record["output_path"]
+    )
+    compressed = compressed_path.read_bytes()
+    raw = zlib.decompress(compressed)
+    expected_raw = np.asarray(
+        executor(seen[-1]), dtype="<f8", order="C"
+    )
+    from maskimpute_benchmark.methods import count_equivalent_to_log2_cp10k
+
+    expected_raw = np.asarray(
+        count_equivalent_to_log2_cp10k(expected_raw), dtype="<f8", order="C"
+    ).tobytes(order="C")
+    assert raw == expected_raw
+    assert completed_record["output_compressed_nbytes"] == len(compressed)
+    assert completed_record["output_uncompressed_nbytes"] == len(raw)
+    assert completed_record["output_uncompressed_sha256"] == hashlib.sha256(
+        raw
+    ).hexdigest()
     assert len(evidence.manifest_sha256) == 64
     assert evidence.manifest_path.read_bytes().endswith(b"\n")
 
@@ -847,6 +877,31 @@ def test_orthogonal_output_producer_exposes_only_truth_free_method_input(
     evidence.manifest_path.write_bytes(original_manifest)
 
     output_path = evidence.output_directory / evidence.records[1]["output_path"]
+    original_output = output_path.read_bytes()
+    trailing = original_output + b"trailing-stream-data"
+    trailing_manifest = json.loads(original_manifest)
+    trailing_manifest["records"][1]["output_file_sha256"] = hashlib.sha256(
+        trailing
+    ).hexdigest()
+    trailing_manifest["records"][1]["output_compressed_nbytes"] = len(trailing)
+    trailing_core = {
+        key: value
+        for key, value in trailing_manifest.items()
+        if key != "manifest_sha256"
+    }
+    trailing_manifest["manifest_sha256"] = canonical_sha256(trailing_core)
+    output_path.write_bytes(trailing)
+    evidence.manifest_path.write_text(
+        json.dumps(trailing_manifest, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    with pytest.raises(Exception, match="compressed|encoding|receipt"):
+        load_orthogonal_output_evidence(
+            evidence.output_directory,
+            expected_authority=expected_authority,
+        )
+
+    evidence.manifest_path.write_bytes(original_manifest)
+    output_path.write_bytes(original_output)
     output_path.write_bytes(b"tampered")
     with pytest.raises(Exception, match="checksum|existing"):
         produce_orthogonal_outputs(
@@ -856,6 +911,26 @@ def test_orthogonal_output_producer_exposes_only_truth_free_method_input(
             model_seeds=(42,),
             artifact_bindings=ORTHOGONAL_ARTIFACT_BINDINGS,
             executor=executor,
+        )
+
+
+def test_orthogonal_storage_preflight_is_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.development_evaluation as evaluation
+
+    output_directory = tmp_path / "orthogonal"
+    output_directory.mkdir()
+    monkeypatch.setattr(
+        evaluation.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=0),
+    )
+
+    with pytest.raises(Exception, match="free storage|compressed-output bound"):
+        evaluation._preflight_orthogonal_output_storage(
+            output_directory,
+            remaining_shapes=((4, 3),),
         )
 
 
