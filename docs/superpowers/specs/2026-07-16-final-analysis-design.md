@@ -49,8 +49,10 @@ outside the frozen evidence boundary.
   lower-is-better metric set is enabled only when the frozen selected
   assessment's rank/Pareto gate declarations agree with the exact selection
   implementation read from the immutable study `method_commit`, including its
-  lower-preference comparisons.  Missing direction authority disables paired
-  directional inference and Pareto analysis rather than guessing.
+  lower-preference comparisons.  Commit objects are read with the study's
+  scrubbed Git environment and replacement objects disabled.  Missing
+  direction authority disables paired directional inference and Pareto
+  analysis rather than guessing.
 - Realized `p_pre_zero` scores form a separate descriptive family.  AUROC and
   AUPRC are higher-is-better; Brier score, log loss, and ECE are
   lower-is-better; calibration intercept and slope are descriptive.  This
@@ -74,9 +76,10 @@ The canonical report contains:
 6. Seed, biological-draw, and technical-view variance components with their
    identifiable denominators and explicit reasons for unavailable components.
 7. Pareto non-domination across authority-declared lower-is-better core metrics
-   only for methods with every planned raw row and every expected dataset-view
-   and biological draw present and successful; otherwise a structured
-   unavailable reason.
+   only for methods with every applicable planned raw row and every expected
+   dataset-view and biological draw present and successful.  Structurally
+   inapplicable truth domains must retain their exact truth-kind reason;
+   algorithmic or malformed absences make the method unavailable.
 8. `p_pre_zero` score summaries overall, by library-size quartile, and by truth
    expression bin, with biological-draw median/IQR, entry denominators, status
    and reason counts, and explicit unavailability of pairwise inference when

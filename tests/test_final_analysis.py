@@ -14,6 +14,7 @@ import pytest
 from maskimpute_benchmark.final_analysis import (
     FinalAnalysisContractError,
     _frozen_metric_direction_contract,
+    _git_object_bytes,
     build_final_analysis,
     generate_final_analysis,
 )
@@ -290,13 +291,23 @@ def _attach_score_evidence(record: dict[str, Any]) -> None:
     }
 
 
-def _analysis(records: list[dict[str, Any]]) -> dict[str, object]:
+def _analysis(
+    records: list[dict[str, Any]],
+    *,
+    primary_metrics: tuple[str, ...] = PRIMARY_METRICS,
+) -> dict[str, object]:
     direction_body = {
         "schema_version": 1,
         "status": "validated",
         "reason": None,
         "favorable_direction": "lower",
-        "metrics": ["corr_err", "gnrmse", "mse", "mse_dropout"],
+        "metrics": [
+            "corr_err",
+            "gnrmse",
+            "mse",
+            "mse_dropout",
+            "mse_pre_dropout_zero",
+        ],
         "authority": {
             "source": "synthetic_frozen_selection_gate_fixture",
             "method_commit": "f" * 40,
@@ -304,7 +315,7 @@ def _analysis(records: list[dict[str, Any]]) -> dict[str, object]:
     }
     return build_final_analysis(
         records,
-        protocol={"schema_version": 1, "primary_metrics": list(PRIMARY_METRICS)},
+        protocol={"schema_version": 1, "primary_metrics": list(primary_metrics)},
         selection_contract={
             "schema_version": 1,
             "candidate_method_id": "maskimpute",
@@ -992,6 +1003,73 @@ def test_pareto_requires_the_full_terminal_draw_and_view_denominator() -> None:
     assert report["denominator"]["run_terminal_status_counts"]["failed"] == 26
 
 
+def test_pareto_accepts_only_exact_truth_kind_structural_unavailability() -> None:
+    truth_kinds = {
+        "symsim": ("exact_pre_capture", None),
+        "sergio": ("exact_continuous", "undefined_for_continuous_truth"),
+        "sparsim": ("exact_continuous", "undefined_for_continuous_truth"),
+        "semisynthetic": ("proxy_high_depth", "proxy_truth_not_exact"),
+    }
+    records: list[dict[str, Any]] = []
+    ordinal = 0
+    for mechanism, (truth_kind, structural_reason) in truth_kinds.items():
+        for method, mse, prezero_mse in (
+            ("maskimpute", 0.5, 0.1),
+            ("dca", 1.0, 0.2),
+        ):
+            ordinal += 1
+            applicable = structural_reason is None
+            record = _record(
+                method,
+                "completed",
+                ordinal=ordinal,
+                mechanism=mechanism,
+                values={
+                    "mse": mse,
+                    "corr_err": prezero_mse if applicable else None,
+                },
+                metric_statuses={
+                    "mse": "completed",
+                    "corr_err": "completed" if applicable else "unavailable",
+                },
+                metric_reasons={
+                    "mse": None,
+                    "corr_err": structural_reason,
+                },
+            )
+            record["run"]["truth_kind"] = truth_kind
+            record["metrics"][1]["metric"] = "mse_pre_dropout_zero"
+            records.append(record)
+
+    report = _analysis(
+        records,
+        primary_metrics=("mse", "mse_pre_dropout_zero"),
+    )
+
+    assert report["pareto"]["status"] == "ok"
+    assert report["pareto"]["complete_method_count"] == 2
+    candidate = _matching(report["pareto"]["methods"], method="maskimpute")
+    assert candidate["status"] == "ok"
+    assert candidate["non_dominated"] is True
+
+    malformed = next(
+        record
+        for record in records
+        if record["run"]["method_id"] == "maskimpute"
+        and record["run"]["mechanism"] == "sergio"
+    )
+    malformed["metrics"][1]["reason"] = "algorithm_failure"
+    malformed_report = _analysis(
+        records,
+        primary_metrics=("mse", "mse_pre_dropout_zero"),
+    )
+    malformed_candidate = _matching(
+        malformed_report["pareto"]["methods"], method="maskimpute"
+    )
+    assert malformed_candidate["status"] == "unavailable"
+    assert malformed_candidate["missing_metrics"] == ["mse_pre_dropout_zero"]
+
+
 def test_nonerror_primary_endpoint_is_not_assumed_to_be_lower_better() -> None:
     records = _paired_panel()
     for record in records:
@@ -1085,7 +1163,9 @@ def test_metric_direction_contract_checksum_is_fail_closed() -> None:
         )
 
 
-def test_direction_authority_binds_frozen_gates_to_method_commit_source() -> None:
+def test_direction_authority_binds_frozen_gates_to_method_commit_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repository = Path(__file__).resolve().parents[1]
     method_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -1132,6 +1212,9 @@ def test_direction_authority_binds_frozen_gates_to_method_commit_source() -> Non
             "corr_err",
         ]
     }
+    monkeypatch.setenv("GIT_DIR", "/attacker-controlled/not-the-study-repository")
+    monkeypatch.setenv("GIT_WORK_TREE", "/attacker-controlled/worktree")
+    monkeypatch.setenv("GIT_NO_REPLACE_OBJECTS", "0")
 
     contract = _frozen_metric_direction_contract(
         repository,
@@ -1161,6 +1244,67 @@ def test_direction_authority_binds_frozen_gates_to_method_commit_source() -> Non
             {"method_commit": method_commit},
             protocol,
         )
+
+
+def test_direction_source_lookup_disables_git_replace_objects(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+
+    def git(*arguments: str, input_text: str | None = None) -> str:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+            input=input_text,
+        ).stdout.strip()
+
+    git("init", "--quiet")
+    selection_path = repository / "maskimpute_benchmark/selection.py"
+    selection_path.parent.mkdir()
+    original_raw = b"ORIGINAL_SELECTION_SOURCE = True\n"
+    selection_path.write_bytes(original_raw)
+    git("add", "maskimpute_benchmark/selection.py")
+    git(
+        "-c",
+        "user.name=Final Analysis Test",
+        "-c",
+        "user.email=final-analysis@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "original",
+    )
+    original_commit = git("rev-parse", "HEAD")
+    original_blob = git(
+        "rev-parse",
+        f"{original_commit}:maskimpute_benchmark/selection.py",
+    )
+
+    selection_path.write_text("REPLACEMENT_SELECTION_SOURCE = True\n")
+    git("add", "maskimpute_benchmark/selection.py")
+    replacement_tree = git("write-tree")
+    replacement_commit = git(
+        "-c",
+        "user.name=Final Analysis Test",
+        "-c",
+        "user.email=final-analysis@example.invalid",
+        "commit-tree",
+        replacement_tree,
+        input_text="replacement\n",
+    )
+    git("replace", original_commit, replacement_commit)
+    redirected_blob = git(
+        "rev-parse",
+        f"{original_commit}:maskimpute_benchmark/selection.py",
+    )
+    assert redirected_blob != original_blob
+
+    observed_blob, observed_raw = _git_object_bytes(repository, original_commit)
+
+    assert observed_blob == original_blob
+    assert observed_raw == original_raw
 
 
 def test_prezero_score_evidence_is_a_separate_complete_descriptive_family() -> None:

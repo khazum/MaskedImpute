@@ -56,6 +56,21 @@ _SCORE_GROUPS = {
     "library_size_quartiles": ("Q1", "Q2", "Q3", "Q4"),
     "truth_expression_bins": ("[0,1)", "[1,2)", "[2,4)", "[4,inf)"),
 }
+_TRUTH_KINDS = frozenset(
+    {
+        "exact_pre_capture",
+        "exact_continuous",
+        "proxy_high_depth",
+        "orthogonal_only",
+    }
+)
+_STRUCTURAL_METRIC_UNAVAILABILITY = {
+    "mse_pre_dropout_zero": {
+        "exact_continuous": "undefined_for_continuous_truth",
+        "proxy_high_depth": "proxy_truth_not_exact",
+        "orthogonal_only": "truth_unavailable",
+    }
+}
 _SCORE_IDENTITY_FIELDS = frozenset(
     {
         "run_id",
@@ -216,6 +231,7 @@ class _NormalizedMetric:
     method: str
     model_seed: int
     source_model_seed: int | None
+    truth_kind: str | None
     metric: str
     value: float | None
     status: str
@@ -340,6 +356,19 @@ def _normalize_records(
         seed = _model_seed(
             run.get("model_seed"), f"record {record_index} model_seed"
         )
+        truth_kind = run.get("truth_kind")
+        score_evidence = record.get("p_pre_zero_evidence")
+        if isinstance(score_evidence, Mapping):
+            evidence_truth_kind = score_evidence.get("truth_kind")
+            if truth_kind is not None and evidence_truth_kind != truth_kind:
+                raise FinalAnalysisContractError(
+                    f"record {record_index} truth kind differs from score evidence"
+                )
+            truth_kind = evidence_truth_kind
+        if truth_kind is not None and truth_kind not in _TRUTH_KINDS:
+            raise FinalAnalysisContractError(
+                f"record {record_index} truth kind is invalid"
+            )
         methods.add(method)
         seeds_by_method.setdefault(method, set()).add(
             "deterministic" if seed is None else "stochastic"
@@ -453,6 +482,9 @@ def _normalize_records(
                         _DETERMINISTIC_SEED_SENTINEL if seed is None else seed
                     ),
                     source_model_seed=seed,
+                    truth_kind=(
+                        str(truth_kind) if truth_kind is not None else None
+                    ),
                     metric=metric_name,
                     value=value,
                     status=analytic_status,
@@ -503,6 +535,25 @@ def _score_metric_roles() -> dict[str, dict[str, str | None]]:
         "ece": {"favorable_direction": "lower", "role": "efficacy"},
         "log_loss": {"favorable_direction": "lower", "role": "efficacy"},
     }
+
+
+def _metric_applicability_contract() -> dict[str, object]:
+    body: dict[str, object] = {
+        "source": "validated_record_truth_kind_contract",
+        "rules": {
+            metric: {
+                "applicable_truth_kinds": ["exact_pre_capture"],
+                "structural_unavailability_reasons": {
+                    truth_kind: reasons[truth_kind]
+                    for truth_kind in sorted(reasons)
+                },
+            }
+            for metric, reasons in sorted(
+                _STRUCTURAL_METRIC_UNAVAILABILITY.items()
+            )
+        },
+    }
+    return {**body, "contract_sha256": canonical_sha256(body)}
 
 
 def _normalize_score_group(
@@ -771,12 +822,7 @@ def _normalize_score_evidence(
                 f"record {record_index} p_pre_zero status is invalid"
             )
         truth_kind = evidence.get("truth_kind")
-        if truth_kind not in {
-            "exact_pre_capture",
-            "exact_continuous",
-            "proxy_high_depth",
-            "orthogonal_only",
-        }:
+        if truth_kind not in _TRUTH_KINDS:
             raise FinalAnalysisContractError(
                 f"record {record_index} p_pre_zero truth kind is invalid"
             )
@@ -1582,10 +1628,17 @@ def _pareto_report(
     evidence_by_key: dict[tuple[str, str], list[_NormalizedMetric]] = {}
     expected_views_by_metric: dict[str, set[tuple[str, str, str, str]]] = {}
     expected_draws_by_metric: dict[str, set[tuple[str, str]]] = {}
+
+    def structural_reason(row: _NormalizedMetric) -> str | None:
+        reasons = _STRUCTURAL_METRIC_UNAVAILABILITY.get(row.metric, {})
+        return reasons.get(row.truth_kind)
+
     for row in evidence.rows:
         if row.metric not in core:
             continue
         evidence_by_key.setdefault((row.method, row.metric), []).append(row)
+        if structural_reason(row) is not None:
+            continue
         expected_views_by_metric.setdefault(row.metric, set()).add(
             (
                 row.mechanism,
@@ -1601,6 +1654,12 @@ def _pareto_report(
     def complete_metric_denominator(method: str, metric: str) -> bool:
         rows = evidence_by_key.get((method, metric), [])
         summary = summary_by_key[(method, metric)]
+        applicable_rows = [row for row in rows if structural_reason(row) is None]
+        structural_rows = [
+            (row, reason)
+            for row in rows
+            if (reason := structural_reason(row)) is not None
+        ]
         observed_views = {
             (
                 row.mechanism,
@@ -1608,15 +1667,19 @@ def _pareto_report(
                 row.technical_view,
                 row.dataset_id,
             )
-            for row in rows
+            for row in applicable_rows
         }
         observed_draws = {
-            (row.mechanism, row.biological_id) for row in rows
+            (row.mechanism, row.biological_id) for row in applicable_rows
         }
-        return bool(rows) and (
-            all(row.status == "ok" for row in rows)
-            and observed_views == expected_views_by_metric[metric]
-            and observed_draws == expected_draws_by_metric[metric]
+        return bool(applicable_rows) and (
+            all(row.status == "ok" for row in applicable_rows)
+            and all(
+                row.status == "unavailable" and row.reason == reason
+                for row, reason in structural_rows
+            )
+            and observed_views == expected_views_by_metric.get(metric, set())
+            and observed_draws == expected_draws_by_metric.get(metric, set())
             and summary.get("status") == "ok"
             and summary.get("n_raw_metric_rows") == len(rows)
             and summary.get("n_dataset_views") == len(observed_views)
@@ -1757,6 +1820,7 @@ def build_final_analysis(
             },
             "inference_unit": "biological_draw",
             "metric_direction_contract": metric_direction_contract,
+            "metric_applicability_contract": _metric_applicability_contract(),
             "technical_views_are_repeated_measurements": True,
             "model_seeds_are_repeated_measurements": True,
         },
@@ -1834,13 +1898,17 @@ def _authority_file(
 
 
 def _git_object_bytes(repository: Path, method_commit: str) -> tuple[str, bytes]:
+    from .study import _git_environment
+
     source_path = "maskimpute_benchmark/selection.py"
+    environment = _git_environment()
     try:
         revision = subprocess.run(
             ["git", "rev-parse", "--verify", f"{method_commit}:{source_path}"],
             cwd=repository,
             check=False,
             capture_output=True,
+            env=environment,
         )
         blob_oid = revision.stdout.decode("ascii").strip()
         if revision.returncode != 0 or _GIT_OID.fullmatch(blob_oid) is None:
@@ -1852,6 +1920,7 @@ def _git_object_bytes(repository: Path, method_commit: str) -> tuple[str, bytes]
             cwd=repository,
             check=False,
             capture_output=True,
+            env=environment,
         )
         if content.returncode != 0:
             raise FinalAnalysisContractError(
