@@ -471,6 +471,7 @@ def _completed_attempt(
     probability=None,
     score_diagnostics: dict[str, object] | None = None,
     prepared=None,
+    output_converter=None,
 ):
     from dataclasses import replace
 
@@ -552,7 +553,15 @@ def _completed_attempt(
         peak_rss_bytes=1,
         peak_gpu_bytes=1,
     )
-    return evaluate_adapter_outcome(plan_entry.run, prepared, outcome)
+    arguments = {}
+    if output_converter is not None:
+        arguments["output_converter"] = output_converter
+    return evaluate_adapter_outcome(
+        plan_entry.run,
+        prepared,
+        outcome,
+        **arguments,
+    )
 
 
 def _authority():
@@ -1194,7 +1203,7 @@ def test_final_result_store_refits_once_and_rejects_coordinated_score_replacemen
         prepared,
         context,
         calibration_usage="retained_all_development",
-        run_status="completed",
+        matrix_present=True,
     )
     np.testing.assert_array_equal(cached_probability, probability)
     assert cached_policy == policy
@@ -1265,6 +1274,221 @@ def test_final_result_store_refits_once_and_rejects_coordinated_score_replacemen
     with pytest.raises(FinalRunnerContractError, match="matrix differs"):
         store.load_records()
     assert refit_calls == 1
+
+
+def test_final_append_validates_before_publishing_and_allows_retry(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    source_entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    entry = replace(source_entry, run=replace(source_entry.run, ordinal=1))
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    prepared, context, valid_attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
+    )
+    policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
+    assert isinstance(policy, dict)
+    invalid_probability = np.where(
+        prepared.method_input.counts == 0.0,
+        0.125,
+        0.0,
+    ).astype("<f8")
+    invalid_attempt = _completed_attempt(
+        entry,
+        probability=invalid_probability,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+    )
+    output = tmp_path / "execution"
+    store = _final_store(
+        output,
+        plan,
+        prepared={prepared.binding.dataset_id: prepared},
+        authority=context,
+        authority_repository=tmp_path,
+    )
+
+    with pytest.raises(FinalRunnerContractError, match="publish final"):
+        store.append(entry, invalid_attempt, execution_request=request)
+    assert not output.exists()
+
+    record = store.append(entry, valid_attempt, execution_request=request)
+    assert record["run"]["status"] == "completed"
+    assert store.load_records() == (record,)
+
+
+@pytest.mark.parametrize("tamper", ("matrix", "policy", "report"))
+def test_final_conversion_terminal_score_remains_exactly_authorized(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    from dataclasses import replace
+    import zlib
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.prezero_evidence import _score_report
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    source_entry = next(
+        value for value in full.entries if value.run.method_id == "maskimpute"
+    )
+    entry = replace(source_entry, run=replace(source_entry.run, ordinal=1))
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="d" * 64,
+    )
+    prepared, context, valid_attempt, request = _real_final_execution_inputs(
+        tmp_path,
+        entry,
+        plan,
+        registry,
+    )
+    policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
+    assert isinstance(policy, dict)
+
+    def reject_conversion(_method_input, _execution):
+        raise ValueError("deliberate evaluator conversion rejection")
+
+    conversion_attempt = _completed_attempt(
+        entry,
+        probability=valid_attempt.p_pre_zero_evidence.matrix,
+        score_diagnostics=_diagnostics_from_policy(policy),
+        prepared=prepared,
+        output_converter=reject_conversion,
+    )
+    assert conversion_attempt.run.status == "unavailable"
+    output = tmp_path / "execution"
+    store = _final_store(
+        output,
+        plan,
+        prepared={prepared.binding.dataset_id: prepared},
+        authority=context,
+        authority_repository=tmp_path,
+    )
+    record = store.append(entry, conversion_attempt, execution_request=request)
+    assert record["run"]["status"] == "unavailable"
+    assert record["p_pre_zero_evidence"]["status"] == "unavailable"
+
+    evidence = record["p_pre_zero_evidence"]
+    score_path = output / evidence["storage"]["path"]
+    raw = zlib.decompress(score_path.read_bytes())
+    if tamper == "matrix":
+        replacement = np.where(
+            prepared.method_input.counts == 0.0,
+            0.125,
+            0.0,
+        ).astype("<f8")
+        raw = replacement.tobytes(order="C")
+        compressed = zlib.compress(raw, level=6)
+        score_path.write_bytes(compressed)
+        evidence["storage"].update(
+            {
+                "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
+                "compressed_nbytes": len(compressed),
+                "uncompressed_sha256": hashlib.sha256(raw).hexdigest(),
+                "uncompressed_nbytes": len(raw),
+            }
+        )
+        evidence["matrix"]["content_sha256"] = hashlib.sha256(raw).hexdigest()
+        evidence["overall"], evidence["strata"] = _score_report(
+            replacement,
+            np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+            np.asarray(
+                prepared.evaluator_dataset.layers["truth"], dtype=np.float64
+            ),
+            truth_kind="exact_pre_capture",
+            unavailable_status="unavailable",
+            unavailable_reason=evidence["reason"],
+        )
+    elif tamper == "policy":
+        evidence["policy"]["calibration_scope"] = "forged_scope"
+        evidence["policy_sha256"] = canonical_sha256(evidence["policy"])
+    elif tamper == "report":
+        evidence["overall"]["metrics"]["brier"]["reason"] = "forged_reason"
+    else:  # pragma: no cover - parametrization is fixed above
+        raise AssertionError(tamper)
+    semantic = hashlib.sha256()
+    semantic.update(b"maskimpute-realized-p-pre-zero-v1\0")
+    semantic.update(
+        json.dumps(
+            {
+                "identity": evidence["identity"],
+                "shape": evidence["matrix"]["shape"],
+                "dtype": evidence["matrix"]["dtype"],
+                "policy_sha256": evidence["policy_sha256"],
+            },
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    )
+    semantic.update(raw)
+    evidence["matrix"]["semantic_sha256"] = semantic.hexdigest()
+    evidence_body = {
+        name: value
+        for name, value in evidence.items()
+        if name not in {"evidence_sha256", "storage"}
+    }
+    evidence["evidence_sha256"] = canonical_sha256(evidence_body)
+    record_path = output / "records/00000001.json"
+    record_path.write_text(
+        json.dumps(
+            record,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        FinalRunnerContractError,
+        match="p_pre_zero|matrix|policy|report",
+    ):
+        store.load_records()
 
 
 def test_final_result_store_append_does_not_rehash_the_whole_prefix(
@@ -2041,9 +2265,11 @@ def test_interrupted_final_attempt_transaction_removes_orphan_artifacts(
     store = _final_store(output, plan)
     original = store._stored_final_attempt
 
-    def interrupt_after_artifacts(attempt):
-        original(attempt)
-        raise RuntimeError("interrupted after artifacts")
+    def interrupt_after_artifacts(attempt, *, artifacts=None):
+        stored = original(attempt, artifacts=artifacts)
+        if artifacts is None:
+            raise RuntimeError("interrupted after artifacts")
+        return stored
 
     monkeypatch.setattr(store, "_stored_final_attempt", interrupt_after_artifacts)
     with pytest.raises(RuntimeError, match="interrupted"):

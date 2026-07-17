@@ -310,7 +310,11 @@ def _completed_maskimpute(
     *,
     execution: MaskImputeAdapterExecution | None = None,
     calibration_file_sha256: str = "7" * 64,
+    output_converter=None,
 ):
+    arguments = {}
+    if output_converter is not None:
+        arguments["output_converter"] = output_converter
     return evaluate_adapter_outcome(
         _entry(prepared),
         prepared,
@@ -329,6 +333,7 @@ def _completed_maskimpute(
                 fold_calibrator_sha256="b" * 64,
             ),
         ),
+        **arguments,
     )
 
 
@@ -398,6 +403,22 @@ def _real_development_checkpoint_case(
         repository / "competition",
         authority_repository=repository,
     )
+
+
+def _diagnostics_from_persisted_policy(
+    policy: dict[str, object],
+) -> dict[str, object]:
+    return {
+        "source": policy["score_source"],
+        "score_artifact_sha256": policy["score_artifact_sha256"],
+        "score_input_sha256": policy["score_input_sha256"],
+        "score_config_sha256": policy["score_config_sha256"],
+        "calibration_file_sha256": policy["calibration_file_sha256"],
+        "calibration_payload_sha256": policy["calibration_payload_sha256"],
+        "retained_calibrator": policy["calibration_algorithm"],
+        "calibration_scope": policy["calibration_scope"],
+        "equivalence_reason": policy["calibration_equivalence_reason"],
+    }
 
 
 def _rewrite_checkpoint(store: CheckpointStore, mutate) -> dict[str, object]:
@@ -957,6 +978,198 @@ def test_development_checkpoint_rejects_coordinated_score_replacement(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="matrix differs"):
+        store.load(plan, prepared_datasets=prepared_datasets)
+
+
+def test_score_authority_cache_returns_detached_matrix_and_policy(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    plan, attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
+    prepared_datasets = _prepared_datasets(prepared)
+    store.append(
+        plan,
+        None,
+        attempt,
+        DevelopmentBudget(),
+        prepared_datasets=prepared_datasets,
+    )
+    assert plan.execution_context is not None
+
+    probability, policy = store._expected_prezero_authority(
+        plan.entries[0],
+        prepared,
+        plan.execution_context,
+        calibration_usage="development_holdout",
+        matrix_present=True,
+    )
+    assert probability is not None
+    assert policy is not None
+    probability.setflags(write=True)
+    probability[0, 0] = 0.125
+    policy["nested_mutation"] = {"values": []}
+    policy["nested_mutation"]["values"].append("forged")
+
+    repeated_probability, repeated_policy = store._expected_prezero_authority(
+        plan.entries[0],
+        prepared,
+        plan.execution_context,
+        calibration_usage="development_holdout",
+        matrix_present=True,
+    )
+    np.testing.assert_array_equal(
+        repeated_probability,
+        attempt.p_pre_zero_evidence.matrix,
+    )
+    assert repeated_probability.flags.writeable is False
+    assert repeated_policy == attempt.p_pre_zero_evidence.to_record()["policy"]
+
+    def mutate(payload: dict[str, object]) -> None:
+        evidence = payload["records"][0]["p_pre_zero_evidence"]
+        evidence["policy"]["calibration_scope"] = "forged_scope"
+        raw = zlib.decompress(
+            (store.output_dir / evidence["storage"]["path"]).read_bytes()
+        )
+        _rebind_score_payload(payload, score_raw=raw)
+
+    _rewrite_checkpoint(store, mutate)
+    with pytest.raises(RunnerContractError, match="policy differs"):
+        store.load(plan, prepared_datasets=prepared_datasets)
+
+
+def test_development_append_validates_before_publishing_and_allows_retry(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    plan, valid_attempt, store = _real_development_checkpoint_case(
+        tmp_path, prepared
+    )
+    policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
+    assert isinstance(policy, dict)
+    invalid_probability = np.where(
+        prepared.method_input.counts == 0.0,
+        0.125,
+        0.0,
+    ).astype("<f8")
+    invalid_attempt = _completed_maskimpute(
+        prepared,
+        execution=_maskimpute_execution(
+            prepared,
+            invalid_probability,
+            _diagnostics_from_persisted_policy(policy),
+        ),
+        calibration_file_sha256=plan.input_hashes[
+            "retained_calibration_sha256"
+        ],
+    )
+    prepared_datasets = _prepared_datasets(prepared)
+
+    with pytest.raises(RunnerContractError, match="matrix differs"):
+        store.append(
+            plan,
+            None,
+            invalid_attempt,
+            DevelopmentBudget(),
+            prepared_datasets=prepared_datasets,
+        )
+    assert not store.output_dir.exists()
+
+    report = store.append(
+        plan,
+        None,
+        valid_attempt,
+        DevelopmentBudget(),
+        prepared_datasets=prepared_datasets,
+    )
+    assert report.status == "completed"
+    assert len(report.records) == 1
+
+
+@pytest.mark.parametrize("tamper", ("matrix", "policy", "report"))
+def test_development_conversion_terminal_score_remains_exactly_authorized(
+    tmp_path: Path,
+    tamper: str,
+) -> None:
+    from maskimpute_benchmark.prezero_evidence import _score_report
+
+    prepared = _prepared()
+    plan, valid_attempt, store = _real_development_checkpoint_case(
+        tmp_path, prepared
+    )
+    policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
+    assert isinstance(policy, dict)
+
+    def reject_conversion(_method_input, _execution):
+        raise ValueError("deliberate evaluator conversion rejection")
+
+    conversion_attempt = _completed_maskimpute(
+        prepared,
+        execution=_maskimpute_execution(
+            prepared,
+            valid_attempt.p_pre_zero_evidence.matrix,
+            _diagnostics_from_persisted_policy(policy),
+        ),
+        calibration_file_sha256=plan.input_hashes[
+            "retained_calibration_sha256"
+        ],
+        output_converter=reject_conversion,
+    )
+    assert conversion_attempt.run.status == "unavailable"
+    assert conversion_attempt.p_pre_zero_evidence.raw_matrix_bytes is not None
+    prepared_datasets = _prepared_datasets(prepared)
+    report = store.append(
+        plan,
+        None,
+        conversion_attempt,
+        DevelopmentBudget(),
+        prepared_datasets=prepared_datasets,
+    )
+    assert report.records[0]["run"]["status"] == "unavailable"
+    assert report.records[0]["p_pre_zero_evidence"]["status"] == "unavailable"
+
+    def mutate(payload: dict[str, object]) -> None:
+        evidence = payload["records"][0]["p_pre_zero_evidence"]
+        path = store.output_dir / evidence["storage"]["path"]
+        raw = zlib.decompress(path.read_bytes())
+        if tamper == "matrix":
+            replacement = np.where(
+                prepared.method_input.counts == 0.0,
+                0.125,
+                0.0,
+            ).astype("<f8")
+            raw = replacement.tobytes(order="C")
+            compressed = zlib.compress(raw, level=6)
+            path.write_bytes(compressed)
+            evidence["storage"].update(
+                {
+                    "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
+                    "compressed_nbytes": len(compressed),
+                    "uncompressed_sha256": hashlib.sha256(raw).hexdigest(),
+                    "uncompressed_nbytes": len(raw),
+                }
+            )
+            evidence["matrix"]["content_sha256"] = hashlib.sha256(raw).hexdigest()
+            evidence["overall"], evidence["strata"] = _score_report(
+                replacement,
+                np.asarray(prepared.evaluator_dataset.X, dtype=np.float64),
+                np.asarray(
+                    prepared.evaluator_dataset.layers["pre_capture_counts"],
+                    dtype=np.float64,
+                ),
+                truth_kind="exact_pre_capture",
+                unavailable_status="unavailable",
+                unavailable_reason=evidence["reason"],
+            )
+        elif tamper == "policy":
+            evidence["policy"]["calibration_scope"] = "forged_scope"
+        elif tamper == "report":
+            evidence["overall"]["metrics"]["brier"]["reason"] = "forged_reason"
+        else:  # pragma: no cover - parametrization is fixed above
+            raise AssertionError(tamper)
+        _rebind_score_payload(payload, score_raw=raw)
+
+    _rewrite_checkpoint(store, mutate)
+    with pytest.raises(RunnerContractError, match="p_pre_zero|matrix|policy|report"):
         store.load(plan, prepared_datasets=prepared_datasets)
 
 

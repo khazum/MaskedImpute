@@ -857,7 +857,7 @@ def _normalize_score_evidence(
             )
             if (
                 method != "maskimpute"
-                or evidence_status != "completed"
+                or evidence_status not in {"completed", "unavailable"}
                 or not isinstance(shape, list)
                 or len(shape) != 2
                 or any(type(item) is not int or item <= 0 for item in shape)

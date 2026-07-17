@@ -12,6 +12,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 from types import MappingProxyType
 from typing import Literal
 import zlib
@@ -1394,15 +1395,21 @@ class FinalResultStore:
         finally:
             os.close(directory)
 
-    def _stored_final_attempt(self, attempt: EvaluatedAttempt) -> dict[str, object]:
+    def _stored_final_attempt(
+        self,
+        attempt: EvaluatedAttempt,
+        *,
+        artifacts: CheckpointStore | None = None,
+    ) -> dict[str, object]:
         """Store one compressed evaluator matrix and omit its redundant native form."""
 
+        artifact_store = self._artifacts if artifacts is None else artifacts
         without_dense_outputs = replace(
             attempt,
             native_output=None,
             evaluator_output=None,
         )
-        stored = self._artifacts._stored_attempt(without_dense_outputs)
+        stored = artifact_store._stored_attempt(without_dense_outputs)
         run = stored["run"]
         assert isinstance(run, dict)
         run["native_output_retention"] = (
@@ -1422,7 +1429,7 @@ class FinalResultStore:
         evaluator = np.asarray(attempt.evaluator_output, dtype="<f8", order="C")
         raw = evaluator.tobytes(order="C")
         compressed = zlib.compress(raw, level=_FINAL_OUTPUT_COMPRESSION_LEVEL)
-        relative, digest = self._artifacts._publish_immutable(
+        relative, digest = artifact_store._publish_immutable(
             f"runs/{attempt.run.run_id}.log2-cp10k-f64.zlib",
             compressed,
         )
@@ -1441,10 +1448,14 @@ class FinalResultStore:
         return stored
 
     def _validate_final_output_storage(
-        self, run: Mapping[str, object]
+        self,
+        run: Mapping[str, object],
+        *,
+        artifacts: CheckpointStore | None = None,
     ) -> dict[str, object]:
         """Validate bounded decompression and return a raw-store validation view."""
 
+        artifact_store = self._artifacts if artifacts is None else artifacts
         validation_run = dict(run)
         native_present = run.get("native_output_sha256") is not None
         if run.get("native_output_retention") != (
@@ -1504,7 +1515,7 @@ class FinalResultStore:
                 run.get("evaluator_output_file_sha256"),
                 "compressed evaluator output file",
             )
-            path = self._artifacts._safe_artifact_path(
+            path = artifact_store._safe_artifact_path(
                 path_value,
                 "compressed evaluator output",
             )
@@ -1737,7 +1748,6 @@ class FinalResultStore:
             )
         if attempt.run.run_id != plan_entry.run.run_id:
             raise FinalRunnerContractError("final attempt differs from its plan entry")
-        intent_path = self._publish_transaction_intent(plan_entry, attempt)
         request_receipt: dict[str, object] | None = None
         if execution_request is not None:
             if not isinstance(execution_request, ExecutionRequest):
@@ -1781,6 +1791,57 @@ class FinalResultStore:
                     execution_request.retained_calibration_sha256
                 ),
             }
+        try:
+            with tempfile.TemporaryDirectory(
+                prefix="maskimpute-final-attempt-stage-"
+            ) as staging_name:
+                staging = CheckpointStore(
+                    Path(staging_name),
+                    authority_repository=self._artifacts.authority_repository,
+                )
+                staged_base = json.loads(
+                    _canonical_bytes(
+                        self._stored_final_attempt(attempt, artifacts=staging)
+                    ).decode("utf-8")
+                )
+                staged = {
+                    "run": staged_base["run"],
+                    "metrics": staged_base["metrics"],
+                    "p_pre_zero_evidence": staged_base["p_pre_zero_evidence"],
+                    "execution_request": request_receipt,
+                }
+                self._validate_execution_request_receipt(
+                    request_receipt, plan_entry, staged["run"]
+                )
+                staged_validation_run = self._validate_final_output_storage(
+                    staged["run"], artifacts=staging
+                )
+                staging._validate_stored_record(
+                    {
+                        "run": staged_validation_run,
+                        "metrics": staged["metrics"],
+                        "p_pre_zero_evidence": staged["p_pre_zero_evidence"],
+                    },
+                    plan_entry.run,
+                    prepared=self.prepared_datasets[plan_entry.run.dataset_id],
+                    expected_dataset_qc_policy_sha256=DatasetQCPolicy.fixed().sha256,
+                    expected_score_config_sha256=(
+                        self.execution_authority.count_model_config_sha256
+                    ),
+                    expected_calibration_file_sha256=(
+                        self.execution_authority.retained_calibration_sha256
+                    ),
+                    execution_authority=self.execution_authority,
+                    calibration_usage="retained_all_development",
+                )
+                self._artifacts._prezero_authority_cache.update(
+                    staging._prezero_authority_cache
+                )
+        except (RunnerContractError, OSError, ValueError) as error:
+            raise FinalRunnerContractError(
+                "cannot publish final execution record"
+            ) from error
+        intent_path = self._publish_transaction_intent(plan_entry, attempt)
         try:
             base_stored = json.loads(
                 _canonical_bytes(self._stored_final_attempt(attempt)).decode("utf-8")

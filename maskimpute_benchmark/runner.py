@@ -3648,7 +3648,7 @@ class CheckpointStore:
         )
         self._prezero_authority_cache: dict[
             tuple[str, str, str, str, str, str, bool, str],
-            tuple[np.ndarray, dict[str, object]],
+            tuple[tuple[int, int], bytes, bytes],
         ] = {}
 
     def _expected_prezero_authority(
@@ -3658,19 +3658,19 @@ class CheckpointStore:
         execution_authority: ExecutionAuthorityContext | None,
         *,
         calibration_usage: str,
-        run_status: object,
+        matrix_present: bool,
     ) -> tuple[np.ndarray | None, dict[str, object] | None]:
-        """Derive and cache the exact matrix/policy for completed score runs."""
+        """Derive and cache authority whenever realized score bytes are present."""
 
         if (
-            run_status != "completed"
+            not matrix_present
             or entry.method_id != "maskimpute"
             or not entry.requires_count_score
         ):
             return None, None
         if execution_authority is None:
             raise RunnerContractError(
-                "completed MaskImpute score lacks frozen execution authority"
+                "realized MaskImpute score lacks frozen execution authority"
             )
         key = (
             execution_authority.authority_sha256,
@@ -3691,17 +3691,32 @@ class CheckpointStore:
                 calibration_usage=calibration_usage,
                 repository=self.authority_repository,
             )
-            frozen_probability = np.array(
+            canonical_probability = np.array(
                 probability,
                 dtype="<f8",
                 copy=True,
                 order="C",
                 subok=False,
             )
-            frozen_probability.setflags(write=False)
-            cached = (frozen_probability, dict(policy))
+            cached = (
+                canonical_probability.shape,
+                canonical_probability.tobytes(order="C"),
+                _canonical_bytes(policy),
+            )
             self._prezero_authority_cache[key] = cached
-        return cached
+        shape, probability_bytes, policy_bytes = cached
+        detached_probability = np.frombuffer(
+            probability_bytes, dtype="<f8"
+        ).reshape(shape).copy(order="C")
+        detached_probability.setflags(write=False)
+        detached_policy = json.loads(
+            policy_bytes.decode("utf-8"),
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+        if not isinstance(detached_policy, dict):  # pragma: no cover - internal bytes
+            raise RunnerContractError("cached p_pre_zero policy is invalid")
+        return detached_probability, detached_policy
 
     def _ensure_root(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -3891,8 +3906,45 @@ class CheckpointStore:
         *,
         prepared_datasets: Mapping[str, PreparedDataset],
     ) -> CheckpointReport:
-        _validate_prepared_dataset_authority(plan, prepared_datasets)
+        prepared_by_dataset = _validate_prepared_dataset_authority(
+            plan, prepared_datasets
+        )
         records = [] if report is None else list(report.records)
+        if len(records) >= len(plan.entries):
+            raise RunnerContractError("checkpoint already contains its full plan")
+        entry = plan.entries[len(records)]
+        prepared = prepared_by_dataset[entry.dataset_id]
+        with tempfile.TemporaryDirectory(
+            prefix="maskimpute-checkpoint-stage-"
+        ) as staging_name:
+            staging = CheckpointStore(
+                Path(staging_name),
+                authority_repository=self.authority_repository,
+            )
+            staged_record = json.loads(
+                _canonical_bytes(staging._stored_attempt(attempt)).decode("utf-8"),
+                parse_constant=_reject_json_constant,
+                object_pairs_hook=_unique_json_object,
+            )
+            staging._validate_stored_record(
+                staged_record,
+                entry,
+                prepared=prepared,
+                expected_dataset_qc_policy_sha256=plan.input_hashes.get(
+                    "dataset_qc_policy_sha256"
+                ),
+                expected_score_config_sha256=plan.input_hashes.get(
+                    "count_model_config_sha256"
+                ),
+                expected_calibration_file_sha256=plan.input_hashes.get(
+                    "retained_calibration_sha256"
+                ),
+                execution_authority=plan.execution_context,
+                calibration_usage="development_holdout",
+            )
+            self._prezero_authority_cache.update(
+                staging._prezero_authority_cache
+            )
         records.append(self._stored_attempt(attempt))
         return self.write(
             plan,
@@ -4248,12 +4300,20 @@ class CheckpointStore:
             "method_input_sha256": authoritative_method_input_sha256,
             "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
         }
+        matrix_value = (
+            evidence_value.get("matrix")
+            if isinstance(evidence_value, Mapping)
+            else None
+        )
         expected_probability, expected_policy = self._expected_prezero_authority(
             entry,
             prepared,
             execution_authority,
             calibration_usage=calibration_usage,
-            run_status=run.get("status"),
+            matrix_present=(
+                isinstance(matrix_value, Mapping)
+                and matrix_value.get("shape") is not None
+            ),
         )
         observed, truth, truth_kind = _prezero_evaluator_targets(prepared)
         try:
