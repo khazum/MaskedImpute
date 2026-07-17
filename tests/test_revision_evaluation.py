@@ -4,6 +4,7 @@ from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -111,8 +112,7 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
         repository / "artifacts/study/development/count_scores/manifest.json"
     )
     calibration_path = (
-        repository
-        / "artifacts/study/development/calibration/retained_calibration.json"
+        repository / "artifacts/study/development/calibration/retained_calibration.json"
     )
     count_score_path.parent.mkdir(parents=True)
     calibration_path.parent.mkdir(parents=True)
@@ -122,16 +122,69 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
     calibration_sha = hashlib.sha256(calibration_path.read_bytes()).hexdigest()
     base_input_path = repository / paths.activation_selection_input
     base_report_path = repository / paths.activation_selection_report
-    base_evaluation_path = repository / (
-        "artifacts/study/development/evaluation/evaluation_manifest.json"
-    )
     for path, raw in (
         (base_input_path, b'{"result_sha256":"' + b"1" * 64 + b'"}\n'),
         (base_report_path, b"{}\n"),
-        (base_evaluation_path, b"{}\n"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(raw)
+
+    base_checkpoint_path = (
+        repository
+        / "artifacts/study/development/competition-reconstruction/checkpoint.json"
+    )
+    base_checkpoint_body = {
+        "plan_sha256": "7" * 64,
+        "input_hashes": {"runner_authority_sha256": "8" * 64},
+        "records": [
+            {
+                "run": {
+                    "run_id": "run-base",
+                    "method_id": "maskimpute",
+                    "configuration_id": "v27-c03-calibrated-r1-g1",
+                    "configuration_kind": "candidate_search",
+                    "status": "completed",
+                    "reason": None,
+                }
+            }
+        ],
+    }
+    base_checkpoint = {
+        **base_checkpoint_body,
+        "checkpoint_sha256": canonical_sha256(base_checkpoint_body),
+    }
+    base_checkpoint_path.parent.mkdir(parents=True)
+    base_checkpoint_raw = (
+        json.dumps(base_checkpoint, sort_keys=True, separators=(",", ":")).encode()
+        + b"\n"
+    )
+    base_checkpoint_path.write_bytes(base_checkpoint_raw)
+    base_evaluation_path = repository / (
+        "artifacts/study/development/evaluation/evaluation_manifest.json"
+    )
+    base_reconstruction = {
+        "checkpoint_path": (
+            "artifacts/study/development/competition-reconstruction/checkpoint.json"
+        ),
+        "checkpoint_file_sha256": hashlib.sha256(base_checkpoint_raw).hexdigest(),
+        "checkpoint_sha256": base_checkpoint["checkpoint_sha256"],
+        "plan_sha256": base_checkpoint["plan_sha256"],
+        "input_hashes": base_checkpoint["input_hashes"],
+        "raw_artifacts": [],
+    }
+    base_evaluation_body = {
+        "schema_version": 1,
+        "reconstruction": base_reconstruction,
+    }
+    base_evaluation = {
+        **base_evaluation_body,
+        "manifest_sha256": canonical_sha256(base_evaluation_body),
+    }
+    base_evaluation_path.parent.mkdir(parents=True, exist_ok=True)
+    base_evaluation_path.write_bytes(
+        json.dumps(base_evaluation, sort_keys=True, separators=(",", ":")).encode()
+        + b"\n"
+    )
 
     reconstruction_dir = repository / paths.reconstruction_directory
     reconstruction_dir.mkdir(parents=True)
@@ -146,7 +199,16 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
         checkpoint_sha256="2" * 64,
         plan_sha256="3" * 64,
         input_hashes={"runner_authority_sha256": "4" * 64},
-        records=(),
+        records=(
+            {
+                "run": {
+                    "run_id": "run-test",
+                    "configuration_id": "v28-c01-nb-parent-c03",
+                    "status": "completed",
+                    "reason": None,
+                }
+            },
+        ),
         raw_artifacts=(
             RawArtifactBinding(
                 run_id="run-test",
@@ -215,9 +277,10 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
     evaluation = json.loads(evaluation_path.read_bytes())
     assert result["schema_version"] == 3
     assert result["revision_versions"] == ["v28"]
-    assert result["evaluation_manifest_sha256"] == hashlib.sha256(
-        evaluation_path.read_bytes()
-    ).hexdigest()
+    assert (
+        result["evaluation_manifest_sha256"]
+        == hashlib.sha256(evaluation_path.read_bytes()).hexdigest()
+    )
     assert result["result_sha256"] == canonical_sha256(
         {key: value for key, value in result.items() if key != "result_sha256"}
     )
@@ -247,7 +310,12 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
             base_evaluation_path.read_bytes()
         ).hexdigest(),
         stages=(stage,),
-        authority=None,
+        authority=SimpleNamespace(
+            declarations=(
+                SimpleNamespace(id="v27-c03-calibrated-r1-g1"),
+                SimpleNamespace(id=spec.configuration_id),
+            )
+        ),
     )
     bindings = validate_revision_artifact_payloads(repository, result, assembled)
     assert bindings["v28_reconstruction_checkpoint_file_sha256"] == (
@@ -256,10 +324,30 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
     assert bindings["v28_orthogonal_manifest_file_sha256"] == (
         orthogonal.manifest_file_sha256
     )
+    assert (
+        bindings["base_reconstruction_checkpoint_file_sha256"]
+        == (base_reconstruction["checkpoint_file_sha256"])
+    )
+    assert bindings["base_reconstruction_statuses_sha256"] == canonical_sha256(
+        [{"run_id": "run-base", "status": "completed", "reason": None}]
+    )
+    assert bindings["v28_reconstruction_plan_sha256"] == reconstruction.plan_sha256
+    assert bindings["v28_reconstruction_input_hashes_sha256"] == canonical_sha256(
+        dict(reconstruction.input_hashes)
+    )
+    assert bindings["v28_reconstruction_statuses_sha256"] == canonical_sha256(
+        [{"run_id": "run-test", "status": "completed", "reason": None}]
+    )
+    assert (
+        bindings["v28_evaluation_manifest_file_sha256"]
+        == hashlib.sha256(evaluation_path.read_bytes()).hexdigest()
+    )
 
     tampered = json.loads(evaluation_path.read_bytes())
     tampered["revisions"][0]["reconstruction"]["checkpoint_sha256"] = "9" * 64
-    unsigned = {key: value for key, value in tampered.items() if key != "manifest_sha256"}
+    unsigned = {
+        key: value for key, value in tampered.items() if key != "manifest_sha256"
+    }
     tampered["manifest_sha256"] = canonical_sha256(unsigned)
     evaluation_path.write_text(
         json.dumps(tampered, sort_keys=True, separators=(",", ":")) + "\n"

@@ -93,6 +93,20 @@ bindings. Development selection schema 4 requires the resulting manifest to
 cover exactly the reconstruction-selection denominator before selection can
 proceed; schemas 2 and 3 remain readable as pre-downstream legacy artifacts.
 
+When v28 or v29 is activated, development evidence is one ordered bundle over
+the base checkpoint and every consecutive activated revision checkpoint.
+Revision checkpoints repeat comparators and the capacity control, so the
+bundle retains the base selection-primary denominator once and adds only each
+revision's own candidate rows. Each source separately binds checkpoint file
+and payload hashes, rebuilt plan and input hashes, exact run statuses,
+denominator identity, and the corresponding evaluator-manifest reconstruction
+object. Schema-4 validation cross-checks all of those source bindings against
+the independently rebuilt revision evaluation; metric-level `unavailable`
+rows therefore cannot be mistaken for a failed completed run. Fixed outputs
+are `downstream`, `downstream-v28`, and `downstream-v29`, with the runner
+selecting the latest present fixed combined revision input and refusing an
+invalid latest input rather than falling back.
+
 ## Verification
 
 Focused tests cover hand-calculated values, stable-ID permutation invariance,

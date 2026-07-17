@@ -401,9 +401,7 @@ def _attach_evaluation_manifest(
         "orthogonal": {} if orthogonal is None else orthogonal,
         "sources": {} if sources is None else sources,
         "null_de_audits": [] if null_de_audits is None else null_de_audits,
-        "orthogonal_audits": (
-            [] if orthogonal_audits is None else orthogonal_audits
-        ),
+        "orthogonal_audits": ([] if orthogonal_audits is None else orthogonal_audits),
         "combined_score": None,
     }
     evaluation = {
@@ -868,6 +866,68 @@ def test_schema_four_selection_requires_downstream_and_revalidates_legacy_envelo
         key: value for key, value in projected.items() if key != "result_sha256"
     }
     assert projected["result_sha256"] == selection._canonical_sha256(projected_core)
+
+
+def test_revision_downstream_sources_crosscheck_each_evaluation_checkpoint() -> None:
+    import maskimpute_benchmark.selection as selection
+
+    downstream: dict[str, str] = {}
+    evaluation: dict[str, str] = {}
+    for source_id in ("base", "v28", "v29"):
+        for downstream_name, evaluation_name in (
+            ("checkpoint_path", "reconstruction_checkpoint_path"),
+            ("checkpoint_file_sha256", "reconstruction_checkpoint_file_sha256"),
+            (
+                "checkpoint_payload_sha256",
+                "reconstruction_checkpoint_payload_sha256",
+            ),
+            ("plan_sha256", "reconstruction_plan_sha256"),
+            ("input_hashes_sha256", "reconstruction_input_hashes_sha256"),
+            ("statuses_sha256", "reconstruction_statuses_sha256"),
+            ("evaluation_manifest_path", "evaluation_manifest_path"),
+            (
+                "evaluation_manifest_file_sha256",
+                "evaluation_manifest_file_sha256",
+            ),
+            (
+                "evaluation_manifest_payload_sha256",
+                "evaluation_manifest_payload_sha256",
+            ),
+            ("evaluation_source_sha256", "evaluation_source_sha256"),
+        ):
+            value = f"{source_id}-{downstream_name}"
+            downstream[f"downstream_{source_id}_{downstream_name}"] = value
+            evaluation[f"{source_id}_{evaluation_name}"] = value
+
+    selection._validate_revision_downstream_source_bindings(
+        downstream,
+        evaluation,
+        ("v28", "v29"),
+    )
+
+    forged = dict(downstream)
+    forged["downstream_v28_checkpoint_file_sha256"] = "forged"
+    with pytest.raises(
+        selection.SelectionAuthorityError,
+        match="v28 downstream source differs",
+    ):
+        selection._validate_revision_downstream_source_bindings(
+            forged,
+            evaluation,
+            ("v28", "v29"),
+        )
+
+    incomplete = dict(downstream)
+    del incomplete["downstream_v29_statuses_sha256"]
+    with pytest.raises(
+        selection.SelectionAuthorityError,
+        match="v29 downstream source differs",
+    ):
+        selection._validate_revision_downstream_source_bindings(
+            incomplete,
+            evaluation,
+            ("v28", "v29"),
+        )
 
 
 def test_selection_blocks_if_count_score_manifest_binding_is_pending(tmp_path):
@@ -1379,14 +1439,10 @@ def test_schema2_rehash_all_cannot_change_reconstructed_efficacy_metric(
     authority = selection._load_selection_authority(repository, require_clean=False)
     status, payload = _status_and_payload(authority)
     independently_rebuilt_records = json.loads(json.dumps(payload["records"]))
-    efficacy = next(
-        row for row in payload["records"] if row["metric"] == "mse"
-    )
+    efficacy = next(row for row in payload["records"] if row["metric"] == "mse")
     efficacy["value"] = float(efficacy["value"]) + 0.25
     inputs = _reconstruction_inputs(authority, status, payload)
-    reconstruction = _minimal_reconstruction_evidence(
-        repository, input_hashes=inputs
-    )
+    reconstruction = _minimal_reconstruction_evidence(repository, input_hashes=inputs)
     payload = _attach_evaluation_manifest(
         repository,
         payload,
@@ -1403,7 +1459,9 @@ def test_schema2_rehash_all_cannot_change_reconstructed_efficacy_metric(
         input_hashes=inputs,
         raw_artifacts=(),
     )
-    monkeypatch.setattr(evaluation, "_validate_evaluation_source_evidence", lambda *_: {})
+    monkeypatch.setattr(
+        evaluation, "_validate_evaluation_source_evidence", lambda *_: {}
+    )
     monkeypatch.setattr(evaluation, "_validate_orthogonal_evidence", lambda *_: {})
     monkeypatch.setattr(evaluation, "_validate_evaluator_audits", lambda *_: {})
     monkeypatch.setattr(evaluation, "_rebuild_reconstruction_plan", lambda *_: plan)
@@ -1602,12 +1660,13 @@ def test_schema2_rehash_all_cannot_change_orthogonal_interval_and_audit(
     )
     orthogonal_path.parent.mkdir(parents=True, exist_ok=True)
     orthogonal_path.write_text(
-        json.dumps(orthogonal_manifest, sort_keys=True, separators=(",", ":"))
-        + "\n"
+        json.dumps(orthogonal_manifest, sort_keys=True, separators=(",", ":")) + "\n"
     )
     orthogonal = {
         "manifest_path": str(orthogonal_path.relative_to(repository)),
-        "manifest_file_sha256": hashlib.sha256(orthogonal_path.read_bytes()).hexdigest(),
+        "manifest_file_sha256": hashlib.sha256(
+            orthogonal_path.read_bytes()
+        ).hexdigest(),
         "manifest_sha256": orthogonal_manifest["manifest_sha256"],
         "records": [],
     }
@@ -1623,7 +1682,9 @@ def test_schema2_rehash_all_cannot_change_orthogonal_interval_and_audit(
         records=(),
     )
     panel = SimpleNamespace(method_inputs=(), cite=object(), tung=object())
-    monkeypatch.setattr(evaluation, "_validate_evaluation_source_evidence", lambda *_: {})
+    monkeypatch.setattr(
+        evaluation, "_validate_evaluation_source_evidence", lambda *_: {}
+    )
     monkeypatch.setattr(evaluation, "_validate_reconstruction_evidence", lambda *_: {})
     monkeypatch.setattr(evaluation, "_validate_evaluator_audits", lambda *_: {})
     monkeypatch.setattr(

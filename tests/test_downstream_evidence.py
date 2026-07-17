@@ -309,9 +309,7 @@ def _current_prezero_evidence(run: dict[str, object]) -> dict[str, object]:
                 "lower": None,
                 "upper": None,
                 "n": 0,
-                "metrics": {
-                    name: {**value, "n": 0} for name, value in metrics.items()
-                },
+                "metrics": {name: {**value, "n": 0} for name, value in metrics.items()},
             }
             for index in range(1, 5)
         ],
@@ -323,9 +321,7 @@ def _current_prezero_evidence(run: dict[str, object]) -> dict[str, object]:
                 "lower": lower,
                 "upper": upper,
                 "n": 0,
-                "metrics": {
-                    name: {**value, "n": 0} for name, value in metrics.items()
-                },
+                "metrics": {name: {**value, "n": 0} for name, value in metrics.items()},
             }
             for label, lower, upper in (
                 ("[0,1)", 0.0, 1.0),
@@ -481,6 +477,45 @@ def _development_source_plan(source: Path) -> SimpleNamespace:
             {**stored["run"], "ordinal": ordinal}
             for ordinal, stored in enumerate(checkpoint["records"], start=1)
         ),
+    )
+
+
+def _evaluation_manifest(
+    path: Path,
+    *,
+    base_plan: object,
+    revision_plan: object,
+) -> tuple[str, str, str, str]:
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    def reconstruction(plan: object) -> dict[str, object]:
+        return {
+            "checkpoint_path": str(
+                Path(plan.source_root).relative_to(path.parent) / "checkpoint.json"
+            ),
+            "checkpoint_file_sha256": plan.source_manifest_file_sha256,
+            "checkpoint_sha256": plan.source_manifest_payload_sha256,
+            "plan_sha256": plan.source_plan_sha256,
+            "input_hashes": json.loads(
+                (Path(plan.source_root) / "checkpoint.json").read_text(encoding="utf-8")
+            )["input_hashes"],
+            "raw_artifacts": [],
+        }
+
+    base = reconstruction(base_plan)
+    revision = reconstruction(revision_plan)
+    body = {
+        "schema_version": 1,
+        "reconstruction": base,
+        "revisions": [{"version": "v28", "reconstruction": revision}],
+    }
+    payload = {**body, "manifest_sha256": canonical_sha256(body)}
+    file_sha = _write_canonical(path, payload)
+    return (
+        file_sha,
+        payload["manifest_sha256"],
+        canonical_sha256(base),
+        canonical_sha256(revision),
     )
 
 
@@ -750,7 +785,244 @@ def test_selection_primary_scope_excludes_only_nonselection_maskimpute_ablations
     assert loaded.planned_denominator_count == 2
 
 
-def test_production_selection_primary_keys_exactly_match_reconstruction_bridge() -> None:
+def test_revision_downstream_bundle_covers_base_and_activated_checkpoint(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DevelopmentSourcePlan,
+        build_downstream_evidence_plan,
+        combine_development_downstream_evidence_plans,
+        load_downstream_evidence_manifest,
+        run_downstream_evidence,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.runner import AuthorizedConfiguration
+
+    base_root = tmp_path / "base"
+    revision_root = tmp_path / "revision"
+    base_root.mkdir()
+    revision_root.mkdir()
+    base_source, base_dataset, base_cells, _base_output = _development_source(base_root)
+    revision_source, _revision_dataset, revision_cells, _revision_output = (
+        _development_source(revision_root)
+    )
+    revision_configuration = AuthorizedConfiguration.create(
+        method_id="maskimpute",
+        configuration_id="v28-c01-nb-decoder",
+        kind="candidate_search",
+        payload={
+            "configuration_id": "v28-c01-nb-decoder",
+            "method_id": "maskimpute",
+            "variant": "revision-downstream-test",
+        },
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+    checkpoint_path = revision_source / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    revised_run = checkpoint["records"][0]["run"]
+    revised_run.update(
+        {
+            "run_id": "run-v28-completed",
+            "configuration_id": revision_configuration.configuration_id,
+            "configuration_sha256": revision_configuration.configuration_sha256,
+            "configuration_kind": revision_configuration.kind,
+        }
+    )
+    output_raw = (
+        revision_source / str(revised_run["evaluator_output_path"])
+    ).read_bytes()
+    revised_run["evaluator_output_sha256"] = _evaluator_output_sha256(
+        revised_run, output_raw
+    )
+    checkpoint["records"][0]["p_pre_zero_evidence"] = _current_prezero_evidence(
+        revised_run
+    )
+    checkpoint_body = {
+        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
+    }
+    checkpoint["checkpoint_sha256"] = canonical_sha256(checkpoint_body)
+    _write_canonical(checkpoint_path, checkpoint)
+
+    base_plan = build_downstream_evidence_plan(
+        base_source,
+        source_kind="development",
+        evidence_scope="selection_primary",
+        datasets=(_dataset_binding(base_dataset, base_cells),),
+        configurations=_test_configuration_authority(),
+        source_plan=_development_source_plan(base_source),
+    )
+    _base_candidate, magic = _test_configuration_authority()
+    revision_plan = build_downstream_evidence_plan(
+        revision_source,
+        source_kind="development",
+        evidence_scope="all",
+        datasets=(_dataset_binding(base_dataset, revision_cells),),
+        configurations=(revision_configuration, magic),
+        source_plan=_development_source_plan(revision_source),
+    )
+    evaluation_path = tmp_path / "evaluation-v28.json"
+    (
+        evaluation_file_sha,
+        evaluation_payload_sha,
+        base_evaluation_sha,
+        revision_evaluation_sha,
+    ) = _evaluation_manifest(
+        evaluation_path,
+        base_plan=base_plan,
+        revision_plan=revision_plan,
+    )
+    combined = combine_development_downstream_evidence_plans(
+        tmp_path,
+        (
+            DevelopmentSourcePlan(
+                source_id="base",
+                plan=base_plan,
+                selected_methods=("default", "magic"),
+                evaluation_manifest_path="evaluation-v28.json",
+                evaluation_manifest_file_sha256=evaluation_file_sha,
+                evaluation_manifest_payload_sha256=evaluation_payload_sha,
+                evaluation_source_pointer="/reconstruction",
+                evaluation_source_sha256=base_evaluation_sha,
+            ),
+            DevelopmentSourcePlan(
+                source_id="v28",
+                plan=revision_plan,
+                selected_methods=(revision_configuration.configuration_id,),
+                evaluation_manifest_path="evaluation-v28.json",
+                evaluation_manifest_file_sha256=evaluation_file_sha,
+                evaluation_manifest_payload_sha256=evaluation_payload_sha,
+                evaluation_source_pointer="/revisions/0/reconstruction",
+                evaluation_source_sha256=revision_evaluation_sha,
+            ),
+        ),
+        revision_versions=("v28",),
+    )
+
+    assert combined.source_root == str(tmp_path.absolute())
+    assert combined.development_revision_versions == ("v28",)
+    assert tuple(source.source_id for source in combined.development_sources) == (
+        "base",
+        "v28",
+    )
+    assert len(combined.entries) == 3
+    assert [entry.configuration_id for entry in combined.entries] == [
+        "default",
+        "registry-default",
+        "v28-c01-nb-decoder",
+    ]
+    assert (
+        len({source.manifest_file_sha256 for source in combined.development_sources})
+        == 2
+    )
+    assert all(
+        source.evaluation_manifest_file_sha256 == evaluation_file_sha
+        for source in combined.development_sources
+    )
+
+    destination = tmp_path / "downstream-v28"
+    run_downstream_evidence(combined, destination)
+    loaded = load_downstream_evidence_manifest(destination)
+    assert loaded.planned_denominator_count == 3
+    assert loaded.payload["development_revision_versions"] == ["v28"]
+    assert len(loaded.payload["development_sources"]) == 2
+
+    from maskimpute_benchmark.selection import (
+        attach_downstream_evidence_to_selection_result,
+    )
+
+    selection_records = [
+        {
+            "mechanism": record["mechanism"],
+            "biological_id": record["biological_id"],
+            "technical_view": record["technical_view"],
+            "dataset_id": record["dataset_id"],
+            "dataset_sha256": record["dataset_sha256"],
+            "method": record["method"],
+            "method_sha256": record["method_artifact_sha256"],
+            "model_seed": record["model_seed"],
+            "metric": "mse",
+            "value": 0.0 if record["run_status"] == "completed" else None,
+            "status": record["run_status"],
+        }
+        for record in loaded.records
+    ]
+    selection_core = {
+        "schema_version": 3,
+        "revision_versions": ["v28"],
+        "dataset_manifest_sha256": "1" * 64,
+        "count_score_manifest_sha256": "2" * 64,
+        "retained_calibration_artifact_sha256": "3" * 64,
+        "evaluation_manifest_sha256": evaluation_file_sha,
+        "records": selection_records,
+        "orthogonal_intervals": [],
+    }
+    upgraded = attach_downstream_evidence_to_selection_result(
+        {
+            **selection_core,
+            "result_sha256": canonical_sha256(selection_core),
+        },
+        tmp_path,
+        "downstream-v28",
+    )
+    source_bindings = upgraded["downstream_evidence"]["sources"]
+    assert [source["source_id"] for source in source_bindings] == ["base", "v28"]
+    assert upgraded["downstream_evidence"]["revision_versions"] == ["v28"]
+
+    evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
+    evaluation["revisions"][0]["reconstruction"]["checkpoint_sha256"] = "0" * 64
+    evaluation_body = {
+        key: value for key, value in evaluation.items() if key != "manifest_sha256"
+    }
+    evaluation["manifest_sha256"] = canonical_sha256(evaluation_body)
+    _write_canonical(evaluation_path, evaluation)
+    from maskimpute_benchmark.downstream_evidence import DownstreamEvidenceError
+
+    with pytest.raises(
+        DownstreamEvidenceError,
+        match="development checkpoint differs",
+    ):
+        load_downstream_evidence_manifest(destination)
+
+
+def test_development_downstream_routes_to_latest_fixed_revision_without_fallback(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        development_downstream_revision_version,
+    )
+    from maskimpute_benchmark.revisions import revision_stage_paths
+
+    assert development_downstream_revision_version(tmp_path) is None
+    v28_path = tmp_path / revision_stage_paths("v28").selection_input
+    _write_canonical(
+        v28_path,
+        {"schema_version": 3, "revision_versions": ["v28"]},
+    )
+    assert development_downstream_revision_version(tmp_path) == "v28"
+
+    v29_path = tmp_path / revision_stage_paths("v29").selection_input
+    _write_canonical(
+        v29_path,
+        {"schema_version": 3, "revision_versions": ["v28", "v29"]},
+    )
+    assert development_downstream_revision_version(tmp_path) == "v29"
+
+    _write_canonical(
+        v29_path,
+        {"schema_version": 3, "revision_versions": ["v29"]},
+    )
+    with pytest.raises(
+        DownstreamEvidenceError,
+        match="v29 revision selection input identity differs",
+    ):
+        development_downstream_revision_version(tmp_path)
+
+
+def test_production_selection_primary_keys_exactly_match_reconstruction_bridge() -> (
+    None
+):
     from maskimpute_benchmark.development_evaluation import (
         reconstruction_selection_method,
     )
@@ -849,12 +1121,8 @@ def test_development_stage_resumes_and_preserves_exact_eight_row_denominators(
     assert records[0]["model_seed"] == 42
     assert records[0]["runner_method_id"] == "maskimpute"
     assert records[0]["method"] == "default"
-    assert records[0]["method_artifact_sha256"] == records[0][
-        "configuration_sha256"
-    ]
-    assert records[1]["method_artifact_sha256"] != records[1][
-        "configuration_sha256"
-    ]
+    assert records[0]["method_artifact_sha256"] == records[0]["configuration_sha256"]
+    assert records[1]["method_artifact_sha256"] != records[1]["configuration_sha256"]
     assert {row["upstream_status"] for row in records[0]["endpoints"]} == {"completed"}
     assert {row["status"] for row in records[1]["endpoints"]} == {"failed"}
     assert {row["reason_code"] for row in records[1]["endpoints"]} == {
@@ -915,9 +1183,7 @@ def test_resume_rejects_rehashed_finite_endpoint_value_drift(tmp_path: Path) -> 
 
     record_path = destination / "records/00000001.json"
     record = json.loads(record_path.read_text(encoding="utf-8"))
-    endpoint = next(
-        row for row in record["endpoints"] if row["status"] == "completed"
-    )
+    endpoint = next(row for row in record["endpoints"] if row["status"] == "completed")
     endpoint["value"] = 0.375 if endpoint["value"] != 0.375 else 0.625
     record_body = {
         key: value for key, value in record.items() if key != "record_sha256"
@@ -935,9 +1201,7 @@ def test_resume_rejects_rehashed_finite_endpoint_value_drift(tmp_path: Path) -> 
     manifest["manifest_sha256"] = canonical_sha256(manifest_body)
     _write_canonical(manifest_path, manifest)
 
-    with pytest.raises(
-        DownstreamEvidenceError, match="endpoint re-evaluation differs"
-    ):
+    with pytest.raises(DownstreamEvidenceError, match="endpoint re-evaluation differs"):
         run_downstream_evidence(plan, destination)
 
 
@@ -995,9 +1259,7 @@ def test_resume_reconstructs_and_validates_endpoint_contract(
         row["value"] = 1.5
     else:  # pragma: no cover - closed parametrization
         raise AssertionError(attack)
-    body = {
-        key: value for key, value in record.items() if key != "record_sha256"
-    }
+    body = {key: value for key, value in record.items() if key != "record_sha256"}
     record["record_sha256"] = canonical_sha256(body)
     _write_canonical(record_path, record)
 
@@ -1324,9 +1586,7 @@ def test_loader_rejects_rehashed_downstream_manifest_schema_extension(
     path = destination / "downstream_manifest.json"
     manifest = json.loads(path.read_text(encoding="utf-8"))
     manifest["unknown_field"] = "forged"
-    body = {
-        key: value for key, value in manifest.items() if key != "manifest_sha256"
-    }
+    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
     manifest["manifest_sha256"] = canonical_sha256(body)
     _write_canonical(path, manifest)
 
@@ -1443,7 +1703,9 @@ def test_plan_rejects_source_configuration_and_artifact_authority_mismatch(
     checkpoint["checkpoint_sha256"] = canonical_sha256(body)
     _write_canonical(checkpoint_path, checkpoint)
 
-    with pytest.raises(DownstreamEvidenceError, match="configuration authority differs"):
+    with pytest.raises(
+        DownstreamEvidenceError, match="configuration authority differs"
+    ):
         build_downstream_evidence_plan(
             source,
             source_kind="development",
@@ -1516,9 +1778,7 @@ def test_final_production_wrapper_rejects_round_symlink_ancestor(
         downstream.DownstreamEvidenceError,
         match="final round path contains a symlink",
     ):
-        downstream.build_final_downstream_evidence_plan(
-            active_repository, alias
-        )
+        downstream.build_final_downstream_evidence_plan(active_repository, alias)
 
 
 def test_output_symlink_ancestor_is_rejected_before_directory_creation(
@@ -1726,6 +1986,14 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
         selection_records, evidence.records, strict=True
     ):
         selection_record["status"] = downstream_record["run_status"]
+    selection_records.append(
+        {
+            **selection_records[0],
+            "metric": "null_de_fpr",
+            "value": None,
+            "status": "unavailable",
+        }
+    )
     core["records"] = selection_records
     payload = {**core, "result_sha256": canonical_sha256(core)}
     upgraded = attach_downstream_evidence_to_selection_result(
@@ -1743,17 +2011,20 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
     assert receipt["downstream_manifest_sha256"] == evidence.manifest_sha256
     assert binding["endpoint_row_count"] == 16
 
+    missing_denominator = [
+        record
+        for record in upgraded["records"]
+        if record["method"] != upgraded["records"][0]["method"]
+    ]
     with pytest.raises(SelectionAuthorityError, match="completeness"):
         validate_downstream_selection_completeness(
-            tmp_path, upgraded["records"][:-1], binding
+            tmp_path, missing_denominator, binding
         )
 
     changed_dataset = [dict(record) for record in upgraded["records"]]
     changed_dataset[0]["dataset_sha256"] = "0" * 64
     with pytest.raises(SelectionAuthorityError, match="completeness"):
-        validate_downstream_selection_completeness(
-            tmp_path, changed_dataset, binding
-        )
+        validate_downstream_selection_completeness(tmp_path, changed_dataset, binding)
 
     changed_method = [dict(record) for record in upgraded["records"]]
     changed_method[0]["method_sha256"] = "0" * 64
@@ -1806,8 +2077,7 @@ def test_final_cli_uses_external_receipt_bound_archive_without_round_mutation(
         "build_final_downstream_evidence_plan",
         lambda selected_repository, selected_round: (
             plan
-            if selected_repository == repository
-            and selected_round == round_directory
+            if selected_repository == repository and selected_round == round_directory
             else pytest.fail("final plan received a different repository or round")
         ),
     )
@@ -1825,9 +2095,7 @@ def test_final_cli_uses_external_receipt_bound_archive_without_round_mutation(
     different_working_directory.mkdir()
     monkeypatch.chdir(different_working_directory)
     repository_relative_round = round_directory.relative_to(repository)
-    assert (
-        script.main(["--round-dir", repository_relative_round.as_posix()]) == 0
-    )
+    assert script.main(["--round-dir", repository_relative_round.as_posix()]) == 0
     assert json.loads(capsys.readouterr().out) == {"status": "completed"}
     expected = (
         repository.parent
@@ -1936,9 +2204,7 @@ def test_evaluated_round_binding_revalidates_exact_receipt_and_execution_manifes
 
     def validated_receipt(_repository: Path, _round: Path):
         return json.loads(
-            (round_directory / "evaluation_receipt.json").read_text(
-                encoding="utf-8"
-            )
+            (round_directory / "evaluation_receipt.json").read_text(encoding="utf-8")
         )
 
     monkeypatch.setattr(
@@ -1976,9 +2242,7 @@ def test_evaluated_round_binding_revalidates_exact_receipt_and_execution_manifes
         downstream.DownstreamEvidenceError,
         match="validation denominator differs",
     ):
-        downstream._read_verified_evaluated_round_binding(
-            repository, round_directory
-        )
+        downstream._read_verified_evaluated_round_binding(repository, round_directory)
 
 
 def test_receipt_bound_final_output_rejects_round_and_repository_containment(
