@@ -1027,6 +1027,39 @@ def _tree_directory_identity(value: os.stat_result) -> tuple[int, ...]:
     )
 
 
+def _stream_tree_file_sha256(
+    descriptor: int,
+    expected_size: int,
+) -> tuple[str, int]:
+    """Hash one pinned tree file without retaining its contents in memory."""
+
+    if isinstance(descriptor, bool) or type(descriptor) is not int or descriptor < 0:
+        raise TypeError("descriptor must be a nonnegative integer")
+    if (
+        isinstance(expected_size, bool)
+        or type(expected_size) is not int
+        or expected_size < 0
+    ):
+        raise TypeError("expected_size must be a nonnegative integer")
+    digest = hashlib.sha256()
+    byte_count = 0
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        byte_count += len(chunk)
+        if byte_count > expected_size:
+            raise PublicationFreezeError(
+                "publication stage tree file grew while being read"
+            )
+        digest.update(chunk)
+    if byte_count != expected_size:
+        raise PublicationFreezeError(
+            "publication stage tree file changed size while being read"
+        )
+    return digest.hexdigest(), byte_count
+
+
 def _closed_tree_file_entry(path: Path, relative: str) -> dict[str, object]:
     descriptor = -1
     label = f"publication stage tree file {relative}"
@@ -1061,12 +1094,10 @@ def _closed_tree_file_entry(path: Path, relative: str) -> dict[str, object]:
                 raise PublicationFreezeError(
                     f"publication stage tree file is not unique: {relative}"
                 )
-            chunks: list[bytes] = []
-            while True:
-                chunk = os.read(descriptor, 1024 * 1024)
-                if not chunk:
-                    break
-                chunks.append(chunk)
+            digest, byte_count = _stream_tree_file_sha256(
+                descriptor,
+                opened_before.st_size,
+            )
             opened_after = os.fstat(descriptor)
             named_after = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
             if (
@@ -1076,17 +1107,12 @@ def _closed_tree_file_entry(path: Path, relative: str) -> dict[str, object]:
                 raise PublicationFreezeError(
                     f"publication stage tree changed while reading {relative}"
                 )
-            raw = b"".join(chunks)
-            if len(raw) != opened_before.st_size:
-                raise PublicationFreezeError(
-                    f"publication stage tree changed while reading {relative}"
-                )
             return {
                 "path": relative,
                 "kind": "file",
                 "mode": stat.S_IMODE(opened_before.st_mode),
-                "size": len(raw),
-                "sha256": hashlib.sha256(raw).hexdigest(),
+                "size": byte_count,
+                "sha256": digest,
             }
     except PublicationFreezeError:
         raise

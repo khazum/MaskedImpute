@@ -2608,6 +2608,47 @@ def test_tree_receipt_changes_for_unreferenced_file(tmp_path: Path) -> None:
     assert before != after
 
 
+def test_tree_receipt_hashes_large_files_as_bounded_streams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    import maskimpute_benchmark.publication_freeze as freeze_module
+    from maskimpute_benchmark.publication_freeze import _stream_tree_file_sha256
+
+    path = tmp_path / "large.bin"
+    path.write_bytes(b"x" * (2 * 1024 * 1024 + 17))
+    original_sha256 = hashlib.sha256
+    update_sizes: list[int] = []
+
+    class BoundedHasher:
+        def __init__(self) -> None:
+            self._delegate = original_sha256()
+
+        def update(self, chunk: bytes) -> None:
+            assert len(chunk) <= 1024 * 1024
+            update_sizes.append(len(chunk))
+            self._delegate.update(chunk)
+
+        def hexdigest(self) -> str:
+            return self._delegate.hexdigest()
+
+    monkeypatch.setattr(freeze_module.hashlib, "sha256", BoundedHasher)
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        digest, byte_count = _stream_tree_file_sha256(
+            descriptor,
+            path.stat().st_size,
+        )
+    finally:
+        os.close(descriptor)
+
+    assert byte_count == path.stat().st_size
+    assert digest == original_sha256(path.read_bytes()).hexdigest()
+    assert update_sizes == [1024 * 1024, 1024 * 1024, 17]
+
+
 @pytest.mark.parametrize("kind", ("symlink", "fifo", "socket", "hardlink"))
 def test_tree_receipt_rejects_links_and_special_files(
     tmp_path: Path,
