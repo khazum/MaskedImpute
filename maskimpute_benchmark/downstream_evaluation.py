@@ -838,6 +838,107 @@ def evaluate_clustering_endpoints(
     )
 
 
+def _profile_spearman(method_profile: np.ndarray, heldout_profile: np.ndarray) -> float:
+    heldout_ranks = stats.rankdata(heldout_profile, method="average")
+    method_ranks = stats.rankdata(method_profile, method="average")
+    heldout_centered = heldout_ranks - np.mean(heldout_ranks)
+    method_centered = method_ranks - np.mean(method_ranks)
+    heldout_norm = float(np.linalg.norm(heldout_centered))
+    method_norm = float(np.linalg.norm(method_centered))
+    if heldout_norm == 0.0:  # caller fixes eligibility from heldout only
+        raise AssertionError("heldout profile must be variable")
+    if method_norm == 0.0:
+        return 0.0
+    value = float(
+        np.dot(method_centered, heldout_centered) / (method_norm * heldout_norm)
+    )
+    return float(np.clip(value, -1.0, 1.0))
+
+
+def evaluate_heldout_endpoints(
+    output: MethodOutput, targets: EvaluatorTargets
+) -> tuple[EndpointRecord, EndpointRecord]:
+    """Compare method profiles with an independent evaluator-only count split."""
+
+    values, _cell_ids, _gene_ids, target_cells, target_genes = (
+        _aligned_evaluator_arrays(output, targets)
+    )
+    procedure = "mean_profile_spearman_log1p_cp10k_independent_count_split"
+    if targets.heldout_counts is None:
+        reason = targets.heldout_reason or "independent_heldout_counts_unavailable"
+        return (
+            _unavailable_record(
+                "heldout_gene_profile_rank_loss",
+                reason,
+                direction="lower_is_better",
+                descriptive_n=0,
+                descriptive_unit="heldout_variable_genes",
+                procedure=procedure,
+            ),
+            _unavailable_record(
+                "heldout_cell_profile_rank_loss",
+                reason,
+                direction="lower_is_better",
+                descriptive_n=0,
+                descriptive_unit="heldout_variable_cells",
+                procedure=procedure,
+            ),
+        )
+
+    heldout = targets.heldout_counts[target_cells][:, target_genes]
+    method_log = _log_cp10k(values)
+    heldout_log = _log_cp10k(heldout)
+    variable_genes = np.ptp(heldout_log, axis=0) > 0.0
+    variable_cells = np.ptp(heldout_log, axis=1) > 0.0
+
+    if np.any(variable_genes):
+        gene_correlations = [
+            _profile_spearman(method_log[:, gene], heldout_log[:, gene])
+            for gene in np.flatnonzero(variable_genes)
+        ]
+        gene_record = _completed_record(
+            "heldout_gene_profile_rank_loss",
+            1.0 - float(np.mean(gene_correlations)),
+            direction="lower_is_better",
+            descriptive_n=len(gene_correlations),
+            descriptive_unit="heldout_variable_genes",
+            procedure=procedure,
+        )
+    else:
+        gene_record = _unavailable_record(
+            "heldout_gene_profile_rank_loss",
+            "heldout_has_no_variable_gene_profiles",
+            direction="lower_is_better",
+            descriptive_n=0,
+            descriptive_unit="heldout_variable_genes",
+            procedure=procedure,
+        )
+
+    if np.any(variable_cells):
+        cell_correlations = [
+            _profile_spearman(method_log[cell], heldout_log[cell])
+            for cell in np.flatnonzero(variable_cells)
+        ]
+        cell_record = _completed_record(
+            "heldout_cell_profile_rank_loss",
+            1.0 - float(np.mean(cell_correlations)),
+            direction="lower_is_better",
+            descriptive_n=len(cell_correlations),
+            descriptive_unit="heldout_variable_cells",
+            procedure=procedure,
+        )
+    else:
+        cell_record = _unavailable_record(
+            "heldout_cell_profile_rank_loss",
+            "heldout_has_no_variable_cell_profiles",
+            direction="lower_is_better",
+            descriptive_n=0,
+            descriptive_unit="heldout_variable_cells",
+            procedure=procedure,
+        )
+    return gene_record, cell_record
+
+
 def _marker_column(mechanism: str, group: str) -> str | None:
     if mechanism == "symsim" and group.startswith("pop-"):
         return f"marker_group_{group.removeprefix('pop-')}"

@@ -429,3 +429,111 @@ def test_clustering_degenerate_inputs_have_fixed_reasons(
 
     assert all(record.status == "unavailable" for record in records)
     assert {record.reason for record in records} == {reason}
+
+
+def _heldout_fixture(values: np.ndarray, heldout: np.ndarray | None):
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluator_targets_from_dataset,
+    )
+
+    cell_ids = tuple(f"cell-{index}" for index in range(values.shape[0], 0, -1))
+    gene_ids = tuple(f"gene-{index}" for index in range(values.shape[1], 0, -1))
+    dataset = ad.AnnData(
+        X=np.zeros_like(values, dtype=np.int64),
+        obs=pd.DataFrame(
+            {
+                "mechanism": ["semisynthetic"] * values.shape[0],
+                "group": ["a" if index < values.shape[0] // 2 else "b" for index in range(values.shape[0])],
+            },
+            index=cell_ids,
+        ),
+        var=pd.DataFrame(index=gene_ids),
+    )
+    if heldout is not None:
+        dataset.layers["heldout_counts"] = heldout
+    return (
+        MethodOutput(values=values, cell_ids=cell_ids, gene_ids=gene_ids),
+        evaluator_targets_from_dataset(dataset),
+    )
+
+
+def test_heldout_profile_rank_losses_are_hand_calculated() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        evaluate_heldout_endpoints,
+    )
+
+    heldout = np.asarray([[1, 3], [2, 2], [3, 1]], dtype=float)
+    output, targets = _heldout_fixture(heldout[::-1].copy(), heldout)
+    gene, cell = evaluate_heldout_endpoints(output, targets)
+
+    # Both heldout-variable gene profiles are perfectly reversed across cells.
+    assert gene.endpoint == "heldout_gene_profile_rank_loss"
+    assert gene.value == pytest.approx(2.0)
+    assert gene.descriptive_n == 2
+    assert gene.descriptive_unit == "heldout_variable_genes"
+    # The first and third cells are variable across genes and perfectly reversed;
+    # the tied middle cell is excluded based only on the heldout split.
+    assert cell.endpoint == "heldout_cell_profile_rank_loss"
+    assert cell.value == pytest.approx(2.0)
+    assert cell.descriptive_n == 2
+    assert cell.descriptive_unit == "heldout_variable_cells"
+    assert gene.independent_n == cell.independent_n == 1
+
+
+def test_heldout_profile_losses_are_permutation_invariant_and_deterministic() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        evaluate_heldout_endpoints,
+    )
+
+    heldout = np.asarray(
+        [[1, 4, 2], [2, 1, 4], [4, 2, 1], [3, 3, 1]], dtype=float
+    )
+    output, targets = _heldout_fixture(heldout.copy(), heldout)
+    baseline = evaluate_heldout_endpoints(output, targets)
+    assert [record.value for record in baseline] == pytest.approx([0.0, 0.0])
+    assert evaluate_heldout_endpoints(output, targets) == baseline
+
+    rows = np.asarray([2, 0, 3, 1])
+    columns = np.asarray([1, 2, 0])
+    permuted = MethodOutput(
+        values=output.values[rows][:, columns],
+        cell_ids=tuple(output.cell_ids[index] for index in rows),
+        gene_ids=tuple(output.gene_ids[index] for index in columns),
+    )
+    assert evaluate_heldout_endpoints(permuted, targets) == baseline
+
+
+def test_heldout_method_collapse_is_penalized_instead_of_changing_denominator() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        evaluate_heldout_endpoints,
+    )
+
+    heldout = np.asarray([[1, 3], [2, 2], [3, 1]], dtype=float)
+    output, targets = _heldout_fixture(np.ones_like(heldout), heldout)
+    gene, cell = evaluate_heldout_endpoints(output, targets)
+
+    assert gene.value == pytest.approx(1.0)
+    assert gene.descriptive_n == 2
+    assert cell.value == pytest.approx(1.0)
+    assert cell.descriptive_n == 2
+
+
+def test_heldout_endpoints_have_fixed_missing_and_constant_reasons() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        evaluate_heldout_endpoints,
+    )
+
+    missing_output, missing_targets = _heldout_fixture(np.eye(3), None)
+    missing = evaluate_heldout_endpoints(missing_output, missing_targets)
+    assert {record.reason for record in missing} == {
+        "independent_heldout_counts_unavailable"
+    }
+
+    constant_output, constant_targets = _heldout_fixture(
+        np.eye(3), np.ones((3, 3))
+    )
+    gene, cell = evaluate_heldout_endpoints(constant_output, constant_targets)
+    assert gene.reason == "heldout_has_no_variable_gene_profiles"
+    assert cell.reason == "heldout_has_no_variable_cell_profiles"
