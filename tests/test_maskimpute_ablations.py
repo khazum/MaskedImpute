@@ -610,6 +610,56 @@ def test_development_reference_uses_heldout_fold_not_all_development_calibrator(
     }
 
 
+def test_final_reference_uses_retained_all_development_calibrator_on_unseen_draw():
+    from maskimpute import (
+        MaskImputeConfig,
+        PreZeroCountModelConfig,
+        fit_p_pre_zero_count_model,
+    )
+    from maskimpute.ablations import _fit_ablation_once, load_ablation_registry
+
+    counts = np.array(
+        [[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64
+    )
+    cell_ids = tuple(f"cell-{index}" for index in range(len(counts)))
+    score = fit_p_pre_zero_count_model(
+        counts,
+        cell_ids,
+        PreZeroCountModelConfig(n_folds=2, link_max_iter=25),
+    )
+    artifact = _nonidentity_calibration_artifact()
+    result = _fit_ablation_once(
+        counts,
+        score,
+        artifact,
+        load_ablation_registry(Path("study/ablations.json")).reference,
+        MaskImputeConfig(
+            hidden_dims=(5,),
+            latent_dim=2,
+            batch_size=2,
+            max_epochs=1,
+            patience=1,
+            seed=42,
+        ),
+        "cpu",
+        cell_ids=cell_ids,
+        development_mechanism="symsim",
+        development_biological_id="draw-03",
+        calibration_usage="retained_all_development",
+    )
+    direct = score.score_for_counts(counts, cell_ids)
+    observed_zero = counts == 0
+    expected = np.zeros_like(direct)
+    expected[observed_zero] = artifact.transform(direct[observed_zero])
+
+    np.testing.assert_allclose(result.p_pre_zero, expected)
+    assert result.diagnostics["score"]["calibration_scope"] == (
+        "retained_all_development_for_final_inference"
+    )
+    assert result.diagnostics["score"]["calibration_holdout"] is None
+    assert result.diagnostics["score"]["calibration_fold_receipt"] is None
+
+
 def test_single_ablation_executes_model_mask_loss_score_and_output_contracts():
     from maskimpute import (
         MaskImputeConfig,

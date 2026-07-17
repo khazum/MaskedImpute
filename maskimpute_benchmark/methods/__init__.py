@@ -342,6 +342,7 @@ _LAZY_MASKIMPUTE_EXPORTS = frozenset(
         "MaskImputeAdapterExecution",
         "finalize_maskimpute_output",
         "run_capacity_matched_ae",
+        "run_frozen_final_in_tree",
         "run_maskimpute",
     }
 )
@@ -449,6 +450,7 @@ __all__ = [
     "run_dca",
     "run_magic",
     "run_capacity_matched_ae",
+    "run_frozen_final_in_tree",
     "run_maskimpute",
     "run_observed",
     "run_saver",

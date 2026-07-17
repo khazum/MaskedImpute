@@ -721,12 +721,13 @@ def _development_manifest_payload() -> dict[str, object]:
     }
 
 
-def test_tracked_v28_revision_authority_builds_reachable_fixed_plan(tmp_path) -> None:
+def test_tracked_revision_authorities_keep_full_comparator_denominator(tmp_path) -> None:
     from maskimpute_benchmark.methods.registry import load_method_registry
     from maskimpute_benchmark.runner import (
         build_competition_plan,
         load_runner_authority,
         load_v28_revision_authority,
+        load_v29_revision_authority,
         maskimpute_decoder_for_configuration,
         RunnerContractError,
         run_v28_revision_competition,
@@ -759,11 +760,12 @@ def test_tracked_v28_revision_authority_builds_reachable_fixed_plan(tmp_path) ->
     assert revision.authority_sha256 != base.authority_sha256
     assert callable(run_v28_revision_competition)
     with pytest.raises(RunnerContractError, match="v28.*activation"):
-        run_v28_revision_competition(tmp_path / "blocked-before-trigger")
+        run_v28_revision_competition()
 
     bindings = validate_development_manifest_payload(_development_manifest_payload())
+    registry = load_method_registry(Path("study/methods.json"))
     plan = build_competition_plan(
-        load_method_registry(Path("study/methods.json")),
+        registry,
         bindings,
         revision,
     )
@@ -779,6 +781,24 @@ def test_tracked_v28_revision_authority_builds_reachable_fixed_plan(tmp_path) ->
         value.configuration_id == "v28-c01-nb-parent-c03"
         for value in plan.configurations
     )
+    expected_methods = {
+        spec.id
+        for spec in registry.methods
+        if spec.execution_scope == "same_input_required"
+    }
+    assert {entry.method_id for entry in plan.entries} == expected_methods
+
+    v29_plan = build_competition_plan(
+        registry,
+        bindings,
+        load_v29_revision_authority(),
+    )
+    assert {entry.method_id for entry in v29_plan.entries} == expected_methods
+    assert {
+        entry.configuration_id
+        for entry in v29_plan.entries
+        if entry.method_id == "maskimpute"
+    } == {"v29-c01-structure-parent-v28-c01"}
 
 
 def test_selection_cli_and_v28_activation_share_canonical_fixed_paths() -> None:
