@@ -19,6 +19,11 @@ import zlib
 import numpy as np
 
 from .methods.registry import MethodRegistry
+from .prezero_evidence import (
+    PREZERO_STORAGE_COMPRESSION_LEVEL,
+    PREZERO_STORAGE_ENCODING,
+    zlib_compress_bound as _prezero_zlib_compress_bound,
+)
 from .protocol import canonical_sha256
 from .runner import (
     DEVELOPMENT_MECHANISMS,
@@ -57,8 +62,11 @@ _FINAL_STORAGE_POLICY = {
     "evaluator_output_encoding": _FINAL_OUTPUT_ENCODING,
     "evaluator_output_compression_level": _FINAL_OUTPUT_COMPRESSION_LEVEL,
     "native_output_retention": _FINAL_NATIVE_RETENTION,
+    "p_pre_zero_encoding": PREZERO_STORAGE_ENCODING,
+    "p_pre_zero_compression_level": PREZERO_STORAGE_COMPRESSION_LEVEL,
 }
 _FINAL_MATRIX_UNCOMPRESSED_NBYTES = 2_700 * 1_200 * 8
+_FINAL_PREZERO_MATRIX_UNCOMPRESSED_NBYTES = 2_700 * 1_200 * 8
 _FINAL_RECORD_OVERHEAD_BYTES = 1024 * 1024
 _FINAL_STORAGE_RESERVE_BYTES = 1024**3
 
@@ -232,9 +240,7 @@ def _read_bound_h5ad(path: Path, binding: DatasetBinding):
             or _stable_file_identity(opened_before)
             != _stable_file_identity(named_before)
         ):
-            raise FinalRunnerContractError(
-                "final dataset is not a unique regular file"
-            )
+            raise FinalRunnerContractError("final dataset is not a unique regular file")
         digest = hashlib.sha256()
         while True:
             chunk = os.read(descriptor, 1024 * 1024)
@@ -246,12 +252,9 @@ def _read_bound_h5ad(path: Path, binding: DatasetBinding):
         dataset = ad.read_h5ad(Path(f"/proc/self/fd/{descriptor}"))
         opened_after = os.fstat(descriptor)
         named_after = path.lstat()
-        if (
-            _stable_file_identity(opened_before)
-            != _stable_file_identity(opened_after)
-            or _stable_file_identity(opened_before)
-            != _stable_file_identity(named_after)
-        ):
+        if _stable_file_identity(opened_before) != _stable_file_identity(
+            opened_after
+        ) or _stable_file_identity(opened_before) != _stable_file_identity(named_after):
             raise FinalRunnerContractError("final dataset changed while being loaded")
         if benchmark_dataset_sha256(dataset) != binding.dataset_sha256:
             raise FinalRunnerContractError("final dataset semantic checksum differs")
@@ -285,7 +288,9 @@ def load_prepared_final_panel(
             "final round must be inside repository"
         ) from error
     except OSError as error:
-        raise FinalRunnerContractError("final repository or round is unavailable") from error
+        raise FinalRunnerContractError(
+            "final repository or round is unavailable"
+        ) from error
     if destination != round_dir.absolute() or not destination.is_dir():
         raise FinalRunnerContractError("final round path is not canonical")
     status_path = destination / "results/dataset_status.json"
@@ -397,9 +402,7 @@ def _read_unique_file(
     *,
     max_bytes: int | None = None,
 ) -> bytes:
-    if max_bytes is not None and (
-        type(max_bytes) is not int or max_bytes < 0
-    ):
+    if max_bytes is not None and (type(max_bytes) is not int or max_bytes < 0):
         raise ValueError("max_bytes must be a nonnegative integer or None")
     descriptor = -1
     try:
@@ -489,7 +492,9 @@ def _canonical_round(repository: Path, round_dir: Path) -> tuple[Path, Path]:
             "final round must be inside repository"
         ) from error
     except OSError as error:
-        raise FinalRunnerContractError("final repository or round is unavailable") from error
+        raise FinalRunnerContractError(
+            "final repository or round is unavailable"
+        ) from error
     if destination != round_dir.absolute() or not destination.is_dir():
         raise FinalRunnerContractError("final round path is not canonical")
     return selected_repository, destination
@@ -505,9 +510,7 @@ def _validate_final_runtime_lock(
         raise TypeError("frozen_method must be a mapping")
     if not isinstance(environments, ExecutionEnvironmentRegistry):
         raise TypeError("environments must be an ExecutionEnvironmentRegistry")
-    expected = _sha256(
-        frozen_method.get("runtime_lock_sha256"), "frozen runtime lock"
-    )
+    expected = _sha256(frozen_method.get("runtime_lock_sha256"), "frozen runtime lock")
     if environments.runtime_lock_sha256 != expected:
         raise FinalRunnerContractError(
             "final execution runtime lock differs from frozen method authority"
@@ -534,12 +537,18 @@ def _validate_final_storage_capacity(
     ):
         raise ValueError("completed_records must be a valid plan prefix length")
     remaining_entries = plan.entries[completed_records:]
-    remaining_executions = sum(
-        entry.action == "execute" for entry in remaining_entries
+    remaining_executions = sum(entry.action == "execute" for entry in remaining_entries)
+    remaining_p_pre_zero_executions = sum(
+        entry.action == "execute" and entry.run.method_id == "maskimpute"
+        for entry in remaining_entries
     )
     compress_bound = _zlib_compress_bound(_FINAL_MATRIX_UNCOMPRESSED_NBYTES)
+    p_pre_zero_compress_bound = _prezero_zlib_compress_bound(
+        _FINAL_PREZERO_MATRIX_UNCOMPRESSED_NBYTES
+    )
     required = (
         remaining_executions * compress_bound
+        + remaining_p_pre_zero_executions * p_pre_zero_compress_bound
         + len(remaining_entries) * _FINAL_RECORD_OVERHEAD_BYTES
         + _FINAL_STORAGE_RESERVE_BYTES
     )
@@ -558,7 +567,9 @@ def _validate_final_storage_capacity(
         "completed_record_count": completed_records,
         "remaining_entry_count": len(remaining_entries),
         "remaining_execution_count": remaining_executions,
+        "remaining_p_pre_zero_execution_count": remaining_p_pre_zero_executions,
         "per_execution_compressed_bound_bytes": compress_bound,
+        "per_p_pre_zero_compressed_bound_bytes": p_pre_zero_compress_bound,
         "required_free_bytes": required,
         "observed_free_bytes": free,
     }
@@ -588,9 +599,7 @@ def materialize_final_execution_authority(
         raise FinalRunnerContractError("frozen method receipt is invalid")
     _sha256(frozen_sha256, "frozen method")
     claim_sha256 = _sha256(execution_claim_sha256, "execution claim")
-    environment_sha256 = _sha256(
-        execution_environment_sha256, "execution environment"
-    )
+    environment_sha256 = _sha256(execution_environment_sha256, "execution environment")
     manifest_sha256 = _sha256(dataset_manifest_sha256, "dataset manifest")
     runtime_lock_sha256 = _sha256(
         frozen_method.get("runtime_lock_sha256"), "frozen runtime lock"
@@ -709,11 +718,15 @@ def materialize_final_execution_authority(
         _canonical_bytes(score_payload) + b"\n",
     )
     calibration_repo_path = (
-        destination / "results" / calibration_relative
-    ).relative_to(selected_repository).as_posix()
+        (destination / "results" / calibration_relative)
+        .relative_to(selected_repository)
+        .as_posix()
+    )
     score_repo_path = (
-        destination / "results" / score_relative
-    ).relative_to(selected_repository).as_posix()
+        (destination / "results" / score_relative)
+        .relative_to(selected_repository)
+        .as_posix()
+    )
     authority_body: dict[str, object] = {
         "schema_version": 1,
         "authority_type": "maskimpute_frozen_final_execution",
@@ -776,11 +789,10 @@ def _hash_unique_file(path: Path, name: str) -> str:
             if not chunk:
                 break
             digest.update(chunk)
-        if (
-            _stable_file_identity(opened_before)
-            != _stable_file_identity(os.fstat(descriptor))
-            or _stable_file_identity(opened_before)
-            != _stable_file_identity(path.lstat())
+        if _stable_file_identity(opened_before) != _stable_file_identity(
+            os.fstat(descriptor)
+        ) or _stable_file_identity(opened_before) != _stable_file_identity(
+            path.lstat()
         ):
             raise FinalRunnerContractError(f"{name} changed while being hashed")
         return digest.hexdigest()
@@ -920,10 +932,12 @@ def _owned_final_result_paths(round_dir: Path) -> frozenset[str]:
                     "final execution record is not canonical"
                 )
             run = record.get("run")
-            if (
-                set(record) != {"run", "metrics", "execution_request"}
-                or not isinstance(run, Mapping)
-            ):
+            if set(record) != {
+                "run",
+                "metrics",
+                "p_pre_zero_evidence",
+                "execution_request",
+            } or not isinstance(run, Mapping):
                 raise FinalRunnerContractError("final execution record is invalid")
             owned.add(f"results/final/execution/records/{name}")
             for prefix in ("stdout", "stderr", "native_output", "evaluator_output"):
@@ -946,6 +960,32 @@ def _owned_final_result_paths(round_dir: Path) -> frozenset[str]:
                         f"final execution {prefix} path is unsafe"
                     )
                 owned.add(f"results/final/execution/{safe.as_posix()}")
+            score_evidence = record.get("p_pre_zero_evidence")
+            if not isinstance(score_evidence, Mapping):
+                raise FinalRunnerContractError(
+                    "final p_pre_zero evidence record is invalid"
+                )
+            score_storage = score_evidence.get("storage")
+            if not isinstance(score_storage, Mapping):
+                raise FinalRunnerContractError(
+                    "final p_pre_zero storage receipt is invalid"
+                )
+            score_relative = score_storage.get("path")
+            if score_relative is not None:
+                _sha256(
+                    score_storage.get("compressed_sha256"),
+                    "final p_pre_zero compressed file",
+                )
+                safe_score = PurePosixPath(str(score_relative))
+                if (
+                    not isinstance(score_relative, str)
+                    or safe_score.is_absolute()
+                    or ".." in safe_score.parts
+                    or not safe_score.parts
+                    or safe_score.parts[0] != "runs"
+                ):
+                    raise FinalRunnerContractError("final p_pre_zero path is unsafe")
+                owned.add(f"results/final/execution/{safe_score.as_posix()}")
     execution_manifest = execution_root / "execution_manifest.json"
     if os.path.lexists(execution_manifest):
         owned.add("results/final/execution/execution_manifest.json")
@@ -1077,7 +1117,10 @@ def _recover_interrupted_final_transactions(round_dir: Path) -> tuple[int, ...]:
             f"runs/{run_id}.stdout",
             f"runs/{run_id}.stderr",
         }
-        allowed = required | {f"runs/{run_id}.log2-cp10k-f64.zlib"}
+        allowed = required | {
+            f"runs/{run_id}.log2-cp10k-f64.zlib",
+            f"runs/{run_id}.p-pre-zero-f64.zlib",
+        }
         artifact_paths = intent.get("artifact_paths")
         if (
             set(intent)
@@ -1221,9 +1264,12 @@ class FinalResultStore:
                 *(
                     ()
                     if attempt.evaluator_output is None
-                    else (
-                        f"runs/{plan_entry.run.run_id}.log2-cp10k-f64.zlib",
-                    )
+                    else (f"runs/{plan_entry.run.run_id}.log2-cp10k-f64.zlib",)
+                ),
+                *(
+                    ()
+                    if attempt.p_pre_zero_evidence.raw_matrix_bytes is None
+                    else (f"runs/{plan_entry.run.run_id}.p-pre-zero-f64.zlib",)
                 ),
             }
         )
@@ -1296,9 +1342,7 @@ class FinalResultStore:
                 "evaluator_scale": "log2_cp10k_plus_1",
                 "evaluator_output_encoding": _FINAL_OUTPUT_ENCODING,
                 "evaluator_output_uncompressed_nbytes": len(raw),
-                "evaluator_output_uncompressed_sha256": hashlib.sha256(
-                    raw
-                ).hexdigest(),
+                "evaluator_output_uncompressed_sha256": hashlib.sha256(raw).hexdigest(),
             }
         )
         return stored
@@ -1341,9 +1385,7 @@ class FinalResultStore:
             or run.get("evaluator_output_dtype") != "<f8"
             or run.get("evaluator_scale") != "log2_cp10k_plus_1"
         ):
-            raise FinalRunnerContractError(
-                "final evaluator output encoding differs"
-            )
+            raise FinalRunnerContractError("final evaluator output encoding differs")
         shape = run.get("evaluator_output_shape")
         if (
             not isinstance(shape, list)
@@ -1457,8 +1499,7 @@ class FinalResultStore:
                 _sha256(nested, f"final execution request {name}")
         if (
             value.get("calibration_usage") != "retained_all_development"
-            or value.get("configuration_sha256")
-            != plan_entry.run.configuration_sha256
+            or value.get("configuration_sha256") != plan_entry.run.configuration_sha256
             or value.get("dataset_id") != plan_entry.run.dataset_id
             or value.get("execution_authority_sha256")
             != self.plan.input_hashes.get("execution_authority_sha256")
@@ -1488,7 +1529,13 @@ class FinalResultStore:
             ) from error
         if (
             not isinstance(value, dict)
-            or set(value) != {"run", "metrics", "execution_request"}
+            or set(value)
+            != {
+                "run",
+                "metrics",
+                "p_pre_zero_evidence",
+                "execution_request",
+            }
             or raw != _canonical_bytes(value) + b"\n"
         ):
             raise FinalRunnerContractError("final execution record is not canonical")
@@ -1501,7 +1548,11 @@ class FinalResultStore:
             )
             validation_run = self._validate_final_output_storage(run)
             self._artifacts._validate_stored_record(
-                {"run": validation_run, "metrics": value["metrics"]},
+                {
+                    "run": validation_run,
+                    "metrics": value["metrics"],
+                    "p_pre_zero_evidence": value["p_pre_zero_evidence"],
+                },
                 plan_entry.run,
                 final_calibration_artifact_sha256=(
                     None
@@ -1590,16 +1641,13 @@ class FinalResultStore:
                 or execution_request.dataset_id != plan_entry.run.dataset_id
                 or execution_request.mechanism != plan_entry.run.mechanism
                 or execution_request.biological_id != plan_entry.run.biological_id
-                or execution_request.technical_view
-                != plan_entry.run.technical_view
-                or execution_request.configuration_id
-                != plan_entry.run.configuration_id
+                or execution_request.technical_view != plan_entry.run.technical_view
+                or execution_request.configuration_id != plan_entry.run.configuration_id
                 or execution_request.configuration_sha256
                 != plan_entry.run.configuration_sha256
                 or execution_request.execution_authority_sha256
                 != self.plan.input_hashes.get("execution_authority_sha256")
-                or execution_request.calibration_usage
-                != "retained_all_development"
+                or execution_request.calibration_usage != "retained_all_development"
                 or execution_request.calibration_context is not None
             ):
                 raise FinalRunnerContractError(
@@ -1624,13 +1672,12 @@ class FinalResultStore:
             }
         try:
             base_stored = json.loads(
-                _canonical_bytes(self._stored_final_attempt(attempt)).decode(
-                    "utf-8"
-                )
+                _canonical_bytes(self._stored_final_attempt(attempt)).decode("utf-8")
             )
             stored = {
                 "run": base_stored["run"],
                 "metrics": base_stored["metrics"],
+                "p_pre_zero_evidence": base_stored["p_pre_zero_evidence"],
                 "execution_request": request_receipt,
             }
             self._validate_execution_request_receipt(
@@ -1638,7 +1685,11 @@ class FinalResultStore:
             )
             validation_run = self._validate_final_output_storage(stored["run"])
             self._artifacts._validate_stored_record(
-                {"run": validation_run, "metrics": stored["metrics"]},
+                {
+                    "run": validation_run,
+                    "metrics": stored["metrics"],
+                    "p_pre_zero_evidence": stored["p_pre_zero_evidence"],
+                },
                 plan_entry.run,
                 final_calibration_artifact_sha256=(
                     None
@@ -1925,11 +1976,11 @@ def build_final_execution_plan(
         for spec in registry.methods:
             row = frozen_by_id[spec.id]
             applicability = row.get("final_applicability")
-            if (
-                not isinstance(applicability, Mapping)
-                or set(applicability)
-                != {"rule", "non_run_reason", "required_reference"}
-            ):
+            if not isinstance(applicability, Mapping) or set(applicability) != {
+                "rule",
+                "non_run_reason",
+                "required_reference",
+            }:
                 raise FinalRunnerContractError(
                     f"method {spec.id} final applicability is invalid"
                 )
@@ -2074,14 +2125,15 @@ def execute_final_plan(
         raise TypeError("executor and publication callback must be callable")
     if not isinstance(store, FinalResultStore) or store.plan != plan:
         raise FinalRunnerContractError("final result store uses a different plan")
-    if plan.input_hashes.get("execution_authority_sha256") != authority.authority_sha256:
+    if (
+        plan.input_hashes.get("execution_authority_sha256")
+        != authority.authority_sha256
+    ):
         raise FinalRunnerContractError("final execution authority differs from plan")
     if os.path.lexists(store.manifest_path):
         return store.load_manifest()
     existing = store._cached_records()
-    configuration_by_method = {
-        value.method_id: value for value in plan.configurations
-    }
+    configuration_by_method = {value.method_id: value for value in plan.configurations}
     if set(configuration_by_method) != set(registry.ids):
         raise FinalRunnerContractError("final configurations differ from denominator")
     for plan_entry in plan.entries[len(existing) :]:
@@ -2162,7 +2214,9 @@ def validate_final_execution_for_evaluation(
     executed_status_counts: dict[str, int] = {}
     record_sha256s: list[str] = []
     for plan_entry, record in zip(plan.entries, values, strict=True):
-        if not isinstance(record, Mapping) or not isinstance(record.get("run"), Mapping):
+        if not isinstance(record, Mapping) or not isinstance(
+            record.get("run"), Mapping
+        ):
             raise FinalRunnerContractError("final execution record is invalid")
         run = record["run"]
         metrics = record.get("metrics")
@@ -2171,8 +2225,7 @@ def validate_final_execution_for_evaluation(
             or run.get("method_id") != plan_entry.run.method_id
             or run.get("dataset_id") != plan_entry.run.dataset_id
             or run.get("model_seed") != plan_entry.run.model_seed
-            or run.get("configuration_sha256")
-            != plan_entry.run.configuration_sha256
+            or run.get("configuration_sha256") != plan_entry.run.configuration_sha256
         ):
             raise FinalRunnerContractError(
                 "final execution record differs from its evaluation plan"
@@ -2181,8 +2234,7 @@ def validate_final_execution_for_evaluation(
             not isinstance(metrics, list)
             or len(metrics) != len(_RECONSTRUCTION_METRIC_NAMES)
             or any(
-                not isinstance(metric, Mapping)
-                or metric.get("metric") != expected_name
+                not isinstance(metric, Mapping) or metric.get("metric") != expected_name
                 for metric, expected_name in zip(
                     metrics, _RECONSTRUCTION_METRIC_NAMES, strict=True
                 )
@@ -2261,9 +2313,7 @@ def validate_final_execution_for_evaluation(
     return {**body, "validation_sha256": canonical_sha256(body)}
 
 
-def run_frozen_final_round(
-    repository: Path, round_dir: Path
-) -> dict[str, object]:
+def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, object]:
     """Claim and execute the frozen final round without scientific overrides."""
 
     from .datasets import generate_dataset_panel
@@ -2309,9 +2359,7 @@ def run_frozen_final_round(
         )
     else:
         try:
-            issued_claim = assert_final_runnable(
-                selected_repository, destination
-            )
+            issued_claim = assert_final_runnable(selected_repository, destination)
         except Exception as error:
             raise FinalRunnerContractError(
                 "final round cannot be claimed for execution"
@@ -2331,9 +2379,7 @@ def run_frozen_final_round(
             namespace="final",
             round_dir=destination,
         )
-        bindings, prepared = load_prepared_final_panel(
-            selected_repository, destination
-        )
+        bindings, prepared = load_prepared_final_panel(selected_repository, destination)
     except Exception as error:
         raise FinalRunnerContractError(
             "frozen final dataset panel is unavailable"
@@ -2398,9 +2444,7 @@ def run_frozen_final_round(
             raise FinalRunnerContractError(
                 "final plan changed while materializing execution authority"
             )
-        store = FinalResultStore(
-            destination / "results/final/execution", plan
-        )
+        store = FinalResultStore(destination / "results/final/execution", plan)
         if resuming:
             existing_records = store.load_records()
             store._records_cache = existing_records
@@ -2410,9 +2454,7 @@ def run_frozen_final_round(
                 completed_records=len(existing_records),
             )
         assert storage_preflight is not None
-        dispatcher = RepositoryAdapterDispatcher(
-            selected_repository, environments
-        )
+        dispatcher = RepositoryAdapterDispatcher(selected_repository, environments)
 
         def publish_results() -> object:
             return _record_incremental_results_if_changed(
@@ -2445,9 +2487,7 @@ def run_frozen_final_round(
             "final_execution_manifest_sha256": _hash_unique_file(
                 store.manifest_path, "final execution manifest"
             ),
-            "final_execution_payload_sha256": execution_manifest[
-                "manifest_sha256"
-            ],
+            "final_execution_payload_sha256": execution_manifest["manifest_sha256"],
             "execution_validation": evaluation_validation,
             "storage_preflight": storage_preflight,
             "result_files": cumulative["result_files"],

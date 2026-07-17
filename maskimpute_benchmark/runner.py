@@ -71,8 +71,7 @@ SELECTION_COMPLETENESS_BLOCKERS = (
 _IMPLEMENTATION_SOURCE_DIRECTORIES = ("maskimpute", "maskimpute_benchmark")
 _IMPLEMENTATION_SOURCE_FILES = ("scripts/run_development_competition.py",)
 _DEVELOPMENT_RUNTIME_LOCK_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "environments/development-runtime.lock.json"
+    Path(__file__).resolve().parents[1] / "environments/development-runtime.lock.json"
 )
 _TRACKED_V28_REVISION_PATH = (
     Path(__file__).resolve().parents[1] / "study/v28_revision.json"
@@ -317,8 +316,7 @@ def implementation_source_sha256(repository_root: Path | None = None) -> str:
                 parent_metadata = parent.lstat()
             except OSError as error:
                 raise RunnerContractError(
-                    "implementation source directory is unavailable: "
-                    f"{parent_relative}"
+                    f"implementation source directory is unavailable: {parent_relative}"
                 ) from error
             if stat.S_ISLNK(parent_metadata.st_mode):
                 raise RunnerContractError(
@@ -327,8 +325,7 @@ def implementation_source_sha256(repository_root: Path | None = None) -> str:
                 )
             if not stat.S_ISDIR(parent_metadata.st_mode):
                 raise RunnerContractError(
-                    "implementation source path must be a directory: "
-                    f"{parent_relative}"
+                    f"implementation source path must be a directory: {parent_relative}"
                 )
             parent = parent.parent
         paths.append((relative, path))
@@ -1006,7 +1003,9 @@ def load_v28_revision_authority() -> RunnerAuthority:
     try:
         revision_bytes = _TRACKED_V28_REVISION_PATH.read_bytes()
     except OSError as error:
-        raise RunnerContractError("tracked v28 revision authority is unavailable") from error
+        raise RunnerContractError(
+            "tracked v28 revision authority is unavailable"
+        ) from error
     revision_sha256 = hashlib.sha256(revision_bytes).hexdigest()
     if revision_sha256 != _TRACKED_V28_REVISION_SHA256:
         raise RunnerContractError("tracked v28 revision authority checksum differs")
@@ -1023,7 +1022,9 @@ def load_v28_revision_authority() -> RunnerAuthority:
     if not isinstance(revision, dict):
         raise RunnerContractError("v28 revision authority must be a JSON object")
     if revision_bytes != json.dumps(revision, indent=2).encode("utf-8") + b"\n":
-        raise RunnerContractError("v28 revision authority is not canonical tracked JSON")
+        raise RunnerContractError(
+            "v28 revision authority is not canonical tracked JSON"
+        )
     expected_fields = {
         "schema_version",
         "status",
@@ -1042,8 +1043,7 @@ def load_v28_revision_authority() -> RunnerAuthority:
         or type(revision["schema_version"]) is not int
         or revision["status"] != "conditional_on_v28_trigger"
         or revision["trigger"] != "v28"
-        or revision["reason_code"]
-        != "prespecified_decoder_only_revision_of_v27_c03"
+        or revision["reason_code"] != "prespecified_decoder_only_revision_of_v27_c03"
     ):
         raise RunnerContractError("v28 revision activation contract differs")
     parent_id = revision["parent_configuration_id"]
@@ -1052,11 +1052,12 @@ def load_v28_revision_authority() -> RunnerAuthority:
         parent = next(
             value
             for value in base.configurations
-            if value.method_id == "maskimpute"
-            and value.configuration_id == parent_id
+            if value.method_id == "maskimpute" and value.configuration_id == parent_id
         )
     except StopIteration as error:
-        raise RunnerContractError("v28 parent is absent from frozen v27 authority") from error
+        raise RunnerContractError(
+            "v28 parent is absent from frozen v27 authority"
+        ) from error
     if (
         parent.kind != "candidate_search"
         or parent.configuration_sha256 != parent_sha256
@@ -1156,10 +1157,10 @@ def load_v29_revision_authority() -> RunnerAuthority:
         raise RunnerContractError("v29 parent configuration binding differs")
     payload = thaw_revision_configuration(revision)
     parent_payload = dict(parent.payload)
-    if (
-        payload.get("hyperparameters") != parent_payload.get("hyperparameters")
-        or payload.get("decoder_hyperparameters")
-        != parent_payload.get("decoder_hyperparameters")
+    if payload.get("hyperparameters") != parent_payload.get(
+        "hyperparameters"
+    ) or payload.get("decoder_hyperparameters") != parent_payload.get(
+        "decoder_hyperparameters"
     ):
         raise RunnerContractError("v29 revision changes its parent model budget")
     for field in ("decoder", "encoder_mode", "output_policy", "score_policy"):
@@ -3079,25 +3080,42 @@ def evaluate_adapter_outcome(
     )
     calibration_receipt = outcome.calibration_fold_receipt
     method_input_digest = method_input_sha256(prepared.method_input)
-    score_observed = _dense_evaluator_matrix(
-        prepared.evaluator_dataset.X, "observed counts for p_pre_zero"
-    )
-    score_truth_kind = prepared.evaluator_dataset.uns.get("truth_kind")
-    if not isinstance(score_truth_kind, str):
-        raise RunnerContractError("evaluator dataset truth_kind is invalid")
-    if score_truth_kind == "orthogonal_only":
+    if prepared.evaluator_dataset is None:
+        score_observed = np.array(
+            prepared.method_input.counts,
+            dtype=np.float64,
+            copy=True,
+            order="C",
+        )
+        score_truth_kind = {
+            "symsim": "exact_pre_capture",
+            "sergio": "exact_continuous",
+            "sparsim": "exact_continuous",
+            "semisynthetic": "proxy_high_depth",
+        }.get(entry.mechanism, "orthogonal_only")
         score_truth = None
     else:
-        score_truth_layer = prepared.evaluator_dataset.uns.get("primary_truth_layer")
-        if (
-            not isinstance(score_truth_layer, str)
-            or score_truth_layer not in prepared.evaluator_dataset.layers
-        ):
-            raise RunnerContractError("evaluator score truth layer is unavailable")
-        score_truth = _dense_evaluator_matrix(
-            prepared.evaluator_dataset.layers[score_truth_layer],
-            "p_pre_zero evaluator truth",
+        score_observed = _dense_evaluator_matrix(
+            prepared.evaluator_dataset.X, "observed counts for p_pre_zero"
         )
+        score_truth_kind = prepared.evaluator_dataset.uns.get("truth_kind")
+        if not isinstance(score_truth_kind, str):
+            raise RunnerContractError("evaluator dataset truth_kind is invalid")
+        if score_truth_kind == "orthogonal_only":
+            score_truth = None
+        else:
+            score_truth_layer = prepared.evaluator_dataset.uns.get(
+                "primary_truth_layer"
+            )
+            if (
+                not isinstance(score_truth_layer, str)
+                or score_truth_layer not in prepared.evaluator_dataset.layers
+            ):
+                raise RunnerContractError("evaluator score truth layer is unavailable")
+            score_truth = _dense_evaluator_matrix(
+                prepared.evaluator_dataset.layers[score_truth_layer],
+                "p_pre_zero evaluator truth",
+            )
     try:
         p_pre_zero_evidence = evaluate_prezero_evidence(
             identity={
@@ -3639,12 +3657,18 @@ class CheckpointStore:
         if run.get("status") not in _OUTCOME_STATUSES:
             raise RunnerContractError("checkpoint run status is invalid")
         _require_nonnegative_number(run.get("runtime_seconds"), "checkpoint runtime")
-        for name in ("retained_cell_count", "retained_gene_count", "observed_zero_count"):
+        for name in (
+            "retained_cell_count",
+            "retained_gene_count",
+            "observed_zero_count",
+        ):
             nested = run.get(name)
             if isinstance(nested, bool) or type(nested) is not int or nested < 0:
                 raise RunnerContractError(f"checkpoint {name} is invalid")
         if run.get("retained_cell_count") <= 0 or run.get("retained_gene_count") <= 0:
-            raise RunnerContractError("checkpoint retained matrix dimensions are invalid")
+            raise RunnerContractError(
+                "checkpoint retained matrix dimensions are invalid"
+            )
         calibration_artifact = run.get("calibration_artifact_sha256")
         if calibration_artifact is None:
             if (
@@ -3722,7 +3746,10 @@ class CheckpointStore:
         compressed_p_pre_zero: bytes | None = None
         if isinstance(evidence_value, Mapping):
             storage_value = evidence_value.get("storage")
-            if isinstance(storage_value, Mapping) and storage_value.get("path") is not None:
+            if (
+                isinstance(storage_value, Mapping)
+                and storage_value.get("path") is not None
+            ):
                 expected_uncompressed = (
                     run["retained_cell_count"] * run["retained_gene_count"] * 8
                 )
@@ -3767,9 +3794,7 @@ class CheckpointStore:
                 requires_count_score=entry.requires_count_score,
                 requires_calibration=entry.requires_calibration,
                 expected_calibration_artifact_sha256=(
-                    None
-                    if expected_calibration is None
-                    else str(expected_calibration)
+                    None if expected_calibration is None else str(expected_calibration)
                 ),
                 compressed=compressed_p_pre_zero,
             )
@@ -4218,16 +4243,13 @@ class ExecutionEnvironmentRegistry:
                 identities: list[tuple[str, str]] = []
                 closure_paths: dict[str, str] = {}
                 snapshots: list[RuntimeEnvironmentSnapshot] = []
-                for environment_id, (kind, executable) in sorted(
-                    declarations.items()
-                ):
+                for environment_id, (kind, executable) in sorted(declarations.items()):
                     selected_libraries = tuple(libraries.get(environment_id, ()))
                     cache_key = (
                         kind,
                         executable.absolute().as_posix(),
                         tuple(
-                            path.absolute().as_posix()
-                            for path in selected_libraries
+                            path.absolute().as_posix() for path in selected_libraries
                         ),
                     )
                     if cache_key not in identity_cache:
@@ -4388,9 +4410,7 @@ class ExecutionEnvironmentRegistry:
                 lock,
                 declarations,
                 r_library_paths=libraries,
-                expected_closure_paths_sha256s=dict(
-                    self.runtime_closure_paths_sha256s
-                ),
+                expected_closure_paths_sha256s=dict(self.runtime_closure_paths_sha256s),
             )
             if self.runtime_snapshot is not None:
                 verify_runtime_environment_snapshot(self.runtime_snapshot)
@@ -4398,7 +4418,9 @@ class ExecutionEnvironmentRegistry:
             raise RunnerContractError(str(error)) from error
 
     def change_monitor(self) -> RuntimeChangeMonitor:
-        specs = () if self.runtime_snapshot is None else self.runtime_snapshot.watch_specs
+        specs = (
+            () if self.runtime_snapshot is None else self.runtime_snapshot.watch_specs
+        )
         try:
             return RuntimeChangeMonitor(specs)
         except RuntimeEnvironmentError as error:
@@ -4564,8 +4586,13 @@ def maskimpute_structure_for_configuration(
         raise TypeError("configuration must be an AuthorizedConfiguration")
     if configuration.kind == "ablation":
         return None
-    if configuration.method_id != "maskimpute" or configuration.kind != "candidate_search":
-        raise RunnerContractError("structure configuration is not a MaskImpute candidate")
+    if (
+        configuration.method_id != "maskimpute"
+        or configuration.kind != "candidate_search"
+    ):
+        raise RunnerContractError(
+            "structure configuration is not a MaskImpute candidate"
+        )
     version = configuration.payload.get("method_version")
     if version in {"v27", "v28"}:
         if "structure_hyperparameters" in configuration.payload:
@@ -4576,12 +4603,16 @@ def maskimpute_structure_for_configuration(
     raw = configuration.payload.get("structure_hyperparameters")
     from maskimpute.structure import StructurePenaltyConfig
 
-    if not isinstance(raw, Mapping) or set(raw) != set(StructurePenaltyConfig().to_dict()):
+    if not isinstance(raw, Mapping) or set(raw) != set(
+        StructurePenaltyConfig().to_dict()
+    ):
         raise RunnerContractError("v29 structure_hyperparameters fields differ")
     try:
         return StructurePenaltyConfig(**dict(raw))
     except (TypeError, ValueError) as error:
-        raise RunnerContractError("v29 structure_hyperparameters are invalid") from error
+        raise RunnerContractError(
+            "v29 structure_hyperparameters are invalid"
+        ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -4744,9 +4775,7 @@ class RepositoryAdapterDispatcher:
     def __call__(self, request: ExecutionRequest) -> AdapterOutcome:
         method_id = request.method_spec.id
         monitor = (
-            self.environments.change_monitor()
-            if self.monitor_runtime_changes
-            else None
+            self.environments.change_monitor() if self.monitor_runtime_changes else None
         )
         try:
             if self.monitor_runtime_changes:
@@ -5185,9 +5214,7 @@ def _run_competition_with_authority(
         environment_overrides,
         runtime_lock_path=_DEVELOPMENT_RUNTIME_LOCK_PATH,
         benchmark_python=Path(sys.executable),
-        r_library_paths={
-            "saver": (repository / "artifacts/envs/saver-r/library",)
-        },
+        r_library_paths={"saver": (repository / "artifacts/envs/saver-r/library",)},
     )
     plan = build_competition_plan(
         registry,
@@ -5336,9 +5363,7 @@ def execute_adapter_in_spawned_process(
     started = time.monotonic()
     original_directory = os.open(
         ".",
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0),
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
     )
     original_search_path = list(sys.path)
     try:

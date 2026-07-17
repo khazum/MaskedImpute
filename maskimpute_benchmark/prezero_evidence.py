@@ -133,9 +133,7 @@ def _policy_from_execution(execution: object) -> dict[str, object]:
 
 def _probability_matrix(value: object, shape: tuple[int, int]) -> np.ndarray:
     if type(value) is not np.ndarray:
-        raise PreZeroEvidenceError(
-            "realized p_pre_zero must be an exact NumPy ndarray"
-        )
+        raise PreZeroEvidenceError("realized p_pre_zero must be an exact NumPy ndarray")
     try:
         probability = np.array(value, dtype="<f8", copy=True, order="C", subok=False)
     except (TypeError, ValueError, OverflowError) as error:
@@ -155,7 +153,9 @@ def _probability_matrix(value: object, shape: tuple[int, int]) -> np.ndarray:
     return probability
 
 
-def _metric_record(metric: MetricValue, *, status: str | None = None) -> dict[str, object]:
+def _metric_record(
+    metric: MetricValue, *, status: str | None = None
+) -> dict[str, object]:
     return {
         "value": None if metric.value is None else float(metric.value),
         "n": int(metric.n),
@@ -217,6 +217,92 @@ def _score_report(
     unavailable_status: str | None = None,
     unavailable_reason: str | None = None,
 ) -> tuple[dict[str, object], dict[str, list[dict[str, object]]]]:
+    observed_zero_count = int((observed == 0).sum())
+    if unavailable_status is not None and truth is None:
+        if not unavailable_reason:
+            raise PreZeroEvidenceError("unavailable score evidence requires a reason")
+        overall = {
+            "stratum_type": "overall",
+            "label": "all_observed_zeros",
+            "lower": None,
+            "upper": None,
+            "n": observed_zero_count,
+            **_unavailable_metric_group(
+                observed_zero_count, unavailable_status, unavailable_reason
+            ),
+        }
+        library_size = np.sum(observed, axis=1)
+        order = np.argsort(library_size, kind="stable")
+        groups: list[np.ndarray] = []
+        start = 0
+        while start < order.size:
+            stop = start + 1
+            while (
+                stop < order.size
+                and library_size[order[stop]] == library_size[order[start]]
+            ):
+                stop += 1
+            groups.append(order[start:stop])
+            start = stop
+        if len(groups) <= 4:
+            cell_chunks = groups
+        else:
+            split_points = [
+                min(
+                    range(1, len(groups)),
+                    key=lambda index: abs(
+                        sum(len(group) for group in groups[:index])
+                        - quartile * len(order) / 4
+                    ),
+                )
+                for quartile in range(1, 4)
+            ]
+            split_points = sorted(set(split_points))
+            cell_chunks = []
+            previous = 0
+            for stop in (*split_points, len(groups)):
+                cell_chunks.append(np.concatenate(groups[previous:stop]))
+                previous = stop
+        cell_chunks.extend(np.array([], dtype=int) for _ in range(4 - len(cell_chunks)))
+        library_records: list[dict[str, object]] = []
+        for quartile, cells in enumerate(cell_chunks, start=1):
+            n = int((observed[cells] == 0).sum()) if len(cells) else 0
+            library_records.append(
+                {
+                    "stratum_type": "library_size_quartiles",
+                    "label": f"Q{quartile}",
+                    "lower": (
+                        None if not len(cells) else float(np.min(library_size[cells]))
+                    ),
+                    "upper": (
+                        None if not len(cells) else float(np.max(library_size[cells]))
+                    ),
+                    "n": n,
+                    **_unavailable_metric_group(
+                        n, unavailable_status, unavailable_reason
+                    ),
+                }
+            )
+        truth_records = [
+            {
+                "stratum_type": "truth_expression_bins",
+                "label": label,
+                "lower": lower,
+                "upper": upper,
+                "n": 0,
+                **_unavailable_metric_group(0, unavailable_status, unavailable_reason),
+            }
+            for label, lower, upper in (
+                ("[0,1)", 0.0, 1.0),
+                ("[1,2)", 1.0, 2.0),
+                ("[2,4)", 2.0, 4.0),
+                ("[4,inf)", 4.0, None),
+            )
+        ]
+        return overall, {
+            "library_size_quartiles": library_records,
+            "truth_expression_bins": truth_records,
+        }
     placeholder = (
         probability
         if probability is not None
@@ -228,7 +314,6 @@ def _score_report(
     strata_source = stratified_zero_score_metrics(
         placeholder, observed, truth, truth_kind=truth_kind
     )
-    observed_zero_count = int((observed == 0).sum())
     if unavailable_status is None:
         overall_group = _normalized_metric_group(overall_source)
     else:
@@ -394,9 +479,7 @@ def _validate_metric_group(
         }:
             raise PreZeroEvidenceError(f"p_pre_zero metric {name} is malformed")
         if metric.get("n") != expected_n:
-            raise PreZeroEvidenceError(
-                f"p_pre_zero metric {name} denominator differs"
-            )
+            raise PreZeroEvidenceError(f"p_pre_zero metric {name} denominator differs")
         metric_value = metric.get("value")
         metric_status = metric.get("status")
         metric_reason = metric.get("reason")
@@ -515,9 +598,7 @@ def validate_stored_prezero_evidence(
     evidence_reason = value.get("reason")
     expected_status = run_status if method_id == "maskimpute" else "not_applicable"
     expected_reason = (
-        run_reason
-        if method_id == "maskimpute"
-        else "method_does_not_emit_p_pre_zero"
+        run_reason if method_id == "maskimpute" else "method_does_not_emit_p_pre_zero"
     )
     if evidence_status != expected_status or evidence_reason != expected_reason:
         raise PreZeroEvidenceError(
@@ -573,16 +654,17 @@ def validate_stored_prezero_evidence(
             raise PreZeroEvidenceError(
                 "calibrated p_pre_zero policy does not use the retained calibrator"
             )
-        if expected_calibration_artifact_sha256 is not None and policy.get(
-            "calibration_artifact_sha256"
-        ) != expected_calibration_artifact_sha256:
+        if (
+            expected_calibration_artifact_sha256 is not None
+            and policy.get("calibration_artifact_sha256")
+            != expected_calibration_artifact_sha256
+        ):
             raise PreZeroEvidenceError(
                 "p_pre_zero calibration policy differs from execution authority"
             )
         if (
             storage.get("encoding") != PREZERO_STORAGE_ENCODING
-            or storage.get("compression_level")
-            != PREZERO_STORAGE_COMPRESSION_LEVEL
+            or storage.get("compression_level") != PREZERO_STORAGE_COMPRESSION_LEVEL
             or not isinstance(storage.get("path"), str)
             or not storage.get("path")
         ):
@@ -598,8 +680,7 @@ def validate_stored_prezero_evidence(
             or storage.get("compressed_nbytes") < 0
             or compressed is None
             or len(compressed) != storage.get("compressed_nbytes")
-            or hashlib.sha256(compressed).hexdigest()
-            != expected_compressed_sha256
+            or hashlib.sha256(compressed).hexdigest() != expected_compressed_sha256
         ):
             raise PreZeroEvidenceError("p_pre_zero compressed receipt differs")
         raw = _bounded_decompress(compressed, expected_nbytes)
@@ -632,7 +713,10 @@ def validate_stored_prezero_evidence(
             raise PreZeroEvidenceError("p_pre_zero matrix receipt is partial")
         if policy is not None or policy_sha256 is not None:
             raise PreZeroEvidenceError("absent p_pre_zero matrix has a score policy")
-        if any(storage.get(name) is not None for name in storage) or compressed is not None:
+        if (
+            any(storage.get(name) is not None for name in storage)
+            or compressed is not None
+        ):
             raise PreZeroEvidenceError("absent p_pre_zero matrix has storage fields")
         if method_id == "maskimpute" and run_status == "completed":
             raise PreZeroEvidenceError("completed MaskImpute evidence lacks its matrix")
@@ -749,9 +833,7 @@ def evaluate_prezero_evidence(
             raise PreZeroEvidenceError(
                 "completed MaskImpute attempt lacks realized p_pre_zero evidence"
             )
-        overall, strata = _score_report(
-            matrix, observed, truth, truth_kind=truth_kind
-        )
+        overall, strata = _score_report(matrix, observed, truth, truth_kind=truth_kind)
     else:
         if not evidence_reason:
             raise PreZeroEvidenceError("noncompleted score evidence requires a reason")
