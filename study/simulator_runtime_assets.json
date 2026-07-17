@@ -1,0 +1,15 @@
+{
+  "r_environment": {
+    "environment_id": "simulator-r",
+    "lock_file_sha256": "2c58487c7353bc9648bc7fbd0ed3e66a612e292c0b2b412bbdc6464f9dde45ed",
+    "lock_path": "study/simulator_r_environment.lock.json",
+    "tree_entry_count": 23138,
+    "tree_sha256": "07c5988e1905af0e5691ee8eec023cd941da8ad5a064538df8ee2d546f5681bf"
+  },
+  "schema": "maskimpute-simulator-runtime-assets-authority-v1",
+  "source_ledger_sha256": "5a6f60c5de980a20eb118d0b82913112650f1956562aec4c92d37d8314c9f29e",
+  "source_snapshot": {
+    "tree_entry_count": 197,
+    "tree_sha256": "cffd819e4968614db0141bc65295582ac1527a7cdd15b9a7e83831a4e989b05c"
+  }
+}

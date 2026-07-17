@@ -31,6 +31,22 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         help="already-claimed canonical study round; required only for final",
     )
+    parser.add_argument(
+        "--simulator-assets-root",
+        type=Path,
+        help=(
+            "explicit external source/data root outside the repository; "
+            "required only for final"
+        ),
+    )
+    parser.add_argument(
+        "--simulator-r-environment",
+        type=Path,
+        help=(
+            "explicit pinned simulator R environment outside the repository; "
+            "required only for final"
+        ),
+    )
     return parser
 
 
@@ -40,11 +56,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         _parser().error("--round-dir is required for --namespace final")
     if arguments.namespace == "dev" and arguments.round_dir is not None:
         _parser().error("--round-dir is not accepted for --namespace dev")
+    runtime_paths = (
+        arguments.simulator_assets_root,
+        arguments.simulator_r_environment,
+    )
+    if arguments.namespace == "final" and any(value is None for value in runtime_paths):
+        _parser().error(
+            "--simulator-assets-root and --simulator-r-environment are required "
+            "for --namespace final"
+        )
+    if arguments.namespace == "dev" and any(
+        value is not None for value in runtime_paths
+    ):
+        _parser().error(
+            "simulator runtime path overrides are not accepted for --namespace dev"
+        )
     try:
         status = generate_dataset_panel(
             repo=arguments.repo,
             namespace=arguments.namespace,
             round_dir=arguments.round_dir,
+            simulator_assets_root=arguments.simulator_assets_root,
+            simulator_r_environment=arguments.simulator_r_environment,
         )
     except DatasetRegistryError as error:
         print(json.dumps({"error": str(error)}, sort_keys=True), file=sys.stderr)
