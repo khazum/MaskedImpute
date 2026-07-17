@@ -75,9 +75,7 @@ class FinalNullDEPlan:
             "repository_root": evaluated.repository_root,
             "round_root": evaluated.round_root,
             "downstream_directory": self.downstream_directory,
-            "downstream_manifest_file_sha256": (
-                self.downstream_manifest_file_sha256
-            ),
+            "downstream_manifest_file_sha256": (self.downstream_manifest_file_sha256),
             "downstream_manifest_payload_sha256": (
                 self.downstream_manifest_payload_sha256
             ),
@@ -191,9 +189,7 @@ def _aligned_dataset_values(
     if "group" not in dataset.obs:
         raise _FinalNullDEUnavailable("evaluator_group_labels_unavailable")
     raw_groups = tuple(dataset.obs["group"].iloc[indices].tolist())
-    if any(
-        not isinstance(value, str) or not value.strip() for value in raw_groups
-    ):
+    if any(not isinstance(value, str) or not value.strip() for value in raw_groups):
         raise _FinalNullDEUnavailable("evaluator_group_labels_unavailable")
     groups = tuple(raw_groups)
     values = dataset.X[indices, :]
@@ -264,9 +260,7 @@ def _dataset_context(
                 "gene_mask": None,
                 "gene_mask_sha256": None,
                 "groups": groups,
-                "availability_reason": (
-                    "fixed_observed_gene_denominator_unavailable"
-                ),
+                "availability_reason": ("fixed_observed_gene_denominator_unavailable"),
             }
         )
     return MappingProxyType(
@@ -349,14 +343,14 @@ def evaluate_final_null_de_records(
     bindings = {value.dataset_id: value for value in plan.datasets}
     if len(bindings) != len(plan.datasets) or not bindings:
         raise FinalNullDEError("final dataset denominator is invalid")
-    if not plan.entries or any(entry.dataset_id not in bindings for entry in plan.entries):
+    if not plan.entries or any(
+        entry.dataset_id not in bindings for entry in plan.entries
+    ):
         raise FinalNullDEError("final run denominator is invalid")
 
     contexts: dict[str, Mapping[str, object]] = {}
     records: list[Mapping[str, object]] = []
-    receipt_sha256 = (
-        plan.evaluated_round_binding.evaluation_receipt_payload_sha256
-    )
+    receipt_sha256 = plan.evaluated_round_binding.evaluation_receipt_payload_sha256
     for expected_ordinal, entry in enumerate(plan.entries, start=1):
         if entry.ordinal != expected_ordinal:
             raise FinalNullDEError("final run denominator is not ordered")
@@ -496,7 +490,9 @@ def _create_final_null_de_plan(
         or source_plan.evaluated_round_binding is None
         or not source_plan.entries
     ):
-        raise FinalNullDEError("null-DE source is not the complete evaluated final plan")
+        raise FinalNullDEError(
+            "null-DE source is not the complete evaluated final plan"
+        )
     directory = Path(_text(downstream_directory, "downstream directory")).absolute()
     provisional = FinalNullDEPlan(
         source_plan=source_plan,
@@ -515,9 +511,7 @@ def _create_final_null_de_plan(
     return FinalNullDEPlan(
         source_plan=provisional.source_plan,
         downstream_directory=provisional.downstream_directory,
-        downstream_manifest_file_sha256=(
-            provisional.downstream_manifest_file_sha256
-        ),
+        downstream_manifest_file_sha256=(provisional.downstream_manifest_file_sha256),
         downstream_manifest_payload_sha256=(
             provisional.downstream_manifest_payload_sha256
         ),
@@ -572,22 +566,17 @@ def build_final_null_de_plan(
     )
 
     try:
-        source_plan = build_final_downstream_evidence_plan(
-            repository, round_directory
-        )
+        source_plan = build_final_downstream_evidence_plan(repository, round_directory)
         downstream_directory = _expected_downstream_directory(source_plan)
         persisted_source_plan = load_downstream_evidence_plan(downstream_directory)
-        downstream_manifest = load_downstream_evidence_manifest(
-            downstream_directory
-        )
+        downstream_manifest = load_downstream_evidence_manifest(downstream_directory)
         if persisted_source_plan.to_dict() != source_plan.to_dict():
             raise FinalNullDEError(
                 "final downstream plan differs from the evaluated source"
             )
         if (
             downstream_manifest.plan_sha256 != source_plan.plan_sha256
-            or downstream_manifest.planned_denominator_count
-            != len(source_plan.entries)
+            or downstream_manifest.planned_denominator_count != len(source_plan.entries)
         ):
             raise FinalNullDEError(
                 "final downstream denominator differs from the evaluated source"
@@ -629,9 +618,7 @@ def _rebuild_plan(value: FinalNullDEPlan | Mapping[str, object]) -> FinalNullDEP
         repository = _text(
             evaluated_payload.get("repository_root"), "persisted repository root"
         )
-        round_root = _text(
-            evaluated_payload.get("round_root"), "persisted round root"
-        )
+        round_root = _text(evaluated_payload.get("round_root"), "persisted round root")
     else:
         raise TypeError("plan value is invalid")
     return build_final_null_de_plan(repository, round_root)
@@ -662,9 +649,7 @@ def _wrap_downstream_io(action, *args):
 def _validate_output_location(plan: FinalNullDEPlan, output_root: Path) -> None:
     from .downstream_evidence import _reject_symlink_chain
 
-    _wrap_downstream_io(
-        _reject_symlink_chain, output_root, "final null-DE output"
-    )
+    _wrap_downstream_io(_reject_symlink_chain, output_root, "final null-DE output")
     evaluated = plan.source_plan.evaluated_round_binding
     if evaluated is None:
         raise FinalNullDEError("evaluated final receipt binding is absent")
@@ -796,9 +781,7 @@ def _record_names(output_root: Path, planned: int) -> tuple[str, ...]:
     records_root = output_root / "records"
     if not os.path.lexists(records_root):
         return ()
-    _wrap_downstream_io(
-        _reject_symlink_chain, records_root, "final null-DE records"
-    )
+    _wrap_downstream_io(_reject_symlink_chain, records_root, "final null-DE records")
     if not records_root.is_dir():
         raise FinalNullDEError("final null-DE record directory is invalid")
     names = tuple(sorted(path.name for path in records_root.iterdir()))
@@ -911,6 +894,8 @@ def _manifest_payload(
     plan: FinalNullDEPlan,
     records: tuple[Mapping[str, object], ...],
 ) -> dict[str, object]:
+    if len(records) != len(plan.source_plan.entries):
+        raise FinalNullDEError("final null-DE manifest denominator is incomplete")
     references: list[dict[str, object]] = []
     for ordinal, record in enumerate(records, start=1):
         path = output_root / "records" / f"{ordinal:08d}.json"
@@ -941,12 +926,8 @@ def _manifest_payload(
             if plan.source_plan.evaluated_round_binding is not None
             else None
         ),
-        "downstream_manifest_file_sha256": (
-            plan.downstream_manifest_file_sha256
-        ),
-        "downstream_manifest_payload_sha256": (
-            plan.downstream_manifest_payload_sha256
-        ),
+        "downstream_manifest_file_sha256": (plan.downstream_manifest_file_sha256),
+        "downstream_manifest_payload_sha256": (plan.downstream_manifest_payload_sha256),
         "evaluator_source_sha256": plan.evaluator_source_sha256,
         "planned_denominator_count": len(plan.source_plan.entries),
         "recorded_denominator_count": len(records),
@@ -1037,20 +1018,19 @@ def run_final_null_de_evidence(
         _ensure_directory, output_root, "final null-DE output directory"
     )
     with _archive_lock(output_root, exclusive=True):
-        return _run_final_null_de_evidence_locked(
-            plan, output_root, max_denominators
-        )
+        return _run_final_null_de_evidence_locked(plan, output_root, max_denominators)
 
 
 def _load_final_null_de_manifest_locked(
     output_root: Path,
 ) -> FinalNullDEManifest:
-
     _validate_archive_layout(output_root)
     plan = _load_persisted_plan(output_root)
     _validate_output_location(plan, output_root)
     expected = _expected_records(plan)
     records = _load_record_prefix(output_root, plan, expected)
+    if len(records) != len(expected):
+        raise FinalNullDEError("final null-DE manifest denominator is incomplete")
     manifest, _raw, manifest_file_sha256 = _strict_json(
         output_root / "final_null_de_manifest.json",
         "final null-DE manifest",

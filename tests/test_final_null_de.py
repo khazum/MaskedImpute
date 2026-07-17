@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,18 +77,12 @@ def _source_plan(*, include_failed: bool = True):
             evaluator_output_sha256=("d" * 64 if completed else None),
             evaluator_output_path=(f"runs/{run_id}.zlib" if completed else None),
             evaluator_output_file_sha256=("e" * 64 if completed else None),
-            evaluator_output_shape=(
-                (len(cells), len(genes)) if completed else None
-            ),
-            evaluator_output_encoding=(
-                "zlib_raw_f64_v1" if completed else None
-            ),
+            evaluator_output_shape=((len(cells), len(genes)) if completed else None),
+            evaluator_output_encoding=("zlib_raw_f64_v1" if completed else None),
             evaluator_output_uncompressed_nbytes=(
                 len(cells) * len(genes) * 8 if completed else None
             ),
-            evaluator_output_uncompressed_sha256=(
-                "f" * 64 if completed else None
-            ),
+            evaluator_output_uncompressed_sha256=("f" * 64 if completed else None),
         )
 
     entries = [
@@ -135,6 +130,8 @@ def _source_plan(*, include_failed: bool = True):
         source_statuses_sha256="8" * 64,
         source_plan_authority="required_exact_execution_plan_v1",
         evaluated_round_binding=evaluated,
+        development_revision_versions=(),
+        development_sources=(),
         datasets=(binding,),
         configurations=(),
         entries=tuple(entries),
@@ -297,8 +294,7 @@ def test_final_null_de_is_invariant_to_stable_id_row_permutation(
         retained_cell_ids_sha256="a" * 64,
     )
     permuted_entries = tuple(
-        replace(entry, retained_cell_ids_sha256="a" * 64)
-        for entry in plan.entries
+        replace(entry, retained_cell_ids_sha256="a" * 64) for entry in plan.entries
     )
     permuted_plan = replace(
         plan,
@@ -369,9 +365,7 @@ def test_final_null_de_archive_resumes_and_replays_every_record(
     )
     assert partial["status"] == "running"
     assert partial["recorded_denominator_count"] == 1
-    interrupted_staging = (
-        destination / "records/.00000002.json.Interrupted123.tmp"
-    )
+    interrupted_staging = destination / "records/.00000002.json.Interrupted123.tmp"
     interrupted_staging.write_bytes(b"interrupted publication")
     completed = final_null_de.run_final_null_de_evidence(plan, destination)
     assert completed["status"] == "completed"
@@ -423,6 +417,115 @@ def test_final_null_de_archive_resumes_and_replays_every_record(
         match="re-evaluation differs",
     ):
         final_null_de.load_final_null_de_manifest(destination)
+
+
+@pytest.mark.parametrize("operation", ["load", "run"])
+def test_final_null_de_rejects_completed_manifest_for_partial_denominator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    import maskimpute_benchmark.final_null_de as final_null_de
+    from maskimpute_benchmark.downstream_evaluation import MethodOutput
+    from maskimpute_benchmark.methods import count_equivalent_to_log2_cp10k
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source_plan, binding = _source_plan()
+    repository = tmp_path / "repository"
+    round_root = repository / "round-1"
+    round_root.mkdir(parents=True)
+    source_plan = replace(
+        source_plan,
+        evaluated_round_binding=replace(
+            source_plan.evaluated_round_binding,
+            repository_root=str(repository),
+            round_root=str(round_root),
+        ),
+    )
+    dataset = _dataset(binding)
+    observed = count_equivalent_to_log2_cp10k(np.asarray(dataset.X))
+    plan = final_null_de._create_final_null_de_plan(
+        source_plan,
+        downstream_directory=str(tmp_path / "validated-downstream"),
+        downstream_manifest_file_sha256="a" * 64,
+        downstream_manifest_payload_sha256="b" * 64,
+    )
+    monkeypatch.setattr(final_null_de, "_rebuild_plan", lambda _plan: plan)
+    monkeypatch.setattr(final_null_de, "_load_bound_dataset", lambda _binding: dataset)
+    monkeypatch.setattr(
+        final_null_de,
+        "_decode_bound_output",
+        lambda _plan, _entry, selected_binding: MethodOutput(
+            values=observed,
+            cell_ids=selected_binding.retained_cell_ids,
+            gene_ids=selected_binding.gene_ids,
+        ),
+    )
+    destination = final_null_de.expected_final_null_de_output_directory(plan)
+    partial = final_null_de.run_final_null_de_evidence(
+        plan,
+        destination,
+        max_denominators=1,
+    )
+    assert partial["status"] == "running"
+    expected = final_null_de._expected_records(plan)
+
+    with pytest.raises(
+        final_null_de.FinalNullDEError,
+        match="denominator is incomplete",
+    ):
+        final_null_de._manifest_payload(destination, plan, expected[:1])
+
+    record = json.loads(
+        (destination / "records/00000001.json").read_text(encoding="utf-8")
+    )
+    record_file_sha256 = hashlib.sha256(
+        (destination / "records/00000001.json").read_bytes()
+    ).hexdigest()
+    plan_file_sha256 = hashlib.sha256(
+        (destination / "plan.json").read_bytes()
+    ).hexdigest()
+    manifest_body = {
+        "schema_version": 1,
+        "algorithm": final_null_de.FINAL_NULL_DE_ALGORITHM,
+        "status": "completed",
+        "plan_sha256": plan.plan_sha256,
+        "plan_file_sha256": plan_file_sha256,
+        "source_plan_sha256": plan.source_plan.plan_sha256,
+        "evaluated_round_binding_sha256": (
+            plan.source_plan.evaluated_round_binding.binding_sha256
+        ),
+        "downstream_manifest_file_sha256": plan.downstream_manifest_file_sha256,
+        "downstream_manifest_payload_sha256": (plan.downstream_manifest_payload_sha256),
+        "evaluator_source_sha256": plan.evaluator_source_sha256,
+        "planned_denominator_count": len(plan.source_plan.entries),
+        "recorded_denominator_count": 1,
+        "records": [
+            {
+                "ordinal": 1,
+                "run_id": record["run_id"],
+                "path": "records/00000001.json",
+                "sha256": record_file_sha256,
+                "record_sha256": record["record_sha256"],
+            }
+        ],
+    }
+    forged_manifest = {
+        **manifest_body,
+        "manifest_sha256": canonical_sha256(manifest_body),
+    }
+    (destination / "final_null_de_manifest.json").write_bytes(
+        final_null_de._canonical_bytes(forged_manifest) + b"\n"
+    )
+
+    with pytest.raises(
+        final_null_de.FinalNullDEError,
+        match="denominator is incomplete",
+    ):
+        if operation == "load":
+            final_null_de.load_final_null_de_manifest(destination)
+        else:
+            final_null_de.run_final_null_de_evidence(plan, destination)
 
 
 def test_final_null_de_output_must_be_external_and_not_symlinked(
@@ -575,8 +678,7 @@ def test_final_null_de_cli_has_only_round_locator_and_uses_receipt_namespace(
         "build_final_null_de_plan",
         lambda selected_repository, selected_round: (
             plan
-            if selected_repository == repository
-            and selected_round == round_directory
+            if selected_repository == repository and selected_round == round_directory
             else pytest.fail("CLI changed repository or round authority")
         ),
     )
