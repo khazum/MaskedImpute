@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
+import zlib
 
 import anndata as ad
 import numpy as np
@@ -18,12 +20,20 @@ from maskimpute_benchmark.methods import (
 from maskimpute_benchmark.methods.maskimpute import MaskImputeAdapterExecution
 from maskimpute_benchmark.runner import (
     AdapterOutcome,
+    CalibrationFoldReceipt,
+    CheckpointStore,
+    CompetitionPlan,
     DatasetBinding,
     DatasetQCAudit,
+    DatasetQCPolicy,
+    DevelopmentBudget,
     PreparedDataset,
     RunPlanEntry,
+    RunnerContractError,
     evaluate_adapter_outcome,
+    implementation_source_sha256,
 )
+from maskimpute_benchmark.protocol import canonical_sha256
 
 
 METHODS = Path("study/methods.json")
@@ -179,8 +189,42 @@ def _completed_maskimpute(prepared: PreparedDataset):
             runtime_seconds=1,
             peak_rss_bytes=1,
             peak_gpu_bytes=1,
+            calibration_fold_receipt=CalibrationFoldReceipt(
+                calibration_artifact_sha256="7" * 64,
+                calibration_context_sha256="8" * 64,
+                mechanism=prepared.binding.mechanism,
+                biological_id=prepared.binding.biological_id,
+                training_manifest_sha256s=("9" * 64,),
+                held_out_manifest_sha256s=("a" * 64,),
+                fold_calibrator_sha256="b" * 64,
+            ),
         ),
     )
+
+
+def _plan(prepared: PreparedDataset) -> CompetitionPlan:
+    return CompetitionPlan(
+        schema_version=1,
+        input_hashes={
+            "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+            "implementation_source_sha256": implementation_source_sha256(),
+        },
+        entries=(_entry(prepared),),
+        plan_sha256="c" * 64,
+    )
+
+
+def _rewrite_checkpoint(store: CheckpointStore, mutate) -> dict[str, object]:
+    payload = json.loads(store.checkpoint_path.read_text(encoding="utf-8"))
+    mutate(payload)
+    body = {key: value for key, value in payload.items() if key != "checkpoint_sha256"}
+    payload["checkpoint_sha256"] = canonical_sha256(body)
+    store.checkpoint_path.write_text(
+        json.dumps(payload, allow_nan=False, separators=(",", ":"), sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    return payload
 
 
 def test_adapter_exposes_realized_p_pre_zero_as_a_defensive_matrix() -> None:
@@ -303,3 +347,107 @@ def test_all_four_mechanisms_have_exact_or_reason_coded_score_evidence() -> None
                 assert {value["reason"] for value in stratum["metrics"].values()} == {
                     reason
                 }
+
+
+def test_development_checkpoint_compresses_and_resumes_realized_score_evidence(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    plan = _plan(prepared)
+    attempt = _completed_maskimpute(prepared)
+    first = CheckpointStore(tmp_path / "first")
+    second = CheckpointStore(tmp_path / "second")
+
+    first_report = first.append(plan, None, attempt, DevelopmentBudget())
+    second_report = second.append(plan, None, attempt, DevelopmentBudget())
+    evidence = first_report.records[0]["p_pre_zero_evidence"]
+    storage = evidence["storage"]
+    first_path = first.output_dir / storage["path"]
+    second_path = (
+        second.output_dir
+        / second_report.records[0]["p_pre_zero_evidence"]["storage"]["path"]
+    )
+
+    assert storage["encoding"] == "zlib_raw_f64_v1"
+    assert storage["compression_level"] == 6
+    assert storage["compressed_sha256"] == hashlib.sha256(
+        first_path.read_bytes()
+    ).hexdigest()
+    expected = attempt.p_pre_zero_evidence.matrix.astype("<f8").tobytes(order="C")
+    assert zlib.decompress(first_path.read_bytes()) == expected
+    assert storage["uncompressed_sha256"] == hashlib.sha256(expected).hexdigest()
+    assert storage["uncompressed_nbytes"] == len(expected)
+    assert first_path.read_bytes() == second_path.read_bytes()
+    assert CheckpointStore(first.output_dir).load(plan) == first_report
+
+
+def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    plan = _plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    report = store.append(plan, None, _completed_maskimpute(prepared), DevelopmentBudget())
+    evidence = report.records[0]["p_pre_zero_evidence"]
+    path = store.output_dir / evidence["storage"]["path"]
+    original = path.read_bytes()
+
+    path.write_bytes(original + b"tamper")
+    with pytest.raises(RunnerContractError, match="p_pre_zero|score.*checksum"):
+        store.load(plan)
+
+    path.write_bytes(original)
+    _rewrite_checkpoint(
+        store,
+        lambda payload: payload["records"][0]["p_pre_zero_evidence"][
+            "storage"
+        ].update({"compression_level": None}),
+    )
+    with pytest.raises(RunnerContractError, match="p_pre_zero|score.*partial"):
+        store.load(plan)
+
+
+def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared()
+    plan = _plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    report = store.append(plan, None, _completed_maskimpute(prepared), DevelopmentBudget())
+    evidence = report.records[0]["p_pre_zero_evidence"]
+    storage = evidence["storage"]
+    path = store.output_dir / storage["path"]
+    oversized = zlib.compress(
+        b"x" * (int(storage["uncompressed_nbytes"]) + 1), level=6
+    )
+    path.write_bytes(oversized)
+
+    def bind_oversized(payload):
+        receipt = payload["records"][0]["p_pre_zero_evidence"]["storage"]
+        receipt["compressed_sha256"] = hashlib.sha256(oversized).hexdigest()
+        receipt["compressed_nbytes"] = len(oversized)
+
+    _rewrite_checkpoint(store, bind_oversized)
+    with pytest.raises(RunnerContractError, match="p_pre_zero|score.*compressed"):
+        store.load(plan)
+
+
+def test_development_evidence_manifest_includes_realized_score_artifact(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.development_evaluation import (
+        load_completed_reconstruction_checkpoint,
+    )
+
+    prepared = _prepared()
+    plan = _plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    store.append(plan, None, _completed_maskimpute(prepared), DevelopmentBudget())
+
+    evidence = load_completed_reconstruction_checkpoint(store.output_dir, plan)
+    score = next(item for item in evidence.raw_artifacts if item.kind == "p_pre_zero")
+    assert score.run_id == "run-maskimpute-symsim"
+    assert score.path.endswith(".p-pre-zero-f64.zlib")
+    assert score.file_sha256 == hashlib.sha256(
+        (store.output_dir / score.path).read_bytes()
+    ).hexdigest()

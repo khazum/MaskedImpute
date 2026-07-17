@@ -2728,6 +2728,46 @@ def load_completed_reconstruction_checkpoint(
                         file_sha256=str(file_digest),
                     )
                 )
+            score_evidence = record.get("p_pre_zero_evidence")
+            if not isinstance(score_evidence, Mapping):
+                raise DevelopmentEvaluationError(
+                    f"checkpoint record {index} p_pre_zero evidence is invalid"
+                )
+            score_storage = score_evidence.get("storage")
+            if not isinstance(score_storage, Mapping):
+                raise DevelopmentEvaluationError(
+                    f"checkpoint record {index} p_pre_zero storage is invalid"
+                )
+            score_path = score_storage.get("path")
+            if score_path is not None:
+                score_digest = score_storage.get("compressed_sha256")
+                if not isinstance(score_path, str) or not isinstance(
+                    score_digest, str
+                ):
+                    raise DevelopmentEvaluationError(
+                        "checkpoint p_pre_zero binding is incomplete"
+                    )
+                relative = PurePosixPath(score_path)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise DevelopmentEvaluationError(
+                        "checkpoint p_pre_zero path is unsafe"
+                    )
+                score_artifact_path = checkpoint_directory.joinpath(*relative.parts)
+                _score_raw, actual_score_digest = _read_stable_bytes(
+                    score_artifact_path, "reconstruction p_pre_zero artifact"
+                )
+                if actual_score_digest != score_digest:
+                    raise DevelopmentEvaluationError(
+                        "checkpoint p_pre_zero raw-byte checksum changed"
+                    )
+                raw_artifacts.append(
+                    RawArtifactBinding(
+                        run_id=run_id,
+                        kind="p_pre_zero",
+                        path=score_path,
+                        file_sha256=score_digest,
+                    )
+                )
     except DevelopmentEvaluationError:
         raise
     except (RunnerContractError, OSError, TypeError, ValueError) as error:

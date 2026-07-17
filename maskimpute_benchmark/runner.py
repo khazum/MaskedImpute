@@ -31,6 +31,14 @@ import numpy as np
 
 from .methods import AdapterExecution, MethodInput, MethodSpec
 from .methods.registry import MethodRegistry
+from .prezero_evidence import (
+    PreZeroEvidence,
+    PreZeroEvidenceError,
+    encode_prezero_evidence,
+    evaluate_prezero_evidence,
+    validate_stored_prezero_evidence,
+    zlib_compress_bound,
+)
 from .protocol import canonical_sha256
 from .runtime_environments import (
     RuntimeChangeMonitor,
@@ -2621,6 +2629,8 @@ class RawRunResult:
     excluded_cell_ids_sha256: str
     retained_cell_count: int
     retained_cell_ids_sha256: str
+    retained_gene_count: int
+    observed_zero_count: int
     status: str
     reason: str | None
     runtime_seconds: int | float
@@ -2672,7 +2682,7 @@ class EvaluatedAttempt:
     native_output: np.ndarray | None
     native_output_scale: str | None
     evaluator_output: np.ndarray | None
-    p_pre_zero_evidence: object
+    p_pre_zero_evidence: PreZeroEvidence
 
 
 def _metric_names() -> tuple[str, ...]:
@@ -3088,8 +3098,6 @@ def evaluate_adapter_outcome(
             prepared.evaluator_dataset.layers[score_truth_layer],
             "p_pre_zero evaluator truth",
         )
-    from .prezero_evidence import PreZeroEvidenceError, evaluate_prezero_evidence
-
     try:
         p_pre_zero_evidence = evaluate_prezero_evidence(
             identity={
@@ -3137,6 +3145,8 @@ def evaluate_adapter_outcome(
         excluded_cell_ids_sha256=prepared.audit.excluded_cell_ids_sha256,
         retained_cell_count=prepared.audit.retained_cell_count,
         retained_cell_ids_sha256=prepared.audit.retained_cell_ids_sha256,
+        retained_gene_count=prepared.method_input.shape[1],
+        observed_zero_count=int((score_observed == 0).sum()),
         status=run_status,
         reason=reason,
         runtime_seconds=outcome.runtime_seconds,
@@ -3381,9 +3391,24 @@ class CheckpointStore:
                     "evaluator_scale": "log2_cp10k_plus_1",
                 }
             )
+        p_pre_zero_evidence, compressed_p_pre_zero = encode_prezero_evidence(
+            attempt.p_pre_zero_evidence
+        )
+        if compressed_p_pre_zero is not None:
+            path, digest = self._publish_immutable(
+                f"{base}.p-pre-zero-f64.zlib", compressed_p_pre_zero
+            )
+            storage = p_pre_zero_evidence["storage"]
+            assert isinstance(storage, dict)
+            if digest != storage["compressed_sha256"]:
+                raise RunnerContractError(
+                    "published p_pre_zero checksum differs from its evidence"
+                )
+            storage["path"] = path
         return {
             "run": run,
             "metrics": [metric.to_dict() for metric in attempt.metrics],
+            "p_pre_zero_evidence": p_pre_zero_evidence,
         }
 
     def write(
@@ -3438,6 +3463,80 @@ class CheckpointStore:
         if _file_sha256(path) != expected:
             raise RunnerContractError(f"{name} artifact checksum mismatch")
         return path
+
+    def _read_bounded_artifact(
+        self,
+        relative: object,
+        digest: object,
+        name: str,
+        *,
+        max_bytes: int,
+    ) -> bytes:
+        """Read one unique immutable artifact without exceeding a byte bound."""
+
+        expected = _require_sha256(digest, f"{name} file checksum")
+        assert expected is not None
+        if isinstance(max_bytes, bool) or type(max_bytes) is not int or max_bytes < 0:
+            raise ValueError("max_bytes must be a nonnegative integer")
+        path = self._safe_artifact_path(relative, name)
+        descriptor = -1
+        try:
+            before = path.lstat()
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or stat.S_ISLNK(before.st_mode)
+                or before.st_nlink != 1
+                or before.st_size > max_bytes
+            ):
+                raise RunnerContractError(
+                    f"{name} artifact is not a bounded unique regular file"
+                )
+            descriptor = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            opened = os.fstat(descriptor)
+            identity = lambda item: (  # noqa: E731 - compact stat identity
+                item.st_dev,
+                item.st_ino,
+                item.st_mode,
+                item.st_nlink,
+                item.st_uid,
+                item.st_size,
+                item.st_mtime_ns,
+                item.st_ctime_ns,
+            )
+            if identity(before) != identity(opened):
+                raise RunnerContractError(f"{name} artifact changed while opening")
+            chunks: list[bytes] = []
+            consumed = 0
+            while True:
+                chunk = os.read(descriptor, min(1024 * 1024, max_bytes + 1 - consumed))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                consumed += len(chunk)
+                if consumed > max_bytes:
+                    raise RunnerContractError(f"{name} artifact exceeds its byte bound")
+            after = os.fstat(descriptor)
+            after_path = path.lstat()
+            if identity(opened) != identity(after) or identity(opened) != identity(
+                after_path
+            ):
+                raise RunnerContractError(f"{name} artifact changed while reading")
+            raw = b"".join(chunks)
+            if hashlib.sha256(raw).hexdigest() != expected:
+                raise RunnerContractError(f"{name} artifact checksum mismatch")
+            return raw
+        except RunnerContractError:
+            raise
+        except OSError as error:
+            raise RunnerContractError(f"{name} artifact is unavailable") from error
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
 
     def _read_checkpoint_bytes(self) -> bytes:
         descriptor = -1
@@ -3508,7 +3607,11 @@ class CheckpointStore:
         *,
         final_calibration_artifact_sha256: str | None = None,
     ) -> dict[str, object]:
-        if not isinstance(value, dict) or set(value) != {"run", "metrics"}:
+        if not isinstance(value, dict) or set(value) != {
+            "run",
+            "metrics",
+            "p_pre_zero_evidence",
+        }:
             raise RunnerContractError("checkpoint record has wrong schema")
         run = value["run"]
         metrics = value["metrics"]
@@ -3525,6 +3628,9 @@ class CheckpointStore:
             ("configuration_kind", entry.configuration_kind),
             ("requires_count_score", entry.requires_count_score),
             ("requires_calibration", entry.requires_calibration),
+            ("mechanism", entry.mechanism),
+            ("biological_id", entry.biological_id),
+            ("technical_view", entry.technical_view),
         ):
             if run.get(name) != expected:
                 raise RunnerContractError(
@@ -3533,6 +3639,12 @@ class CheckpointStore:
         if run.get("status") not in _OUTCOME_STATUSES:
             raise RunnerContractError("checkpoint run status is invalid")
         _require_nonnegative_number(run.get("runtime_seconds"), "checkpoint runtime")
+        for name in ("retained_cell_count", "retained_gene_count", "observed_zero_count"):
+            nested = run.get(name)
+            if isinstance(nested, bool) or type(nested) is not int or nested < 0:
+                raise RunnerContractError(f"checkpoint {name} is invalid")
+        if run.get("retained_cell_count") <= 0 or run.get("retained_gene_count") <= 0:
+            raise RunnerContractError("checkpoint retained matrix dimensions are invalid")
         calibration_artifact = run.get("calibration_artifact_sha256")
         if calibration_artifact is None:
             if (
@@ -3606,6 +3718,63 @@ class CheckpointStore:
                 raise RunnerContractError(
                     f"checkpoint {prefix} shape or dtype is invalid"
                 )
+        evidence_value = value.get("p_pre_zero_evidence")
+        compressed_p_pre_zero: bytes | None = None
+        if isinstance(evidence_value, Mapping):
+            storage_value = evidence_value.get("storage")
+            if isinstance(storage_value, Mapping) and storage_value.get("path") is not None:
+                expected_uncompressed = (
+                    run["retained_cell_count"] * run["retained_gene_count"] * 8
+                )
+                compressed_p_pre_zero = self._read_bounded_artifact(
+                    storage_value.get("path"),
+                    storage_value.get("compressed_sha256"),
+                    "p_pre_zero",
+                    max_bytes=zlib_compress_bound(expected_uncompressed),
+                )
+        expected_identity = {
+            "run_id": entry.run_id,
+            "method_id": entry.method_id,
+            "dataset_id": entry.dataset_id,
+            "source_dataset_sha256": entry.source_dataset_sha256,
+            "mechanism": entry.mechanism,
+            "biological_id": entry.biological_id,
+            "technical_view": entry.technical_view,
+            "model_seed": entry.model_seed,
+            "configuration_id": entry.configuration_id,
+            "configuration_sha256": entry.configuration_sha256,
+            "method_input_sha256": run.get("method_input_sha256"),
+            "retained_cell_ids_sha256": run.get("retained_cell_ids_sha256"),
+        }
+        expected_calibration = (
+            final_calibration_artifact_sha256
+            if final_calibration_artifact_sha256 is not None
+            else run.get("calibration_artifact_sha256")
+        )
+        try:
+            validate_stored_prezero_evidence(
+                evidence_value,
+                expected_identity=expected_identity,
+                run_status=str(run.get("status")),
+                run_reason=(
+                    None if run.get("reason") is None else str(run.get("reason"))
+                ),
+                observed_zero_count=run["observed_zero_count"],
+                expected_shape=(
+                    run["retained_cell_count"],
+                    run["retained_gene_count"],
+                ),
+                requires_count_score=entry.requires_count_score,
+                requires_calibration=entry.requires_calibration,
+                expected_calibration_artifact_sha256=(
+                    None
+                    if expected_calibration is None
+                    else str(expected_calibration)
+                ),
+                compressed=compressed_p_pre_zero,
+            )
+        except PreZeroEvidenceError as error:
+            raise RunnerContractError(str(error)) from error
         if len(metrics) != len(_RECONSTRUCTION_METRIC_NAMES):
             raise RunnerContractError("checkpoint metric denominator is incomplete")
         for metric, expected_name in zip(
