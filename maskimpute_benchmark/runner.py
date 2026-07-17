@@ -63,6 +63,9 @@ _TRACKED_V28_REVISION_PATH = (
 _TRACKED_V28_REVISION_SHA256 = (
     "04fbd61a7ab83e3f1b4b1c8a8d4d5b40b8c6bee39a7f57b50c28b68f12c36705"
 )
+_TRACKED_V29_REVISION_SHA256 = (
+    "8d3f71f5a923b07b6fa489ee9856e0e4598084fdbf7cda77ecaf510068081ba5"
+)
 _V28_SELECTION_INPUT_PATH = (
     Path(__file__).resolve().parents[1]
     / "artifacts/study/development/evaluation/development_selection_input.json"
@@ -1105,6 +1108,105 @@ def load_v28_revision_authority() -> RunnerAuthority:
     )
 
 
+def load_v29_revision_authority() -> RunnerAuthority:
+    """Load the prespecified structure-only v29 authority without activating it."""
+
+    from .revisions import load_revision_spec, thaw_revision_configuration
+
+    repository = Path(__file__).resolve().parents[1]
+    base = load_runner_authority()
+    v28 = load_v28_revision_authority()
+    try:
+        revision = load_revision_spec(repository, "v29", require_clean=False)
+    except Exception as error:
+        raise RunnerContractError(
+            f"tracked v29 revision authority is unavailable: {error}"
+        ) from error
+    if revision.file_sha256 != _TRACKED_V29_REVISION_SHA256:
+        raise RunnerContractError("tracked v29 revision authority checksum differs")
+    try:
+        parent = next(
+            value
+            for value in v28.configurations
+            if value.method_id == "maskimpute"
+            and value.configuration_id == revision.parent_configuration_id
+        )
+    except StopIteration as error:
+        raise RunnerContractError(
+            "v29 parent is absent from prespecified v28 authority"
+        ) from error
+    if parent.configuration_sha256 != revision.parent_configuration_sha256:
+        raise RunnerContractError("v29 parent configuration binding differs")
+    payload = thaw_revision_configuration(revision)
+    parent_payload = dict(parent.payload)
+    if (
+        payload.get("hyperparameters") != parent_payload.get("hyperparameters")
+        or payload.get("decoder_hyperparameters")
+        != parent_payload.get("decoder_hyperparameters")
+    ):
+        raise RunnerContractError("v29 revision changes its parent model budget")
+    for field in ("decoder", "encoder_mode", "output_policy", "score_policy"):
+        if payload.get(field) != parent_payload.get(field):
+            raise RunnerContractError(f"v29 revision changes parent {field}")
+    structure = payload.get("structure_hyperparameters")
+    if structure != {
+        "variable_gene_count": 200,
+        "neighborhood_k": 15,
+        "covariance_penalty_weight": 0.1,
+        "neighborhood_penalty_weight": 0.1,
+        "variance_floor": 1e-8,
+    }:
+        raise RunnerContractError("v29 structure penalty authority differs")
+    candidate = AuthorizedConfiguration.create(
+        method_id="maskimpute",
+        configuration_id=revision.configuration_id,
+        kind="candidate_search",
+        payload=payload,
+        requires_count_score=True,
+        requires_calibration=True,
+        configuration_sha256=revision.configuration_sha256,
+    )
+    capacity = tuple(
+        value
+        for value in base.configurations
+        if value.method_id == "capacity-matched-ae"
+    )
+    if len(capacity) != 1:
+        raise RunnerContractError("v29 authority lacks one fixed capacity control")
+    authority_body = {
+        "schema": "maskimpute-v29-revision-runner-authority-v1",
+        "base_runner_authority_sha256": base.authority_sha256,
+        "v28_revision_authority_sha256": v28.authority_sha256,
+        "revision_file_sha256": revision.file_sha256,
+        "parent_configuration_id": parent.configuration_id,
+        "parent_configuration_sha256": parent.configuration_sha256,
+        "configuration": candidate.to_dict(),
+        "capacity_control": capacity[0].to_dict(),
+    }
+    return RunnerAuthority(
+        schema_version=base.schema_version,
+        authority_sha256=canonical_sha256(authority_body),
+        method_registry_sha256=base.method_registry_sha256,
+        selection_contract_sha256=base.selection_contract_sha256,
+        development_search_sha256=base.development_search_sha256,
+        ablation_registry_sha256=base.ablation_registry_sha256,
+        base_configuration_id=parent.configuration_id,
+        base_configuration_sha256=base.base_configuration_sha256,
+        base_configuration=base.base_configuration,
+        count_model_config=base.count_model_config,
+        count_model_config_sha256=base.count_model_config_sha256,
+        count_score_manifest_status=base.count_score_manifest_status,
+        count_score_manifest_sha256=base.count_score_manifest_sha256,
+        retained_calibration_status=base.retained_calibration_status,
+        retained_calibration_sha256=base.retained_calibration_sha256,
+        dataset_qc_policy=base.dataset_qc_policy,
+        dataset_qc_policy_sha256=base.dataset_qc_policy_sha256,
+        count_score_manifest_path=base.count_score_manifest_path,
+        retained_calibration_path=base.retained_calibration_path,
+        configurations=(candidate, capacity[0]),
+    )
+
+
 def _secure_canonical_artifact(path: Path, name: str) -> tuple[dict[str, Any], str]:
     descriptor: int | None = None
     try:
@@ -1148,56 +1250,31 @@ def _secure_canonical_artifact(path: Path, name: str) -> tuple[dict[str, Any], s
     return payload, hashlib.sha256(raw).hexdigest()
 
 
-def _validate_v28_activation() -> tuple[str, str]:
-    """Recompute the fixed selection report and require its v28 trigger."""
+def _validate_v28_activation() -> tuple[str, str, str]:
+    """Revalidate the complete fixed base evidence and require its v28 trigger."""
 
-    selection_input, input_sha256 = _secure_canonical_artifact(
-        _V28_SELECTION_INPUT_PATH,
-        "v28 activation selection input",
-    )
-    selection_report, report_sha256 = _secure_canonical_artifact(
-        _V28_SELECTION_REPORT_PATH,
-        "v28 activation selection report",
-    )
-    from .selection import select_development_candidate
+    from .revisions import validate_revision_activation
 
+    repository = Path(__file__).resolve().parents[1]
     try:
-        recomputed = select_development_candidate(selection_input).to_dict()
+        activation = validate_revision_activation(repository, "v28")
     except Exception as error:
-        raise RunnerContractError(
-            "v28 activation selection input failed semantic revalidation"
-        ) from error
-    if selection_report != recomputed:
-        raise RunnerContractError(
-            "v28 activation report differs from recomputed selection"
-        )
-    if (
-        selection_report.get("trigger") != "v28"
-        or selection_report.get("selected_configuration") is not None
-    ):
-        raise RunnerContractError("v28 activation report does not authorize v28")
-    assessments = selection_report.get("assessments")
-    if not isinstance(assessments, list) or not any(
-        isinstance(value, dict)
-        and value.get("configuration_id") == "v27-c03-calibrated-r1-g1"
-        and value.get("version") == "v27"
-        for value in assessments
-    ):
-        raise RunnerContractError(
-            "v28 activation report lacks the prespecified assessed parent"
-        )
-    bindings = selection_report.get("authority_bindings")
-    if not isinstance(bindings, dict) or not bindings:
-        raise RunnerContractError("v28 activation report lacks authority bindings")
-    return input_sha256, report_sha256
+        raise RunnerContractError(f"v28 activation failed: {error}") from error
+    return (
+        activation.selection_input_file_sha256,
+        activation.selection_result_sha256,
+        activation.selection_report_file_sha256,
+    )
 
 
 def _bind_v28_activation(
     authority: RunnerAuthority,
     input_sha256: str,
+    result_sha256: str,
     report_sha256: str,
 ) -> RunnerAuthority:
     _require_sha256(input_sha256, "v28 selection input checksum")
+    _require_sha256(result_sha256, "v28 selection result checksum")
     _require_sha256(report_sha256, "v28 selection report checksum")
     return replace(
         authority,
@@ -1206,6 +1283,7 @@ def _bind_v28_activation(
                 "schema": "maskimpute-v28-activated-runner-authority-v1",
                 "revision_authority_sha256": authority.authority_sha256,
                 "selection_input_sha256": input_sha256,
+                "selection_result_sha256": result_sha256,
                 "selection_report_sha256": report_sha256,
             }
         ),
@@ -4026,7 +4104,7 @@ def maskimpute_decoder_for_configuration(
         ):
             raise RunnerContractError("v27 candidate decoder contract differs")
         return "scaled_gaussian", None
-    if method_version != "v28" or decoder != "negative_binomial":
+    if method_version not in {"v28", "v29"} or decoder != "negative_binomial":
         raise RunnerContractError("candidate version and decoder pair is unsupported")
     expected_fields = {
         "method_version",
@@ -4037,8 +4115,12 @@ def maskimpute_decoder_for_configuration(
         "hyperparameters",
         "decoder_hyperparameters",
     }
+    if method_version == "v29":
+        expected_fields.add("structure_hyperparameters")
     if set(payload) != expected_fields:
-        raise RunnerContractError("v28 candidate decoder payload fields differ")
+        raise RunnerContractError(
+            f"{method_version} candidate decoder payload fields differ"
+        )
     if (
         payload.get("encoder_mode") != "explicit_mask"
         or payload.get("output_policy") != "selective"
@@ -4059,6 +4141,35 @@ def maskimpute_decoder_for_configuration(
     except (TypeError, ValueError) as error:
         raise RunnerContractError("v28 decoder_hyperparameters are invalid") from error
     return "negative_binomial", decoder_config
+
+
+def maskimpute_structure_for_configuration(
+    configuration: AuthorizedConfiguration,
+) -> object | None:
+    """Resolve the fixed v29 structure objective, absent from v27/v28/ablations."""
+
+    if not isinstance(configuration, AuthorizedConfiguration):
+        raise TypeError("configuration must be an AuthorizedConfiguration")
+    if configuration.kind == "ablation":
+        return None
+    if configuration.method_id != "maskimpute" or configuration.kind != "candidate_search":
+        raise RunnerContractError("structure configuration is not a MaskImpute candidate")
+    version = configuration.payload.get("method_version")
+    if version in {"v27", "v28"}:
+        if "structure_hyperparameters" in configuration.payload:
+            raise RunnerContractError("v27/v28 cannot carry structure penalties")
+        return None
+    if version != "v29":
+        raise RunnerContractError("structure configuration version is unsupported")
+    raw = configuration.payload.get("structure_hyperparameters")
+    from maskimpute.structure import StructurePenaltyConfig
+
+    if not isinstance(raw, Mapping) or set(raw) != set(StructurePenaltyConfig().to_dict()):
+        raise RunnerContractError("v29 structure_hyperparameters fields differ")
+    try:
+        return StructurePenaltyConfig(**dict(raw))
+    except (TypeError, ValueError) as error:
+        raise RunnerContractError("v29 structure_hyperparameters are invalid") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -4136,6 +4247,9 @@ class RepositoryAdapterDispatcher:
         decoder, decoder_config = maskimpute_decoder_for_configuration(
             authorized_configuration
         )
+        structure_config = maskimpute_structure_for_configuration(
+            authorized_configuration
+        )
         execution = _run_in_tree(
             request.method_spec,
             request.method_input,
@@ -4149,6 +4263,7 @@ class RepositoryAdapterDispatcher:
             development_biological_id=request.biological_id,
             decoder=decoder,
             decoder_config=decoder_config,
+            structure_config=structure_config,
         )
         diagnostics = execution.ablation_result.diagnostics
         score_diagnostics = diagnostics.get("score")
@@ -4433,21 +4548,66 @@ def run_development_competition(
 
 
 def run_v28_revision_competition(
-    output_dir: Path,
     *,
     environment_overrides: Mapping[str, Path] | None = None,
 ) -> CheckpointReport:
-    """Run/resume the separately tracked conditional v28 revision panel."""
+    """Run/resume v28 only at its fixed path after the base selection trigger."""
 
-    input_sha256, report_sha256 = _validate_v28_activation()
-    authority = _bind_v28_activation(
+    repository = Path(__file__).resolve().parents[1]
+    return _run_competition_with_authority(
+        repository / "artifacts/study/development/competition-v28-revision",
+        load_activated_v28_revision_authority(),
+        environment_overrides=environment_overrides,
+    )
+
+
+def load_activated_v28_revision_authority() -> RunnerAuthority:
+    """Return v28 authority bound to the exact recomputed base selection trigger."""
+
+    input_sha256, result_sha256, report_sha256 = _validate_v28_activation()
+    return _bind_v28_activation(
         load_v28_revision_authority(),
         input_sha256,
+        result_sha256,
         report_sha256,
     )
-    return _run_competition_with_authority(
-        output_dir,
+
+
+def load_activated_v29_revision_authority() -> RunnerAuthority:
+    """Bind the v29 plan to the independently recomputed combined v28 report."""
+
+    from .revisions import validate_revision_activation
+
+    repository = Path(__file__).resolve().parents[1]
+    try:
+        activation = validate_revision_activation(repository, "v29")
+    except Exception as error:
+        raise RunnerContractError(f"v29 activation failed: {error}") from error
+    authority = load_v29_revision_authority()
+    return replace(
         authority,
+        authority_sha256=canonical_sha256(
+            {
+                "schema": "maskimpute-v29-activated-runner-authority-v1",
+                "revision_authority_sha256": authority.authority_sha256,
+                "selection_input_sha256": activation.selection_input_file_sha256,
+                "selection_result_sha256": activation.selection_result_sha256,
+                "selection_report_sha256": activation.selection_report_file_sha256,
+            }
+        ),
+    )
+
+
+def run_v29_revision_competition(
+    *,
+    environment_overrides: Mapping[str, Path] | None = None,
+) -> CheckpointReport:
+    """Run/resume v29 only at its fixed path after the combined v28 trigger."""
+
+    repository = Path(__file__).resolve().parents[1]
+    return _run_competition_with_authority(
+        repository / "artifacts/study/development/competition-v29-revision",
+        load_activated_v29_revision_authority(),
         environment_overrides=environment_overrides,
     )
 
@@ -4759,13 +4919,18 @@ __all__ = [
     "enforce_calibration_fold_receipt",
     "method_input_sha256",
     "maskimpute_decoder_for_configuration",
+    "maskimpute_structure_for_configuration",
     "maskimpute_variant_for_configuration",
     "load_prepared_development_panel",
     "load_runner_authority",
     "load_v28_revision_authority",
+    "load_activated_v28_revision_authority",
+    "load_activated_v29_revision_authority",
+    "load_v29_revision_authority",
     "prepare_dataset_for_execution",
     "prepare_dataset_pair_for_execution",
     "run_development_competition",
     "run_v28_revision_competition",
+    "run_v29_revision_competition",
     "validate_development_manifest_payload",
 ]

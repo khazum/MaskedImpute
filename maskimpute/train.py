@@ -63,6 +63,26 @@ class V28TrainingOutcome:
             raise TypeError("dispersion must be an exact GeneDispersionEstimate")
 
 
+@dataclass(frozen=True, slots=True)
+class V29TrainingOutcome:
+    """NB training record with frozen observed-only structure authority."""
+
+    training: TrainingOutcome
+    dispersion: object
+    structure: object
+
+    def __post_init__(self) -> None:
+        from maskimpute.nb_model import GeneDispersionEstimate
+        from maskimpute.structure import StructureAuthority
+
+        if type(self.training) is not TrainingOutcome:
+            raise TypeError("training must be an exact TrainingOutcome")
+        if type(self.dispersion) is not GeneDispersionEstimate:
+            raise TypeError("dispersion must be an exact GeneDispersionEstimate")
+        if type(self.structure) is not StructureAuthority:
+            raise TypeError("structure must be an exact StructureAuthority")
+
+
 _MAX_EXACT_FLOAT64_INTEGER = 2**53
 
 
@@ -503,6 +523,10 @@ def _train_with_policies(
     training_mask_factory: Callable[..., np.ndarray],
     objective_factory: Callable[..., Callable[..., tuple[torch.Tensor, torch.Tensor]]]
     | None = None,
+    additional_training_loss: Callable[
+        [torch.Tensor, torch.Tensor, np.ndarray], torch.Tensor
+    ]
+    | None = None,
 ) -> TrainingOutcome:
     """Shared deterministic trainer for prespecified architecture/mask policies."""
 
@@ -538,6 +562,8 @@ def _train_with_policies(
         raise ValueError("training model must contain parameters")
     if objective_factory is not None and not callable(objective_factory):
         raise TypeError("objective_factory must be callable or None")
+    if additional_training_loss is not None and not callable(additional_training_loss):
+        raise TypeError("additional_training_loss must be callable or None")
     objective = (
         None
         if objective_factory is None
@@ -671,6 +697,15 @@ def _train_with_policies(
                     score[rows],
                 )
             loss = primary_loss + config.pre_zero_regularization * preservation_loss
+            if additional_training_loss is not None:
+                additional = additional_training_loss(
+                    prediction,
+                    corrupted_input[rows],
+                    rows_numpy,
+                )
+                if not isinstance(additional, torch.Tensor) or additional.ndim != 0:
+                    raise TypeError("additional_training_loss must return a scalar tensor")
+                loss = loss + additional
             if not torch.isfinite(loss):
                 raise FloatingPointError("nonfinite masked-model training loss")
             loss.backward()
@@ -849,3 +884,132 @@ def train_v28(
     )
     dispersion = dispersion_holder.get("value")
     return V28TrainingOutcome(training=training, dispersion=dispersion)
+
+
+def train_v29(
+    observed_counts: object,
+    p_pre_zero: object,
+    config: MaskImputeConfig,
+    device: str | torch.device,
+    *,
+    decoder_config: object,
+    structure_config: object,
+) -> V29TrainingOutcome:
+    """Train the conditional v29 NB model with observed-only structure losses."""
+
+    from maskimpute.nb_model import (
+        MAX_V28_COUNT_OR_LIBRARY,
+        NegativeBinomialDecoderConfig,
+        NegativeBinomialMaskAutoencoder,
+        _negative_binomial_objective,
+        apply_library_size_offset,
+        estimate_shrunk_gene_dispersion,
+    )
+    from maskimpute.structure import (
+        StructurePenaltyConfig,
+        build_structure_authority,
+        structure_preservation_loss,
+    )
+
+    if type(decoder_config) is not NegativeBinomialDecoderConfig:
+        raise TypeError(
+            "decoder_config must be an exact NegativeBinomialDecoderConfig"
+        )
+    if type(structure_config) is not StructurePenaltyConfig:
+        raise TypeError(
+            "structure_config must be an exact StructurePenaltyConfig"
+        )
+    counts = validate_observed_counts(observed_counts)
+    library_sizes = counts.sum(axis=1, dtype=np.float64)
+    if np.any(counts > MAX_V28_COUNT_OR_LIBRARY) or np.any(
+        library_sizes > MAX_V28_COUNT_OR_LIBRARY
+    ):
+        raise ValueError(
+            "v29 observed count or library exceeds the stable likelihood limit"
+        )
+    dispersion_holder: dict[str, object] = {}
+    structure_holder: dict[str, object] = {}
+
+    def model_factory(
+        n_genes: int,
+        training_config: MaskImputeConfig,
+    ) -> torch.nn.Module:
+        return NegativeBinomialMaskAutoencoder(
+            n_genes=n_genes,
+            hidden_dims=training_config.hidden_dims,
+            latent_dim=training_config.latent_dim,
+        )
+
+    def objective_factory(
+        counts: np.ndarray,
+        library_sizes: np.ndarray,
+        validation_mask: np.ndarray,
+        training_config: MaskImputeConfig,
+        selected_device: torch.device,
+    ):
+        structure_counts = counts.copy()
+        structure_counts[validation_mask] = 0.0
+        structure_holder["value"] = build_structure_authority(
+            structure_counts,
+            structure_config,
+        )
+        dispersion = estimate_shrunk_gene_dispersion(
+            counts,
+            library_sizes,
+            decoder_config,
+            estimation_mask=~validation_mask,
+        )
+        dispersion_holder["value"] = dispersion
+        return _negative_binomial_objective(
+            dispersion,
+            normalization_target=training_config.normalization_target,
+            device=selected_device,
+            dtype=torch.float64,
+        )
+
+    libraries = np.asarray(library_sizes, dtype=np.float64)
+
+    def additional_training_loss(
+        prediction: torch.Tensor,
+        visible_expression: torch.Tensor,
+        global_rows: np.ndarray,
+    ) -> torch.Tensor:
+        row_libraries = torch.as_tensor(
+            libraries[global_rows],
+            dtype=torch.float64,
+            device=prediction.device,
+        )
+        predicted_counts = apply_library_size_offset(
+            prediction.to(torch.float64), row_libraries
+        )
+        scale = torch.zeros_like(row_libraries)
+        positive = row_libraries > 0
+        scale[positive] = config.normalization_target / row_libraries[positive]
+        predicted_normalized = torch.log1p(predicted_counts * scale[:, None])
+        structure = structure_holder.get("value")
+        loss, _components = structure_preservation_loss(
+            predicted_normalized,
+            visible_expression.to(torch.float64),
+            global_rows,
+            structure,
+            structure_config,
+        )
+        return loss
+
+    training = _train_with_policies(
+        counts,
+        p_pre_zero,
+        config,
+        device,
+        model_factory=model_factory,
+        training_mask_factory=make_epoch_training_mask,
+        objective_factory=objective_factory,
+        additional_training_loss=additional_training_loss,
+    )
+    dispersion = dispersion_holder.get("value")
+    structure = structure_holder.get("value")
+    return V29TrainingOutcome(
+        training=training,
+        dispersion=dispersion,
+        structure=structure,
+    )

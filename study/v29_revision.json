@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "status": "conditional_on_v29_trigger",
+  "trigger": "v29",
+  "parent_configuration_id": "v28-c01-nb-parent-c03",
+  "parent_configuration_sha256": "fcea35b52f40fc6880ec7b3ca16a5a7c5a0784f984677e8f55934010d3fb470f",
+  "configuration_id": "v29-c01-structure-parent-v28-c01",
+  "configuration": {
+    "method_version": "v29",
+    "decoder": "negative_binomial",
+    "encoder_mode": "explicit_mask",
+    "output_policy": "selective",
+    "score_policy": "retained_development_calibrator",
+    "hyperparameters": {
+      "hidden_dims": [
+        128,
+        64
+      ],
+      "latent_dim": 24,
+      "learning_rate": 0.0002,
+      "weight_decay": 0.0001,
+      "batch_size": 64,
+      "max_epochs": 300,
+      "patience": 30,
+      "artificial_mask_fraction": 0.2,
+      "validation_fraction": 0.1,
+      "log_count_bin_edges": [
+        1.0986122886681096,
+        2.1972245773362196,
+        3.4965075614664802
+      ],
+      "early_stopping_min_delta": 0.0,
+      "pre_zero_regularization": 1.0,
+      "gate_gamma": 1.0,
+      "normalization_target": 10000.0
+    },
+    "decoder_hyperparameters": {
+      "dispersion_prior_strength": 20.0,
+      "winsor_quantile": 0.95,
+      "min_dispersion": 0.0001,
+      "max_dispersion": 100.0,
+      "mean_floor": 1e-08
+    },
+    "structure_hyperparameters": {
+      "variable_gene_count": 200,
+      "neighborhood_k": 15,
+      "covariance_penalty_weight": 0.1,
+      "neighborhood_penalty_weight": 0.1,
+      "variance_floor": 1e-08
+    }
+  },
+  "configuration_sha256": "a9f0258aafdb43866ed3d29b45a9b41162adc587d2ba088b3094f999c9905a53",
+  "reason_code": "prespecified_structure_revision_of_v28_c01"
+}

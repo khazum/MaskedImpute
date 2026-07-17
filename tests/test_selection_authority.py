@@ -792,8 +792,22 @@ def test_selection_blocks_if_count_score_manifest_binding_is_pending(tmp_path):
     }
     ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
 
+    schema_valid_payload = {
+        "schema_version": 2,
+        "dataset_manifest_sha256": "a" * 64,
+        "count_score_manifest_sha256": "b" * 64,
+        "retained_calibration_artifact_sha256": "c" * 64,
+        "evaluation_manifest_sha256": "d" * 64,
+        "records": [],
+        "orthogonal_intervals": [],
+        "result_sha256": "e" * 64,
+    }
     with pytest.raises(selection.SelectionAuthorityError, match="count-score.*pending"):
-        selection._select_for_repository({}, repository, require_clean=False)
+        selection._select_for_repository(
+            schema_valid_payload,
+            repository,
+            require_clean=False,
+        )
 
 
 def test_schema_valid_count_score_manifest_cannot_change_the_frozen_config(
