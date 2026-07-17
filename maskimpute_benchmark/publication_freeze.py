@@ -1045,60 +1045,62 @@ def _stream_tree_file_sha256(
     return digest.hexdigest(), byte_count
 
 
-def _closed_tree_file_entry(path: Path, relative: str) -> dict[str, object]:
+def _closed_tree_file_entry(
+    parent: int,
+    name: str,
+    relative: str,
+) -> dict[str, object]:
     descriptor = -1
-    label = f"publication stage tree file {relative}"
     try:
-        with _pinned_parent(path, label) as parent:
-            named_before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
-            if not stat.S_ISREG(named_before.st_mode):
-                if stat.S_ISLNK(named_before.st_mode):
-                    raise PublicationFreezeError(
-                        f"publication stage tree contains a symlink: {relative}"
-                    )
+        named_before = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if not stat.S_ISREG(named_before.st_mode):
+            if stat.S_ISLNK(named_before.st_mode):
                 raise PublicationFreezeError(
-                    f"publication stage tree contains a special file: {relative}"
+                    f"publication stage tree contains a symlink: {relative}"
                 )
-            if named_before.st_nlink != 1:
-                raise PublicationFreezeError(
-                    f"publication stage tree file is not unique: {relative}"
-                )
-            descriptor = os.open(
-                path.name,
-                os.O_RDONLY
-                | getattr(os, "O_NOFOLLOW", 0)
-                | getattr(os, "O_CLOEXEC", 0),
-                dir_fd=parent,
+            raise PublicationFreezeError(
+                f"publication stage tree contains a special file: {relative}"
             )
-            opened_before = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(opened_before.st_mode)
-                or opened_before.st_nlink != 1
-                or _identity(opened_before) != _identity(named_before)
-            ):
-                raise PublicationFreezeError(
-                    f"publication stage tree file is not unique: {relative}"
-                )
-            digest, byte_count = _stream_tree_file_sha256(
-                descriptor,
-                opened_before.st_size,
+        if named_before.st_nlink != 1:
+            raise PublicationFreezeError(
+                f"publication stage tree file is not unique: {relative}"
             )
-            opened_after = os.fstat(descriptor)
-            named_after = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
-            if (
-                _identity(opened_before) != _identity(opened_after)
-                or _identity(opened_before) != _identity(named_after)
-            ):
-                raise PublicationFreezeError(
-                    f"publication stage tree changed while reading {relative}"
-                )
-            return {
-                "path": relative,
-                "kind": "file",
-                "mode": stat.S_IMODE(opened_before.st_mode),
-                "size": byte_count,
-                "sha256": digest,
-            }
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=parent,
+        )
+        opened_before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_before.st_mode)
+            or opened_before.st_nlink != 1
+            or _identity(opened_before) != _identity(named_before)
+        ):
+            raise PublicationFreezeError(
+                f"publication stage tree file is not unique: {relative}"
+            )
+        digest, byte_count = _stream_tree_file_sha256(
+            descriptor,
+            opened_before.st_size,
+        )
+        opened_after = os.fstat(descriptor)
+        named_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (
+            _identity(opened_before) != _identity(opened_after)
+            or _identity(opened_before) != _identity(named_after)
+        ):
+            raise PublicationFreezeError(
+                f"publication stage tree changed while reading {relative}"
+            )
+        return {
+            "path": relative,
+            "kind": "file",
+            "mode": stat.S_IMODE(opened_before.st_mode),
+            "size": byte_count,
+            "sha256": digest,
+        }
     except PublicationFreezeError:
         raise
     except OSError as error:
@@ -1112,18 +1114,20 @@ def _closed_tree_file_entry(path: Path, relative: str) -> dict[str, object]:
 
 def _snapshot_closed_stage_tree(root: Path) -> tuple[dict[str, object], ...]:
     rows: list[dict[str, object]] = []
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
 
-    def visit(directory: Path, relative: str) -> None:
+    def visit(descriptor: int, relative: str) -> None:
         try:
-            before = os.lstat(directory)
+            before = os.fstat(descriptor)
         except OSError as error:
             raise PublicationFreezeError(
                 f"publication stage tree directory is unavailable: {relative}"
             ) from error
-        if stat.S_ISLNK(before.st_mode):
-            raise PublicationFreezeError(
-                f"publication stage tree contains a symlink: {relative}"
-            )
         if not stat.S_ISDIR(before.st_mode):
             raise PublicationFreezeError(
                 f"publication stage tree contains a special file: {relative}"
@@ -1136,17 +1140,16 @@ def _snapshot_closed_stage_tree(root: Path) -> tuple[dict[str, object], ...]:
             }
         )
         try:
-            with os.scandir(directory) as iterator:
+            with os.scandir(descriptor) as iterator:
                 names = sorted(entry.name for entry in iterator)
         except OSError as error:
             raise PublicationFreezeError(
                 f"publication stage tree directory is unavailable: {relative}"
             ) from error
         for name in names:
-            child = directory / name
             child_relative = name if relative == "." else f"{relative}/{name}"
             try:
-                value = os.lstat(child)
+                value = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
             except OSError as error:
                 raise PublicationFreezeError(
                     f"publication stage tree changed during scan: {child_relative}"
@@ -1156,15 +1159,62 @@ def _snapshot_closed_stage_tree(root: Path) -> tuple[dict[str, object], ...]:
                     f"publication stage tree contains a symlink: {child_relative}"
                 )
             if stat.S_ISDIR(value.st_mode):
-                visit(child, child_relative)
+                child_descriptor = -1
+                try:
+                    child_descriptor = os.open(
+                        name,
+                        directory_flags,
+                        dir_fd=descriptor,
+                    )
+                    opened_before = os.fstat(child_descriptor)
+                    if _tree_directory_identity(
+                        opened_before
+                    ) != _tree_directory_identity(value):
+                        raise PublicationFreezeError(
+                            "publication stage tree directory changed while opening: "
+                            f"{child_relative}"
+                        )
+                    visit(child_descriptor, child_relative)
+                    opened_after = os.fstat(child_descriptor)
+                    named_after = os.stat(
+                        name,
+                        dir_fd=descriptor,
+                        follow_symlinks=False,
+                    )
+                    if (
+                        _tree_directory_identity(opened_before)
+                        != _tree_directory_identity(opened_after)
+                        or _tree_directory_identity(opened_before)
+                        != _tree_directory_identity(named_after)
+                    ):
+                        raise PublicationFreezeError(
+                            "publication stage tree directory changed during scan: "
+                            f"{child_relative}"
+                        )
+                except PublicationFreezeError:
+                    raise
+                except OSError as error:
+                    raise PublicationFreezeError(
+                        "publication stage tree directory is unavailable or unsafe: "
+                        f"{child_relative}"
+                    ) from error
+                finally:
+                    if child_descriptor >= 0:
+                        os.close(child_descriptor)
             elif stat.S_ISREG(value.st_mode):
-                rows.append(_closed_tree_file_entry(child, child_relative))
+                rows.append(
+                    _closed_tree_file_entry(
+                        descriptor,
+                        name,
+                        child_relative,
+                    )
+                )
             else:
                 raise PublicationFreezeError(
                     f"publication stage tree contains a special file: {child_relative}"
                 )
         try:
-            after = os.lstat(directory)
+            after = os.fstat(descriptor)
         except OSError as error:
             raise PublicationFreezeError(
                 f"publication stage tree changed during scan: {relative}"
@@ -1174,7 +1224,59 @@ def _snapshot_closed_stage_tree(root: Path) -> tuple[dict[str, object], ...]:
                 f"publication stage tree changed during scan: {relative}"
             )
 
-    visit(root, ".")
+    root_descriptor = -1
+    try:
+        with _pinned_parent(root, "publication stage tree") as parent:
+            named_before = os.stat(
+                root.name,
+                dir_fd=parent,
+                follow_symlinks=False,
+            )
+            if stat.S_ISLNK(named_before.st_mode):
+                raise PublicationFreezeError(
+                    "publication stage tree contains a symlink: ."
+                )
+            if not stat.S_ISDIR(named_before.st_mode):
+                raise PublicationFreezeError(
+                    "publication stage tree contains a special file: ."
+                )
+            root_descriptor = os.open(
+                root.name,
+                directory_flags,
+                dir_fd=parent,
+            )
+            opened_before = os.fstat(root_descriptor)
+            if _tree_directory_identity(
+                opened_before
+            ) != _tree_directory_identity(named_before):
+                raise PublicationFreezeError(
+                    "publication stage tree root changed while opening"
+                )
+            visit(root_descriptor, ".")
+            opened_after = os.fstat(root_descriptor)
+            named_after = os.stat(
+                root.name,
+                dir_fd=parent,
+                follow_symlinks=False,
+            )
+            if (
+                _tree_directory_identity(opened_before)
+                != _tree_directory_identity(opened_after)
+                or _tree_directory_identity(opened_before)
+                != _tree_directory_identity(named_after)
+            ):
+                raise PublicationFreezeError(
+                    "publication stage tree root changed during scan"
+                )
+    except PublicationFreezeError:
+        raise
+    except OSError as error:
+        raise PublicationFreezeError(
+            "publication stage tree root is unavailable or unsafe"
+        ) from error
+    finally:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
     return tuple(sorted(rows, key=lambda row: str(row["path"])))
 
 

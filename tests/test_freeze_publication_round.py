@@ -1838,6 +1838,69 @@ def test_atomic_write_retry_accepts_file_left_after_post_link_failure(
     assert not list(path.parent.glob(".frozen_method.json.*.tmp"))
 
 
+def test_atomic_write_accepts_sequential_identical_retry(tmp_path: Path) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    path = (tmp_path / "authority" / "frozen_method.json").resolve()
+    path.parent.mkdir()
+    raw = b'{"schema_version":1}\n'
+
+    freeze_module._atomic_write(path, raw)
+    freeze_module._atomic_write(path, raw)
+
+    assert path.read_bytes() == raw
+    assert not list(path.parent.glob(".frozen_method.json.*.tmp"))
+
+
+@pytest.mark.parametrize("kind", ("symlink", "hardlink"))
+def test_atomic_write_rejects_unsafe_existing_target(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    import os
+
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    path = (tmp_path / "authority" / "frozen_method.json").resolve()
+    path.parent.mkdir()
+    source = path.parent / "source.json"
+    raw = b'{"schema_version":1}\n'
+    source.write_bytes(raw)
+    if kind == "symlink":
+        path.symlink_to(source)
+    else:
+        os.link(source, path)
+
+    with pytest.raises(PublicationFreezeError, match="different.*concurrently"):
+        freeze_module._atomic_write(path, raw)
+
+    assert path.exists()
+    assert path.is_symlink() == (kind == "symlink")
+    assert not list(path.parent.glob(".frozen_method.json.*.tmp"))
+
+
+def test_atomic_write_interruption_before_link_leaves_no_target_or_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    path = (tmp_path / "authority" / "frozen_method.json").resolve()
+    path.parent.mkdir()
+
+    def interrupt_link(*_args, **_kwargs):
+        raise OSError("simulated pre-link interruption")
+
+    monkeypatch.setattr(freeze_module.os, "link", interrupt_link)
+
+    with pytest.raises(PublicationFreezeError, match="cannot open.*parent"):
+        freeze_module._atomic_write(path, b'{"schema_version":1}\n')
+
+    assert not os.path.lexists(path)
+    assert not list(path.parent.glob(".frozen_method.json.*.tmp"))
+
+
 def test_secure_json_rejects_parent_directory_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2880,6 +2943,79 @@ def test_tree_receipt_hashes_large_files_as_bounded_streams(
     assert byte_count == path.stat().st_size
     assert digest == original_sha256(path.read_bytes()).hexdigest()
     assert update_sizes == [1024 * 1024, 1024 * 1024, 17]
+
+
+def test_tree_receipt_directory_swap_cannot_escape_pinned_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    import maskimpute_benchmark.publication_freeze as freeze_module
+    from maskimpute_benchmark.publication_freeze import (
+        _snapshot_closed_stage_tree,
+    )
+
+    repository = tmp_path / "repository"
+    container = repository / "container"
+    root = container / "tree"
+    competing_container = repository / "competing-container"
+    competing_root = competing_container / "tree"
+    held_container = repository / "container-held"
+    root.mkdir(parents=True)
+    competing_root.mkdir(parents=True)
+    (root / "safe.bin").write_bytes(b"safe")
+    (competing_root / "escaped.bin").write_bytes(b"escaped")
+    root_inode = root.stat().st_ino
+    real_scandir = freeze_module.os.scandir
+    real_lstat = freeze_module.os.lstat
+    swapped = False
+    path_walk = False
+
+    def swap_in() -> None:
+        nonlocal swapped
+        container.rename(held_container)
+        competing_container.rename(container)
+        swapped = True
+
+    def swap_out() -> None:
+        nonlocal swapped
+        container.rename(competing_container)
+        held_container.rename(container)
+        swapped = False
+
+    def racing_scandir(target):
+        nonlocal path_walk
+        descriptor_walk = (
+            type(target) is int and os.fstat(target).st_ino == root_inode
+        )
+        pathname_walk = not isinstance(target, int) and Path(target) == root
+        if not swapped and (descriptor_walk or pathname_walk):
+            swap_in()
+            iterator = real_scandir(target)
+            if descriptor_walk:
+                swap_out()
+            else:
+                path_walk = True
+            return iterator
+        return real_scandir(target)
+
+    def restoring_lstat(path):
+        if path_walk and swapped and Path(path) == root:
+            swap_out()
+        return real_lstat(path)
+
+    monkeypatch.setattr(freeze_module.os, "scandir", racing_scandir)
+    monkeypatch.setattr(freeze_module.os, "lstat", restoring_lstat)
+    try:
+        rows = _snapshot_closed_stage_tree(root)
+    finally:
+        if swapped:
+            swap_out()
+
+    paths = {row["path"] for row in rows}
+    assert "safe.bin" in paths
+    assert "escaped.bin" not in paths
 
 
 @pytest.mark.parametrize("kind", ("symlink", "fifo", "socket", "hardlink"))
