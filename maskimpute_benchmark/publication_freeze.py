@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -23,6 +24,10 @@ from .protocol import canonical_sha256
 from .runtime_environments import (
     RuntimeEnvironmentError,
     load_runtime_environment_lock,
+)
+from .revisions import (
+    development_selection_stage_paths,
+    revision_stage_paths,
 )
 from .study import (
     StudyStateError,
@@ -105,6 +110,300 @@ _TRACKED_AUTHORITY_NAMES = tuple(
 
 class PublicationFreezeError(ValueError):
     """Raised when development evidence cannot authorize a publication freeze."""
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationStagePaths:
+    """Closed paths owned by one publication-development stage."""
+
+    stage: str
+    source_input: str
+    complete_input: str
+    report: str
+    downstream_directory: str
+    downstream_plan: str
+    downstream_manifest: str
+    evaluation_manifest: str
+    reconstruction_directory: str
+    reconstruction_checkpoint: str
+    orthogonal_directory: str
+    orthogonal_manifest: str
+    revision_authority: str | None
+    activation_selection_input: str | None
+    activation_selection_report: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationStageLayout:
+    """The exact contiguous publication-development prefix present on disk."""
+
+    active_stage: str
+    revision_versions: tuple[str, ...]
+    stages: tuple[PublicationStagePaths, ...]
+
+
+def _publication_stage_paths(stage: str) -> PublicationStagePaths:
+    if stage not in {"base", "v28", "v29"}:
+        raise PublicationFreezeError(f"unknown publication stage suffix: {stage}")
+    through_version = None if stage == "base" else stage
+    selection = development_selection_stage_paths(through_version)
+    if stage == "base":
+        evaluation_manifest = (
+            "artifacts/study/development/evaluation/evaluation_manifest.json"
+        )
+        reconstruction_directory = (
+            "artifacts/study/development/competition-reconstruction"
+        )
+        orthogonal_directory = (
+            "artifacts/study/development/evaluation/orthogonal"
+        )
+        revision_authority = None
+        activation_selection_input = None
+        activation_selection_report = None
+    else:
+        revision = revision_stage_paths(stage)
+        evaluation_manifest = revision.evaluation_manifest
+        reconstruction_directory = revision.reconstruction_directory
+        orthogonal_directory = revision.orthogonal_directory
+        revision_authority = revision.revision_authority
+        activation_selection_input = revision.activation_selection_input
+        activation_selection_report = revision.activation_selection_report
+    return PublicationStagePaths(
+        stage=stage,
+        source_input=selection.source_selection_input,
+        complete_input=selection.selection_complete_input,
+        report=selection.selection_report,
+        downstream_directory=selection.downstream_directory,
+        downstream_plan=f"{selection.downstream_directory}/plan.json",
+        downstream_manifest=(
+            f"{selection.downstream_directory}/downstream_manifest.json"
+        ),
+        evaluation_manifest=evaluation_manifest,
+        reconstruction_directory=reconstruction_directory,
+        reconstruction_checkpoint=f"{reconstruction_directory}/checkpoint.json",
+        orthogonal_directory=orthogonal_directory,
+        orthogonal_manifest=f"{orthogonal_directory}/orthogonal_outputs.json",
+        revision_authority=revision_authority,
+        activation_selection_input=activation_selection_input,
+        activation_selection_report=activation_selection_report,
+    )
+
+
+def _publication_stage_footprint(stage: PublicationStagePaths) -> tuple[str, ...]:
+    return (
+        stage.source_input,
+        stage.complete_input,
+        stage.report,
+        stage.downstream_directory,
+        stage.downstream_plan,
+        stage.downstream_manifest,
+        stage.evaluation_manifest,
+        stage.reconstruction_directory,
+        stage.reconstruction_checkpoint,
+        stage.orthogonal_directory,
+        stage.orthogonal_manifest,
+    )
+
+
+def _safe_stage_directory_entries(repository: Path, relative: str) -> tuple[str, ...]:
+    """List one generated-stage directory without following a symlink."""
+
+    path = repository / relative
+    if not os.path.lexists(path):
+        return ()
+    descriptor = -1
+    try:
+        with _pinned_parent(path, "publication stage directory") as parent:
+            named_before = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISDIR(named_before.st_mode):
+                raise PublicationFreezeError(
+                    f"publication stage directory is unsafe: {relative}"
+                )
+            descriptor = os.open(
+                path.name,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+                dir_fd=parent,
+            )
+            opened_before = os.fstat(descriptor)
+            if _directory_identity(opened_before) != _directory_identity(named_before):
+                raise PublicationFreezeError(
+                    f"publication stage directory changed while opened: {relative}"
+                )
+            entries = tuple(sorted(os.listdir(descriptor)))
+            opened_after = os.fstat(descriptor)
+            named_after = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+            if (
+                _directory_identity(opened_before)
+                != _directory_identity(opened_after)
+                or _directory_identity(opened_before)
+                != _directory_identity(named_after)
+            ):
+                raise PublicationFreezeError(
+                    f"publication stage directory changed during access: {relative}"
+                )
+            return entries
+    except PublicationFreezeError:
+        raise
+    except OSError as error:
+        raise PublicationFreezeError(
+            f"publication stage directory is unavailable or unsafe: {relative}"
+        ) from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _reject_unknown_publication_stages(repository: Path) -> None:
+    known = {"v28", "v29"}
+    evaluation_entries = _safe_stage_directory_entries(
+        repository, "artifacts/study/development/evaluation"
+    )
+    exact_base_names = {
+        "development_selection_input.json",
+        "development_selection_input-downstream.json",
+        "development_selection_report.json",
+        "evaluation_manifest.json",
+        "downstream",
+        "orthogonal",
+    }
+    prefixes = (
+        ("development_selection_input-", ".json", "-downstream"),
+        ("development_selection_report-", ".json", ""),
+        ("evaluation_manifest-", ".json", ""),
+        ("downstream-", "", ""),
+        ("orthogonal-", "-revision", ""),
+    )
+    for name in evaluation_entries:
+        if name in exact_base_names:
+            continue
+        for prefix, suffix, removable_suffix in prefixes:
+            if not name.startswith(prefix) or (suffix and not name.endswith(suffix)):
+                continue
+            version = name[len(prefix) :]
+            if suffix:
+                version = version[: -len(suffix)]
+            if removable_suffix and version.endswith(removable_suffix):
+                version = version[: -len(removable_suffix)]
+            if version not in known:
+                raise PublicationFreezeError(
+                    f"unknown publication stage suffix in generated footprint: {name}"
+                )
+            break
+
+    development_entries = _safe_stage_directory_entries(
+        repository, "artifacts/study/development"
+    )
+    for name in development_entries:
+        match = re.fullmatch(r"competition-(.+)-revision", name)
+        if match is not None and match.group(1) not in known:
+            raise PublicationFreezeError(
+                f"unknown publication stage suffix in generated footprint: {name}"
+            )
+
+
+def _validate_publication_stage_path(
+    repository: Path,
+    stage: str,
+    relative: str,
+    *,
+    directory: bool,
+) -> None:
+    current = repository
+    for index, component in enumerate(PurePosixPath(relative).parts):
+        current /= component
+        try:
+            value = os.lstat(current)
+        except FileNotFoundError as error:
+            raise PublicationFreezeError(
+                f"{stage} publication stage is incomplete: missing {relative}"
+            ) from error
+        except OSError as error:
+            raise PublicationFreezeError(
+                f"{stage} publication stage path is unsafe: {relative}"
+            ) from error
+        if stat.S_ISLNK(value.st_mode):
+            raise PublicationFreezeError(
+                f"{stage} publication stage contains an unsafe symlink: {relative}"
+            )
+        final = index == len(PurePosixPath(relative).parts) - 1
+        expected_directory = directory if final else True
+        if expected_directory and not stat.S_ISDIR(value.st_mode):
+            raise PublicationFreezeError(
+                f"{stage} publication stage path is unsafe: {relative}"
+            )
+        if not expected_directory and (
+            not stat.S_ISREG(value.st_mode) or value.st_nlink != 1
+        ):
+            raise PublicationFreezeError(
+                f"{stage} publication stage file is unsafe: {relative}"
+            )
+
+
+def _resolve_publication_stage(repository: Path) -> PublicationStageLayout:
+    """Resolve and validate the newest exact base/v28/v29 generated prefix."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    root = Path(os.path.abspath(repository))
+    try:
+        root_status = os.lstat(root)
+    except OSError as error:
+        raise PublicationFreezeError("publication repository is unavailable") from error
+    if stat.S_ISLNK(root_status.st_mode) or not stat.S_ISDIR(root_status.st_mode):
+        raise PublicationFreezeError("publication repository is unsafe")
+
+    _reject_unknown_publication_stages(root)
+    candidates = {
+        stage: _publication_stage_paths(stage) for stage in ("base", "v28", "v29")
+    }
+    active_stage = "base"
+    for stage in ("v29", "v28"):
+        if any(
+            os.path.lexists(root / relative)
+            for relative in _publication_stage_footprint(candidates[stage])
+        ):
+            active_stage = stage
+            break
+    order = {
+        "base": ("base",),
+        "v28": ("base", "v28"),
+        "v29": ("base", "v28", "v29"),
+    }[active_stage]
+    directory_fields = {
+        "downstream_directory",
+        "reconstruction_directory",
+        "orthogonal_directory",
+    }
+    for stage_name in order:
+        paths = candidates[stage_name]
+        for field in (
+            "source_input",
+            "complete_input",
+            "report",
+            "downstream_directory",
+            "downstream_plan",
+            "downstream_manifest",
+            "evaluation_manifest",
+            "reconstruction_directory",
+            "reconstruction_checkpoint",
+            "orthogonal_directory",
+            "orthogonal_manifest",
+        ):
+            _validate_publication_stage_path(
+                root,
+                stage_name,
+                getattr(paths, field),
+                directory=field in directory_fields,
+            )
+    revision_versions = tuple(stage for stage in order if stage != "base")
+    return PublicationStageLayout(
+        active_stage=active_stage,
+        revision_versions=revision_versions,
+        stages=tuple(candidates[stage] for stage in order),
+    )
 
 
 def _json_copy(value: object, label: str) -> Any:

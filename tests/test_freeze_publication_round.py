@@ -1927,3 +1927,227 @@ def test_freeze_publication_cli_exposes_only_prepare_and_fixed_round_freeze(
     assert script.main(["freeze", str(round_dir)]) == 0
     assert observed == [(repository, round_dir)]
     assert json.loads(capsys.readouterr().out) == {"state": "frozen"}
+
+
+def _publication_stage_footprint_paths(stage: str) -> dict[str, tuple[str, str]]:
+    from maskimpute_benchmark.revisions import (
+        development_selection_stage_paths,
+        revision_stage_paths,
+    )
+
+    through_version = None if stage == "base" else stage
+    selection = development_selection_stage_paths(through_version)
+    if stage == "base":
+        evaluation_manifest = (
+            "artifacts/study/development/evaluation/evaluation_manifest.json"
+        )
+        reconstruction_directory = (
+            "artifacts/study/development/competition-reconstruction"
+        )
+        orthogonal_directory = (
+            "artifacts/study/development/evaluation/orthogonal"
+        )
+    else:
+        revision = revision_stage_paths(stage)
+        evaluation_manifest = revision.evaluation_manifest
+        reconstruction_directory = revision.reconstruction_directory
+        orthogonal_directory = revision.orthogonal_directory
+    return {
+        "source_input": ("file", selection.source_selection_input),
+        "complete_input": ("file", selection.selection_complete_input),
+        "report": ("file", selection.selection_report),
+        "downstream_directory": ("directory", selection.downstream_directory),
+        "downstream_plan": (
+            "file",
+            f"{selection.downstream_directory}/plan.json",
+        ),
+        "downstream_manifest": (
+            "file",
+            f"{selection.downstream_directory}/downstream_manifest.json",
+        ),
+        "evaluation_manifest": ("file", evaluation_manifest),
+        "reconstruction_directory": ("directory", reconstruction_directory),
+        "reconstruction_checkpoint": (
+            "file",
+            f"{reconstruction_directory}/checkpoint.json",
+        ),
+        "orthogonal_directory": ("directory", orthogonal_directory),
+        "orthogonal_manifest": (
+            "file",
+            f"{orthogonal_directory}/orthogonal_outputs.json",
+        ),
+    }
+
+
+def _materialize_publication_stage_footprint(
+    repository: Path,
+    stage: str,
+    *,
+    only: str | None = None,
+) -> None:
+    paths = _publication_stage_footprint_paths(stage)
+    selected = paths.items() if only is None else ((only, paths[only]),)
+    for _name, (kind, relative) in selected:
+        path = repository / relative
+        if kind == "directory":
+            path.mkdir(parents=True, exist_ok=True)
+        else:
+            _write_json(path, {"stage": stage, "path": relative})
+
+
+@pytest.mark.parametrize(
+    ("active_stage", "stage_order", "revision_versions"),
+    (
+        ("base", ("base",), ()),
+        ("v28", ("base", "v28"), ("v28",)),
+        ("v29", ("base", "v28", "v29"), ("v28", "v29")),
+    ),
+)
+def test_publication_stage_resolver_returns_exact_complete_prefix(
+    tmp_path: Path,
+    active_stage: str,
+    stage_order: tuple[str, ...],
+    revision_versions: tuple[str, ...],
+) -> None:
+    from maskimpute_benchmark.publication_freeze import _resolve_publication_stage
+    from maskimpute_benchmark.revisions import (
+        development_selection_stage_paths,
+        revision_stage_paths,
+    )
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    for stage in stage_order:
+        _materialize_publication_stage_footprint(repository, stage)
+
+    layout = _resolve_publication_stage(repository)
+
+    assert layout.active_stage == active_stage
+    assert layout.revision_versions == revision_versions
+    assert tuple(stage.stage for stage in layout.stages) == stage_order
+    for stage in layout.stages:
+        through_version = None if stage.stage == "base" else stage.stage
+        selection = development_selection_stage_paths(through_version)
+        assert stage.source_input == selection.source_selection_input
+        assert stage.complete_input == selection.selection_complete_input
+        assert stage.report == selection.selection_report
+        assert stage.downstream_directory == selection.downstream_directory
+        assert stage.downstream_plan == f"{selection.downstream_directory}/plan.json"
+        assert stage.downstream_manifest == (
+            f"{selection.downstream_directory}/downstream_manifest.json"
+        )
+        if stage.stage == "base":
+            assert stage.revision_authority is None
+            assert stage.activation_selection_input is None
+            assert stage.activation_selection_report is None
+        else:
+            revision = revision_stage_paths(stage.stage)
+            assert stage.revision_authority == revision.revision_authority
+            assert stage.activation_selection_input == (
+                revision.activation_selection_input
+            )
+            assert stage.activation_selection_report == (
+                revision.activation_selection_report
+            )
+            assert stage.evaluation_manifest == revision.evaluation_manifest
+            assert stage.reconstruction_directory == (
+                revision.reconstruction_directory
+            )
+            assert stage.orthogonal_directory == revision.orthogonal_directory
+
+
+@pytest.mark.parametrize("newest_stage", ("v28", "v29"))
+@pytest.mark.parametrize(
+    "component",
+    (
+        "source_input",
+        "complete_input",
+        "report",
+        "downstream_directory",
+        "downstream_manifest",
+        "evaluation_manifest",
+        "reconstruction_directory",
+        "reconstruction_checkpoint",
+        "orthogonal_directory",
+        "orthogonal_manifest",
+    ),
+)
+def test_newest_footprint_component_never_falls_back(
+    tmp_path: Path,
+    newest_stage: str,
+    component: str,
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        PublicationFreezeError,
+        _resolve_publication_stage,
+    )
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    prior = ("base",) if newest_stage == "v28" else ("base", "v28")
+    for stage in prior:
+        _materialize_publication_stage_footprint(repository, stage)
+    _materialize_publication_stage_footprint(
+        repository,
+        newest_stage,
+        only=component,
+    )
+
+    with pytest.raises(PublicationFreezeError, match="stage.*incomplete|partial"):
+        _resolve_publication_stage(repository)
+
+
+def test_publication_stage_resolver_rejects_unsafe_or_reordered_footprints(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        PublicationFreezeError,
+        _resolve_publication_stage,
+    )
+
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    _materialize_publication_stage_footprint(broken, "base")
+    report = broken / _publication_stage_footprint_paths("base")["report"][1]
+    report.unlink()
+    report.symlink_to(broken / "missing-report.json")
+    with pytest.raises(PublicationFreezeError, match="symlink|unsafe"):
+        _resolve_publication_stage(broken)
+
+    partial = tmp_path / "empty-newest-directory"
+    partial.mkdir()
+    _materialize_publication_stage_footprint(partial, "base")
+    _materialize_publication_stage_footprint(
+        partial,
+        "v28",
+        only="reconstruction_directory",
+    )
+    with pytest.raises(PublicationFreezeError, match="stage.*incomplete|partial"):
+        _resolve_publication_stage(partial)
+
+    reordered = tmp_path / "v29-without-v28"
+    reordered.mkdir()
+    _materialize_publication_stage_footprint(reordered, "base")
+    _materialize_publication_stage_footprint(reordered, "v29")
+    with pytest.raises(PublicationFreezeError, match="v28.*incomplete|partial"):
+        _resolve_publication_stage(reordered)
+
+
+def test_unknown_stage_family_suffix_is_rejected(tmp_path: Path) -> None:
+    from maskimpute_benchmark.publication_freeze import (
+        PublicationFreezeError,
+        _resolve_publication_stage,
+    )
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _materialize_publication_stage_footprint(repository, "base")
+    _write_json(
+        repository
+        / "artifacts/study/development/evaluation/"
+        "development_selection_report-v30.json",
+        {"trigger": "freeze_candidate"},
+    )
+
+    with pytest.raises(PublicationFreezeError, match="unknown.*stage|stage.*suffix"):
+        _resolve_publication_stage(repository)
