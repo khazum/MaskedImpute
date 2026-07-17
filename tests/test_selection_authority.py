@@ -817,14 +817,29 @@ def test_schema_four_selection_requires_downstream_and_revalidates_legacy_envelo
     repository, _calibration_sha = _ready_repository(tmp_path)
     authority = selection._load_selection_authority(repository, require_clean=False)
     status, payload = _status_and_payload(authority)
+    from maskimpute_benchmark.revisions import development_selection_stage_paths
+
+    stage_paths = development_selection_stage_paths(None)
+    source_path = repository / stage_paths.source_selection_input
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_raw = (
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    source_path.write_bytes(source_raw)
+    source_file_sha = hashlib.sha256(source_raw).hexdigest()
     core = {key: value for key, value in payload.items() if key != "result_sha256"}
     core.update(
         {
             "schema_version": 4,
             "revision_versions": [],
-            "downstream_evidence": {
-                "path": "artifacts/downstream",
-                "manifest_file_sha256": "1" * 64,
+                "downstream_evidence": {
+                    "path": stage_paths.downstream_directory,
+                    "source_selection_input_path": (
+                        stage_paths.source_selection_input
+                    ),
+                    "source_selection_input_file_sha256": source_file_sha,
+                    "source_selection_result_sha256": payload["result_sha256"],
+                    "manifest_file_sha256": "1" * 64,
                 "manifest_sha256": "2" * 64,
                 "plan_sha256": "3" * 64,
                 "planned_denominator_count": 1,
@@ -875,6 +890,30 @@ def test_schema_four_selection_requires_downstream_and_revalidates_legacy_envelo
         key: value for key, value in projected.items() if key != "result_sha256"
     }
     assert projected["result_sha256"] == selection._canonical_sha256(projected_core)
+
+    forged_binding = dict(schema_four["downstream_evidence"])
+    forged_binding["source_selection_input_file_sha256"] = "0" * 64
+    forged_core = {
+        **{
+            key: value
+            for key, value in schema_four.items()
+            if key not in {"downstream_evidence", "result_sha256"}
+        },
+        "downstream_evidence": forged_binding,
+    }
+    forged = {
+        **forged_core,
+        "result_sha256": selection._canonical_sha256(forged_core),
+    }
+    with pytest.raises(
+        selection.SelectionAuthorityError,
+        match="promoted selection source differs",
+    ):
+        selection._select_for_repository(
+            forged,
+            repository,
+            require_clean=False,
+        )
 
 
 def test_revision_downstream_sources_crosscheck_each_evaluation_checkpoint() -> None:

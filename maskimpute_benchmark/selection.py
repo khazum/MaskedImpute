@@ -2717,6 +2717,9 @@ def _load_selection_authority(
 _DOWNSTREAM_SELECTION_BINDING_FIELDS = frozenset(
     {
         "path",
+        "source_selection_input_path",
+        "source_selection_input_file_sha256",
+        "source_selection_result_sha256",
         "manifest_file_sha256",
         "manifest_sha256",
         "plan_sha256",
@@ -2733,6 +2736,133 @@ _DOWNSTREAM_SELECTION_BINDING_FIELDS = frozenset(
         "sources",
     }
 )
+
+_SELECTION_SOURCE_BASE_FIELDS = frozenset(
+    {
+        "schema_version",
+        "dataset_manifest_sha256",
+        "count_score_manifest_sha256",
+        "retained_calibration_artifact_sha256",
+        "evaluation_manifest_sha256",
+        "records",
+        "orthogonal_intervals",
+        "result_sha256",
+    }
+)
+
+
+def _validate_selection_source_payload(payload: object) -> str | None:
+    """Validate the exact pre-downstream schema and return its terminal stage."""
+
+    if type(payload) is not dict:
+        raise SelectionAuthorityError(
+            "source selection input has missing or extra fields"
+        )
+    schema_version = payload.get("schema_version")
+    expected_fields = (
+        _SELECTION_SOURCE_BASE_FIELDS
+        if schema_version == 2
+        else _SELECTION_SOURCE_BASE_FIELDS | {"revision_versions"}
+        if schema_version == 3
+        else frozenset()
+    )
+    if not expected_fields or set(payload) != expected_fields:
+        raise SelectionAuthorityError(
+            "source selection input has missing or extra fields"
+        )
+    revision_versions = payload.get("revision_versions", [])
+    if schema_version == 2:
+        through_version = None
+    elif revision_versions == ["v28"]:
+        through_version = "v28"
+    elif revision_versions == ["v28", "v29"]:
+        through_version = "v29"
+    else:
+        raise SelectionAuthorityError(
+            "source selection revision versions are incomplete or reordered"
+        )
+    result_sha = _authority_sha(
+        payload.get("result_sha256"), "source selection result checksum"
+    )
+    unsigned = {key: value for key, value in payload.items() if key != "result_sha256"}
+    if _canonical_sha256(unsigned) != result_sha:
+        raise SelectionAuthorityError("source selection result checksum mismatch")
+    return through_version
+
+
+def _read_bound_selection_source(
+    repository: Path,
+    through_version: str | None,
+) -> tuple[dict[str, object], str, str]:
+    from .revisions import (
+        RevisionAuthorityError,
+        _read_canonical_json,
+        development_selection_stage_paths,
+    )
+
+    paths = development_selection_stage_paths(through_version)
+    try:
+        source, file_sha256 = _read_canonical_json(
+            repository / paths.source_selection_input,
+            "source development selection input",
+            indented=False,
+        )
+    except RevisionAuthorityError as error:
+        raise SelectionAuthorityError(
+            "source selection input is absent, unsafe, or noncanonical"
+        ) from error
+    observed_stage = _validate_selection_source_payload(source)
+    if observed_stage != through_version:
+        raise SelectionAuthorityError("source selection input stage differs")
+    return source, file_sha256, paths.source_selection_input
+
+
+def _validate_schema_four_source_projection(
+    repository: Path,
+    data: Mapping[str, object],
+    binding: Mapping[str, object],
+) -> Mapping[str, str]:
+    revision_versions = data.get("revision_versions")
+    if revision_versions == []:
+        through_version = None
+    elif revision_versions == ["v28"]:
+        through_version = "v28"
+    elif revision_versions == ["v28", "v29"]:
+        through_version = "v29"
+    else:  # pragma: no cover - guarded by the schema-four envelope
+        raise SelectionAuthorityError(
+            "development revision versions are incomplete or reordered"
+        )
+    source, file_sha256, relative_path = _read_bound_selection_source(
+        repository,
+        through_version,
+    )
+    expected_result_sha = _authority_sha(
+        binding.get("source_selection_result_sha256"),
+        "source selection result checksum",
+    )
+    projected = {
+        key: value
+        for key, value in data.items()
+        if key not in {"downstream_evidence", "result_sha256"}
+    }
+    projected["schema_version"] = 2 if through_version is None else 3
+    if through_version is None:
+        projected.pop("revision_versions")
+    projected["result_sha256"] = expected_result_sha
+    if (
+        binding.get("source_selection_input_path") != relative_path
+        or binding.get("source_selection_input_file_sha256") != file_sha256
+        or source != projected
+    ):
+        raise SelectionAuthorityError("promoted selection source differs")
+    return MappingProxyType(
+        {
+            "source_selection_input_path": relative_path,
+            "source_selection_input_file_sha256": file_sha256,
+            "source_selection_result_sha256": expected_result_sha,
+        }
+    )
 
 
 def _selection_downstream_denominators(
@@ -2993,8 +3123,21 @@ def attach_downstream_evidence_to_selection_result(
 ) -> dict[str, object]:
     """Upgrade a schema-2/3 result to selection-complete schema 4."""
 
-    if type(payload) is not dict or payload.get("schema_version") not in {2, 3}:
-        raise SelectionAuthorityError("downstream attachment requires schema 2 or 3")
+    through_version = _validate_selection_source_payload(payload)
+    assert isinstance(payload, dict)
+    from .revisions import development_selection_stage_paths
+
+    stage_paths = development_selection_stage_paths(through_version)
+    if relative_directory != stage_paths.downstream_directory:
+        raise SelectionAuthorityError(
+            "downstream attachment directory is not fixed for the source stage"
+        )
+    source, source_file_sha, source_relative_path = _read_bound_selection_source(
+        repository,
+        through_version,
+    )
+    if source != payload:
+        raise SelectionAuthorityError("source selection input differs from attachment")
     original_sha = _authority_sha(
         payload.get("result_sha256"), "development result checksum"
     )
@@ -3015,6 +3158,9 @@ def attach_downstream_evidence_to_selection_result(
     manifest_path = directory / "downstream_manifest.json"
     binding: dict[str, object] = {
         "path": relative_directory,
+        "source_selection_input_path": source_relative_path,
+        "source_selection_input_file_sha256": source_file_sha,
+        "source_selection_result_sha256": original_sha,
         "manifest_file_sha256": _file_sha256(manifest_path),
         "manifest_sha256": evidence.manifest_sha256,
         "plan_sha256": evidence.plan_sha256,
@@ -3258,10 +3404,20 @@ def _select_for_repository(
     )
     downstream_bindings: Mapping[str, str] = MappingProxyType({})
     if schema_version == 4:
-        downstream_bindings = validate_downstream_selection_completeness(
-            repository,
-            data["records"],
-            data["downstream_evidence"],
+        source_bindings = _validate_schema_four_source_projection(
+            repository, data, data["downstream_evidence"]
+        )
+        downstream_bindings = MappingProxyType(
+            {
+                **dict(source_bindings),
+                **dict(
+                    validate_downstream_selection_completeness(
+                        repository,
+                        data["records"],
+                        data["downstream_evidence"],
+                    )
+                ),
+            }
         )
     if schema_version == 2 or (schema_version == 4 and data["revision_versions"] == []):
         try:
