@@ -243,6 +243,8 @@ class DatasetEvidenceBinding:
     gene_ids: tuple[str, ...]
     trajectory_root_cell_id: str | None = None
     trajectory_source_id: str | None = None
+    trajectory_authority_sha256: str | None = None
+    trajectory_binding_sha256: str | None = None
 
     def __post_init__(self) -> None:
         _text(self.dataset_id, "dataset_id")
@@ -252,14 +254,25 @@ class DatasetEvidenceBinding:
         _digest(self.dataset_sha256, "dataset semantic checksum")
         cells = _stable_ids(self.retained_cell_ids, "retained_cell_ids")
         genes = _stable_ids(self.gene_ids, "gene_ids")
-        if (self.trajectory_root_cell_id is None) != (
-            self.trajectory_source_id is None
+        trajectory_values = (
+            self.trajectory_root_cell_id,
+            self.trajectory_source_id,
+            self.trajectory_authority_sha256,
+            self.trajectory_binding_sha256,
+        )
+        if any(value is not None for value in trajectory_values) and not all(
+            value is not None for value in trajectory_values
         ):
-            raise ValueError("trajectory root and source must be paired")
+            raise ValueError("trajectory authority binding must be complete")
         if self.trajectory_root_cell_id is not None:
             if self.trajectory_root_cell_id not in cells:
                 raise ValueError("trajectory root must be retained")
             _text(self.trajectory_source_id, "trajectory_source_id")
+            _digest(
+                self.trajectory_authority_sha256,
+                "trajectory authority checksum",
+            )
+            _digest(self.trajectory_binding_sha256, "trajectory binding checksum")
         object.__setattr__(self, "retained_cell_ids", cells)
         object.__setattr__(self, "gene_ids", genes)
 
@@ -273,7 +286,94 @@ class DatasetEvidenceBinding:
             "gene_ids": list(self.gene_ids),
             "trajectory_root_cell_id": self.trajectory_root_cell_id,
             "trajectory_source_id": self.trajectory_source_id,
+            "trajectory_authority_sha256": self.trajectory_authority_sha256,
+            "trajectory_binding_sha256": self.trajectory_binding_sha256,
         }
+
+
+def _trajectory_authority_binding(
+    dataset: ad.AnnData,
+    dataset_sha256: str,
+    *,
+    trajectory_root_cell_id: str | None,
+    trajectory_source_id: str | None,
+    trajectory_authority_sha256: str | None,
+    trajectory_binding_sha256: str | None,
+    populate_authority_digests: bool,
+) -> tuple[str | None, str | None]:
+    """Validate the one registered trajectory contract as a closed identity."""
+
+    from .trajectory_dataset import (
+        FOUR_RECONSTRUCTION_MECHANISMS,
+        REGISTERED_TRAJECTORY_DATASET_ID,
+        TrajectoryAuthorityError,
+        load_trajectory_authority,
+    )
+
+    mechanisms = dataset.obs["mechanism"].astype(str).unique().tolist()
+    dataset_ids = dataset.obs["dataset_id"].astype(str).unique().tolist()
+    if len(mechanisms) != 1 or len(dataset_ids) != 1:
+        raise DownstreamEvidenceError(
+            "evaluator trajectory dataset identity is not constant"
+        )
+    mechanism = mechanisms[0]
+    dataset_id = dataset_ids[0]
+    supplied = (
+        trajectory_root_cell_id,
+        trajectory_source_id,
+        trajectory_authority_sha256,
+        trajectory_binding_sha256,
+    )
+    any_supplied = any(value is not None for value in supplied)
+    has_pseudotime = "pseudotime" in dataset.obs
+    if mechanism in FOUR_RECONSTRUCTION_MECHANISMS:
+        if any_supplied or has_pseudotime:
+            raise DownstreamEvidenceError(
+                "reconstruction mechanism cannot carry trajectory authority"
+            )
+        return None, None
+
+    is_registered_trajectory = (
+        mechanism == "synthetic_trajectory"
+        or dataset_id == REGISTERED_TRAJECTORY_DATASET_ID
+        or has_pseudotime
+        or any_supplied
+    )
+    if not is_registered_trajectory:
+        return None, None
+    if trajectory_root_cell_id is None or trajectory_source_id is None:
+        raise DownstreamEvidenceError("registered trajectory authority is required")
+    try:
+        authority = load_trajectory_authority()
+    except TrajectoryAuthorityError as error:
+        raise DownstreamEvidenceError(
+            "registered trajectory authority cannot be validated"
+        ) from error
+    if populate_authority_digests:
+        if (
+            trajectory_authority_sha256 is not None
+            or trajectory_binding_sha256 is not None
+        ):
+            raise DownstreamEvidenceError(
+                "trajectory authority digests are evaluator-owned"
+            )
+        trajectory_authority_sha256 = authority.authority_sha256
+        trajectory_binding_sha256 = authority.binding_sha256
+    if trajectory_authority_sha256 != authority.authority_sha256:
+        raise DownstreamEvidenceError("trajectory authority checksum differs")
+    if trajectory_binding_sha256 != authority.binding_sha256:
+        raise DownstreamEvidenceError("trajectory binding checksum differs")
+    if dataset_sha256 != authority.expected_dataset_sha256:
+        raise DownstreamEvidenceError("trajectory dataset checksum differs")
+    if mechanism != authority.mechanism:
+        raise DownstreamEvidenceError("trajectory mechanism differs")
+    if dataset_id != REGISTERED_TRAJECTORY_DATASET_ID:
+        raise DownstreamEvidenceError("trajectory dataset identity differs")
+    if trajectory_root_cell_id != authority.root_cell_id:
+        raise DownstreamEvidenceError("trajectory root differs")
+    if trajectory_source_id != authority.source_id:
+        raise DownstreamEvidenceError("trajectory source differs")
+    return trajectory_authority_sha256, trajectory_binding_sha256
 
 
 def _read_bound_dataset(binding: DatasetEvidenceBinding) -> ad.AnnData:
@@ -286,7 +386,8 @@ def _read_bound_dataset(binding: DatasetEvidenceBinding) -> ad.AnnData:
         validate_benchmark_dataset(dataset)
     except (OSError, TypeError, ValueError) as error:
         raise DownstreamEvidenceError("evaluator dataset validation failed") from error
-    if benchmark_dataset_sha256(dataset) != binding.dataset_sha256:
+    dataset_sha256 = benchmark_dataset_sha256(dataset)
+    if dataset_sha256 != binding.dataset_sha256:
         raise DownstreamEvidenceError("evaluator dataset semantic checksum differs")
     dataset_ids = dataset.obs["dataset_id"].astype(str).unique().tolist()
     if dataset_ids != [binding.dataset_id]:
@@ -300,6 +401,15 @@ def _read_bound_dataset(binding: DatasetEvidenceBinding) -> ad.AnnData:
         raise DownstreamEvidenceError("retained cell IDs changed source order")
     if tuple(dataset.var_names.astype(str)) != binding.gene_ids:
         raise DownstreamEvidenceError("evaluator gene IDs differ")
+    _trajectory_authority_binding(
+        dataset,
+        dataset_sha256,
+        trajectory_root_cell_id=binding.trajectory_root_cell_id,
+        trajectory_source_id=binding.trajectory_source_id,
+        trajectory_authority_sha256=binding.trajectory_authority_sha256,
+        trajectory_binding_sha256=binding.trajectory_binding_sha256,
+        populate_authority_digests=False,
+    )
     return dataset
 
 
@@ -335,15 +445,29 @@ def bind_evaluator_dataset(
     dataset_ids = dataset.obs["dataset_id"].astype(str).unique().tolist()
     if len(dataset_ids) != 1:
         raise DownstreamEvidenceError("evaluator dataset ID is not constant")
+    dataset_sha256 = benchmark_dataset_sha256(dataset)
+    trajectory_authority_sha256, trajectory_binding_sha256 = (
+        _trajectory_authority_binding(
+            dataset,
+            dataset_sha256,
+            trajectory_root_cell_id=trajectory_root_cell_id,
+            trajectory_source_id=trajectory_source_id,
+            trajectory_authority_sha256=None,
+            trajectory_binding_sha256=None,
+            populate_authority_digests=True,
+        )
+    )
     return DatasetEvidenceBinding(
         dataset_id=dataset_ids[0],
         path=str(dataset_path),
         file_sha256=file_sha256,
-        dataset_sha256=benchmark_dataset_sha256(dataset),
+        dataset_sha256=dataset_sha256,
         retained_cell_ids=cell_ids,
         gene_ids=tuple(dataset.var_names.astype(str)),
         trajectory_root_cell_id=trajectory_root_cell_id,
         trajectory_source_id=trajectory_source_id,
+        trajectory_authority_sha256=trajectory_authority_sha256,
+        trajectory_binding_sha256=trajectory_binding_sha256,
     )
 
 
@@ -465,6 +589,8 @@ _DATASET_BINDING_FIELDS = frozenset(
         "gene_ids",
         "trajectory_root_cell_id",
         "trajectory_source_id",
+        "trajectory_authority_sha256",
+        "trajectory_binding_sha256",
     }
 )
 
@@ -487,6 +613,14 @@ def _dataset_binding_from_payload(value: object) -> DatasetEvidenceBinding:
             value.get("trajectory_source_id") is not None
             and not isinstance(value.get("trajectory_source_id"), str)
         )
+        or (
+            value.get("trajectory_authority_sha256") is not None
+            and not isinstance(value.get("trajectory_authority_sha256"), str)
+        )
+        or (
+            value.get("trajectory_binding_sha256") is not None
+            and not isinstance(value.get("trajectory_binding_sha256"), str)
+        )
     ):
         raise DownstreamEvidenceError("persisted dataset IDs are invalid")
     try:
@@ -506,6 +640,16 @@ def _dataset_binding_from_payload(value: object) -> DatasetEvidenceBinding:
                 None
                 if value["trajectory_source_id"] is None
                 else value["trajectory_source_id"]
+            ),
+            trajectory_authority_sha256=(
+                None
+                if value["trajectory_authority_sha256"] is None
+                else value["trajectory_authority_sha256"]
+            ),
+            trajectory_binding_sha256=(
+                None
+                if value["trajectory_binding_sha256"] is None
+                else value["trajectory_binding_sha256"]
             ),
         )
     except (TypeError, ValueError) as error:

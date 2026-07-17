@@ -20,6 +20,7 @@ from .schema import benchmark_dataset_sha256, validate_benchmark_dataset
 FOUR_RECONSTRUCTION_MECHANISMS = frozenset(
     {"symsim", "sergio", "sparsim", "semisynthetic"}
 )
+REGISTERED_TRAJECTORY_DATASET_ID = "trajectory-exact-latent-01"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _AUTHORITY_FIELDS = frozenset(
     {
@@ -256,7 +257,7 @@ def _build_registered_dataset(authority: TrajectoryAuthority) -> ad.AnnData:
     )
     obs = pd.DataFrame(
         {
-            "dataset_id": ["trajectory-exact-latent-01"] * authority.cells,
+            "dataset_id": [REGISTERED_TRAJECTORY_DATASET_ID] * authority.cells,
             "mechanism": [authority.mechanism] * authority.cells,
             "condition": [authority.condition] * authority.cells,
             "biological_id": [authority.biological_id] * authority.cells,
@@ -268,6 +269,15 @@ def _build_registered_dataset(authority: TrajectoryAuthority) -> ad.AnnData:
         },
         index=cell_ids,
     )
+    for field in (
+        "dataset_id",
+        "mechanism",
+        "condition",
+        "biological_id",
+        "technical_view",
+        "group",
+    ):
+        obs[field] = pd.Categorical(obs[field])
     dataset = ad.AnnData(
         X=counts,
         obs=obs,
@@ -313,6 +323,7 @@ def generate_registered_trajectory_dataset(
 
 __all__ = [
     "FOUR_RECONSTRUCTION_MECHANISMS",
+    "REGISTERED_TRAJECTORY_DATASET_ID",
     "TrajectoryAuthority",
     "TrajectoryAuthorityError",
     "default_trajectory_authority_path",

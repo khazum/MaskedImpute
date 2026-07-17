@@ -464,6 +464,91 @@ def test_complete_manifest_rejects_self_consistent_sealed_source_drift(
         load_downstream_evidence_manifest(destination)
 
 
+def test_registered_trajectory_binding_is_mandatory_and_exact(tmp_path: Path) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        _read_bound_dataset,
+        bind_evaluator_dataset,
+    )
+    from maskimpute_benchmark.trajectory_dataset import (
+        generate_registered_trajectory_dataset,
+        load_trajectory_authority,
+    )
+
+    authority = load_trajectory_authority()
+    dataset = generate_registered_trajectory_dataset(authority=authority)
+    path = tmp_path / "registered-trajectory.h5ad"
+    dataset.write_h5ad(path)
+    retained = tuple(dataset.obs_names.astype(str))
+
+    with pytest.raises(
+        DownstreamEvidenceError, match="registered trajectory authority is required"
+    ):
+        bind_evaluator_dataset(path, retained_cell_ids=retained)
+    with pytest.raises(DownstreamEvidenceError, match="trajectory root differs"):
+        bind_evaluator_dataset(
+            path,
+            retained_cell_ids=retained,
+            trajectory_root_cell_id=retained[1],
+            trajectory_source_id=authority.source_id,
+        )
+    with pytest.raises(DownstreamEvidenceError, match="trajectory source differs"):
+        bind_evaluator_dataset(
+            path,
+            retained_cell_ids=retained,
+            trajectory_root_cell_id=authority.root_cell_id,
+            trajectory_source_id="ad-hoc-trajectory-source",
+        )
+
+    binding = bind_evaluator_dataset(
+        path,
+        retained_cell_ids=retained,
+        trajectory_root_cell_id=authority.root_cell_id,
+        trajectory_source_id=authority.source_id,
+    )
+    assert binding.dataset_sha256 == authority.expected_dataset_sha256
+    assert binding.trajectory_authority_sha256 == authority.authority_sha256
+    assert binding.trajectory_binding_sha256 == authority.binding_sha256
+    _read_bound_dataset(binding)
+    with pytest.raises(DownstreamEvidenceError, match="authority checksum differs"):
+        _read_bound_dataset(replace(binding, trajectory_authority_sha256="0" * 64))
+    with pytest.raises(DownstreamEvidenceError, match="binding checksum differs"):
+        _read_bound_dataset(replace(binding, trajectory_binding_sha256="0" * 64))
+    with pytest.raises(DownstreamEvidenceError, match="trajectory source differs"):
+        _read_bound_dataset(
+            replace(binding, trajectory_source_id="ad-hoc-trajectory-source")
+        )
+
+
+@pytest.mark.parametrize("mechanism", ["symsim", "sergio", "sparsim", "semisynthetic"])
+def test_reconstruction_mechanisms_reject_trajectory_binding_fields(
+    tmp_path: Path,
+    mechanism: str,
+) -> None:
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        bind_evaluator_dataset,
+    )
+
+    path = tmp_path / f"{mechanism}.h5ad"
+    dataset, cells, _genes = _dataset(path)
+    dataset.obs["mechanism"] = mechanism
+    dataset.write_h5ad(path)
+
+    with pytest.raises(
+        DownstreamEvidenceError,
+        match="reconstruction mechanism cannot carry trajectory authority",
+    ):
+        bind_evaluator_dataset(
+            path,
+            retained_cell_ids=cells,
+            trajectory_root_cell_id=cells[0],
+            trajectory_source_id="ad-hoc-trajectory-source",
+        )
+
+
 def test_selection_schema_four_requires_bound_downstream_completeness(
     tmp_path: Path,
 ) -> None:
