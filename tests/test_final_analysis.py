@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
 import inspect
 import json
@@ -433,6 +434,7 @@ def _evaluated_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> dict[str, Any]:
+    import maskimpute_benchmark.final_runner as final_runner
     import maskimpute_benchmark.study as study
 
     repository = tmp_path / "repository"
@@ -651,6 +653,42 @@ def _evaluated_evidence(
             **scaling_evidence_body,
             "evidence_sha256": canonical_sha256(scaling_evidence_body),
         }
+        from maskimpute_benchmark.final_runner import _trajectory_run_id
+        from maskimpute_benchmark.runner import _RECONSTRUCTION_METRIC_NAMES
+
+        trajectory_dataset_path = (
+            round_dir / "results/trajectory/dataset/evaluator.h5ad"
+        )
+        trajectory_dataset_path.parent.mkdir(parents=True, exist_ok=True)
+        trajectory_dataset_raw = b"canonical trajectory fixture dataset\n"
+        trajectory_dataset_path.write_bytes(trajectory_dataset_raw)
+        trajectory_dataset_file_sha256 = hashlib.sha256(
+            trajectory_dataset_raw
+        ).hexdigest()
+        trajectory_receipt_body = {
+            "schema_version": 1,
+            "scope": "supplementary_trajectory",
+            "fixture": "registered-dataset",
+        }
+        trajectory_receipt_payload = {
+            **trajectory_receipt_body,
+            "receipt_sha256": canonical_sha256(trajectory_receipt_body),
+        }
+        trajectory_receipt_path = (
+            round_dir / "results/trajectory/dataset/dataset_receipt.json"
+        )
+        trajectory_receipt_raw = _write_json(
+            trajectory_receipt_path,
+            trajectory_receipt_payload,
+        )
+        trajectory_receipt_file_sha256 = hashlib.sha256(
+            trajectory_receipt_raw
+        ).hexdigest()
+        trajectory_receipt_payload_sha256 = trajectory_receipt_payload["receipt_sha256"]
+        trajectory_panel_raw = _write_json(
+            repository / "study/trajectory_panel.json",
+            {"schema_version": 1, "fixture": "trajectory-authority"},
+        )
         trajectory_binding = {
             "schema_version": "trajectory-execution-dataset-binding-v1",
             "dataset_id": "trajectory-exact-latent-01",
@@ -666,17 +704,38 @@ def _evaluated_evidence(
             "seed": 20250308,
             "dataset_sha256": "b" * 64,
             "dataset_file_path": "results/trajectory/dataset/evaluator.h5ad",
-            "dataset_file_sha256": "c" * 64,
+            "dataset_file_sha256": trajectory_dataset_file_sha256,
             "authority_path": "study/trajectory_panel.json",
-            "authority_file_sha256": "d" * 64,
+            "authority_file_sha256": hashlib.sha256(trajectory_panel_raw).hexdigest(),
             "authority_sha256": "e" * 64,
             "registered_binding_sha256": "f" * 64,
         }
-        trajectory_receipt_file_sha256 = "1" * 64
-        trajectory_receipt_payload_sha256 = "2" * 64
         trajectory_authority_sha256 = "3" * 64
+        trajectory_configuration_payload = {
+            "schema": "maskimpute-analysis-trajectory-fixture-v1",
+            "method_id": "observed",
+        }
+        trajectory_configuration_sha256 = canonical_sha256(
+            trajectory_configuration_payload
+        )
+        trajectory_configuration = {
+            "method_id": "observed",
+            "configuration_id": "registry-default",
+            "kind": "registry",
+            "configuration_sha256": trajectory_configuration_sha256,
+            "payload": trajectory_configuration_payload,
+            "requires_count_score": False,
+            "requires_calibration": False,
+        }
         trajectory_plan_inputs = {
+            "frozen_method_sha256": frozen_method["payload_sha256"],
+            "method_registry_sha256": "8" * 64,
+            "runtime_lock_sha256": "9" * 64,
             "primary_final_plan_sha256": final_plan_sha256,
+            "trajectory_authority_file_sha256": trajectory_binding[
+                "authority_file_sha256"
+            ],
+            "trajectory_authority_sha256": trajectory_binding["authority_sha256"],
             "trajectory_binding_sha256": trajectory_binding[
                 "registered_binding_sha256"
             ],
@@ -684,35 +743,167 @@ def _evaluated_evidence(
             "trajectory_dataset_file_sha256": trajectory_binding["dataset_file_sha256"],
             "trajectory_dataset_receipt_sha256": (trajectory_receipt_payload_sha256),
             "trajectory_dataset_receipt_file_sha256": (trajectory_receipt_file_sha256),
+            "trajectory_method_input_sha256": "a" * 64,
+            "trajectory_retained_cell_ids_sha256": "b" * 64,
+            "dataset_qc_policy_sha256": "c" * 64,
+            "execution_claim_sha256": "d" * 64,
+            "execution_environment_sha256": "e" * 64,
             "execution_authority_sha256": trajectory_authority_sha256,
+        }
+        trajectory_run = {
+            "ordinal": 1,
+            "run_id": _trajectory_run_id(
+                "observed",
+                trajectory_binding["dataset_id"],
+                None,
+                trajectory_configuration_sha256,
+            ),
+            "method_id": "observed",
+            "dataset_id": trajectory_binding["dataset_id"],
+            "source_dataset_sha256": trajectory_binding["dataset_sha256"],
+            "mechanism": trajectory_binding["mechanism"],
+            "biological_id": trajectory_binding["biological_id"],
+            "technical_view": trajectory_binding["technical_view"],
+            "model_seed": None,
+            "configuration_id": trajectory_configuration["configuration_id"],
+            "configuration_sha256": trajectory_configuration_sha256,
+            "preflight_status": "planned",
+            "preflight_reason": None,
+            "configuration_kind": "registry",
+            "requires_count_score": False,
+            "requires_calibration": False,
+        }
+        trajectory_entry = {
+            "run": trajectory_run,
+            "action": "execute",
+            "reason": None,
         }
         trajectory_plan_body = {
             "schema_version": 1,
             "scope": "supplementary_trajectory",
             "input_hashes": trajectory_plan_inputs,
-            "entries": [{"run": {"run_id": "trajectory-observed-fixture"}}],
-            "configurations": [{"method_id": "observed"}],
+            "entries": [trajectory_entry],
+            "configurations": [trajectory_configuration],
             "model_seed_policy": [42, 43, 44],
         }
         trajectory_plan = {
             **trajectory_plan_body,
             "plan_sha256": canonical_sha256(trajectory_plan_body),
         }
-        trajectory_paths = {
-            "results/trajectory/dataset/evaluator.h5ad": trajectory_binding[
-                "dataset_file_sha256"
+        trajectory_record_reason = "fixture_algorithm_unavailable"
+        trajectory_record = {
+            "run": {
+                "run_id": trajectory_run["run_id"],
+                "method_id": trajectory_run["method_id"],
+                "dataset_id": trajectory_run["dataset_id"],
+                "model_seed": trajectory_run["model_seed"],
+                "configuration_sha256": trajectory_configuration_sha256,
+                "status": "unavailable",
+                "reason": trajectory_record_reason,
+            },
+            "metrics": [
+                {
+                    "mechanism": trajectory_binding["mechanism"],
+                    "biological_id": trajectory_binding["biological_id"],
+                    "technical_view": trajectory_binding["technical_view"],
+                    "dataset_id": trajectory_binding["dataset_id"],
+                    "method": "observed",
+                    "model_seed": None,
+                    "configuration_id": "registry-default",
+                    "configuration_sha256": trajectory_configuration_sha256,
+                    "metric": metric,
+                    "value": None,
+                    "n": 0,
+                    "status": "unavailable",
+                    "reason": trajectory_record_reason,
+                }
+                for metric in _RECONSTRUCTION_METRIC_NAMES
             ],
+            "p_pre_zero_evidence": {},
+            "execution_request": None,
+        }
+        trajectory_record_path = (
+            round_dir / "results/trajectory/execution/records/00000001.json"
+        )
+        trajectory_record_raw = _write_json(
+            trajectory_record_path,
+            trajectory_record,
+        )
+        trajectory_record_file_sha256 = hashlib.sha256(
+            trajectory_record_raw
+        ).hexdigest()
+        trajectory_authority_paths: dict[str, str] = {}
+        for relative, payload in (
+            (
+                "results/trajectory/execution_authority/retained_calibration.json",
+                {"fixture": "retained-calibration"},
+            ),
+            (
+                "results/trajectory/execution_authority/count_score_authority.json",
+                {"fixture": "count-score-authority"},
+            ),
+            (
+                "results/trajectory/execution_authority/authority.json",
+                {"fixture": "execution-authority"},
+            ),
+        ):
+            raw = _write_json(round_dir / relative, payload)
+            trajectory_authority_paths[relative] = hashlib.sha256(raw).hexdigest()
+        trajectory_manifest_body = {
+            "schema_version": 1,
+            "status": "completed",
+            "plan_sha256": trajectory_plan["plan_sha256"],
+            "input_hashes": trajectory_plan_inputs,
+            "planned_run_count": 1,
+            "recorded_run_count": 1,
+            "records": [
+                {
+                    "ordinal": 1,
+                    "run_id": trajectory_run["run_id"],
+                    "path": "records/00000001.json",
+                    "sha256": trajectory_record_file_sha256,
+                }
+            ],
+            "artifact_storage": {
+                "evaluator_output_compression_level": 6,
+                "evaluator_output_encoding": "zlib_raw_f64_v1",
+                "native_output_retention": "omitted_redundant_final_output",
+                "p_pre_zero_compression_level": 6,
+                "p_pre_zero_encoding": "zlib_raw_f64_v1",
+            },
+            "scope": "supplementary_trajectory",
+            "plan_entries": [trajectory_entry],
+            "configurations": [trajectory_configuration],
+            "model_seed_policy": [42, 43, 44],
+        }
+        trajectory_manifest_payload = {
+            **trajectory_manifest_body,
+            "manifest_sha256": canonical_sha256(trajectory_manifest_body),
+        }
+        trajectory_manifest_path = (
+            round_dir / "results/trajectory/execution/execution_manifest.json"
+        )
+        trajectory_manifest_raw = _write_json(
+            trajectory_manifest_path,
+            trajectory_manifest_payload,
+        )
+        trajectory_manifest_file_sha256 = hashlib.sha256(
+            trajectory_manifest_raw
+        ).hexdigest()
+        trajectory_paths = {
+            "results/trajectory/dataset/evaluator.h5ad": (
+                trajectory_dataset_file_sha256
+            ),
             "results/trajectory/dataset/dataset_receipt.json": (
                 trajectory_receipt_file_sha256
             ),
-            "results/trajectory/execution_authority/retained_calibration.json": (
-                "4" * 64
+            **trajectory_authority_paths,
+            "results/trajectory/execution/records/00000001.json": (
+                trajectory_record_file_sha256
             ),
-            "results/trajectory/execution_authority/count_score_authority.json": (
-                "5" * 64
+            "results/trajectory/execution/execution_manifest.json": (
+                trajectory_manifest_file_sha256
             ),
-            "results/trajectory/execution_authority/authority.json": "6" * 64,
-            "results/trajectory/execution/execution_manifest.json": "7" * 64,
         }
         trajectory_result_files = [
             {"path": path, "sha256": digest}
@@ -725,11 +916,11 @@ def _evaluated_evidence(
             "scope": "supplementary_trajectory",
             "trajectory_plan_sha256": trajectory_plan["plan_sha256"],
             "planned_run_count": 1,
-            "executed_completed_count": 1,
-            "executed_algorithmic_failure_count": 0,
-            "executed_status_counts": {"completed": 1},
+            "executed_completed_count": 0,
+            "executed_algorithmic_failure_count": 1,
+            "executed_status_counts": {"unavailable": 1},
             "not_applicable_count": 0,
-            "record_payload_sha256s": ["8" * 64],
+            "record_payload_sha256s": [canonical_sha256(trajectory_record)],
         }
         trajectory_validation = {
             **trajectory_validation_body,
@@ -758,24 +949,30 @@ def _evaluated_evidence(
                 "authority_path": (
                     "results/trajectory/execution_authority/authority.json"
                 ),
-                "authority_file_sha256": "6" * 64,
+                "authority_file_sha256": trajectory_authority_paths[
+                    "results/trajectory/execution_authority/authority.json"
+                ],
                 "authority_sha256": trajectory_authority_sha256,
                 "count_score_authority_path": (
                     "artifacts/study/final/round-001/results/trajectory/"
                     "execution_authority/count_score_authority.json"
                 ),
-                "count_score_authority_file_sha256": "5" * 64,
+                "count_score_authority_file_sha256": trajectory_authority_paths[
+                    "results/trajectory/execution_authority/count_score_authority.json"
+                ],
                 "retained_calibration_path": (
                     "artifacts/study/final/round-001/results/trajectory/"
                     "execution_authority/retained_calibration.json"
                 ),
-                "retained_calibration_file_sha256": "4" * 64,
+                "retained_calibration_file_sha256": trajectory_authority_paths[
+                    "results/trajectory/execution_authority/retained_calibration.json"
+                ],
                 "files": trajectory_authority_files,
             },
             "execution_manifest": {
                 "path": "results/trajectory/execution/execution_manifest.json",
-                "file_sha256": "7" * 64,
-                "payload_sha256": "9" * 64,
+                "file_sha256": trajectory_manifest_file_sha256,
+                "payload_sha256": trajectory_manifest_payload["manifest_sha256"],
             },
             "execution_validation": trajectory_validation,
             "result_files": trajectory_result_files,
@@ -899,7 +1096,224 @@ def _evaluated_evidence(
         "_verify_frozen_repository",
         lambda _repo, _round, *, allowed_result_paths: freeze,
     )
+    monkeypatch.setattr(
+        final_runner,
+        "_rederive_trajectory_evidence_before_receipt",
+        lambda _repository, _round, evidence, _result_files, **_kwargs: dict(evidence),
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_validate_trajectory_primary_authority_chain",
+        lambda *_args, **_kwargs: {
+            "execution_claim_sha256": "d" * 64,
+            "execution_environment_sha256": "e" * 64,
+            "primary_execution_authority_sha256": "5" * 64,
+            "trajectory_execution_authority_sha256": "3" * 64,
+        },
+    )
     return fixture
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "configuration_not_list",
+        "entry_not_plan_entry",
+        "validation_not_terminal",
+        "validation_counts_do_not_reconcile",
+        "validation_record_hashes_empty",
+        "boolean_ordinal",
+        "boolean_requirement_flag",
+        "invalid_action",
+        "boolean_validation_count",
+    ),
+)
+def test_embedded_trajectory_evidence_rejects_rehashed_semantic_malformation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    import maskimpute_benchmark.final_analysis as final_analysis
+
+    fixture = _evaluated_evidence(tmp_path, monkeypatch)
+    evidence = deepcopy(fixture["evaluation_manifest"]["trajectory_evidence"])
+    plan = evidence["plan"]
+    validation = evidence["execution_validation"]
+    assert isinstance(plan, dict)
+    assert isinstance(validation, dict)
+    if mutation == "configuration_not_list":
+        plan["configurations"] = "not-even-a-list"
+    elif mutation == "entry_not_plan_entry":
+        plan["entries"] = [{"arbitrary": "entry"}]
+    elif mutation == "validation_not_terminal":
+        validation["status"] = "not-terminal"
+    elif mutation == "validation_counts_do_not_reconcile":
+        validation["executed_completed_count"] = 999
+        validation["executed_status_counts"] = []
+    elif mutation == "validation_record_hashes_empty":
+        validation["record_payload_sha256s"] = []
+    elif mutation == "boolean_ordinal":
+        plan["entries"][0]["run"]["ordinal"] = True
+    elif mutation == "boolean_requirement_flag":
+        plan["entries"][0]["run"]["requires_count_score"] = 1
+        plan["configurations"][0]["requires_count_score"] = 1
+    elif mutation == "invalid_action":
+        plan["entries"][0]["action"] = "run-whenever"
+    else:
+        validation["planned_run_count"] = True
+    plan_body = {key: value for key, value in plan.items() if key != "plan_sha256"}
+    plan["plan_sha256"] = canonical_sha256(plan_body)
+    validation["trajectory_plan_sha256"] = plan["plan_sha256"]
+    validation_body = {
+        key: value for key, value in validation.items() if key != "validation_sha256"
+    }
+    validation["validation_sha256"] = canonical_sha256(validation_body)
+    evidence_body = {
+        key: value for key, value in evidence.items() if key != "evidence_sha256"
+    }
+    evidence["evidence_sha256"] = canonical_sha256(evidence_body)
+    result_bindings = {
+        row["path"]: row["sha256"]
+        for row in fixture["evaluation_manifest"]["result_files"]
+    }
+
+    with pytest.raises(
+        FinalAnalysisContractError,
+        match="trajectory|configuration|terminal|denominator|record",
+    ):
+        final_analysis._validate_embedded_trajectory_evidence(
+            evidence,
+            result_bindings,
+            repository=fixture["repository"],
+            round_dir=fixture["round_dir"],
+            primary_final_plan_sha256=fixture["final_plan_sha256"],
+            result_files=fixture["evaluation_manifest"]["result_files"],
+        )
+
+
+def test_embedded_trajectory_evidence_reads_the_bound_manifest_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_analysis as final_analysis
+
+    fixture = _evaluated_evidence(tmp_path, monkeypatch)
+    manifest = (
+        fixture["round_dir"] / "results/trajectory/execution/execution_manifest.json"
+    )
+    _write_json(
+        manifest,
+        {
+            "schema_version": 1,
+            "status": "completed",
+            "plan_sha256": "0" * 64,
+        },
+    )
+    evidence = fixture["evaluation_manifest"]["trajectory_evidence"]
+    result_bindings = {
+        row["path"]: row["sha256"]
+        for row in fixture["evaluation_manifest"]["result_files"]
+    }
+
+    with pytest.raises(FinalAnalysisContractError, match="trajectory.*manifest"):
+        final_analysis._validate_embedded_trajectory_evidence(
+            evidence,
+            result_bindings,
+            repository=fixture["repository"],
+            round_dir=fixture["round_dir"],
+            primary_final_plan_sha256=fixture["final_plan_sha256"],
+            result_files=fixture["evaluation_manifest"]["result_files"],
+        )
+
+
+def test_embedded_trajectory_evidence_binds_every_record_payload_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_analysis as final_analysis
+
+    fixture = _evaluated_evidence(tmp_path, monkeypatch)
+    evidence = fixture["evaluation_manifest"]["trajectory_evidence"]
+    record_path = (
+        fixture["round_dir"] / "results/trajectory/execution/records/00000001.json"
+    )
+    record_raw = _write_json(
+        record_path,
+        {
+            "run": {
+                "run_id": "trajectory-observed-fixture",
+                "status": "completed",
+            },
+            "metrics": [],
+            "p_pre_zero_evidence": {},
+            "execution_request": {},
+        },
+    )
+    row = {
+        "path": record_path.relative_to(fixture["round_dir"]).as_posix(),
+        "sha256": hashlib.sha256(record_raw).hexdigest(),
+    }
+    evidence["result_files"].append(row)
+    evidence["result_files"].sort(key=lambda item: item["path"])
+    evidence_body = {
+        key: value for key, value in evidence.items() if key != "evidence_sha256"
+    }
+    evidence["evidence_sha256"] = canonical_sha256(evidence_body)
+    fixture["evaluation_manifest"]["result_files"].append(dict(row))
+    fixture["evaluation_manifest"]["result_files"].sort(key=lambda item: item["path"])
+    result_bindings = {
+        item["path"]: item["sha256"]
+        for item in fixture["evaluation_manifest"]["result_files"]
+    }
+
+    with pytest.raises(
+        FinalAnalysisContractError,
+        match="trajectory.*record|payload.*hash|metric.*denominator",
+    ):
+        final_analysis._validate_embedded_trajectory_evidence(
+            evidence,
+            result_bindings,
+            repository=fixture["repository"],
+            round_dir=fixture["round_dir"],
+            primary_final_plan_sha256=fixture["final_plan_sha256"],
+            result_files=fixture["evaluation_manifest"]["result_files"],
+        )
+
+
+def test_embedded_trajectory_evidence_requires_frozen_authority_rederivation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_analysis as final_analysis
+    import maskimpute_benchmark.final_runner as final_runner
+
+    fixture = _evaluated_evidence(tmp_path, monkeypatch)
+    evidence = fixture["evaluation_manifest"]["trajectory_evidence"]
+    result_bindings = {
+        row["path"]: row["sha256"]
+        for row in fixture["evaluation_manifest"]["result_files"]
+    }
+
+    def reject(*_args, **_kwargs):
+        raise final_runner.FinalRunnerContractError(
+            "trajectory evidence changed before the final evaluation receipt"
+        )
+
+    monkeypatch.setattr(
+        final_runner,
+        "_rederive_trajectory_evidence_before_receipt",
+        reject,
+    )
+
+    with pytest.raises(FinalAnalysisContractError, match="trajectory evidence changed"):
+        final_analysis._validate_embedded_trajectory_evidence(
+            evidence,
+            result_bindings,
+            repository=fixture["repository"],
+            round_dir=fixture["round_dir"],
+            primary_final_plan_sha256=fixture["final_plan_sha256"],
+            result_files=fixture["evaluation_manifest"]["result_files"],
+        )
 
 
 def test_denominator_preserves_every_terminal_status_and_normalizes_only_success() -> (

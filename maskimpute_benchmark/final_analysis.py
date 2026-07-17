@@ -2186,7 +2186,8 @@ def _validate_embedded_scaling_evidence(
         "embedded scaling checkpoint file",
     )
     if (
-        evidence.get("schema_version") != 1
+        type(evidence.get("schema_version")) is not int
+        or evidence.get("schema_version") != 1
         or evidence.get("status") != "completed"
         or not isinstance(checkpoint_path, str)
         or re.fullmatch(
@@ -2271,8 +2272,42 @@ def _validate_embedded_scaling_evidence(
 def _validate_embedded_trajectory_evidence(
     value: object,
     result_bindings: Mapping[str, str],
+    *,
+    repository: Path,
+    round_dir: Path,
+    primary_final_plan_sha256: str,
+    result_files: Sequence[Mapping[str, object]],
 ) -> Mapping[str, object]:
-    """Validate the receipt-local trajectory denominator and byte inventory."""
+    """Replay the receipt-local trajectory denominator from explicit context."""
+
+    from .final_runner import (
+        FinalPlanEntry,
+        FinalRunnerContractError,
+        TrajectoryExecutionPlan,
+        _canonical_round,
+        _rederive_trajectory_evidence_before_receipt,
+        _trajectory_run_id,
+        _validate_trajectory_primary_authority_chain,
+        trajectory_execution_plan_payload,
+        validate_trajectory_execution_for_evaluation,
+    )
+    from .runner import (
+        DEVELOPMENT_MODEL_SEEDS,
+        AuthorizedConfiguration,
+        RunPlanEntry,
+        RunnerContractError,
+    )
+
+    try:
+        selected_repository, destination = _canonical_round(repository, round_dir)
+    except (FinalRunnerContractError, OSError, TypeError, ValueError) as error:
+        raise FinalAnalysisContractError(
+            "trajectory evidence repository or round context is invalid"
+        ) from error
+    primary_plan_sha256 = _sha256(
+        primary_final_plan_sha256,
+        "primary final plan",
+    )
 
     evidence = _exact_mapping(
         value,
@@ -2320,18 +2355,130 @@ def _validate_embedded_trajectory_evidence(
         "embedded trajectory plan",
     )
     plan_body = {key: nested for key, nested in plan.items() if key != "plan_sha256"}
-    entries = plan.get("entries")
-    input_hashes = plan.get("input_hashes")
+    entry_rows = plan.get("entries")
+    configuration_rows = plan.get("configurations")
+    expected_input_hash_keys = frozenset(
+        {
+            "frozen_method_sha256",
+            "method_registry_sha256",
+            "runtime_lock_sha256",
+            "primary_final_plan_sha256",
+            "trajectory_authority_file_sha256",
+            "trajectory_authority_sha256",
+            "trajectory_binding_sha256",
+            "trajectory_dataset_sha256",
+            "trajectory_dataset_file_sha256",
+            "trajectory_dataset_receipt_sha256",
+            "trajectory_dataset_receipt_file_sha256",
+            "trajectory_method_input_sha256",
+            "trajectory_retained_cell_ids_sha256",
+            "dataset_qc_policy_sha256",
+            "execution_claim_sha256",
+            "execution_environment_sha256",
+            "execution_authority_sha256",
+        }
+    )
+    input_hashes = _exact_mapping(
+        plan.get("input_hashes"),
+        expected_input_hash_keys,
+        "embedded trajectory plan input hashes",
+    )
+    for name, digest in input_hashes.items():
+        _sha256(digest, f"trajectory plan input {name}")
     if (
-        plan.get("schema_version") != 1
+        type(plan.get("schema_version")) is not int
+        or plan.get("schema_version") != 1
         or plan.get("scope") != "supplementary_trajectory"
-        or plan.get("model_seed_policy") != [42, 43, 44]
-        or not isinstance(entries, list)
-        or not entries
-        or not isinstance(input_hashes, Mapping)
+        or plan.get("model_seed_policy") != list(DEVELOPMENT_MODEL_SEEDS)
+        or not isinstance(entry_rows, list)
+        or not entry_rows
+        or not isinstance(configuration_rows, list)
+        or not configuration_rows
+        or input_hashes.get("primary_final_plan_sha256") != primary_plan_sha256
         or plan.get("plan_sha256") != canonical_sha256(plan_body)
     ):
         raise FinalAnalysisContractError("embedded trajectory plan binding is invalid")
+    try:
+        authority_chain = _validate_trajectory_primary_authority_chain(
+            selected_repository,
+            destination,
+            primary_final_plan_sha256=primary_plan_sha256,
+        )
+    except FinalRunnerContractError as error:
+        raise FinalAnalysisContractError(str(error)) from error
+    if (
+        input_hashes.get("execution_claim_sha256")
+        != authority_chain["execution_claim_sha256"]
+        or input_hashes.get("execution_environment_sha256")
+        != authority_chain["execution_environment_sha256"]
+        or input_hashes.get("execution_authority_sha256")
+        != authority_chain["trajectory_execution_authority_sha256"]
+    ):
+        raise FinalAnalysisContractError(
+            "embedded trajectory plan differs from the primary authority chain"
+        )
+
+    configuration_fields = frozenset(
+        {
+            "method_id",
+            "configuration_id",
+            "kind",
+            "configuration_sha256",
+            "payload",
+            "requires_count_score",
+            "requires_calibration",
+        }
+    )
+    configurations: list[AuthorizedConfiguration] = []
+    configuration_by_method: dict[str, AuthorizedConfiguration] = {}
+    for index, row_value in enumerate(configuration_rows):
+        row = _exact_mapping(
+            row_value,
+            configuration_fields,
+            f"embedded trajectory configuration {index}",
+        )
+        payload = row.get("payload")
+        if (
+            not isinstance(payload, Mapping)
+            or any(
+                not isinstance(row.get(name), str) or not row[name]
+                for name in (
+                    "method_id",
+                    "configuration_id",
+                    "kind",
+                    "configuration_sha256",
+                )
+            )
+            or type(row.get("requires_count_score")) is not bool
+            or type(row.get("requires_calibration")) is not bool
+        ):
+            raise FinalAnalysisContractError(
+                "embedded trajectory configuration payload is invalid"
+            )
+        try:
+            configuration = AuthorizedConfiguration.create(
+                method_id=row["method_id"],
+                configuration_id=row["configuration_id"],
+                kind=row["kind"],
+                payload=payload,
+                requires_count_score=row.get("requires_count_score"),
+                requires_calibration=row.get("requires_calibration"),
+                configuration_sha256=row["configuration_sha256"],
+            )
+        except (RunnerContractError, TypeError, ValueError) as error:
+            raise FinalAnalysisContractError(
+                "embedded trajectory configuration is invalid"
+            ) from error
+        if _canonical_bytes(configuration.to_dict()) != _canonical_bytes(dict(row)):
+            raise FinalAnalysisContractError(
+                "embedded trajectory configuration binding differs"
+            )
+        if configuration.method_id in configuration_by_method:
+            raise FinalAnalysisContractError(
+                "embedded trajectory configurations are duplicated"
+            )
+        configuration_by_method[configuration.method_id] = configuration
+        configurations.append(configuration)
 
     dataset = _exact_mapping(
         evidence.get("dataset"),
@@ -2386,6 +2533,159 @@ def _validate_embedded_trajectory_evidence(
         raise FinalAnalysisContractError(
             "embedded trajectory dataset receipt binding is invalid"
         )
+
+    run_fields = frozenset(
+        {
+            "ordinal",
+            "run_id",
+            "method_id",
+            "dataset_id",
+            "source_dataset_sha256",
+            "mechanism",
+            "biological_id",
+            "technical_view",
+            "model_seed",
+            "configuration_id",
+            "configuration_sha256",
+            "preflight_status",
+            "preflight_reason",
+            "configuration_kind",
+            "requires_count_score",
+            "requires_calibration",
+        }
+    )
+    entries: list[FinalPlanEntry] = []
+    run_ids: set[str] = set()
+    used_methods: set[str] = set()
+    for ordinal, entry_value in enumerate(entry_rows, start=1):
+        entry_row = _exact_mapping(
+            entry_value,
+            frozenset({"run", "action", "reason"}),
+            f"embedded trajectory plan entry {ordinal}",
+        )
+        run_row = _exact_mapping(
+            entry_row.get("run"),
+            run_fields,
+            f"embedded trajectory run {ordinal}",
+        )
+        action = entry_row.get("action")
+        reason = entry_row.get("reason")
+        if (
+            type(run_row.get("ordinal")) is not int
+            or run_row["ordinal"] <= 0
+            or any(
+                not isinstance(run_row.get(name), str) or not run_row[name]
+                for name in (
+                    "run_id",
+                    "method_id",
+                    "dataset_id",
+                    "source_dataset_sha256",
+                    "mechanism",
+                    "biological_id",
+                    "technical_view",
+                    "configuration_id",
+                    "configuration_sha256",
+                    "preflight_status",
+                    "configuration_kind",
+                )
+            )
+            or (
+                run_row.get("model_seed") is not None
+                and type(run_row.get("model_seed")) is not int
+            )
+            or type(run_row.get("requires_count_score")) is not bool
+            or type(run_row.get("requires_calibration")) is not bool
+            or not isinstance(action, str)
+            or action not in {"execute", "not_applicable"}
+            or (action == "execute" and reason is not None)
+            or (
+                action == "not_applicable"
+                and (not isinstance(reason, str) or not reason)
+            )
+        ):
+            raise FinalAnalysisContractError(
+                "embedded trajectory plan entry has invalid exact types"
+            )
+        _sha256(
+            run_row.get("source_dataset_sha256"),
+            "trajectory run source dataset",
+        )
+        _sha256(
+            run_row.get("configuration_sha256"),
+            "trajectory run configuration",
+        )
+        try:
+            run = RunPlanEntry(**dict(run_row))
+            entry = FinalPlanEntry(
+                run=run,
+                action=action,
+                reason=reason,
+            )
+        except (FinalRunnerContractError, TypeError, ValueError) as error:
+            raise FinalAnalysisContractError(
+                "embedded trajectory plan entry is invalid"
+            ) from error
+        configuration = configuration_by_method.get(run.method_id)
+        if configuration is None:
+            raise FinalAnalysisContractError(
+                "embedded trajectory run lacks its configuration"
+            )
+        try:
+            expected_run_id = _trajectory_run_id(
+                run.method_id,
+                run.dataset_id,
+                run.model_seed,
+                run.configuration_sha256,
+            )
+        except (TypeError, ValueError) as error:
+            raise FinalAnalysisContractError(
+                "embedded trajectory run identity is invalid"
+            ) from error
+        if (
+            run.ordinal != ordinal
+            or run.run_id != expected_run_id
+            or run.run_id in run_ids
+            or run.dataset_id != binding.dataset_id
+            or run.source_dataset_sha256 != binding.dataset_sha256
+            or run.mechanism != binding.mechanism
+            or run.biological_id != binding.biological_id
+            or run.technical_view != binding.technical_view
+            or run.model_seed not in (None, *DEVELOPMENT_MODEL_SEEDS)
+            or run.configuration_id != configuration.configuration_id
+            or run.configuration_sha256 != configuration.configuration_sha256
+            or run.preflight_status != "planned"
+            or run.preflight_reason is not None
+            or run.configuration_kind != configuration.kind
+            or run.requires_count_score != configuration.requires_count_score
+            or run.requires_calibration != configuration.requires_calibration
+        ):
+            raise FinalAnalysisContractError(
+                "embedded trajectory run differs from its exact plan authority"
+            )
+        run_ids.add(run.run_id)
+        used_methods.add(run.method_id)
+        entries.append(entry)
+    if used_methods != set(configuration_by_method):
+        raise FinalAnalysisContractError(
+            "embedded trajectory configuration denominator is incomplete"
+        )
+    typed_plan = TrajectoryExecutionPlan(
+        schema_version=1,
+        scope="supplementary_trajectory",
+        input_hashes=dict(input_hashes),
+        entries=tuple(entries),
+        configurations=tuple(configurations),
+        plan_sha256=str(plan["plan_sha256"]),
+    )
+    try:
+        if _canonical_bytes(trajectory_execution_plan_payload(typed_plan)) != (
+            _canonical_bytes(dict(plan))
+        ):
+            raise FinalAnalysisContractError("embedded trajectory plan replay differs")
+    except (FinalRunnerContractError, TypeError, ValueError) as error:
+        raise FinalAnalysisContractError(
+            "embedded trajectory plan replay is invalid"
+        ) from error
 
     authority = _exact_mapping(
         evidence.get("execution_authority"),
@@ -2452,6 +2752,157 @@ def _validate_embedded_trajectory_evidence(
         raise FinalAnalysisContractError(
             "embedded trajectory execution manifest binding is invalid"
         )
+
+    manifest_path = destination / str(manifest["path"])
+    try:
+        manifest_payload, manifest_raw = _read_json_file(
+            manifest_path,
+            "trajectory execution manifest",
+            require_canonical=True,
+        )
+    except (FinalAnalysisContractError, OSError) as error:
+        raise FinalAnalysisContractError(
+            "embedded trajectory execution manifest cannot be read"
+        ) from error
+    expected_manifest_fields = frozenset(
+        {
+            "schema_version",
+            "status",
+            "plan_sha256",
+            "input_hashes",
+            "planned_run_count",
+            "recorded_run_count",
+            "records",
+            "artifact_storage",
+            "scope",
+            "plan_entries",
+            "configurations",
+            "model_seed_policy",
+            "manifest_sha256",
+        }
+    )
+    manifest_payload = _exact_mapping(
+        manifest_payload,
+        expected_manifest_fields,
+        "trajectory execution manifest payload",
+    )
+    manifest_body = {
+        key: nested
+        for key, nested in manifest_payload.items()
+        if key != "manifest_sha256"
+    }
+    manifest_records = manifest_payload.get("records")
+    if (
+        hashlib.sha256(manifest_raw).hexdigest() != manifest.get("file_sha256")
+        or type(manifest_payload.get("schema_version")) is not int
+        or manifest_payload.get("schema_version") != 1
+        or manifest_payload.get("status") != "completed"
+        or manifest_payload.get("scope") != "supplementary_trajectory"
+        or manifest_payload.get("plan_sha256") != typed_plan.plan_sha256
+        or _canonical_bytes(manifest_payload.get("input_hashes"))
+        != _canonical_bytes(dict(typed_plan.input_hashes))
+        or type(manifest_payload.get("planned_run_count")) is not int
+        or manifest_payload.get("planned_run_count") != len(entries)
+        or type(manifest_payload.get("recorded_run_count")) is not int
+        or manifest_payload.get("recorded_run_count") != len(entries)
+        or _canonical_bytes(manifest_payload.get("plan_entries"))
+        != _canonical_bytes([entry.to_dict() for entry in entries])
+        or _canonical_bytes(manifest_payload.get("configurations"))
+        != _canonical_bytes(
+            [configuration.to_dict() for configuration in configurations]
+        )
+        or _canonical_bytes(manifest_payload.get("model_seed_policy"))
+        != _canonical_bytes(list(DEVELOPMENT_MODEL_SEEDS))
+        or _canonical_bytes(manifest_payload.get("artifact_storage"))
+        != _canonical_bytes(_EXPECTED_FINAL_STORAGE_POLICY)
+        or manifest_payload.get("manifest_sha256") != canonical_sha256(manifest_body)
+        or manifest.get("payload_sha256") != manifest_payload.get("manifest_sha256")
+        or not isinstance(manifest_records, list)
+        or len(manifest_records) != len(entries)
+    ):
+        raise FinalAnalysisContractError(
+            "embedded trajectory execution manifest differs from its plan"
+        )
+
+    records: list[Mapping[str, object]] = []
+    record_result_paths: set[str] = set()
+    for entry, reference_value in zip(entries, manifest_records, strict=True):
+        reference = _exact_mapping(
+            reference_value,
+            frozenset({"ordinal", "run_id", "path", "sha256"}),
+            f"trajectory manifest record {entry.run.ordinal}",
+        )
+        relative = f"records/{entry.run.ordinal:08d}.json"
+        full_relative = f"results/trajectory/execution/{relative}"
+        if (
+            type(reference.get("ordinal")) is not int
+            or reference.get("ordinal") != entry.run.ordinal
+            or reference.get("run_id") != entry.run.run_id
+            or reference.get("path") != relative
+        ):
+            raise FinalAnalysisContractError(
+                "trajectory manifest record binding differs"
+            )
+        record_path = destination / full_relative
+        record, record_raw = _read_json_file(
+            record_path,
+            f"trajectory execution record {entry.run.ordinal}",
+            require_canonical=True,
+        )
+        record = _exact_mapping(
+            record,
+            frozenset({"run", "metrics", "p_pre_zero_evidence", "execution_request"}),
+            f"trajectory execution record {entry.run.ordinal}",
+        )
+        record_run = record.get("run")
+        record_metrics = record.get("metrics")
+        if (
+            not isinstance(record_run, Mapping)
+            or not isinstance(record_metrics, list)
+            or any(
+                not isinstance(record_run.get(name), str)
+                for name in (
+                    "run_id",
+                    "method_id",
+                    "dataset_id",
+                    "configuration_sha256",
+                    "status",
+                )
+            )
+            or _canonical_bytes(record_run.get("model_seed"))
+            != _canonical_bytes(entry.run.model_seed)
+            or any(
+                not isinstance(metric, Mapping)
+                or not isinstance(metric.get("metric"), str)
+                or not isinstance(metric.get("status"), str)
+                or type(metric.get("n")) is not int
+                or metric["n"] < 0
+                or isinstance(metric.get("value"), bool)
+                or (
+                    metric.get("value") is not None
+                    and not isinstance(metric.get("value"), (int, float))
+                )
+                or (
+                    metric.get("reason") is not None
+                    and not isinstance(metric.get("reason"), str)
+                )
+                for metric in record_metrics
+            )
+        ):
+            raise FinalAnalysisContractError(
+                "trajectory execution record has invalid exact types"
+            )
+        record_file_sha256 = hashlib.sha256(record_raw).hexdigest()
+        if (
+            record_file_sha256
+            != _sha256(reference.get("sha256"), "trajectory record file")
+            or result_bindings.get(full_relative) != record_file_sha256
+        ):
+            raise FinalAnalysisContractError(
+                "trajectory execution record file binding differs"
+            )
+        records.append(record)
+        record_result_paths.add(full_relative)
     validation = _exact_mapping(
         evidence.get("execution_validation"),
         frozenset(
@@ -2474,15 +2925,80 @@ def _validate_embedded_trajectory_evidence(
     validation_body = {
         key: nested for key, nested in validation.items() if key != "validation_sha256"
     }
+    count_names = (
+        "planned_run_count",
+        "executed_completed_count",
+        "executed_algorithmic_failure_count",
+        "not_applicable_count",
+    )
+    status_counts = validation.get("executed_status_counts")
+    payload_hashes = validation.get("record_payload_sha256s")
     if (
-        validation.get("schema_version") != 1
+        type(validation.get("schema_version")) is not int
+        or validation.get("schema_version") != 1
+        or validation.get("status")
+        != "eligible_for_final_evaluation_complete_terminal_denominator"
         or validation.get("scope") != "supplementary_trajectory"
         or validation.get("trajectory_plan_sha256") != plan.get("plan_sha256")
+        or any(
+            type(validation.get(name)) is not int or validation[name] < 0
+            for name in count_names
+        )
         or validation.get("planned_run_count") != len(entries)
+        or not isinstance(status_counts, dict)
+        or any(
+            status
+            not in {
+                "completed",
+                "failed",
+                "timeout",
+                "resource_exceeded",
+                "unavailable",
+            }
+            or type(count) is not int
+            or count <= 0
+            for status, count in (
+                status_counts.items() if isinstance(status_counts, dict) else ()
+            )
+        )
+        or sum(status_counts.values())
+        != validation.get("executed_completed_count")
+        + validation.get("executed_algorithmic_failure_count")
+        or sum(status_counts.values()) + validation.get("not_applicable_count")
+        != len(entries)
+        or status_counts.get("completed", 0)
+        != validation.get("executed_completed_count")
+        or sum(
+            status_counts.get(status, 0)
+            for status in (
+                "failed",
+                "timeout",
+                "resource_exceeded",
+                "unavailable",
+            )
+        )
+        != validation.get("executed_algorithmic_failure_count")
+        or not isinstance(payload_hashes, list)
+        or len(payload_hashes) != len(entries)
         or validation.get("validation_sha256") != canonical_sha256(validation_body)
     ):
         raise FinalAnalysisContractError(
             "embedded trajectory execution validation binding is invalid"
+        )
+    for index, digest in enumerate(payload_hashes):
+        _sha256(digest, f"trajectory validation record {index} payload")
+    try:
+        replayed_validation = validate_trajectory_execution_for_evaluation(
+            typed_plan,
+            records,
+        )
+    except (FinalRunnerContractError, TypeError, ValueError) as error:
+        raise FinalAnalysisContractError(
+            "embedded trajectory terminal denominator is invalid"
+        ) from error
+    if _canonical_bytes(replayed_validation) != _canonical_bytes(dict(validation)):
+        raise FinalAnalysisContractError(
+            "embedded trajectory validation differs from record replay"
         )
     nested = _result_file_bindings({"result_files": evidence.get("result_files")})
     expected_nested = {
@@ -2490,9 +3006,32 @@ def _validate_embedded_trajectory_evidence(
         for path, digest in result_bindings.items()
         if path.startswith("results/trajectory/")
     }
-    if not nested or nested != expected_nested:
+    nested_record_paths = {
+        path
+        for path in nested
+        if path.startswith("results/trajectory/execution/records/")
+    }
+    if (
+        not nested
+        or nested != expected_nested
+        or nested_record_paths != record_result_paths
+    ):
         raise FinalAnalysisContractError(
             "embedded trajectory result inventory is invalid"
+        )
+    try:
+        rederived = _rederive_trajectory_evidence_before_receipt(
+            selected_repository,
+            destination,
+            evidence,
+            result_files,
+            primary_final_plan_sha256=primary_plan_sha256,
+        )
+    except FinalRunnerContractError as error:
+        raise FinalAnalysisContractError(str(error)) from error
+    if _canonical_bytes(rederived) != _canonical_bytes(dict(evidence)):
+        raise FinalAnalysisContractError(
+            "embedded trajectory evidence differs from frozen rederivation"
         )
     return evidence
 
@@ -2872,6 +3411,13 @@ def _evaluated_inputs(
     trajectory_evidence = _validate_embedded_trajectory_evidence(
         evaluation.get("trajectory_evidence"),
         result_bindings,
+        repository=selected_repository,
+        round_dir=destination,
+        primary_final_plan_sha256=_sha256(
+            evaluation.get("final_plan_sha256"),
+            "primary final plan",
+        ),
+        result_files=evaluation["result_files"],
     )
     manifest_relative = evaluation.get("final_execution_manifest_path")
     expected_manifest_relative = "results/final/execution/execution_manifest.json"
