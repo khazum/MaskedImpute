@@ -552,9 +552,12 @@ def parse_comparator_tuning_authority(
         seen_configuration_ids[row["method_id"]].add(row["configuration_id"])
         seen_payload_sha256[row["method_id"]].add(row["payload_sha256"])
 
-        expected_payload = json.loads(
-            _EXPECTED_CONFIGURATION_PAYLOADS[observed_identity]
-        )
+        expected_payload_json = _EXPECTED_CONFIGURATION_PAYLOADS[observed_identity]
+        if _canonical_bytes(row["payload"]) != expected_payload_json.encode("utf-8"):
+            raise ComparatorTuningError(
+                "comparator configuration payload representation differs"
+            )
+        expected_payload = json.loads(expected_payload_json)
         _require_exact_literal(
             row["payload"],
             expected_payload,

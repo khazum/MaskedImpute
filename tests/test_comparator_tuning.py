@@ -265,6 +265,31 @@ def test_authority_rejects_rehashed_grid_mutation(mutation: str) -> None:
         )
 
 
+def test_authority_rejects_rehashed_signed_zero_payload_mutation() -> None:
+    payload = _tracked_payload()
+    configurations = payload["configurations"]
+    assert isinstance(configurations, list)
+    afmf_default = configurations[18]
+    assert isinstance(afmf_default, dict)
+    assert afmf_default["configuration_id"] == "afmf-sigma-3"
+    afmf_payload = afmf_default["payload"]
+    assert isinstance(afmf_payload, dict)
+    assert afmf_payload["lambda_p"] == 0.0
+    original_row_sha256 = afmf_default["payload_sha256"]
+    original_authority_sha256 = payload["payload_sha256"]
+
+    afmf_payload["lambda_p"] = -0.0
+    _rehash_authority(payload)
+
+    assert afmf_default["payload_sha256"] != original_row_sha256
+    assert payload["payload_sha256"] != original_authority_sha256
+    registry = load_method_registry(ROOT / "study/methods.json")
+    with pytest.raises(ComparatorTuningError):
+        parse_comparator_tuning_authority(
+            payload, registry=registry, file_sha256="a" * 64
+        )
+
+
 def test_authority_rejects_invalid_file_sha256() -> None:
     registry = load_method_registry(ROOT / "study/methods.json")
     with pytest.raises(ComparatorTuningError, match="file SHA-256"):
