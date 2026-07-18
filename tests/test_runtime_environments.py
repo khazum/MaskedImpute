@@ -46,6 +46,27 @@ def _isolated_python(tmp_path: Path) -> Path:
     return environment / "bin/python"
 
 
+def _synthetic_cross_scope_lock(tmp_path: Path) -> RuntimeEnvironmentLock:
+    return RuntimeEnvironmentLock(
+        path=tmp_path / "runtime-lock.json",
+        file_sha256="f" * 64,
+        entries=(
+            RuntimeEnvironmentEntry(
+                environment_id="benchmark",
+                kind="python",
+                inventory_json=b'{"kind":"live"}',
+                inventory_sha256="a" * 64,
+            ),
+            RuntimeEnvironmentEntry(
+                environment_id="external",
+                kind="python",
+                inventory_json=b'{"kind":"external"}',
+                inventory_sha256="b" * 64,
+            ),
+        ),
+    )
+
+
 def test_python_probe_is_deterministic_and_package_sorted() -> None:
     first = probe_python_environment(Path(sys.executable))
     second = probe_python_environment(Path(sys.executable))
@@ -301,8 +322,7 @@ def test_python_probe_binds_loose_importable_runtime_bytes(tmp_path: Path) -> No
     python = _isolated_python(tmp_path)
     before = probe_python_environment(python)
     site_packages = next(
-        path
-        for path in (python.parents[1] / "lib").glob("python*/site-packages")
+        path for path in (python.parents[1] / "lib").glob("python*/site-packages")
     )
     (site_packages / "publication_shadow.py").write_text(
         "VALUE = 'changed-runtime'\n", encoding="utf-8"
@@ -690,7 +710,9 @@ def test_r_probe_binds_selected_method_library_bytes(tmp_path: Path) -> None:
         "License: MIT\n",
         encoding="utf-8",
     )
-    (source / "NAMESPACE").write_text("export(runtime_lock_fixture)\n", encoding="utf-8")
+    (source / "NAMESPACE").write_text(
+        "export(runtime_lock_fixture)\n", encoding="utf-8"
+    )
     (source / "R/function.R").write_text(
         "runtime_lock_fixture <- function() 1L\n", encoding="utf-8"
     )
@@ -801,9 +823,7 @@ def test_runtime_tree_rejects_mutation_of_already_visited_file(
 
 def test_lock_round_trip_and_exact_runtime_validation(tmp_path: Path) -> None:
     python = _isolated_python(tmp_path)
-    lock = build_runtime_environment_lock(
-        {"benchmark": ("python", python)}
-    )
+    lock = build_runtime_environment_lock({"benchmark": ("python", python)})
     path = tmp_path / "runtime-lock.json"
     _write_canonical(path, lock)
 
@@ -813,17 +833,86 @@ def test_lock_round_trip_and_exact_runtime_validation(tmp_path: Path) -> None:
         {"benchmark": ("python", python)},
     )
 
-    assert receipt["lock_file_sha256"] == loaded.file_sha256
+    assert receipt == {
+        "lock_file_sha256": loaded.file_sha256,
+        "environment_inventory_sha256s": (
+            ("benchmark", loaded.by_id("benchmark").inventory_sha256),
+        ),
+    }
+
+
+def test_lock_validation_binds_explicit_lock_only_runtime_without_probing_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    python = tmp_path / "live-python"
+    loaded = _synthetic_cross_scope_lock(tmp_path)
+    probed: list[Path] = []
+
+    def recording_probe(kind, executable, *, r_library_paths=()):
+        probed.append(executable)
+        return {"kind": "live"}, "c" * 64
+
+    monkeypatch.setattr(
+        runtime_module,
+        "_probe_runtime_environment_with_closure",
+        recording_probe,
+    )
+
+    receipt = validate_runtime_environment_lock(
+        loaded,
+        {"benchmark": ("python", python)},
+        lock_only_environment_ids=("external",),
+    )
+
+    assert probed == [python]
     assert receipt["environment_inventory_sha256s"] == (
         ("benchmark", loaded.by_id("benchmark").inventory_sha256),
     )
+    assert receipt["lock_only_environment_inventory_sha256s"] == (
+        ("external", loaded.by_id("external").inventory_sha256),
+    )
+
+
+@pytest.mark.parametrize(
+    ("lock_only_environment_ids", "message"),
+    (
+        (("external", "external"), "duplicated"),
+        (("../external",), "invalid"),
+        (("benchmark",), "overlap"),
+    ),
+)
+def test_lock_validation_rejects_invalid_lock_only_runtime_sets(
+    tmp_path: Path,
+    lock_only_environment_ids: tuple[str, ...],
+    message: str,
+) -> None:
+    python = tmp_path / "live-python"
+    loaded = _synthetic_cross_scope_lock(tmp_path)
+
+    with pytest.raises(RuntimeEnvironmentError, match=message):
+        validate_runtime_environment_lock(
+            loaded,
+            {"benchmark": ("python", python)},
+            lock_only_environment_ids=lock_only_environment_ids,
+        )
+
+
+def test_lock_validation_rejects_unknown_lock_only_runtime(tmp_path: Path) -> None:
+    python = tmp_path / "live-python"
+    loaded = _synthetic_cross_scope_lock(tmp_path)
+
+    with pytest.raises(RuntimeEnvironmentError, match="runtime IDs mismatch"):
+        validate_runtime_environment_lock(
+            loaded,
+            {"benchmark": ("python", python)},
+            lock_only_environment_ids=("unknown",),
+        )
 
 
 def test_rehashed_inventory_tamper_cannot_validate(tmp_path: Path) -> None:
     python = _isolated_python(tmp_path)
-    lock = build_runtime_environment_lock(
-        {"benchmark": ("python", python)}
-    )
+    lock = build_runtime_environment_lock({"benchmark": ("python", python)})
     lock["environments"][0]["inventory"]["interpreter"]["version"][2] += 1
     # Rehash every public envelope field an attacker can rewrite.
     from maskimpute_benchmark.protocol import canonical_sha256
@@ -843,9 +932,7 @@ def test_rehashed_inventory_tamper_cannot_validate(tmp_path: Path) -> None:
 
 def test_lock_rejects_missing_or_extra_runtime(tmp_path: Path) -> None:
     python = _isolated_python(tmp_path)
-    lock = build_runtime_environment_lock(
-        {"benchmark": ("python", python)}
-    )
+    lock = build_runtime_environment_lock({"benchmark": ("python", python)})
     path = tmp_path / "runtime-lock.json"
     _write_canonical(path, lock)
     loaded = load_runtime_environment_lock(path)
@@ -864,9 +951,7 @@ def test_lock_rejects_missing_or_extra_runtime(tmp_path: Path) -> None:
 
 def test_lock_loader_rejects_noncanonical_and_duplicate_ids(tmp_path: Path) -> None:
     python = _isolated_python(tmp_path)
-    lock = build_runtime_environment_lock(
-        {"benchmark": ("python", python)}
-    )
+    lock = build_runtime_environment_lock({"benchmark": ("python", python)})
     path = tmp_path / "runtime-lock.json"
     path.write_text(json.dumps(lock, indent=2), encoding="utf-8")
     with pytest.raises(RuntimeEnvironmentError, match="canonical JSON"):

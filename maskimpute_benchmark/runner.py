@@ -87,8 +87,7 @@ _TRACKED_V29_REVISION_SHA256 = (
     "8d3f71f5a923b07b6fa489ee9856e0e4598084fdbf7cda77ecaf510068081ba5"
 )
 _V28_SELECTION_INPUT_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "artifacts/study/development/evaluation/"
+    Path(__file__).resolve().parents[1] / "artifacts/study/development/evaluation/"
     "development_selection_input-downstream.json"
 )
 _V28_SELECTION_REPORT_PATH = (
@@ -5514,12 +5513,40 @@ def _execution_environment_snapshot() -> str:
     return process_environment_sha256()
 
 
+def derive_lock_only_environment_ids(registry: MethodRegistry) -> tuple[str, ...]:
+    """Derive ready external-reference runtime IDs from one validated registry."""
+
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    scopes_by_id: dict[str, str] = {}
+    lock_only_ids: list[str] = []
+    for spec in registry.methods:
+        if not isinstance(spec.id, str) or not _SAFE_ID.fullmatch(spec.id):
+            raise RunnerContractError("method registry environment ID is invalid")
+        previous_scope = scopes_by_id.get(spec.id)
+        if previous_scope is not None:
+            if (
+                "external_reference_only" in {previous_scope, spec.execution_scope}
+                and previous_scope != spec.execution_scope
+            ):
+                raise RunnerContractError("method registry environment scopes overlap")
+            raise RunnerContractError("method registry environment IDs are duplicated")
+        scopes_by_id[spec.id] = spec.execution_scope
+        if (
+            spec.execution_scope == "external_reference_only"
+            and spec.environment.status == "ready"
+        ):
+            lock_only_ids.append(spec.id)
+    return tuple(sorted(lock_only_ids))
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionEnvironmentRegistry:
     """Explicit executable paths for every adapter environment available locally."""
 
     repository_root: Path
     executable_paths: tuple[tuple[str, str | None], ...]
+    lock_only_environment_ids: tuple[str, ...]
     registry_sha256: str
     runtime_lock_sha256: str | None
     runtime_lock_path: Path | None
@@ -5540,10 +5567,29 @@ class ExecutionEnvironmentRegistry:
         runtime_lock_path: Path | None = None,
         benchmark_python: Path | None = None,
         r_library_paths: Mapping[str, Sequence[Path]] | None = None,
+        lock_only_environment_ids: Sequence[str] = (),
     ) -> ExecutionEnvironmentRegistry:
         if not isinstance(repository_root, Path):
             raise TypeError("repository_root must be a pathlib.Path")
         repository = repository_root.resolve(strict=True)
+        if isinstance(lock_only_environment_ids, (str, bytes)) or not isinstance(
+            lock_only_environment_ids, Sequence
+        ):
+            raise TypeError("lock_only_environment_ids must be a sequence")
+        raw_lock_only_ids = tuple(lock_only_environment_ids)
+        if any(
+            not isinstance(environment_id, str)
+            or not _SAFE_ID.fullmatch(environment_id)
+            for environment_id in raw_lock_only_ids
+        ):
+            raise RunnerContractError("lock-only environment ID is invalid")
+        if len(set(raw_lock_only_ids)) != len(raw_lock_only_ids):
+            raise RunnerContractError("lock-only environment IDs are duplicated")
+        normalized_lock_only_ids = tuple(sorted(raw_lock_only_ids))
+        if normalized_lock_only_ids and runtime_lock_path is None:
+            raise RunnerContractError(
+                "lock-only environment IDs require a runtime lock"
+            )
         declared: dict[str, Path] = {
             "afmf": repository / "artifacts/envs/afmf-python/bin/python",
             "alra": repository / "artifacts/envs/alra-r/bin/Rscript",
@@ -5699,6 +5745,7 @@ class ExecutionEnvironmentRegistry:
                         declarations,
                         r_library_paths=r_library_paths,
                         expected_closure_paths_sha256s=closure_paths,
+                        lock_only_environment_ids=normalized_lock_only_ids,
                     )
                     verify_runtime_environment_snapshot(runtime_snapshot)
                     monitor.assert_unchanged()
@@ -5725,9 +5772,12 @@ class ExecutionEnvironmentRegistry:
                 None if runtime_snapshot is None else runtime_snapshot.identity_sha256
             ),
         }
+        if normalized_lock_only_ids:
+            body["lock_only_environment_ids"] = normalized_lock_only_ids
         return cls(
             repository_root=repository,
             executable_paths=tuple(entries),
+            lock_only_environment_ids=normalized_lock_only_ids,
             registry_sha256=canonical_sha256(body),
             runtime_lock_sha256=runtime_lock_sha256,
             runtime_lock_path=(
@@ -5830,6 +5880,7 @@ class ExecutionEnvironmentRegistry:
                 declarations,
                 r_library_paths=libraries,
                 expected_closure_paths_sha256s=dict(self.runtime_closure_paths_sha256s),
+                lock_only_environment_ids=self.lock_only_environment_ids,
             )
             if self.runtime_snapshot is not None:
                 verify_runtime_environment_snapshot(self.runtime_snapshot)
@@ -6689,6 +6740,7 @@ def _run_competition_with_authority(
         runtime_lock_path=_DEVELOPMENT_RUNTIME_LOCK_PATH,
         benchmark_python=Path(sys.executable),
         r_library_paths={"saver": (repository / "artifacts/envs/saver-r/library",)},
+        lock_only_environment_ids=derive_lock_only_environment_ids(registry),
     )
     plan = build_competition_plan(
         registry,
@@ -7079,6 +7131,7 @@ __all__ = [
     "RunnerContractError",
     "SpawnedRepositoryExecutor",
     "build_competition_plan",
+    "derive_lock_only_environment_ids",
     "derive_authorized_configurations",
     "execute_adapter_in_spawned_process",
     "execute_competition_plan",

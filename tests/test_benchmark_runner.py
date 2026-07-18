@@ -21,6 +21,7 @@ import maskimpute_benchmark.runtime_environments as runtime_module
 from maskimpute_benchmark.methods import (
     AdapterExecution,
     MethodInput,
+    MethodRegistry,
     load_method_registry,
     run_observed,
 )
@@ -56,8 +57,11 @@ from maskimpute_benchmark.runner import (
     validate_development_manifest_payload,
 )
 from maskimpute_benchmark.runtime_environments import (
+    RuntimeEnvironmentEntry,
+    RuntimeEnvironmentLock,
     RuntimeEnvironmentSnapshot,
     build_runtime_environment_lock,
+    load_runtime_environment_lock,
 )
 
 
@@ -423,6 +427,75 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
         sum(entry.method_id == "capacity-matched-ae" for entry in plan.entries)
         == len(datasets) * 3
     )
+
+
+def test_tracked_cross_scope_lock_preserves_exact_development_denominator() -> None:
+    registry = load_method_registry(METHODS_PATH)
+    lock = load_runtime_environment_lock(
+        Path("environments/development-runtime.lock.json")
+    )
+    lock_ids = tuple(entry.environment_id for entry in lock.entries)
+    lock_only_ids = runner_module.derive_lock_only_environment_ids(registry)
+    live_ids = tuple(
+        sorted(
+            {
+                (
+                    "benchmark"
+                    if spec.id in {"observed", "capacity-matched-ae", "maskimpute"}
+                    else spec.id
+                )
+                for spec in registry.methods
+                if spec.execution_scope == "same_input_required"
+                and spec.environment.status == "ready"
+            }
+        )
+    )
+
+    assert lock_ids == (
+        "afmf",
+        "alra",
+        "benchmark",
+        "biaeimpute",
+        "d3impute",
+        "dca",
+        "magic",
+        "saver",
+        "sccr",
+        "scsdae",
+        "sctsi",
+        "scvi",
+        "scziva",
+    )
+    assert live_ids == (
+        "afmf",
+        "alra",
+        "benchmark",
+        "biaeimpute",
+        "dca",
+        "magic",
+        "saver",
+        "sccr",
+        "scsdae",
+        "scvi",
+        "scziva",
+    )
+    assert lock_only_ids == ("d3impute", "sctsi")
+    assert set(live_ids).isdisjoint(lock_only_ids)
+    assert set(lock_ids) == set(live_ids) | set(lock_only_ids)
+
+    plan = build_competition_plan(
+        registry,
+        validate_development_manifest_payload(_manifest_payload()),
+        load_runner_authority(),
+    )
+
+    assert len(plan.entries) == 1_744
+    assert {entry.method_id for entry in plan.entries} == {
+        spec.id
+        for spec in registry.methods
+        if spec.execution_scope == "same_input_required"
+    }
+    assert {"d3impute", "sctsi"}.isdisjoint(entry.method_id for entry in plan.entries)
 
 
 def test_authority_derives_first_twenty_search_configs_and_excludes_budget_overruns() -> (
@@ -884,6 +957,204 @@ def test_execution_environment_registry_binds_exact_runtime_lock(
 
     assert environments.runtime_lock_sha256 is not None
     assert environments.executable_for("afmf") == python.absolute()
+
+
+def test_method_registry_derives_ready_external_reference_lock_only_ids() -> None:
+    registry = load_method_registry(METHODS_PATH)
+
+    assert runner_module.derive_lock_only_environment_ids(registry) == (
+        "d3impute",
+        "sctsi",
+    )
+
+
+@pytest.mark.parametrize(
+    ("replacement", "message"),
+    (
+        ({"id": "magic"}, "overlap"),
+        ({"id": "../unsafe"}, "invalid"),
+    ),
+)
+def test_lock_only_derivation_rejects_malformed_or_overlapping_scope(
+    replacement: dict[str, str],
+    message: str,
+) -> None:
+    registry = load_method_registry(METHODS_PATH)
+    external = replace(registry.by_id("d3impute"), **replacement)
+    malformed = MethodRegistry(
+        schema_version=registry.schema_version,
+        methods=registry.methods + (external,),
+    )
+
+    with pytest.raises(RunnerContractError, match=message):
+        runner_module.derive_lock_only_environment_ids(malformed)
+
+
+def test_execution_environment_registry_retains_and_revalidates_lock_only_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = RuntimeEnvironmentSnapshot(
+        identity_sha256="1" * 64,
+        closure_paths_sha256="2" * 64,
+        nvidia_smi_path=None,
+        path_identities=(),
+        watch_specs=(),
+        control_file_sha256s=(),
+    )
+    runtime_lock = RuntimeEnvironmentLock(
+        path=tmp_path / "runtime-lock.json",
+        file_sha256="3" * 64,
+        entries=tuple(
+            RuntimeEnvironmentEntry(
+                environment_id=environment_id,
+                kind="python",
+                inventory_json=b"{}",
+                inventory_sha256=digest * 64,
+            )
+            for environment_id, digest in (
+                ("benchmark", "4"),
+                ("d3impute", "5"),
+                ("sctsi", "6"),
+            )
+        ),
+    )
+    validation_calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+    def validate(
+        lock,
+        declarations,
+        *,
+        r_library_paths=None,
+        expected_closure_paths_sha256s=None,
+        lock_only_environment_ids=(),
+    ):
+        validation_calls.append(
+            (tuple(sorted(declarations)), tuple(lock_only_environment_ids))
+        )
+        return {
+            "lock_file_sha256": lock.file_sha256,
+            "environment_inventory_sha256s": (("benchmark", "4" * 64),),
+            "lock_only_environment_inventory_sha256s": tuple(
+                (environment_id, lock.by_id(environment_id).inventory_sha256)
+                for environment_id in sorted(lock_only_environment_ids)
+            ),
+        }
+
+    class NoopMonitor:
+        def __init__(self, _watch_specs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            pass
+
+        def assert_unchanged(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        runner_module, "load_runtime_environment_lock", lambda _path: runtime_lock
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "runtime_environment_snapshot",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "merge_runtime_environment_snapshots",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(runner_module, "RuntimeChangeMonitor", NoopMonitor)
+    monkeypatch.setattr(
+        runner_module, "verify_runtime_environment_snapshot", lambda _snapshot: None
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "verify_runtime_environment_control_files",
+        lambda _snapshot: None,
+    )
+    monkeypatch.setattr(runner_module, "validate_runtime_environment_lock", validate)
+
+    environments = ExecutionEnvironmentRegistry.fixed(
+        tmp_path,
+        runtime_lock_path=runtime_lock.path,
+        benchmark_python=Path(sys.executable),
+        lock_only_environment_ids=("sctsi", "d3impute"),
+    )
+
+    assert environments.lock_only_environment_ids == ("d3impute", "sctsi")
+    assert environments.executable_for("d3impute") is None
+    assert environments.executable_for("sctsi") is None
+    assert validation_calls == [
+        (("benchmark",), ("d3impute", "sctsi")),
+    ]
+
+    validation_calls.clear()
+    environments.full_revalidate()
+
+    assert validation_calls == [
+        (("benchmark",), ("d3impute", "sctsi")),
+    ]
+
+
+def test_development_competition_forwards_registry_derived_lock_only_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.methods as methods_module
+
+    registry = load_method_registry(METHODS_PATH)
+    captured: dict[str, object] = {}
+    expected_report = object()
+
+    def fixed(*args, **kwargs):
+        captured["fixed_args"] = args
+        captured["fixed_kwargs"] = kwargs
+        return type("EnvironmentFixture", (), {"registry_sha256": "7" * 64})()
+
+    monkeypatch.setattr(
+        runner_module,
+        "ExecutionEnvironmentRegistry",
+        type("RegistryFixture", (), {"fixed": staticmethod(fixed)}),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "load_prepared_development_panel",
+        lambda _authority: ((), {}),
+    )
+    monkeypatch.setattr(
+        methods_module,
+        "load_method_registry",
+        lambda _path: registry,
+    )
+    monkeypatch.setattr(
+        runner_module, "build_competition_plan", lambda *_a, **_k: object()
+    )
+    monkeypatch.setattr(
+        runner_module, "RepositoryAdapterDispatcher", lambda *_a: object()
+    )
+    monkeypatch.setattr(runner_module, "SpawnedRepositoryExecutor", lambda value: value)
+    monkeypatch.setattr(runner_module, "CheckpointStore", lambda _path: object())
+    monkeypatch.setattr(
+        runner_module,
+        "execute_competition_plan",
+        lambda *_args: expected_report,
+    )
+
+    report = runner_module._run_competition_with_authority(
+        tmp_path / "competition",
+        _authority(maskimpute_ready=True),
+        environment_overrides=None,
+    )
+
+    assert report is expected_report
+    assert captured["fixed_kwargs"]["lock_only_environment_ids"] == (
+        "d3impute",
+        "sctsi",
+    )
 
 
 def test_execution_environment_registry_rejects_runtime_drift(
@@ -2037,9 +2308,7 @@ def test_execution_reuses_one_truth_free_input_and_checkpoints_full_denominator(
     assert all(record["run"]["status"] == "unavailable" for record in report.records)
     checkpoint_bytes = store.checkpoint_path.read_bytes()
     assert checkpoint_bytes.endswith(b"\n")
-    loaded = store.load(
-        plan, prepared_datasets={prepared.binding.dataset_id: prepared}
-    )
+    loaded = store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
     assert loaded == report
     for record in loaded.records:
         stdout = store.output_dir / record["run"]["stdout_path"]
@@ -2084,9 +2353,7 @@ def test_resume_requires_exact_plan_and_continues_only_after_valid_prefix(
 
     changed = replace(plan, plan_sha256="d" * 64)
     with pytest.raises(RunnerContractError, match="plan checksum"):
-        store.load(
-            changed, prepared_datasets={prepared.binding.dataset_id: prepared}
-        )
+        store.load(changed, prepared_datasets={prepared.binding.dataset_id: prepared})
 
 
 def test_checkpoint_resume_rejects_changed_implementation_bytes(
@@ -2122,9 +2389,7 @@ def test_checkpoint_resume_rejects_changed_implementation_bytes(
     changed = source_root / "maskimpute/a.py"
     changed.write_bytes(changed.read_bytes() + b"# changed after checkpoint\n")
     with pytest.raises(RunnerContractError, match="implementation source"):
-        store.load(
-            plan, prepared_datasets={prepared.binding.dataset_id: prepared}
-        )
+        store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
 
 
 def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
@@ -2162,9 +2427,7 @@ def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
     stdout = store.output_dir / run["stdout_path"]
     stdout.write_bytes(b"tampered")
     with pytest.raises(RunnerContractError, match="stdout.*checksum"):
-        store.load(
-            plan, prepared_datasets={prepared.binding.dataset_id: prepared}
-        )
+        store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
 
 
 def test_checkpoint_loader_rejects_symlink_replacement(tmp_path: Path) -> None:
@@ -2184,9 +2447,7 @@ def test_checkpoint_loader_rejects_symlink_replacement(tmp_path: Path) -> None:
     store.checkpoint_path.symlink_to(target)
 
     with pytest.raises(RunnerContractError, match="checkpoint.*regular file|symlink"):
-        store.load(
-            plan, prepared_datasets={prepared.binding.dataset_id: prepared}
-        )
+        store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
 
 
 def test_implementation_source_digest_is_sorted_raw_and_symlink_safe(

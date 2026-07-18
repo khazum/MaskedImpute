@@ -48,6 +48,7 @@ from .runner import (
     _prezero_evaluator_targets,
     _prepare_dataset_with_exclusions,
     _unlink_owned_staging_temporary,
+    derive_lock_only_environment_ids,
     enforce_calibration_fold_receipt,
     evaluate_adapter_outcome,
     method_input_sha256,
@@ -1449,11 +1450,14 @@ def _validate_final_runtime_lock(
 
 def _load_final_execution_environment_registry(
     repository: Path,
+    registry: MethodRegistry,
 ) -> ExecutionEnvironmentRegistry:
     """Rebuild the exact executable/runtime registry used by final execution."""
 
     if not isinstance(repository, Path):
         raise TypeError("repository must be a pathlib.Path")
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
     selected_repository = repository.resolve(strict=True)
     return ExecutionEnvironmentRegistry.fixed(
         selected_repository,
@@ -1464,6 +1468,7 @@ def _load_final_execution_environment_registry(
         r_library_paths={
             "saver": (selected_repository / "artifacts/envs/saver-r/library",)
         },
+        lock_only_environment_ids=derive_lock_only_environment_ids(registry),
     )
 
 
@@ -3070,7 +3075,10 @@ def _reconcile_interrupted_final_publications(
         destination,
     )
     registry = load_method_registry(selected_repository / "study/methods.json")
-    environments = _load_final_execution_environment_registry(selected_repository)
+    environments = _load_final_execution_environment_registry(
+        selected_repository,
+        registry,
+    )
     _validate_final_runtime_lock(frozen_method, environments)
     (
         registered,
@@ -4986,7 +4994,10 @@ def _validate_trajectory_primary_authority_chain(
     try:
         frozen_method = validate_frozen_method(selected_repository)
         registry = load_method_registry(selected_repository / "study/methods.json")
-        environments = _load_final_execution_environment_registry(selected_repository)
+        environments = _load_final_execution_environment_registry(
+            selected_repository,
+            registry,
+        )
         _validate_final_runtime_lock(frozen_method, environments)
         environment_sha256 = _sha256(
             environments.registry_sha256,
@@ -5100,7 +5111,8 @@ def _validate_trajectory_primary_authority_chain(
             selected_repository / "study/methods.json"
         )
         stable_environments = _load_final_execution_environment_registry(
-            selected_repository
+            selected_repository,
+            stable_registry,
         )
         _validate_final_runtime_lock(stable_frozen_method, stable_environments)
         stable_environments.full_revalidate()
@@ -5851,7 +5863,10 @@ def run_frozen_final_round(
         )
 
     registry = load_method_registry(selected_repository / "study/methods.json")
-    environments = _load_final_execution_environment_registry(selected_repository)
+    environments = _load_final_execution_environment_registry(
+        selected_repository,
+        registry,
+    )
     _validate_final_runtime_lock(frozen_method, environments)
 
     def publish_results() -> object:

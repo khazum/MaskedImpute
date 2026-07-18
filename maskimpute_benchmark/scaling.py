@@ -36,6 +36,7 @@ from .runner import (
     RunPlanEntry,
     RunnerAuthority,
     SpawnedRepositoryExecutor,
+    derive_lock_only_environment_ids,
     enforce_calibration_fold_receipt,
     implementation_source_sha256,
     load_runner_authority,
@@ -3546,6 +3547,26 @@ def _materialize_scaling_dataset(
     return _dataset_receipt_from_artifacts(contract, protocol, output_dir, artifacts)
 
 
+def _load_scaling_execution_environment_registry(
+    repository: Path,
+    registry: MethodRegistry,
+) -> ExecutionEnvironmentRegistry:
+    """Rebuild the same-input registry while binding cross-scope lock entries."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    selected = repository.resolve(strict=True)
+    return ExecutionEnvironmentRegistry.fixed(
+        selected,
+        runtime_lock_path=selected / "environments/development-runtime.lock.json",
+        benchmark_python=Path(sys.executable),
+        r_library_paths={"saver": (selected / "artifacts/envs/saver-r/library",)},
+        lock_only_environment_ids=derive_lock_only_environment_ids(registry),
+    )
+
+
 def load_scaling_execution_authority(
     repository: Path,
 ) -> ScalingExecutionAuthority:
@@ -3590,12 +3611,7 @@ def load_scaling_execution_authority(
         _configuration_for_method(method_id, registry.by_id(method_id), frozen)
         for method_id in contract.method_ids
     )
-    environments = ExecutionEnvironmentRegistry.fixed(
-        selected,
-        runtime_lock_path=selected / "environments/development-runtime.lock.json",
-        benchmark_python=Path(sys.executable),
-        r_library_paths={"saver": (selected / "artifacts/envs/saver-r/library",)},
-    )
+    environments = _load_scaling_execution_environment_registry(selected, registry)
     plan = build_scaling_plan(
         contract,
         registry,

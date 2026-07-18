@@ -4188,7 +4188,11 @@ def _exact_primary_trajectory_chain_inputs(
     monkeypatch.setattr(
         final_runner,
         "_load_final_execution_environment_registry",
-        lambda selected: environment if selected == repository else None,
+        lambda selected, selected_registry: (
+            environment
+            if (selected, selected_registry) == (repository, registry)
+            else None
+        ),
         raising=False,
     )
     monkeypatch.setattr(
@@ -5254,6 +5258,7 @@ def test_frozen_round_second_invocation_recovers_each_publication_seam(
     import maskimpute_benchmark.simulators.runtime_assets as runtime_assets_module
     import maskimpute_benchmark.study as study
 
+    registry = load_method_registry(METHODS)
     repository, round_dir = _claimed_lifecycle_round(tmp_path)
     simulator_assets_root = tmp_path / "external-simulator-assets"
     simulator_r_environment = tmp_path / "simulator-r-environment"
@@ -5385,7 +5390,7 @@ def test_frozen_round_second_invocation_recovers_each_publication_seam(
         "validate_frozen_method",
         lambda _repository: frozen,
     )
-    monkeypatch.setattr(methods, "load_method_registry", lambda _path: object())
+    monkeypatch.setattr(methods, "load_method_registry", lambda _path: registry)
     monkeypatch.setattr(
         final_runner,
         "ExecutionEnvironmentRegistry",
@@ -5665,6 +5670,38 @@ def test_final_runtime_registry_must_match_the_frozen_lock(tmp_path: Path) -> No
 
     with pytest.raises(FinalRunnerContractError, match="runtime lock differs"):
         _validate_final_runtime_lock({"runtime_lock_sha256": "5" * 64}, environments)
+
+
+def test_final_runtime_registry_receives_validated_method_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+
+    registry = load_method_registry(METHODS)
+    captured: dict[str, object] = {}
+    expected = object()
+
+    def fixed(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return expected
+
+    monkeypatch.setattr(
+        final_runner,
+        "ExecutionEnvironmentRegistry",
+        type("RegistryFixture", (), {"fixed": staticmethod(fixed)}),
+    )
+
+    observed = final_runner._load_final_execution_environment_registry(
+        Path.cwd(),
+        registry,
+    )
+
+    assert observed is expected
+    assert captured["kwargs"]["lock_only_environment_ids"] == (
+        "d3impute",
+        "sctsi",
+    )
 
 
 def test_final_storage_preflight_reserves_one_compressed_common_matrix(

@@ -1419,6 +1419,39 @@ def test_public_scaling_run_requires_a_claimed_canonical_round(
     assert execution_called is False
 
 
+def test_scaling_runtime_registry_receives_validated_method_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.scaling as scaling
+    from maskimpute_benchmark.methods import load_method_registry
+
+    registry = load_method_registry(REPOSITORY / "study/methods.json")
+    captured: dict[str, object] = {}
+    expected = object()
+
+    def fixed(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return expected
+
+    monkeypatch.setattr(
+        scaling,
+        "ExecutionEnvironmentRegistry",
+        type("RegistryFixture", (), {"fixed": staticmethod(fixed)}),
+    )
+
+    observed = scaling._load_scaling_execution_environment_registry(
+        REPOSITORY,
+        registry,
+    )
+
+    assert observed is expected
+    assert captured["kwargs"]["lock_only_environment_ids"] == (
+        "d3impute",
+        "sctsi",
+    )
+
+
 def test_claimed_scaling_run_journals_each_immutable_checkpoint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

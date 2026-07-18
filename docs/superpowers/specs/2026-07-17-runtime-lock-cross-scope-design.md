@@ -26,6 +26,10 @@ not probed by the same-input registry, but their canonical inventory hashes are
 included in the returned receipt and registry identity. Unknown extras, missing
 declared entries, overlap, duplicates, and unsafe IDs fail closed. The default
 empty lock-only sequence preserves exact validation for all other callers.
+It also preserves the historical two-key validator receipt byte-shape. Only an
+explicit nonempty lock-only sequence adds the separate
+`lock_only_environment_inventory_sha256s` receipt field; this keeps simulator
+runtime semantic receipts and their frozen authority byte-compatible.
 
 The two lock-only IDs are derived from the ready `external_reference_only` rows in
 the tracked method registry, rather than duplicated as an operational constant.

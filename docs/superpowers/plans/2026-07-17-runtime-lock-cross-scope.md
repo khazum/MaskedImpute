@@ -19,6 +19,9 @@ Modify `maskimpute_benchmark/runtime_environments.py` and
   rejection; unknown extra rejection; unchanged exact default behavior.
 - Require the exact disjoint union of live and lock-only IDs.
 - Return sorted live and lock-only inventory-hash tuples separately.
+- Preserve the historical two-key receipt byte-shape when the lock-only sequence
+  is empty; add `lock_only_environment_inventory_sha256s` only for an explicit
+  nonempty sequence so simulator runtime receipts remain byte-compatible.
 
 ## Task 2: Execution registry retention (RED then GREEN)
 
