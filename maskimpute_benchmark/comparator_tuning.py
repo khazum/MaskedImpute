@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -182,6 +183,14 @@ def _json_payload(config: ComparatorAdapterConfig) -> dict[str, object]:
     return value
 
 
+def _primitive_type_matches(observed: object, default: object) -> bool:
+    if default is None:
+        return observed is None
+    if type(default) is float:
+        return type(observed) is float and math.isfinite(observed)
+    return type(observed) is type(default)
+
+
 def encode_comparator_configuration(
     config: ComparatorAdapterConfig,
 ) -> dict[str, object]:
@@ -198,23 +207,35 @@ def decode_comparator_configuration(
     *,
     expected_payload_sha256: str,
 ) -> ComparatorAdapterConfig:
-    """Bootstrap the authority loader; Task 2 replaces this with strict type checks."""
+    """Decode one closed JSON payload into its exact adapter dataclass."""
 
     config_type = _CONFIG_TYPES.get(method_id)
     if config_type is None or type(payload) not in {dict, MappingProxyType}:
         raise ComparatorTuningError("comparator method or payload is invalid")
-    observed = dict(payload)
     defaults = _json_payload(config_type())
+    observed = dict(payload)
     if set(observed) != set(defaults):
         raise ComparatorTuningError(
             "comparator payload differs from its complete field set"
         )
     constructor = dict(observed)
-    if method_id == "dca":
-        hidden = observed["hidden_size"]
-        if type(hidden) is not list:
-            raise ComparatorTuningError("DCA hidden_size must be a JSON array")
-        constructor["hidden_size"] = tuple(hidden)
+    for name, default in defaults.items():
+        value = observed[name]
+        if method_id == "dca" and name == "hidden_size":
+            if (
+                type(value) is not list
+                or not value
+                or any(type(item) is not int or item <= 0 for item in value)
+            ):
+                raise ComparatorTuningError(
+                    "DCA hidden_size must be a positive-integer JSON array"
+                )
+            constructor[name] = tuple(value)
+            continue
+        if not _primitive_type_matches(value, default):
+            raise ComparatorTuningError(
+                f"comparator field {name} has the wrong primitive type"
+            )
     if canonical_sha256(observed) != expected_payload_sha256:
         raise ComparatorTuningError("comparator payload checksum differs")
     try:
@@ -223,7 +244,8 @@ def decode_comparator_configuration(
         raise ComparatorTuningError(
             "comparator payload violates its adapter contract"
         ) from error
-    if encode_comparator_configuration(decoded) != observed:
+    encoded = encode_comparator_configuration(decoded)
+    if encoded != observed or canonical_sha256(encoded) != expected_payload_sha256:
         raise ComparatorTuningError(
             "comparator payload changed during typed normalization"
         )

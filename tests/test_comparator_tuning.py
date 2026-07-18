@@ -13,6 +13,7 @@ from maskimpute_benchmark.comparator_tuning import (
     DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
     DEVELOPMENT_MAX_RECORD_BYTES,
     DEVELOPMENT_STORAGE_RESERVE_BYTES,
+    decode_comparator_configuration,
     encode_comparator_configuration,
     load_comparator_tuning_authority,
     parse_comparator_tuning_authority,
@@ -76,6 +77,49 @@ def _set_nested(
         target = target[key]
     assert isinstance(target, dict)
     target[path[-1]] = value
+
+
+def test_decode_comparator_configuration_is_closed_and_exact() -> None:
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    for row in authority.configurations:
+        decoded = row.decode()
+        assert encode_comparator_configuration(decoded) == dict(row.payload)
+
+        missing = dict(row.payload)
+        missing.pop(next(iter(missing)))
+        with pytest.raises(ComparatorTuningError, match="complete field set"):
+            decode_comparator_configuration(
+                row.method_id,
+                missing,
+                expected_payload_sha256=row.payload_sha256,
+            )
+
+        extra = {**dict(row.payload), "unexpected": 1}
+        with pytest.raises(ComparatorTuningError, match="complete field set"):
+            decode_comparator_configuration(
+                row.method_id,
+                extra,
+                expected_payload_sha256=row.payload_sha256,
+            )
+
+    magic = authority.configurations_for("magic")[0]
+    bool_as_int = {**dict(magic.payload), "knn": True}
+    with pytest.raises(ComparatorTuningError, match="primitive type"):
+        decode_comparator_configuration(
+            "magic",
+            bool_as_int,
+            expected_payload_sha256=magic.payload_sha256,
+        )
+
+    dca = authority.configurations_for("dca")[0]
+    tuple_payload = {**dict(dca.payload), "hidden_size": (64, 32, 64)}
+    with pytest.raises(ComparatorTuningError, match="JSON array"):
+        decode_comparator_configuration(
+            "dca",
+            tuple_payload,
+            expected_payload_sha256=dca.payload_sha256,
+        )
 
 
 @pytest.mark.parametrize(
