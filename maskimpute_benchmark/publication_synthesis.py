@@ -47,8 +47,6 @@ from .scaling import (
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _NULL_DE_MAXIMUM_FPR = 0.06
 _NULL_DE_MAXIMUM_ABOVE_OBSERVED = 0.01
-_TRAJECTORY_EXECUTION_RUN_COUNT = 8
-_TRAJECTORY_RECEIPT_RESULT_FILE_COUNT = 30
 _TRAJECTORY_ENDPOINT = "trajectory_pseudotime_rank_loss"
 _SCIENTIFIC_GATE_STATUSES = frozenset({"passed", "failed", "unavailable"})
 _PAIRWISE_EXCLUSION_NAMES = frozenset(
@@ -381,9 +379,9 @@ def _validate_trajectory_downstream_bindings(
     if any(getattr(plan, key) != value for key, value in expected_plan_fields.items()):
         raise PublicationSynthesisError("trajectory downstream source binding differs")
     if (
-        binding.trajectory_planned_run_count != _TRAJECTORY_EXECUTION_RUN_COUNT
-        or len(plan.entries) != _TRAJECTORY_EXECUTION_RUN_COUNT
-        or binding.trajectory_result_file_count != _TRAJECTORY_RECEIPT_RESULT_FILE_COUNT
+        type(binding.trajectory_planned_run_count) is not int
+        or binding.trajectory_planned_run_count <= 0
+        or binding.trajectory_planned_run_count != len(plan.entries)
     ):
         raise PublicationSynthesisError("trajectory receipt denominator differs")
     _digest(

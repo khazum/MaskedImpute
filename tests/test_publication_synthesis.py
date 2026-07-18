@@ -957,6 +957,96 @@ def _with_terminal_trajectory_status(
     )
 
 
+def _with_alternate_trajectory_counts(
+    loaded: _LoadedPublicationEvidence,
+    *,
+    execution_run_count: int,
+    receipt_result_file_count: int,
+) -> _LoadedPublicationEvidence:
+    entries = loaded.trajectory_downstream_plan.entries[:execution_run_count]
+    old_binding = loaded.downstream_plan.evaluated_round_binding
+    assert old_binding is not None
+    binding = replace(
+        old_binding,
+        trajectory_evidence_sha256=_digest("alternate-trajectory-evidence"),
+        trajectory_plan_sha256=_digest("alternate-trajectory-source-plan"),
+        trajectory_execution_manifest_file_sha256=_digest(
+            "alternate-trajectory-execution-manifest-file"
+        ),
+        trajectory_execution_manifest_payload_sha256=_digest(
+            "alternate-trajectory-execution-manifest-payload"
+        ),
+        trajectory_execution_validation_sha256=_digest(
+            "alternate-trajectory-execution-validation"
+        ),
+        trajectory_record_payload_sha256s_sha256=_digest(
+            "alternate-trajectory-record-payloads"
+        ),
+        trajectory_status_counts_sha256=canonical_sha256(
+            {
+                "executed_status_counts": {"completed": execution_run_count},
+                "not_applicable_count": 0,
+            }
+        ),
+        trajectory_planned_run_count=execution_run_count,
+        trajectory_result_files_sha256=_digest("alternate-trajectory-result-files"),
+        trajectory_result_file_count=receipt_result_file_count,
+    )
+    primary_provisional = replace(
+        loaded.downstream_plan,
+        evaluated_round_binding=binding,
+        plan_sha256=_digest("temporary-primary-plan"),
+    )
+    primary = replace(
+        primary_provisional,
+        plan_sha256=canonical_sha256(primary_provisional.body()),
+    )
+    primary_manifest = _downstream_manifest(primary)
+    trajectory_provisional = replace(
+        loaded.trajectory_downstream_plan,
+        source_manifest_file_sha256=(binding.trajectory_execution_manifest_file_sha256),
+        source_manifest_payload_sha256=(
+            binding.trajectory_execution_manifest_payload_sha256
+        ),
+        source_plan_sha256=binding.trajectory_plan_sha256,
+        source_statuses_sha256=canonical_sha256(
+            [
+                {
+                    "run_id": entry.run_id,
+                    "status": entry.status,
+                    "reason": entry.reason,
+                }
+                for entry in entries
+            ]
+        ),
+        evaluated_round_binding=binding,
+        entries=entries,
+        plan_sha256=_digest("temporary-trajectory-plan"),
+    )
+    trajectory = replace(
+        trajectory_provisional,
+        plan_sha256=canonical_sha256(trajectory_provisional.body()),
+    )
+    trajectory_manifest = _trajectory_manifest(trajectory)
+    null_plan = _null_plan(primary, primary_manifest)
+    null_manifest = _null_manifest(null_plan)
+    return _LoadedPublicationEvidence(
+        primary_report=_primary_report(
+            loaded.frozen_method,
+            binding,
+            trajectory_sha256=binding.trajectory_evidence_sha256,
+        ),
+        frozen_method=loaded.frozen_method,
+        downstream_plan=primary,
+        downstream_manifest=primary_manifest,
+        trajectory_downstream_plan=trajectory,
+        trajectory_downstream_manifest=trajectory_manifest,
+        null_de_plan=null_plan,
+        null_de_manifest=null_manifest,
+        scaling_checkpoint=loaded.scaling_checkpoint,
+    )
+
+
 def _with_report(
     loaded: _LoadedPublicationEvidence,
     **changes: object,
@@ -1241,21 +1331,11 @@ def test_trajectory_manifest_record_replacement_cannot_bypass_receipt_replay() -
         _build_publication_synthesis(changed)
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("trajectory_planned_run_count", 7),
-        ("trajectory_result_file_count", 29),
-    ],
-)
-def test_trajectory_receipt_denominator_domains_are_distinct_and_exact(
-    field: str,
-    value: int,
-) -> None:
+def test_trajectory_receipt_planned_count_must_match_rebuilt_plan() -> None:
     loaded = _loaded()
     old_binding = loaded.downstream_plan.evaluated_round_binding
     assert old_binding is not None
-    binding = replace(old_binding, **{field: value})
+    binding = replace(old_binding, trajectory_planned_run_count=7)
     primary = replace(loaded.downstream_plan, evaluated_round_binding=binding)
     trajectory_provisional = replace(
         loaded.trajectory_downstream_plan,
@@ -1274,6 +1354,22 @@ def test_trajectory_receipt_denominator_domains_are_distinct_and_exact(
 
     with pytest.raises(PublicationSynthesisError, match="receipt denominator"):
         publication_synthesis._validate_trajectory_downstream_bindings(changed)
+
+
+def test_coherent_alternate_trajectory_counts_are_receipt_derived() -> None:
+    loaded = _with_alternate_trajectory_counts(
+        _loaded(),
+        execution_run_count=7,
+        receipt_result_file_count=29,
+    )
+
+    synthesis = _build_publication_synthesis(loaded)
+
+    assert synthesis["trajectory"]["planned_execution_run_count"] == 7
+    assert synthesis["trajectory"]["receipt_result_file_count"] == 29
+    assert synthesis["trajectory"]["external_endpoint_row_count"] == 7
+    assert synthesis["trajectory"]["run_status_counts"] == {"completed": 7}
+    assert synthesis["trajectory"]["endpoint_status_counts"] == {"completed": 7}
 
 
 def test_trajectory_registered_dataset_authority_must_match_receipt() -> None:
@@ -1363,6 +1459,27 @@ def test_trajectory_external_endpoint_denominator_is_not_receipt_file_count() ->
 
     with pytest.raises(PublicationSynthesisError, match="manifest denominator"):
         _build_publication_synthesis(changed)
+
+
+@pytest.mark.parametrize("case", ["planned_count", "record_count"])
+def test_trajectory_manifest_run_denominators_must_match_rebuilt_plan(
+    case: str,
+) -> None:
+    loaded = _loaded()
+    manifest = loaded.trajectory_downstream_manifest
+    changed_manifest = (
+        replace(manifest, planned_denominator_count=7)
+        if case == "planned_count"
+        else replace(manifest, records=manifest.records[:-1])
+    )
+
+    with pytest.raises(PublicationSynthesisError, match="manifest denominator"):
+        _build_publication_synthesis(
+            replace(
+                loaded,
+                trajectory_downstream_manifest=changed_manifest,
+            )
+        )
 
 
 def test_trajectory_digest_in_primary_report_must_equal_evaluated_receipt() -> None:
