@@ -1396,6 +1396,145 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
         )
 
 
+def test_pre_receipt_rederivation_uses_exact_running_runtime_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.study as study
+
+    fixture = _exact_primary_trajectory_chain_inputs(
+        tmp_path,
+        monkeypatch,
+        full_denominator=True,
+    )
+    repository = fixture["repository"]
+    round_dir = fixture["round_dir"]
+    registered = fixture["registered"]
+    authority = fixture["trajectory"]
+    plan = fixture["trajectory_plan"]
+    primary_plan = fixture["primary_plan"]
+    assert isinstance(repository, Path)
+    assert isinstance(round_dir, Path)
+    simulator_assets_root = tmp_path / "external-simulator-assets"
+    simulator_r_environment = tmp_path / "simulator-r-environment"
+
+    prepared = {registered.binding.dataset_id: registered.prepared}
+    store = final_runner.FinalResultStore(
+        round_dir / "results/trajectory/execution",
+        plan,
+        prepared,
+        authority,
+        authority_repository=repository,
+    )
+    for entry in plan.entries:
+        store.append(
+            entry,
+            _unavailable_attempt(entry, prepared=registered.prepared),
+        )
+    store.finalize()
+    validation = final_runner.validate_trajectory_execution_for_evaluation(
+        plan,
+        store.load_records(),
+    )
+    result_files = final_runner._owned_final_result_file_manifest(round_dir)[
+        "result_files"
+    ]
+    assert isinstance(result_files, list)
+    trajectory_evidence = final_runner._trajectory_evaluation_evidence(
+        round_dir,
+        plan,
+        registered,
+        authority,
+        store,
+        validation,
+        result_files,
+    )
+
+    original_loader = final_runner.load_prepared_final_panel
+    runtime_loads: list[dict[str, object]] = []
+
+    def load_running_panel(selected: Path, destination: Path, **kwargs):
+        runtime_loads.append(dict(kwargs))
+        assert kwargs == {
+            "allow_evaluated": True,
+            "simulator_assets_root": simulator_assets_root,
+            "simulator_r_environment": simulator_r_environment,
+        }
+        assert kwargs["simulator_assets_root"] is simulator_assets_root
+        assert kwargs["simulator_r_environment"] is simulator_r_environment
+        return original_loader(selected, destination, **kwargs)
+
+    monkeypatch.setattr(
+        final_runner,
+        "load_prepared_final_panel",
+        load_running_panel,
+    )
+    checkpoint = SimpleNamespace(
+        status="completed",
+        planned_run_count=1,
+        records=(object(),),
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_run_pre_receipt_supplementary_phases",
+        lambda selected, destination: (
+            {"scaling": checkpoint}
+            if (selected, destination) == (repository, round_dir)
+            else {}
+        ),
+    )
+    scaling_evidence = {"evidence_sha256": "a" * 64}
+    monkeypatch.setattr(
+        final_runner,
+        "_scaling_evaluation_evidence",
+        lambda selected, destination, observed, _files: (
+            scaling_evidence
+            if (selected, destination, observed) == (repository, round_dir, checkpoint)
+            else {}
+        ),
+    )
+    recorded: dict[str, object] = {}
+
+    def record_receipt(destination: Path, manifest, *, repo: Path):
+        assert (repo, destination) == (repository, round_dir)
+        recorded.update(manifest)
+        return {"state": "evaluated"}
+
+    monkeypatch.setattr(study, "record_final_evaluation", record_receipt)
+
+    result = final_runner._record_final_evaluation_after_scaling(
+        repository,
+        round_dir,
+        {
+            "schema_version": 1,
+            "status": "completed",
+            "final_plan_sha256": primary_plan.plan_sha256,
+            "trajectory_evidence": trajectory_evidence,
+        },
+        simulator_assets_root=simulator_assets_root,
+        simulator_r_environment=simulator_r_environment,
+    )
+
+    assert result == {"state": "evaluated"}
+    assert recorded["trajectory_evidence"] == trajectory_evidence
+    assert recorded["scaling_evidence"] == scaling_evidence
+    assert runtime_loads == [
+        {
+            "allow_evaluated": True,
+            "simulator_assets_root": simulator_assets_root,
+            "simulator_r_environment": simulator_r_environment,
+        },
+        {
+            "allow_evaluated": True,
+            "simulator_assets_root": simulator_assets_root,
+            "simulator_r_environment": simulator_r_environment,
+        },
+    ]
+
+
 def test_combined_preflight_binds_primary_trajectory_scaling_with_one_reserve(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5418,8 +5557,17 @@ def test_frozen_round_second_invocation_recovers_each_publication_seam(
         lambda *_args, **_kwargs: {"evidence_sha256": "c" * 64},
     )
 
-    def finalize(_repository, _round, _evaluation):
+    def finalize(
+        _repository,
+        _round,
+        _evaluation,
+        *,
+        simulator_assets_root,
+        simulator_r_environment,
+    ):
         nonlocal current_stage
+        assert simulator_assets_root is expected_simulator_assets_root
+        assert simulator_r_environment is expected_simulator_r_environment
         current_stage = "scaling_checkpoint"
         publish("results/scaling/checkpoints/00000001.json", b"{}\n")
         journal(repository, round_dir, study.record_incremental_results)
@@ -5749,6 +5897,8 @@ def test_incomplete_scaling_blocks_final_evaluation_receipt(
                 "status": "completed",
                 "trajectory_evidence": _minimal_trajectory_evidence(),
             },
+            simulator_assets_root=tmp_path / "external-simulator-assets",
+            simulator_r_environment=tmp_path / "simulator-r-environment",
         )
 
     assert receipt_called is False
@@ -5822,6 +5972,8 @@ def test_complete_scaling_is_bound_before_the_only_evaluation_receipt(
         tmp_path,
         tmp_path,
         base,
+        simulator_assets_root=tmp_path / "external-simulator-assets",
+        simulator_r_environment=tmp_path / "simulator-r-environment",
     )
 
     assert result == {"state": "evaluated"}
@@ -5917,6 +6069,8 @@ def test_trajectory_change_during_scaling_blocks_the_only_receipt(
                 "final_plan_sha256": "d" * 64,
                 "trajectory_evidence": trajectory_evidence,
             },
+            simulator_assets_root=tmp_path / "external-simulator-assets",
+            simulator_r_environment=tmp_path / "simulator-r-environment",
         )
 
     assert receipt_called is False

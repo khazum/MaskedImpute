@@ -14,6 +14,7 @@ def establish_supported_final_runtime_environment() -> None:
     """Remove user/Codex loader influence before final runtime verification."""
 
     os.environ["PATH"] = SUPPORTED_FINAL_RUNTIME_PATH
+    os.unsetenv("LD_LIBRARY_PATH")
     os.environ.pop("LD_LIBRARY_PATH", None)
 
 

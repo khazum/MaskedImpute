@@ -1187,6 +1187,48 @@ def test_supported_final_runtime_environment_policy_is_exact(
     assert "LD_LIBRARY_PATH" not in os.environ
 
 
+def test_supported_final_runtime_environment_clears_libc_only_loader_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ctypes
+
+    from maskimpute_benchmark.operational_environment import (
+        establish_supported_final_runtime_environment,
+    )
+
+    name = "LD_LIBRARY_PATH"
+    encoded_name = os.fsencode(name)
+    libc_getenv = ctypes.CDLL(None).getenv
+    libc_getenv.argtypes = [ctypes.c_char_p]
+    libc_getenv.restype = ctypes.c_char_p
+    missing = object()
+    original_mapping = os.environ.get(name, missing)
+    original_libc = libc_getenv(encoded_name)
+    injected = "/tmp/libc-only-codex-libraries"
+    monkeypatch.setenv("PATH", "/tmp/ephemeral-codex-bin:/usr/bin")
+
+    try:
+        os.environ.pop(name, None)
+        os.putenv(name, injected)
+        assert name not in os.environ
+        assert libc_getenv(encoded_name) == os.fsencode(injected)
+
+        establish_supported_final_runtime_environment()
+
+        assert name not in os.environ
+        assert libc_getenv(encoded_name) is None
+    finally:
+        os.unsetenv(name)
+        os.environ.pop(name, None)
+        if original_mapping is not missing:
+            assert isinstance(original_mapping, str)
+            os.environ[name] = original_mapping
+        if original_libc is None:
+            os.unsetenv(name)
+        else:
+            os.putenv(name, os.fsdecode(original_libc))
+
+
 def test_dataset_cli_sanitizes_only_final_runtime_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

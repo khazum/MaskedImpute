@@ -4948,6 +4948,8 @@ def _validate_trajectory_primary_authority_chain(
     round_dir: Path,
     *,
     primary_final_plan_sha256: str,
+    simulator_assets_root: Path | None = None,
+    simulator_r_environment: Path | None = None,
 ) -> Mapping[str, str]:
     """Purely validate trajectory provenance back to the claimed primary run."""
 
@@ -4959,6 +4961,20 @@ def _validate_trajectory_primary_authority_chain(
         primary_final_plan_sha256,
         "primary final plan",
     )
+    runtime_paths = (simulator_assets_root, simulator_r_environment)
+    if any(value is None for value in runtime_paths):
+        if any(value is not None for value in runtime_paths):
+            raise FinalRunnerContractError(
+                "primary revalidation requires both simulator runtime paths"
+            )
+        runtime_panel_kwargs: dict[str, Path] = {}
+    else:
+        assert simulator_assets_root is not None
+        assert simulator_r_environment is not None
+        runtime_panel_kwargs = {
+            "simulator_assets_root": simulator_assets_root,
+            "simulator_r_environment": simulator_r_environment,
+        }
     claim_path = destination / "execution_claim.json"
     claim_raw = _read_unique_file(
         claim_path,
@@ -4980,6 +4996,7 @@ def _validate_trajectory_primary_authority_chain(
             selected_repository,
             destination,
             allow_evaluated=True,
+            **runtime_panel_kwargs,
         )
         derived_primary = _derive_final_execution_authority(
             selected_repository,
@@ -5095,6 +5112,7 @@ def _validate_trajectory_primary_authority_chain(
             selected_repository,
             destination,
             allow_evaluated=True,
+            **runtime_panel_kwargs,
         )
         stable_derived_primary = _derive_final_execution_authority(
             selected_repository,
@@ -5335,6 +5353,8 @@ def _rederive_trajectory_evidence_before_receipt(
     result_files: Sequence[Mapping[str, object]],
     *,
     primary_final_plan_sha256: str,
+    simulator_assets_root: Path | None = None,
+    simulator_r_environment: Path | None = None,
 ) -> dict[str, object]:
     """Rebuild trajectory authority, plan, records, and inventory from fresh bytes."""
 
@@ -5363,6 +5383,8 @@ def _rederive_trajectory_evidence_before_receipt(
         selected_repository,
         destination,
         primary_final_plan_sha256=primary_plan_sha256,
+        simulator_assets_root=simulator_assets_root,
+        simulator_r_environment=simulator_r_environment,
     )
     if (
         evidence_inputs.get("execution_claim_sha256")
@@ -5621,6 +5643,9 @@ def _record_final_evaluation_after_scaling(
     repository: Path,
     round_dir: Path,
     evaluation_manifest: Mapping[str, object],
+    *,
+    simulator_assets_root: Path,
+    simulator_r_environment: Path,
 ) -> dict[str, object]:
     """Require the complete supplementary denominator before issuing the receipt."""
 
@@ -5684,6 +5709,8 @@ def _record_final_evaluation_after_scaling(
         trajectory_evidence,
         result_files,
         primary_final_plan_sha256=final_plan_sha256,
+        simulator_assets_root=simulator_assets_root,
+        simulator_r_environment=simulator_r_environment,
     )
     if rederived_trajectory_evidence != dict(trajectory_evidence):
         raise FinalRunnerContractError(
@@ -5943,6 +5970,8 @@ def run_frozen_final_round(
             selected_repository,
             destination,
             evaluation_manifest,
+            simulator_assets_root=simulator_assets_root,
+            simulator_r_environment=simulator_r_environment,
         )
     finally:
         if executor is not None:
