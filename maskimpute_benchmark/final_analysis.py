@@ -1806,9 +1806,7 @@ def _unavailable_reconstruction_claim_gate(
 
 
 def _claim_structural_reason(row: _NormalizedMetric) -> str | None:
-    return _STRUCTURAL_METRIC_UNAVAILABILITY.get(row.metric, {}).get(
-        row.truth_kind
-    )
+    return _STRUCTURAL_METRIC_UNAVAILABILITY.get(row.metric, {}).get(row.truth_kind)
 
 
 def _collapse_final_claim_draws(
@@ -1816,10 +1814,13 @@ def _collapse_final_claim_draws(
     *,
     method_ids: Sequence[str],
     metric_ids: Sequence[str],
-) -> tuple[
-    dict[tuple[str, str, str, str], float],
-    list[dict[str, object]],
-] | None:
+) -> (
+    tuple[
+        dict[tuple[str, str, str, str], float],
+        list[dict[str, object]],
+    ]
+    | None
+):
     methods = tuple(method_ids)
     metrics = tuple(metric_ids)
     expected_seeds: dict[str, frozenset[int | None]] = {}
@@ -1831,9 +1832,7 @@ def _collapse_final_claim_draws(
             return None
         expected_seeds[method] = seeds
 
-    grouped: dict[
-        tuple[str, str, str, str, str, str], list[_NormalizedMetric]
-    ] = {}
+    grouped: dict[tuple[str, str, str, str, str, str], list[_NormalizedMetric]] = {}
     for row in evidence.rows:
         if row.method not in methods or row.metric not in metrics:
             continue
@@ -1875,8 +1874,9 @@ def _collapse_final_claim_draws(
 
             view_values: dict[tuple[str, str, str, str], float] = {}
             for view_key, rows in method_groups.items():
-                if frozenset(row.source_model_seed for row in rows) != (
-                    expected_seeds[method]
+                if (
+                    frozenset(row.source_model_seed for row in rows)
+                    != (expected_seeds[method])
                 ):
                     return None
                 structural_reasons = tuple(
@@ -1884,8 +1884,7 @@ def _collapse_final_claim_draws(
                 )
                 if all(reason is not None for reason in structural_reasons):
                     if any(
-                        row.status != "unavailable"
-                        or row.reason != structural_reason
+                        row.status != "unavailable" or row.reason != structural_reason
                         for row, structural_reason in zip(
                             rows, structural_reasons, strict=True
                         )
@@ -1894,9 +1893,7 @@ def _collapse_final_claim_draws(
                     continue
                 if any(reason is not None for reason in structural_reasons):
                     return None
-                if any(
-                    row.status != "ok" or row.value is None for row in rows
-                ):
+                if any(row.status != "ok" or row.value is None for row in rows):
                     return None
                 view_values[view_key] = _finite_mean(
                     [float(row.value) for row in rows if row.value is not None]
@@ -1922,7 +1919,10 @@ def _collapse_final_claim_draws(
                 if technical_view in by_view:
                     return None
                 by_view[technical_view] = value
-            if any(set(values) != {"moderate", "severe"} for values in views_by_draw.values()):
+            if any(
+                set(values) != {"moderate", "severe"}
+                for values in views_by_draw.values()
+            ):
                 return None
             draw_keys = set(views_by_draw)
             if expected_draws is None:
@@ -1930,8 +1930,8 @@ def _collapse_final_claim_draws(
             elif draw_keys != expected_draws:
                 return None
             for (mechanism, biological_id), values in views_by_draw.items():
-                draw_values[(method, metric, mechanism, biological_id)] = (
-                    _finite_mean([values["moderate"], values["severe"]])
+                draw_values[(method, metric, mechanism, biological_id)] = _finite_mean(
+                    [values["moderate"], values["severe"]]
                 )
 
     summaries: list[dict[str, object]] = []
@@ -2008,18 +2008,17 @@ def _reconstruction_claim_gate(
             required_comparators=comparators,
             reason="frozen_claim_metric_authority_unavailable",
         )
-    if tuple(authority.get("rank_metrics", ())) != _CLAIM_RANK_METRICS or tuple(
-        authority.get("pareto_metrics", ())
-    ) != _CLAIM_PARETO_METRICS:
+    if (
+        tuple(authority.get("rank_metrics", ())) != _CLAIM_RANK_METRICS
+        or tuple(authority.get("pareto_metrics", ())) != _CLAIM_PARETO_METRICS
+    ):
         raise FinalAnalysisContractError(
             "frozen final claim metrics differ from selection authority"
         )
 
     methods = (candidate, *comparators)
     required_metrics = tuple(
-        dict.fromkeys(
-            (*_CLAIM_RANK_METRICS, *_CLAIM_PARETO_METRICS, *primary_metrics)
-        )
+        dict.fromkeys((*_CLAIM_RANK_METRICS, *_CLAIM_PARETO_METRICS, *primary_metrics))
     )
     if any(method not in evidence.methods for method in methods) or any(
         metric not in evidence.metric_names for metric in required_metrics
@@ -2105,11 +2104,9 @@ def _reconstruction_claim_gate(
             for metric in _CLAIM_PARETO_METRICS
         )
         if all(
-            left <= right
-            for left, right in zip(vector, candidate_vector, strict=True)
+            left <= right for left, right in zip(vector, candidate_vector, strict=True)
         ) and any(
-            left < right
-            for left, right in zip(vector, candidate_vector, strict=True)
+            left < right for left, right in zip(vector, candidate_vector, strict=True)
         ):
             dominators.append(comparator)
     dominators.sort()
@@ -2134,10 +2131,14 @@ def _reconstruction_claim_gate(
             for method in comparators
         )
         best_median = candidates[0][0]
-        tied = sorted(method for median, method, _count in candidates if median == best_median)
+        tied = sorted(
+            method for median, method, _count in candidates if median == best_median
+        )
         selected = tied[0]
         selected_count = next(
-            count for median, method, count in candidates if median == best_median and method == selected
+            count
+            for median, method, count in candidates
+            if median == best_median and method == selected
         )
         strongest.append(
             {
@@ -2151,9 +2152,7 @@ def _reconstruction_claim_gate(
             }
         )
 
-    failed = any(row["status"] == "failed" for row in rank_gates) or not (
-        pareto_passed
-    )
+    failed = any(row["status"] == "failed" for row in rank_gates) or not (pareto_passed)
     return {
         "status": "failed" if failed else "passed",
         "reason": "final_reconstruction_gate_failed" if failed else None,

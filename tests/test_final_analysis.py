@@ -390,9 +390,7 @@ def _claim_panel(
                     for seed_index, model_seed in enumerate(seeds):
                         ordinal += 1
                         seed_offset = (
-                            0.0
-                            if model_seed is None
-                            else (-0.3, 0.0, 0.3)[seed_index]
+                            0.0 if model_seed is None else (-0.3, 0.0, 0.3)[seed_index]
                         )
                         record = _record(
                             method,
@@ -449,9 +447,7 @@ def _claim_panel(
                         records.append(record)
     if failed_method is not None:
         failed = next(
-            record
-            for record in records
-            if record["run"]["method_id"] == failed_method
+            record for record in records if record["run"]["method_id"] == failed_method
         )
         failed["run"]["status"] = "failed"
         failed["run"]["reason"] = "algorithm_failure"
@@ -2107,7 +2103,9 @@ def test_direction_source_lookup_disables_git_replace_objects(tmp_path: Path) ->
     assert observed_raw == original_raw
 
 
-def test_reconstruction_claim_gate_collapses_seeds_then_views_and_uses_exact_authority() -> None:
+def test_reconstruction_claim_gate_collapses_seeds_then_views_and_uses_exact_authority() -> (
+    None
+):
     report = _claim_analysis(_claim_panel())
 
     gate = report["reconstruction_claim_gate"]
@@ -2115,9 +2113,7 @@ def test_reconstruction_claim_gate_collapses_seeds_then_views_and_uses_exact_aut
     assert gate["reason"] is None
     assert gate["candidate_method_id"] == "maskimpute"
     assert gate["required_comparator_ids"] == ["observed", "dca"]
-    assert [row["metric"] for row in gate["rank_gates"]] == list(
-        CLAIM_RANK_METRICS
-    )
+    assert [row["metric"] for row in gate["rank_gates"]] == list(CLAIM_RANK_METRICS)
     assert all(row["status"] == "passed" for row in gate["rank_gates"])
     assert all(
         row["median_biological_draw_rank"] == pytest.approx(1.0)
@@ -2144,9 +2140,7 @@ def test_reconstruction_claim_gate_collapses_seeds_then_views_and_uses_exact_aut
         "n_biological_draws": 4,
         "status": "complete",
     }
-    strongest = _matching(
-        gate["strongest_applicable_comparators"], metric="mse"
-    )
+    strongest = _matching(gate["strongest_applicable_comparators"], metric="mse")
     assert strongest == {
         "median": pytest.approx(1.5),
         "method_id": "dca",
@@ -2158,14 +2152,14 @@ def test_reconstruction_claim_gate_collapses_seeds_then_views_and_uses_exact_aut
     }
 
 
-def test_reconstruction_claim_gate_marks_complete_rank_and_pareto_failures_failed() -> None:
+def test_reconstruction_claim_gate_marks_complete_rank_and_pareto_failures_failed() -> (
+    None
+):
     rank_report = _claim_analysis(_claim_panel(candidate_mse=3.0))
     rank_gate = rank_report["reconstruction_claim_gate"]
     assert rank_gate["status"] == "failed"
     assert _matching(rank_gate["rank_gates"], metric="mse")["status"] == "failed"
-    assert _matching(rank_gate["rank_gates"], metric="gnrmse")["status"] == (
-        "failed"
-    )
+    assert _matching(rank_gate["rank_gates"], metric="gnrmse")["status"] == ("failed")
 
     pareto_report = _claim_analysis(_claim_panel(candidate_pareto=3.0))
     pareto_gate = pareto_report["reconstruction_claim_gate"]
@@ -2175,7 +2169,9 @@ def test_reconstruction_claim_gate_marks_complete_rank_and_pareto_failures_faile
     assert pareto_gate["pareto_gate"]["dominated_by"] == ["dca", "observed"]
 
 
-def test_reconstruction_claim_gate_marks_required_comparator_failure_unavailable() -> None:
+def test_reconstruction_claim_gate_marks_required_comparator_failure_unavailable() -> (
+    None
+):
     report = _claim_analysis(_claim_panel(failed_method="dca"))
 
     gate = report["reconstruction_claim_gate"]
@@ -2206,9 +2202,7 @@ def test_reconstruction_claim_gate_rejects_a_missing_candidate_seed_view() -> No
 
 
 def test_reconstruction_claim_gate_uses_tie_aware_average_rank() -> None:
-    report = _claim_analysis(
-        _claim_panel(candidate_mse=1.5, candidate_pareto=1.5)
-    )
+    report = _claim_analysis(_claim_panel(candidate_mse=1.5, candidate_pareto=1.5))
 
     gate = report["reconstruction_claim_gate"]
     assert gate["status"] == "passed"
@@ -2220,9 +2214,7 @@ def test_reconstruction_claim_gate_uses_tie_aware_average_rank() -> None:
 
 
 def test_reconstruction_claim_gate_accepts_only_exact_structural_reason() -> None:
-    report = _claim_analysis(
-        _claim_panel(structural_reason="truth_unavailable")
-    )
+    report = _claim_analysis(_claim_panel(structural_reason="truth_unavailable"))
 
     gate = report["reconstruction_claim_gate"]
     assert gate["status"] == "unavailable"
