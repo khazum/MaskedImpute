@@ -633,7 +633,10 @@ def test_tracked_search_and_ablation_files_expand_to_full_runner_grid() -> None:
 
 
 def test_clean_publication_authority_loads_pending_revalidation_bindings() -> None:
+    from maskimpute_benchmark.selection import load_publication_execution_authority
+
     authority = load_runner_authority()
+    selection_authority = load_publication_execution_authority()
 
     assert len(authority.configurations) == 26
     assert (
@@ -646,6 +649,9 @@ def test_clean_publication_authority_loads_pending_revalidation_bindings() -> No
     assert authority.count_score_manifest_sha256 is None
     assert authority.retained_calibration_status == "pending"
     assert authority.retained_calibration_sha256 is None
+    assert selection_authority.file_sha256["study/comparator_tuning.json"] == (
+        selection_authority.comparator_tuning_file_sha256
+    )
 
 
 def test_ready_maskimpute_authority_removes_only_its_preflight_block() -> None:

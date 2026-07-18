@@ -71,6 +71,7 @@ def _ready_repository(tmp_path: Path):
         "study/methods.json",
         "study/ablations.json",
         "study/calibration_contract.json",
+        "study/comparator_tuning.json",
         "study/selection_contract.json",
         "study/development_search.json",
     ):
@@ -79,9 +80,22 @@ def _ready_repository(tmp_path: Path):
         shutil.copyfile(relative, destination)
     ledger_path = repository / "study/development_search.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
-    contract = json.loads(
-        (repository / "study/selection_contract.json").read_text(encoding="utf-8")
+    contract_path = repository / "study/selection_contract.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    tuning_path = repository / "study/comparator_tuning.json"
+    tuning = json.loads(tuning_path.read_text(encoding="utf-8"))
+    tuning_file_sha256 = hashlib.sha256(tuning_path.read_bytes()).hexdigest()
+    contract["comparator_tuning_file_sha256"] = tuning_file_sha256
+    contract["comparator_tuning_payload_sha256"] = tuning["payload_sha256"]
+    contract_path.write_text(
+        json.dumps(contract, indent=2) + "\n",
+        encoding="utf-8",
     )
+    ledger["authority"]["selection_contract_sha256"] = hashlib.sha256(
+        contract_path.read_bytes()
+    ).hexdigest()
+    ledger["authority"]["comparator_tuning_file_sha256"] = tuning_file_sha256
+    ledger["authority"]["comparator_tuning_payload_sha256"] = tuning["payload_sha256"]
     entries = []
     for row in _dataset_rows():
         label = ":".join(
@@ -285,7 +299,8 @@ def _status_and_payload(authority):
     selected_methods = [
         declaration
         for declaration in authority.declarations
-        if declaration.required_for_claim or declaration.role == "candidate"
+        if declaration.id in authority.scheduled_same_input_ids
+        or declaration.role == "candidate"
     ]
     records = []
     for declaration in selected_methods:
@@ -734,6 +749,60 @@ def test_repository_authority_derives_design_methods_and_pending_artifacts():
         item.reason_code == "exploratory_budget_overrun_not_selection_eligible"
         for item in authority.exclusions
     )
+
+
+def test_selection_authority_uses_exact_comparator_readiness_sets() -> None:
+    from maskimpute_benchmark.selection import _load_selection_authority
+
+    authority = _load_selection_authority(Path.cwd(), require_clean=False)
+    assert authority.scheduled_same_input_ids == (
+        "observed",
+        "capacity-matched-ae",
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+        "scziva",
+        "afmf",
+        "biaeimpute",
+        "sccr",
+        "scsdae",
+    )
+    assert authority.required_control_ids == ("observed", "capacity-matched-ae")
+    assert authority.established_comparator_ids == (
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+    )
+    assert authority.modern_core_ids == ("scziva", "afmf", "biaeimpute", "sccr")
+    assert "biaeimpute" in authority.scheduled_same_input_ids
+    assert len(authority.comparator_tuning_file_sha256) == 64
+    assert len(authority.comparator_tuning_payload_sha256) == 64
+    assert all(
+        not declaration.required_for_claim
+        for declaration in authority.declarations
+        if declaration.role != "candidate"
+    )
+
+
+def test_selection_authority_rejects_biaeimpute_omission(tmp_path: Path) -> None:
+    from maskimpute_benchmark.selection import (
+        SelectionAuthorityError,
+        _load_selection_authority,
+    )
+
+    repository, _calibration_sha = _ready_repository(tmp_path)
+    contract_path = repository / "study/selection_contract.json"
+    contract = json.loads(contract_path.read_text())
+    contract["scheduled_same_input_ids"].remove("biaeimpute")
+    contract_path.write_text(json.dumps(contract, indent=2) + "\n")
+    with pytest.raises(
+        SelectionAuthorityError, match="scheduled same-input denominator"
+    ):
+        _load_selection_authority(repository, require_clean=False)
 
 
 def test_public_selection_rejects_malformed_result_before_evidence_validation(tmp_path):

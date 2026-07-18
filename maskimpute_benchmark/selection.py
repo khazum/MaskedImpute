@@ -79,6 +79,7 @@ _AUTHORITY_PATHS = (
     "study/methods.json",
     "study/ablations.json",
     "study/calibration_contract.json",
+    "study/comparator_tuning.json",
     "study/selection_contract.json",
     "study/development_search.json",
 )
@@ -255,7 +256,12 @@ class SelectionAuthority:
     biological_ids: tuple[str, ...]
     technical_views: tuple[str, ...]
     model_seeds: tuple[int, ...]
-    required_comparator_ids: tuple[str, ...]
+    scheduled_same_input_ids: tuple[str, ...]
+    required_control_ids: tuple[str, ...]
+    established_comparator_ids: tuple[str, ...]
+    modern_core_ids: tuple[str, ...]
+    comparator_tuning_file_sha256: str
+    comparator_tuning_payload_sha256: str
     attempts: tuple[CandidateAttempt, ...]
     declarations: tuple[MethodDeclaration, ...]
     endpoint_policies: tuple[EndpointPolicy, ...]
@@ -276,6 +282,14 @@ class SelectionAuthority:
     retained_calibration: RetainedCalibrationBinding
     count_score_manifest: RetainedCalibrationBinding
     file_sha256: Mapping[str, str]
+
+    @property
+    def required_comparator_ids(self) -> tuple[str, ...]:
+        return tuple(
+            method_id
+            for method_id in self.scheduled_same_input_ids
+            if method_id != "biaeimpute"
+        )
 
 
 def _freeze_detail_value(value: Any, name: str) -> Any:
@@ -1985,6 +1999,24 @@ def _load_selection_authority(
             )
         method_rows[method_id] = row
 
+    from .comparator_tuning import (
+        ComparatorTuningError,
+        load_comparator_tuning_authority,
+    )
+    from .methods import MethodContractError, load_method_registry
+
+    try:
+        method_registry = load_method_registry(repository / "study/methods.json")
+        comparator_tuning = load_comparator_tuning_authority(
+            repository,
+            registry=method_registry,
+            require_clean=require_clean,
+        )
+    except (ComparatorTuningError, MethodContractError, OSError) as error:
+        raise SelectionAuthorityError(
+            "comparator tuning authority failed closed validation"
+        ) from error
+
     contract = _exact_authority_mapping(
         payloads["study/selection_contract.json"],
         {
@@ -2000,7 +2032,13 @@ def _load_selection_authority(
             "calibration_contract_sha256",
             "dataset_qc_policy",
             "dataset_qc_policy_sha256",
-            "required_comparator_ids",
+            "comparator_tuning_path",
+            "scheduled_same_input_ids",
+            "required_control_ids",
+            "established_comparator_ids",
+            "modern_core_ids",
+            "comparator_tuning_file_sha256",
+            "comparator_tuning_payload_sha256",
             "orthogonal_endpoints",
             "revision_policy",
             "equivalence_policy",
@@ -2182,23 +2220,59 @@ def _load_selection_authority(
     }
     if payloads["study/calibration_contract.json"] != expected_calibration_contract:
         raise SelectionAuthorityError("calibration retention contract is invalid")
-    required_ids = (
-        tuple(contract["required_comparator_ids"])
-        if type(contract["required_comparator_ids"]) is list
+    if contract["comparator_tuning_path"] != "study/comparator_tuning.json":
+        raise SelectionAuthorityError("comparator tuning path is not canonical")
+    scheduled_same_input_ids = (
+        tuple(contract["scheduled_same_input_ids"])
+        if type(contract["scheduled_same_input_ids"]) is list
         else ()
     )
-    if not required_ids or len(required_ids) != len(set(required_ids)):
-        raise SelectionAuthorityError("required comparator ids are invalid")
-    for method_id in required_ids:
-        row = method_rows.get(method_id)
-        if row is None or row["track"] != "same_input" or row["role"] == "candidate":
-            raise SelectionAuthorityError(
-                f"required comparator {method_id!r} is not eligible"
-            )
-    if "observed" not in required_ids or "capacity-matched-ae" not in required_ids:
+    if scheduled_same_input_ids != comparator_tuning.scheduled_same_input_ids:
         raise SelectionAuthorityError(
-            "observed and capacity-matched controls are required"
+            "scheduled same-input denominator differs from comparator tuning authority"
         )
+    required_control_ids = (
+        tuple(contract["required_control_ids"])
+        if type(contract["required_control_ids"]) is list
+        else ()
+    )
+    if required_control_ids != comparator_tuning.required_control_ids:
+        raise SelectionAuthorityError(
+            "required control denominator differs from comparator tuning authority"
+        )
+    established_comparator_ids = (
+        tuple(contract["established_comparator_ids"])
+        if type(contract["established_comparator_ids"]) is list
+        else ()
+    )
+    if established_comparator_ids != comparator_tuning.established_comparator_ids:
+        raise SelectionAuthorityError(
+            "established comparator denominator differs from comparator tuning authority"
+        )
+    modern_core_ids = (
+        tuple(contract["modern_core_ids"])
+        if type(contract["modern_core_ids"]) is list
+        else ()
+    )
+    if modern_core_ids != comparator_tuning.modern_core_ids:
+        raise SelectionAuthorityError(
+            "modern-core denominator differs from comparator tuning authority"
+        )
+    comparator_tuning_file_sha256 = _authority_sha(
+        contract["comparator_tuning_file_sha256"],
+        "comparator tuning file checksum",
+    )
+    if (
+        comparator_tuning_file_sha256 != comparator_tuning.file_sha256
+        or comparator_tuning_file_sha256 != file_hashes["study/comparator_tuning.json"]
+    ):
+        raise SelectionAuthorityError("comparator tuning file checksum mismatch")
+    comparator_tuning_payload_sha256 = _authority_sha(
+        contract["comparator_tuning_payload_sha256"],
+        "comparator tuning payload checksum",
+    )
+    if comparator_tuning_payload_sha256 != comparator_tuning.payload_sha256:
+        raise SelectionAuthorityError("comparator tuning payload checksum mismatch")
 
     endpoint_rows = contract["orthogonal_endpoints"]
     if type(endpoint_rows) is not list or not endpoint_rows:
@@ -2393,6 +2467,8 @@ def _load_selection_authority(
             "development_panel_sha256",
             "methods_sha256",
             "selection_contract_sha256",
+            "comparator_tuning_file_sha256",
+            "comparator_tuning_payload_sha256",
             "ablations_sha256",
             "calibration_contract_sha256",
         },
@@ -2403,6 +2479,8 @@ def _load_selection_authority(
         "development_panel_sha256": file_hashes["study/development_panel.json"],
         "methods_sha256": file_hashes["study/methods.json"],
         "selection_contract_sha256": file_hashes["study/selection_contract.json"],
+        "comparator_tuning_file_sha256": comparator_tuning_file_sha256,
+        "comparator_tuning_payload_sha256": comparator_tuning_payload_sha256,
         "ablations_sha256": file_hashes["study/ablations.json"],
         "calibration_contract_sha256": file_hashes["study/calibration_contract.json"],
     }
@@ -2665,7 +2743,7 @@ def _load_selection_authority(
                 role=role,
                 track="same_input",
                 stochastic=row["stochastic"],
-                required_for_claim=method_id in required_ids,
+                required_for_claim=False,
             )
         )
     declarations.extend(
@@ -2690,7 +2768,12 @@ def _load_selection_authority(
         biological_ids=biological_ids,
         technical_views=technical_views,
         model_seeds=model_seeds,
-        required_comparator_ids=required_ids,
+        scheduled_same_input_ids=scheduled_same_input_ids,
+        required_control_ids=required_control_ids,
+        established_comparator_ids=established_comparator_ids,
+        modern_core_ids=modern_core_ids,
+        comparator_tuning_file_sha256=comparator_tuning_file_sha256,
+        comparator_tuning_payload_sha256=comparator_tuning_payload_sha256,
         attempts=attempt_values,
         declarations=declaration_values,
         endpoint_policies=tuple(endpoint_policies),

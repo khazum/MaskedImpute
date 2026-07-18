@@ -912,6 +912,7 @@ def load_runner_authority() -> RunnerAuthority:
         "study/selection_contract.json",
         "study/development_search.json",
         "study/calibration_contract.json",
+        "study/comparator_tuning.json",
     }
     if set(file_hashes) != required_files:
         raise RunnerContractError("selection authority file hash set is incomplete")

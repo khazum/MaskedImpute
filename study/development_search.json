@@ -4,7 +4,9 @@
     "protocol_sha256": "7cfa1b55458b5b2bc4c22e3a155086724586d95df40aa61c4b78b1a779794249",
     "development_panel_sha256": "97bb0dfb449dced7c43735830498ad58dcaf6503f40403d177d6e8d2e829d9d7",
     "methods_sha256": "d71197d5d94d5009c807c57b393372fefa56f0f48327558bae334ab68875588d",
-    "selection_contract_sha256": "08c1c4f82a7e2ffcef88e60a634d3e9874e1f27011771218c66f50b863d43d43",
+    "selection_contract_sha256": "5dd9421e64fa8fd60652560451c0b458f9e4d3856864292767c80ef1eef8fcb5",
+    "comparator_tuning_file_sha256": "36f61c8cc6a3f68e96fa708c5e9d6edff8c49d3a58fe612278c00be3887c33a4",
+    "comparator_tuning_payload_sha256": "3508cf3df8d5899b435be8526cd0747541d944f096899191584b29799eae6fee",
     "ablations_sha256": "dd4da34e0ebe5e7eb349fac3ed89063781bcddf640b01601b9a3c82a2e43b26f",
     "calibration_contract_sha256": "180d85cc18e359970fff3c9cff37190c2b944b13b0883a46be2765c439a8a1b3"
   },

@@ -177,6 +177,29 @@ def test_execution_plan_separates_required_external_historical_and_inapplicable(
     assert not plan["sczn"].executable
 
 
+def test_registry_derives_exact_selection_same_input_denominator() -> None:
+    registry = load_method_registry(METHODS_PATH)
+
+    assert tuple(
+        spec.id
+        for spec in registry.methods
+        if spec.execution_scope == "same_input_required" and spec.role != "candidate"
+    ) == (
+        "observed",
+        "capacity-matched-ae",
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+        "scziva",
+        "afmf",
+        "biaeimpute",
+        "sccr",
+        "scsdae",
+    )
+
+
 def test_sczn_source_attempt_receipt_binds_packaging_license_labels_and_output() -> (
     None
 ):
