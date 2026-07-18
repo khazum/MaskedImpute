@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import inspect
 from pathlib import Path
@@ -12,6 +13,7 @@ from maskimpute_benchmark.simulators.sergio import run_sergio_pair
 from maskimpute_benchmark.simulators.sparsim import run_sparsim_pair
 from maskimpute_benchmark.simulators.symsim import run_symsim_pair
 from maskimpute_benchmark.protocol import canonical_sha256
+from maskimpute_benchmark.runtime_environments import load_runtime_environment_lock
 from maskimpute_benchmark.simulators.runtime_assets import (
     SimulatorRuntimeAssetsError,
     load_simulator_runtime_assets,
@@ -74,6 +76,32 @@ SOURCE_RECEIPTS = tuple(
     }
     for source_id in ("symsim", "sergio", "sparsim", "baron-pancreas-umi")
 )
+
+
+def test_tracked_simulator_r_authority_uses_current_full_closure_lock() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    authority_path = repository / "study/simulator_runtime_assets.json"
+    authority = json.loads(authority_path.read_text(encoding="utf-8"))
+    r_authority = authority["r_environment"]
+    lock_path = repository / r_authority["lock_path"]
+
+    lock = load_runtime_environment_lock(lock_path)
+    entry = lock.by_id("simulator-r")
+    inventory = entry.inventory
+
+    assert lock.file_sha256 == hashlib.sha256(lock_path.read_bytes()).hexdigest()
+    assert r_authority["environment_id"] == entry.environment_id
+    assert r_authority["lock_file_sha256"] == lock.file_sha256
+    assert set(inventory) == {
+        "schema",
+        "interpreter",
+        "packages",
+        "executable_sha256",
+        "launcher",
+        "runtime_roots",
+        "native_linkage_sha256",
+    }
+    assert inventory["runtime_roots"]
 
 
 def _repository(tmp_path: Path) -> Path:
