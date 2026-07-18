@@ -392,3 +392,12 @@ def test_tracked_authority_has_exact_grid_and_operational_contract() -> None:
             dataclass_payload["hidden_size"] = list(dataclass_payload["hidden_size"])
         assert dataclass_payload == dict(row.payload)
         assert encode_comparator_configuration(row.decode()) == dict(row.payload)
+
+
+def test_clean_repository_loads_comparator_tuning_authority() -> None:
+    registry = load_method_registry(ROOT / "study/methods.json")
+
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+
+    assert authority.contract_id == "maskimpute-comparator-tuning-v1"
+    assert len(authority.configurations) == 34
