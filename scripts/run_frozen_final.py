@@ -13,9 +13,13 @@ if str(REPOSITORY) not in sys.path:
     sys.path.insert(0, str(REPOSITORY))
 
 from maskimpute_benchmark.final_runner import run_frozen_final_round  # noqa: E402
+from maskimpute_benchmark.operational_environment import (  # noqa: E402
+    establish_supported_final_runtime_environment,
+)
 
 
 def main() -> int:
+    establish_supported_final_runtime_environment()
     parser = argparse.ArgumentParser(
         description=(
             "Execute/resume the committed frozen method on the claimed final panel. "
@@ -27,13 +31,28 @@ def main() -> int:
         type=Path,
         help="round directory inside artifacts/study (absolute or repository-relative)",
     )
+    parser.add_argument(
+        "--simulator-assets-root",
+        type=Path,
+        required=True,
+        help="explicit external simulator source/data root",
+    )
+    parser.add_argument(
+        "--simulator-r-environment",
+        type=Path,
+        required=True,
+        help="explicit pinned simulator R environment",
+    )
     args = parser.parse_args()
     round_dir = (
-        args.round_dir
-        if args.round_dir.is_absolute()
-        else REPOSITORY / args.round_dir
+        args.round_dir if args.round_dir.is_absolute() else REPOSITORY / args.round_dir
     )
-    result = run_frozen_final_round(REPOSITORY, round_dir)
+    result = run_frozen_final_round(
+        REPOSITORY,
+        round_dir,
+        simulator_assets_root=args.simulator_assets_root,
+        simulator_r_environment=args.simulator_r_environment,
+    )
     print(
         json.dumps(
             {

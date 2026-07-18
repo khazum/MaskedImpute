@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+import os
 from pathlib import Path
 import runpy
 import shutil
@@ -1164,3 +1165,92 @@ def test_cli_exposes_no_seed_or_dimension_overrides() -> None:
         assert forbidden not in script
     assert "--simulator-assets-root" in script
     assert "--simulator-r-environment" in script
+
+
+def test_supported_final_runtime_environment_policy_is_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.operational_environment import (
+        SUPPORTED_FINAL_RUNTIME_PATH,
+        establish_supported_final_runtime_environment,
+    )
+
+    monkeypatch.setenv("PATH", "/tmp/ephemeral-codex-bin:/usr/bin")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/ephemeral-codex-libraries")
+
+    establish_supported_final_runtime_environment()
+
+    assert SUPPORTED_FINAL_RUNTIME_PATH == (
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    )
+    assert os.environ["PATH"] == SUPPORTED_FINAL_RUNTIME_PATH
+    assert "LD_LIBRARY_PATH" not in os.environ
+
+
+def test_dataset_cli_sanitizes_only_final_runtime_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observations: list[dict[str, object]] = []
+
+    def generate_panel(**kwargs) -> dict[str, object]:
+        observations.append(
+            {
+                "kwargs": kwargs,
+                "path": os.environ.get("PATH"),
+                "ld_library_path": os.environ.get("LD_LIBRARY_PATH"),
+            }
+        )
+        return {"status": "completed"}
+
+    monkeypatch.setattr(datasets_module, "generate_dataset_panel", generate_panel)
+    namespace = runpy.run_path("scripts/generate_study_datasets.py")
+    main = namespace["main"]
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    simulator_assets_root = tmp_path / "external-simulator-assets"
+    simulator_r_environment = tmp_path / "simulator-r-environment"
+
+    monkeypatch.setenv("PATH", "/tmp/ephemeral-codex-bin:/usr/bin")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/ephemeral-codex-libraries")
+    assert (
+        main(
+            [
+                "--namespace",
+                "final",
+                "--repo",
+                str(repository),
+                "--round-dir",
+                str(round_dir),
+                "--simulator-assets-root",
+                str(simulator_assets_root),
+                "--simulator-r-environment",
+                str(simulator_r_environment),
+            ]
+        )
+        == 0
+    )
+
+    assert observations[0]["path"] == (
+        "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    )
+    assert observations[0]["ld_library_path"] is None
+    assert observations[0]["kwargs"] == {
+        "repo": repository,
+        "namespace": "final",
+        "round_dir": round_dir,
+        "simulator_assets_root": simulator_assets_root,
+        "simulator_r_environment": simulator_r_environment,
+    }
+
+    development_path = "/tmp/development-only-bin:/usr/bin"
+    development_ld_library_path = "/tmp/development-only-libraries"
+    monkeypatch.setenv("PATH", development_path)
+    monkeypatch.setenv("LD_LIBRARY_PATH", development_ld_library_path)
+
+    assert main(["--namespace", "dev", "--repo", str(repository)]) == 0
+
+    assert observations[1]["path"] == development_path
+    assert observations[1]["ld_library_path"] == development_ld_library_path
+    assert os.environ["PATH"] == development_path
+    assert os.environ["LD_LIBRARY_PATH"] == development_ld_library_path

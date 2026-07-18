@@ -6,6 +6,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+import runpy
 import stat
 import subprocess
 import sys
@@ -65,6 +66,7 @@ def _claimed_lifecycle_round(
     tmp_path: Path,
     *,
     seed_count: int = 4,
+    claimed: bool = True,
 ) -> tuple[Path, Path]:
     from maskimpute_benchmark.study import (
         assert_final_runnable,
@@ -114,9 +116,45 @@ def _claimed_lifecycle_round(
         environment_path=repository / "environment.lock",
     )
     materialize_final(round_dir, seed_count=seed_count, repo=repository)
-    assert_final_runnable(repository, round_dir)
-    (round_dir / "results").mkdir()
+    if claimed:
+        assert_final_runnable(repository, round_dir)
+        (round_dir / "results").mkdir()
     return repository, round_dir
+
+
+class _FakeRuntimeSnapshot:
+    def __init__(
+        self,
+        semantic_sha256: str,
+        semantic_receipt: dict[str, object],
+        *,
+        fail_receipt: bool = False,
+    ) -> None:
+        self.semantic_sha256 = semantic_sha256
+        self._semantic_receipt = json.loads(json.dumps(semantic_receipt))
+        self._fail_receipt = fail_receipt
+        self.receipt_reads = 0
+        self.enter_count = 0
+        self.close_count = 0
+
+    @property
+    def semantic_receipt(self) -> dict[str, object]:
+        self.receipt_reads += 1
+        if self._fail_receipt:
+            raise RuntimeError("semantic receipt capture failed")
+        value = json.loads(json.dumps(self._semantic_receipt))
+        assert isinstance(value, dict)
+        return value
+
+    def close(self) -> None:
+        self.close_count += 1
+
+    def __enter__(self) -> _FakeRuntimeSnapshot:
+        self.enter_count += 1
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
 
 
 def _bindings() -> tuple[DatasetBinding, ...]:
@@ -3322,9 +3360,26 @@ def test_load_prepared_final_panel_revalidates_and_pairs_in_manifest_order(
     validations = []
     reads = []
     pair_calls = []
+    simulator_assets_root = tmp_path / "external-simulator-assets"
+    simulator_r_environment = tmp_path / "simulator-r-environment"
 
-    def validate_status(path, *, repo, round_dir):
-        validations.append((path, repo, round_dir))
+    def validate_status(
+        path,
+        *,
+        repo,
+        round_dir,
+        simulator_assets_root,
+        simulator_r_environment,
+    ):
+        validations.append(
+            (
+                path,
+                repo,
+                round_dir,
+                simulator_assets_root,
+                simulator_r_environment,
+            )
+        )
         return status
 
     monkeypatch.setattr(
@@ -3381,7 +3436,10 @@ def test_load_prepared_final_panel_revalidates_and_pairs_in_manifest_order(
     )
 
     observed_bindings, observed_prepared = final_runner.load_prepared_final_panel(
-        repository, round_dir
+        repository,
+        round_dir,
+        simulator_assets_root=simulator_assets_root,
+        simulator_r_environment=simulator_r_environment,
     )
 
     assert observed_bindings == bindings
@@ -3390,9 +3448,66 @@ def test_load_prepared_final_panel_revalidates_and_pairs_in_manifest_order(
     assert len(pair_calls) == 1
     assert pair_calls[0][4] == final_runner.DatasetQCPolicy.fixed()
     assert validations == [
-        (status_path, repository.resolve(), round_dir.resolve()),
-        (status_path, repository.resolve(), round_dir.resolve()),
+        (
+            status_path,
+            repository.resolve(),
+            round_dir.resolve(),
+            simulator_assets_root,
+            simulator_r_environment,
+        ),
+        (
+            status_path,
+            repository.resolve(),
+            round_dir.resolve(),
+            simulator_assets_root,
+            simulator_r_environment,
+        ),
     ]
+
+
+@pytest.mark.parametrize(
+    ("allow_evaluated", "supply_assets", "supply_environment"),
+    (
+        (False, False, False),
+        (False, True, False),
+        (False, False, True),
+        (True, True, False),
+        (True, False, True),
+    ),
+)
+def test_load_prepared_final_panel_requires_complete_running_runtime_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    allow_evaluated: bool,
+    supply_assets: bool,
+    supply_environment: bool,
+) -> None:
+    import maskimpute_benchmark.datasets as datasets
+    import maskimpute_benchmark.final_runner as final_runner
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/round-001"
+    round_dir.mkdir(parents=True)
+    simulator_assets_root = (
+        tmp_path / "external-simulator-assets" if supply_assets else None
+    )
+    simulator_r_environment = (
+        tmp_path / "simulator-r-environment" if supply_environment else None
+    )
+
+    def forbid_validation(*_args, **_kwargs):
+        raise AssertionError("incomplete runtime path pair reached status validation")
+
+    monkeypatch.setattr(datasets, "validate_dataset_status", forbid_validation)
+
+    with pytest.raises(final_runner.FinalRunnerContractError, match="runtime.*paths"):
+        final_runner.load_prepared_final_panel(
+            repository,
+            round_dir,
+            allow_evaluated=allow_evaluated,
+            simulator_assets_root=simulator_assets_root,
+            simulator_r_environment=simulator_r_environment,
+        )
 
 
 def test_load_prepared_final_panel_rejects_round_outside_repository(
@@ -3425,8 +3540,11 @@ def test_load_prepared_final_panel_supports_validated_evaluated_replay(
     bindings = _bindings()
     prepared = {binding.dataset_id: object() for binding in bindings}
     snapshots: list[str] = []
+    running_calls: list[dict[str, object]] = []
+    runtime_lookups: list[object] = []
 
-    def running_only(*_args, **_kwargs):
+    def running_only(*_args, **kwargs):
+        running_calls.append(kwargs)
         raise RuntimeError("running claim is unavailable after evaluation")
 
     def evaluated_snapshot(_repository, _round):
@@ -3434,6 +3552,11 @@ def test_load_prepared_final_panel_supports_validated_evaluated_replay(
         return "stable-evaluated-snapshot"
 
     monkeypatch.setattr(datasets, "validate_dataset_status", running_only)
+    monkeypatch.setattr(
+        datasets,
+        "load_simulator_runtime_assets",
+        lambda *_args, **_kwargs: runtime_lookups.append(object()),
+    )
     monkeypatch.setattr(
         final_runner,
         "_validated_evaluated_final_round_snapshot",
@@ -3457,6 +3580,10 @@ def test_load_prepared_final_panel_supports_validated_evaluated_replay(
         "stable-evaluated-snapshot",
         "stable-evaluated-snapshot",
     ]
+    assert len(running_calls) == 1
+    assert running_calls[0].get("simulator_assets_root") is None
+    assert running_calls[0].get("simulator_r_environment") is None
+    assert runtime_lookups == []
 
 
 def test_evaluated_final_panel_rejects_journaled_status_for_another_claim(
@@ -4503,13 +4630,349 @@ def test_stale_result_temporary_recovery_rejects_symlink(tmp_path: Path) -> None
         _remove_stale_result_temporaries(round_dir)
 
 
-def test_frozen_final_round_public_api_accepts_no_scientific_overrides() -> None:
+def test_frozen_final_round_public_api_accepts_only_runtime_locators() -> None:
     from maskimpute_benchmark.final_runner import run_frozen_final_round
 
-    assert tuple(inspect.signature(run_frozen_final_round).parameters) == (
+    parameters = inspect.signature(run_frozen_final_round).parameters
+
+    assert tuple(parameters) == (
         "repository",
         "round_dir",
+        "simulator_assets_root",
+        "simulator_r_environment",
     )
+    assert parameters["repository"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert parameters["round_dir"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    for name in ("simulator_assets_root", "simulator_r_environment"):
+        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters[name].default is inspect.Parameter.empty
+
+
+@pytest.mark.parametrize("resuming", (False, True), ids=("unclaimed", "resumable"))
+def test_runtime_preclaim_failure_precedes_every_lifecycle_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resuming: bool,
+) -> None:
+    import maskimpute_benchmark.datasets as datasets
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.publication_freeze as publication_freeze
+    import maskimpute_benchmark.simulators.base as simulator_base
+    import maskimpute_benchmark.simulators.runtime_assets as runtime_assets_module
+    import maskimpute_benchmark.study as study
+
+    repository, round_dir = _claimed_lifecycle_round(tmp_path, claimed=resuming)
+    simulator_assets_root = tmp_path / "external-simulator-assets"
+    simulator_r_environment = tmp_path / "simulator-r-environment"
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        publication_freeze,
+        "validate_frozen_method",
+        lambda selected: {} if selected == repository.resolve() else None,
+    )
+
+    def reject_runtime(
+        selected: Path,
+        *,
+        external_root: Path,
+        r_environment: Path,
+        require_outside_repository: bool,
+    ) -> object:
+        calls.append("runtime_preclaim")
+        assert selected == repository.resolve()
+        assert external_root is simulator_assets_root
+        assert r_environment is simulator_r_environment
+        assert require_outside_repository is True
+        raise RuntimeError("runtime preclaim rejected")
+
+    monkeypatch.setattr(
+        runtime_assets_module,
+        "load_simulator_runtime_assets",
+        reject_runtime,
+    )
+
+    def forbid(name: str):
+        def forbidden(*_args, **_kwargs):
+            calls.append(name)
+            raise AssertionError(f"{name} ran before runtime preclaim")
+
+        return forbidden
+
+    monkeypatch.setattr(study, "assert_final_runnable", forbid("claim"))
+    monkeypatch.setattr(
+        final_runner,
+        "_remove_stale_result_temporaries",
+        forbid("stale_temporary_cleanup"),
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_recover_interrupted_final_transactions",
+        forbid("final_transaction_recovery"),
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_recover_interrupted_trajectory_transactions",
+        forbid("trajectory_transaction_recovery"),
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_recover_scaling_transactions_for_resume",
+        forbid("scaling_recovery"),
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_reconcile_interrupted_final_publications",
+        forbid("reconciliation"),
+    )
+    monkeypatch.setattr(
+        simulator_base,
+        "load_final_manifest_claim",
+        forbid("claim_validation"),
+    )
+    monkeypatch.setattr(datasets, "generate_dataset_panel", forbid("generation"))
+    before = _read_only_tree_snapshot(round_dir)
+
+    with pytest.raises(final_runner.FinalRunnerContractError, match="runtime"):
+        final_runner.run_frozen_final_round(
+            repository,
+            round_dir,
+            simulator_assets_root=simulator_assets_root,
+            simulator_r_environment=simulator_r_environment,
+        )
+
+    assert calls == ["runtime_preclaim"]
+    assert _read_only_tree_snapshot(round_dir) == before
+
+
+@pytest.mark.parametrize(
+    "mismatched_field",
+    ("runtime_assets_sha256", "runtime_assets_receipt"),
+)
+def test_runtime_preclaim_propagates_exact_paths_and_blocks_semantic_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mismatched_field: str,
+) -> None:
+    from types import SimpleNamespace
+
+    import maskimpute_benchmark.datasets as datasets
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.methods as methods
+    import maskimpute_benchmark.publication_freeze as publication_freeze
+    import maskimpute_benchmark.simulators.base as simulator_base
+    import maskimpute_benchmark.simulators.runtime_assets as runtime_assets_module
+
+    repository, round_dir = _claimed_lifecycle_round(tmp_path)
+    simulator_assets_root = tmp_path / "external-simulator-assets"
+    simulator_r_environment = tmp_path / "simulator-r-environment"
+    semantic_sha256 = "a" * 64
+    semantic_receipt: dict[str, object] = {
+        "schema": "runtime-receipt-fixture-v1",
+        "nested": {"value": "stable"},
+    }
+    snapshot = _FakeRuntimeSnapshot(semantic_sha256, semantic_receipt)
+    runtime_calls: list[dict[str, object]] = []
+    generation_calls: list[dict[str, object]] = []
+    preparation_calls: list[dict[str, object]] = []
+    method_registry_calls: list[Path] = []
+    executor_calls: list[object] = []
+    binding = SimpleNamespace(manifest_sha256="b" * 64)
+
+    monkeypatch.setattr(
+        publication_freeze,
+        "validate_frozen_method",
+        lambda _repository: {},
+    )
+
+    def load_runtime(
+        selected: Path,
+        *,
+        external_root: Path,
+        r_environment: Path,
+        require_outside_repository: bool,
+    ) -> _FakeRuntimeSnapshot:
+        runtime_calls.append(
+            {
+                "repo": selected,
+                "external_root": external_root,
+                "r_environment": r_environment,
+                "require_outside_repository": require_outside_repository,
+            }
+        )
+        return snapshot
+
+    monkeypatch.setattr(
+        runtime_assets_module,
+        "load_simulator_runtime_assets",
+        load_runtime,
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_recover_scaling_transactions_for_resume",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        final_runner,
+        "_reconcile_interrupted_final_publications",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        simulator_base,
+        "load_final_manifest_claim",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    def generate_panel(
+        *,
+        repo: Path,
+        namespace: str,
+        round_dir: Path,
+        simulator_assets_root: Path,
+        simulator_r_environment: Path,
+    ) -> dict[str, object]:
+        generation_calls.append(
+            {
+                "repo": repo,
+                "namespace": namespace,
+                "round_dir": round_dir,
+                "simulator_assets_root": simulator_assets_root,
+                "simulator_r_environment": simulator_r_environment,
+            }
+        )
+        status: dict[str, object] = {
+            "manifest_sha256": binding.manifest_sha256,
+            "runtime_assets_sha256": semantic_sha256,
+            "runtime_assets_receipt": json.loads(json.dumps(semantic_receipt)),
+        }
+        if mismatched_field == "runtime_assets_sha256":
+            status[mismatched_field] = "c" * 64
+        else:
+            status[mismatched_field] = {
+                "schema": "runtime-receipt-fixture-v1",
+                "nested": {"value": "drifted"},
+            }
+        return status
+
+    monkeypatch.setattr(datasets, "generate_dataset_panel", generate_panel)
+
+    def load_panel(
+        selected: Path,
+        destination: Path,
+        *,
+        simulator_assets_root: Path,
+        simulator_r_environment: Path,
+    ) -> tuple[tuple[object, ...], dict[str, object]]:
+        preparation_calls.append(
+            {
+                "repository": selected,
+                "round_dir": destination,
+                "simulator_assets_root": simulator_assets_root,
+                "simulator_r_environment": simulator_r_environment,
+            }
+        )
+        return (binding,), {}
+
+    monkeypatch.setattr(final_runner, "load_prepared_final_panel", load_panel)
+
+    def forbid_method_registry(path: Path) -> object:
+        method_registry_calls.append(path)
+        raise AssertionError("method registry loaded after runtime semantic drift")
+
+    monkeypatch.setattr(methods, "load_method_registry", forbid_method_registry)
+    monkeypatch.setattr(
+        final_runner,
+        "SpawnedRepositoryExecutor",
+        lambda dispatcher: executor_calls.append(dispatcher),
+    )
+
+    with pytest.raises(final_runner.FinalRunnerContractError, match="runtime"):
+        final_runner.run_frozen_final_round(
+            repository,
+            round_dir,
+            simulator_assets_root=simulator_assets_root,
+            simulator_r_environment=simulator_r_environment,
+        )
+
+    assert runtime_calls == [
+        {
+            "repo": repository.resolve(),
+            "external_root": simulator_assets_root,
+            "r_environment": simulator_r_environment,
+            "require_outside_repository": True,
+        }
+    ]
+    assert generation_calls == [
+        {
+            "repo": repository.resolve(),
+            "namespace": "final",
+            "round_dir": round_dir.resolve(),
+            "simulator_assets_root": simulator_assets_root,
+            "simulator_r_environment": simulator_r_environment,
+        }
+    ]
+    assert preparation_calls == [
+        {
+            "repository": repository.resolve(),
+            "round_dir": round_dir.resolve(),
+            "simulator_assets_root": simulator_assets_root,
+            "simulator_r_environment": simulator_r_environment,
+        }
+    ]
+    assert snapshot.receipt_reads == 1
+    assert snapshot.close_count == 1
+    assert method_registry_calls == []
+    assert executor_calls == []
+
+
+def test_runtime_preclaim_closes_snapshot_when_semantic_capture_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.publication_freeze as publication_freeze
+    import maskimpute_benchmark.simulators.runtime_assets as runtime_assets_module
+    import maskimpute_benchmark.study as study
+
+    repository, round_dir = _claimed_lifecycle_round(tmp_path, claimed=False)
+    simulator_assets_root = tmp_path / "external-simulator-assets"
+    simulator_r_environment = tmp_path / "simulator-r-environment"
+    snapshot = _FakeRuntimeSnapshot(
+        "a" * 64,
+        {"schema": "runtime-receipt-fixture-v1"},
+        fail_receipt=True,
+    )
+    claim_calls: list[object] = []
+
+    monkeypatch.setattr(
+        publication_freeze,
+        "validate_frozen_method",
+        lambda _repository: {},
+    )
+    monkeypatch.setattr(
+        runtime_assets_module,
+        "load_simulator_runtime_assets",
+        lambda *_args, **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        study,
+        "assert_final_runnable",
+        lambda *_args, **_kwargs: claim_calls.append(object()),
+    )
+    before = _read_only_tree_snapshot(round_dir)
+
+    with pytest.raises(final_runner.FinalRunnerContractError, match="runtime"):
+        final_runner.run_frozen_final_round(
+            repository,
+            round_dir,
+            simulator_assets_root=simulator_assets_root,
+            simulator_r_environment=simulator_r_environment,
+        )
+
+    assert snapshot.receipt_reads == 1
+    assert snapshot.close_count == 1
+    assert claim_calls == []
+    assert _read_only_tree_snapshot(round_dir) == before
 
 
 def test_frozen_round_preflights_all_scopes_before_first_adapter() -> None:
@@ -4649,9 +5112,17 @@ def test_frozen_round_second_invocation_recovers_each_publication_seam(
     import maskimpute_benchmark.methods as methods
     import maskimpute_benchmark.publication_freeze as publication_freeze
     import maskimpute_benchmark.scaling as scaling
+    import maskimpute_benchmark.simulators.runtime_assets as runtime_assets_module
     import maskimpute_benchmark.study as study
 
     repository, round_dir = _claimed_lifecycle_round(tmp_path)
+    simulator_assets_root = tmp_path / "external-simulator-assets"
+    simulator_r_environment = tmp_path / "simulator-r-environment"
+    expected_simulator_assets_root = simulator_assets_root
+    expected_simulator_r_environment = simulator_r_environment
+    runtime_sha256 = "8" * 64
+    runtime_receipt: dict[str, object] = {"schema": "runtime-receipt-fixture-v1"}
+    runtime_snapshots: list[_FakeRuntimeSnapshot] = []
     frozen = {"runtime_lock_sha256": "1" * 64}
     binding = SimpleNamespace(manifest_sha256="2" * 64, dataset_id="dataset-fixture")
     primary_plan = SimpleNamespace(
@@ -4686,7 +5157,37 @@ def test_frozen_round_second_invocation_recovers_each_publication_seam(
         generic_owned_manifest,
     )
 
-    def generate_panel(*, repo, namespace, round_dir, **_kwargs):
+    def load_runtime(
+        selected: Path,
+        *,
+        external_root: Path,
+        r_environment: Path,
+        require_outside_repository: bool,
+    ) -> _FakeRuntimeSnapshot:
+        assert selected == repository.resolve()
+        assert external_root is simulator_assets_root
+        assert r_environment is simulator_r_environment
+        assert require_outside_repository is True
+        snapshot = _FakeRuntimeSnapshot(runtime_sha256, runtime_receipt)
+        runtime_snapshots.append(snapshot)
+        return snapshot
+
+    monkeypatch.setattr(
+        runtime_assets_module,
+        "load_simulator_runtime_assets",
+        load_runtime,
+    )
+
+    def generate_panel(
+        *,
+        repo,
+        namespace,
+        round_dir,
+        simulator_assets_root,
+        simulator_r_environment,
+    ):
+        assert simulator_assets_root is expected_simulator_assets_root
+        assert simulator_r_environment is expected_simulator_r_environment
         status = round_dir / "results/dataset_status.json"
         if not status.exists():
             status.parent.mkdir(parents=True, exist_ok=True)
@@ -4703,14 +5204,36 @@ def test_frozen_round_second_invocation_recovers_each_publication_seam(
                 },
                 repo=repo,
             )
-        return {"manifest_sha256": binding.manifest_sha256}
+        return {
+            "manifest_sha256": binding.manifest_sha256,
+            "runtime_assets_sha256": runtime_sha256,
+            "runtime_assets_receipt": json.loads(json.dumps(runtime_receipt)),
+        }
 
     monkeypatch.setattr(datasets, "generate_dataset_panel", generate_panel)
-    generate_panel(repo=repository, namespace="final", round_dir=round_dir)
+    generate_panel(
+        repo=repository,
+        namespace="final",
+        round_dir=round_dir,
+        simulator_assets_root=simulator_assets_root,
+        simulator_r_environment=simulator_r_environment,
+    )
+
+    def load_panel(
+        _repository,
+        _round,
+        *,
+        simulator_assets_root,
+        simulator_r_environment,
+    ):
+        assert simulator_assets_root is expected_simulator_assets_root
+        assert simulator_r_environment is expected_simulator_r_environment
+        return (binding,), {}
+
     monkeypatch.setattr(
         final_runner,
         "load_prepared_final_panel",
-        lambda _repository, _round: ((binding,), {}),
+        load_panel,
     )
     monkeypatch.setattr(
         final_runner,
@@ -4909,11 +5432,23 @@ def test_frozen_round_second_invocation_recovers_each_publication_seam(
     )
 
     with pytest.raises(RuntimeError, match=f"crash after {crash_stage}"):
-        final_runner.run_frozen_final_round(repository, round_dir)
+        final_runner.run_frozen_final_round(
+            repository,
+            round_dir,
+            simulator_assets_root=simulator_assets_root,
+            simulator_r_environment=simulator_r_environment,
+        )
     assert crashed is True
 
-    result = final_runner.run_frozen_final_round(repository, round_dir)
+    result = final_runner.run_frozen_final_round(
+        repository,
+        round_dir,
+        simulator_assets_root=simulator_assets_root,
+        simulator_r_environment=simulator_r_environment,
+    )
     assert result["evaluation_receipt"] == {"state": "evaluated"}
+    assert len(runtime_snapshots) == 2
+    assert all(snapshot.close_count == 1 for snapshot in runtime_snapshots)
 
 
 def test_unreceipted_trajectory_dataset_recovery_is_closed(tmp_path: Path) -> None:
@@ -5064,7 +5599,7 @@ def test_final_storage_preflight_adds_realized_score_matrix_for_maskimpute(
     )
 
 
-def test_frozen_final_cli_exposes_only_round_locator() -> None:
+def test_frozen_final_cli_exposes_only_operational_locators() -> None:
     completed = subprocess.run(
         [sys.executable, "scripts/run_frozen_final.py", "--help"],
         check=True,
@@ -5073,6 +5608,8 @@ def test_frozen_final_cli_exposes_only_round_locator() -> None:
     )
 
     assert "round_dir" in completed.stdout
+    assert "--simulator-assets-root" in completed.stdout
+    assert "--simulator-r-environment" in completed.stdout
     for forbidden in (
         "--repository",
         "--environment",
@@ -5082,6 +5619,78 @@ def test_frozen_final_cli_exposes_only_round_locator() -> None:
         "--method",
     ):
         assert forbidden not in completed.stdout
+
+
+def test_frozen_final_cli_requires_and_forwards_runtime_locators(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.final_runner as final_runner
+
+    calls: list[dict[str, object]] = []
+    relative_round = Path("artifacts/study/final/round-001")
+    simulator_assets_root = tmp_path / "external-simulator-assets"
+    simulator_r_environment = tmp_path / "simulator-r-environment"
+
+    def run_round(
+        repository: Path,
+        round_dir: Path,
+        *,
+        simulator_assets_root: Path,
+        simulator_r_environment: Path,
+    ) -> dict[str, object]:
+        calls.append(
+            {
+                "repository": repository,
+                "round_dir": round_dir,
+                "simulator_assets_root": simulator_assets_root,
+                "simulator_r_environment": simulator_r_environment,
+                "path": os.environ.get("PATH"),
+                "ld_library_path": os.environ.get("LD_LIBRARY_PATH"),
+            }
+        )
+        return {
+            "execution_manifest": {"manifest_sha256": "a" * 64},
+            "evaluation_receipt": {"state": "evaluated"},
+        }
+
+    monkeypatch.setattr(final_runner, "run_frozen_final_round", run_round)
+    namespace = runpy.run_path("scripts/run_frozen_final.py")
+    main = namespace["main"]
+
+    monkeypatch.setattr(sys, "argv", ["run_frozen_final.py", str(relative_round)])
+    with pytest.raises(SystemExit) as missing:
+        main()
+    assert missing.value.code == 2
+    assert calls == []
+
+    monkeypatch.setenv("PATH", "/tmp/ephemeral-codex-bin:/usr/bin")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/ephemeral-codex-libraries")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_frozen_final.py",
+            str(relative_round),
+            "--simulator-assets-root",
+            str(simulator_assets_root),
+            "--simulator-r-environment",
+            str(simulator_r_environment),
+        ],
+    )
+
+    assert main() == 0
+    assert calls == [
+        {
+            "repository": Path("scripts/run_frozen_final.py").resolve().parents[1],
+            "round_dir": Path("scripts/run_frozen_final.py").resolve().parents[1]
+            / relative_round,
+            "simulator_assets_root": simulator_assets_root,
+            "simulator_r_environment": simulator_r_environment,
+            "path": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "ld_library_path": None,
+        }
+    ]
 
 
 def _minimal_trajectory_evidence() -> dict[str, object]:

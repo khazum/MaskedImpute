@@ -15,6 +15,11 @@ precondition. It does not add a scientific override, change any method,
 configuration, seed, dataset design, or publication denominator, and it does not
 record machine-specific paths in scientific authority.
 
+The tracked simulator closure is also sensitive to an inherited user/Codex
+executable and loader search path. Supported final entrypoints therefore need a
+single sanctioned process-environment boundary before they verify any runtime
+source or take the preclaim snapshot.
+
 ## Selected design
 
 `run_frozen_final_round` receives two required keyword-only `Path` values:
@@ -46,6 +51,22 @@ The CLI requires `--simulator-assets-root` and
 `--simulator-r-environment`. These locate already frozen bytes; all scientific
 override flags remain absent.
 
+Both supported final runtime-asset entrypoints use one centralized operational
+environment helper. It sets `PATH` exactly to
+`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` and removes
+`LD_LIBRARY_PATH`. `scripts/run_frozen_final.py` establishes this boundary on
+every invocation before the runner can preclaim runtime assets.
+`scripts/generate_study_datasets.py` establishes it only for
+`--namespace final`, before generation can verify runtime sources. Development
+generation does not mutate the caller's environment. Direct library calls
+remain fail-closed if invoked under a different environment; the supported CLI
+boundary is not a scientific override.
+
+After this code is independently reviewed, the tracked simulator runtime lock
+and derived authority must be regenerated once under the sanctioned stable
+environment and integrated separately. This implementation branch deliberately
+does not edit either authority file.
+
 ## Rejected alternatives
 
 - Lazy validation inside dataset generation is rejected because it occurs after
@@ -56,6 +77,8 @@ override flags remain absent.
 - Passing a mutable preloaded runtime object through every simulator layer is
   rejected because it broadens ownership and lifetime semantics unnecessarily;
   the existing authoritative path loader remains the single boundary.
+- Duplicating environment literals in both scripts is rejected because the two
+  supported entrypoints must not silently diverge.
 
 ## Error handling and verification
 
@@ -69,5 +92,8 @@ boundary. Runtime snapshots close on success and failure. Tests must prove:
 - generated SHA/receipt drift aborts before method execution;
 - partial/missing running path pairs fail;
 - evaluated replay with no paths remains byte-identical and read-only; and
-- the CLI exposes the two operational flags and no scientific overrides.
-
+- the frozen-final CLI exposes the two operational flags and no scientific
+  overrides;
+- both final CLI paths expose the exact sanctioned environment to their
+  downstream boundary before runtime verification; and
+- development dataset generation leaves the caller environment unchanged.

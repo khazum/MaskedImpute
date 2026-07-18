@@ -11,8 +11,10 @@ evaluated replay.
 **Architecture:** Keep `load_simulator_runtime_assets` as the sole live path
 authority boundary. Capture its path-independent receipt before lifecycle
 mutation, pass exact operational paths through generation/running validation,
-and compare status semantics before execution. Evaluated consumers continue to
-reconstruct authority solely from frozen receipts.
+and compare status semantics before execution. Establish one centralized stable
+process environment at both supported final CLI boundaries before runtime
+verification. Evaluated consumers continue to reconstruct authority solely from
+frozen receipts.
 
 **Tech Stack:** Python 3.11+, pytest, pathlib, existing MaskedImpute lifecycle,
 dataset-registry, and simulator-runtime contracts.
@@ -27,6 +29,13 @@ dataset-registry, and simulator-runtime contracts.
 - Invalid runtime paths must precede every claim or resume mutation.
 - Running validation requires both paths; evaluated replay requires neither.
 - All private runtime snapshots close deterministically.
+- Supported final CLI execution uses exactly
+  `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` with
+  `LD_LIBRARY_PATH` absent before runtime verification.
+- Development dataset generation does not mutate its caller environment.
+- Do not edit the simulator R lock or runtime authority here; regenerate them
+  later under the sanctioned environment and integrate that authority change
+  separately after review.
 
 ---
 
@@ -35,8 +44,10 @@ dataset-registry, and simulator-runtime contracts.
 **Files:**
 - Modify: `maskimpute_benchmark/final_runner.py`
 - Modify: `scripts/run_frozen_final.py`
+- Modify: `scripts/generate_study_datasets.py`
+- Add: `maskimpute_benchmark/operational_environment.py`
 - Modify: `tests/test_final_runner.py`
-- Modify: `tests/test_dataset_registry.py` only if a production boundary test belongs there
+- Modify: `tests/test_dataset_registry.py`
 - Add/commit: `docs/superpowers/specs/2026-07-17-final-runtime-preclaim-design.md`
 - Add/commit: `docs/superpowers/plans/2026-07-17-final-runtime-preclaim.md`
 
@@ -47,8 +58,11 @@ dataset-registry, and simulator-runtime contracts.
   `load_prepared_final_panel(repository: Path, round_dir: Path, *, allow_evaluated: bool = False, simulator_assets_root: Path | None = None, simulator_r_environment: Path | None = None)`
 - Preserves: `load_prepared_final_panel(..., allow_evaluated=True)` with neither
   live path for evaluated downstream replay.
+- Produces:
+  `establish_supported_final_runtime_environment() -> None`, backed by one
+  importable exact `SUPPORTED_FINAL_RUNTIME_PATH` constant.
 
-- [ ] **Step 1: Add RED public-contract and ordering tests**
+- [x] **Step 1: Add RED public-contract and ordering tests**
 
 Add tests that inspect the exact keyword-only signature; make the authoritative
 runtime loader raise for both unclaimed and resumable fixtures; instrument
@@ -57,7 +71,7 @@ recovery, and reconciliation; assert none are called and round bytes do not
 change. Run the exact nodes and confirm failure because the runner lacks the
 required preclaim API/ordering.
 
-- [ ] **Step 2: Add RED propagation, semantic-match, and cleanup tests**
+- [x] **Step 2: Add RED propagation, semantic-match, and cleanup tests**
 
 Use a context-capable fake runtime snapshot exposing defensive
 `semantic_sha256`/`semantic_receipt`. Record kwargs received by
@@ -66,14 +80,14 @@ objects at both boundaries, one deterministic preclaim close, exact generated
 status comparison, and no method-registry/executor call after a mismatched
 status receipt. Confirm RED for missing behavior rather than fixture errors.
 
-- [ ] **Step 3: Add RED prepared-panel state tests**
+- [x] **Step 3: Add RED prepared-panel state tests**
 
 Require a complete path pair for running validation and assert both values are
 forwarded on both status validations. Reject every partial pair. Retain the
 existing evaluated fixture with `allow_evaluated=True` and neither path; assert
 two stable evaluated snapshots and no live runtime lookup.
 
-- [ ] **Step 4: Implement the minimal preclaim boundary**
+- [x] **Step 4: Implement the minimal preclaim boundary**
 
 Import `load_simulator_runtime_assets` locally at the runner boundary. Validate
 and close one preclaim snapshot, retaining only:
@@ -89,7 +103,22 @@ the preclaim fields before creating method registries, environments, stores, or
 executors. Extend running status calls to forward the path pair; keep evaluated
 fallback path-free.
 
-- [ ] **Step 5: Add and satisfy the CLI RED test**
+- [x] **Step 5: Add RED operational-environment boundary tests**
+
+Require the centralized helper to install the exact sanctioned `PATH` and
+remove `LD_LIBRARY_PATH`. Instrument both supported CLI downstream calls and
+require the sanitized environment to be visible before the frozen runner or
+final dataset generation. Require development generation to preserve the
+caller's environment. Confirm RED for the absent centralized boundary.
+
+- [x] **Step 6: Implement the centralized operational environment**
+
+Add one importable helper/constant and call it from
+`scripts/run_frozen_final.py` on every invocation and from
+`scripts/generate_study_datasets.py` only for the final namespace. Do not
+duplicate the environment literal and do not change direct library semantics.
+
+- [x] **Step 7: Add and satisfy the CLI runtime-locator RED test**
 
 Require:
 
@@ -101,10 +130,12 @@ Require:
 Pass them as keyword-only arguments. Assert help still omits repository,
 environment-selection, seed, mechanism, configuration, and method overrides.
 
-- [ ] **Step 6: Run focused and complete verification**
+- [x] **Step 8: Run focused and complete verification**
 
 Run the new nodes under `-W error`, then the full final-runner, dataset-registry,
 simulator-runtime, downstream-evidence, and final-null-DE suites under
-`-W error`. Run Ruff format/check, `compileall`, `git diff --check`, inspect the
-exact range, and commit atomically. Do not run `scripts/run_frozen_final.py`
-against a round.
+`-W error`, including both script boundary tests. Run Ruff format/check,
+`compileall`, `git diff --check`, inspect the exact range, and commit atomically.
+Do not run `scripts/run_frozen_final.py` against a round. Leave the simulator R
+lock and runtime authority unchanged; their stable-environment regeneration is
+a later separately reviewed change.

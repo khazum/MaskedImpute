@@ -18,6 +18,9 @@ from maskimpute_benchmark.datasets import (  # noqa: E402
     DatasetRegistryError,
     generate_dataset_panel,
 )
+from maskimpute_benchmark.operational_environment import (  # noqa: E402
+    establish_supported_final_runtime_environment,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -71,6 +74,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         _parser().error(
             "simulator runtime path overrides are not accepted for --namespace dev"
         )
+    if arguments.namespace == "final":
+        establish_supported_final_runtime_environment()
     try:
         status = generate_dataset_panel(
             repo=arguments.repo,

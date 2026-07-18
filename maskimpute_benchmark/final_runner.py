@@ -587,6 +587,8 @@ def load_prepared_final_panel(
     round_dir: Path,
     *,
     allow_evaluated: bool = False,
+    simulator_assets_root: Path | None = None,
+    simulator_r_environment: Path | None = None,
 ) -> tuple[tuple[DatasetBinding, ...], Mapping[str, PreparedDataset]]:
     """Byte-revalidate and pair-union-QC the exact unseen final panel."""
 
@@ -610,10 +612,31 @@ def load_prepared_final_panel(
         ) from error
     if destination != round_dir.absolute() or not destination.is_dir():
         raise FinalRunnerContractError("final round path is not canonical")
+    runtime_paths = (simulator_assets_root, simulator_r_environment)
+    if any(
+        value is not None and not isinstance(value, Path) for value in runtime_paths
+    ):
+        raise TypeError("simulator runtime paths must be pathlib.Path values")
+    if any(value is None for value in runtime_paths):
+        if any(value is not None for value in runtime_paths) or not allow_evaluated:
+            raise FinalRunnerContractError(
+                "running final panel validation requires both runtime asset paths"
+            )
+        runtime_status_kwargs: dict[str, Path] = {}
+    else:
+        assert simulator_assets_root is not None
+        assert simulator_r_environment is not None
+        runtime_status_kwargs = {
+            "simulator_assets_root": simulator_assets_root,
+            "simulator_r_environment": simulator_r_environment,
+        }
     status_path = destination / "results/dataset_status.json"
     try:
         status = validate_dataset_status(
-            status_path, repo=selected_repository, round_dir=destination
+            status_path,
+            repo=selected_repository,
+            round_dir=destination,
+            **runtime_status_kwargs,
         )
         bindings = validate_final_manifest_payload(status)
     except Exception as error:
@@ -648,7 +671,10 @@ def load_prepared_final_panel(
     prepared = _prepare_final_panel_bindings(destination, bindings)
     try:
         status_after = validate_dataset_status(
-            status_path, repo=selected_repository, round_dir=destination
+            status_path,
+            repo=selected_repository,
+            round_dir=destination,
+            **runtime_status_kwargs,
         )
     except Exception as error:
         raise FinalRunnerContractError(
@@ -5683,13 +5709,20 @@ def _record_final_evaluation_after_scaling(
     )
 
 
-def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, object]:
+def run_frozen_final_round(
+    repository: Path,
+    round_dir: Path,
+    *,
+    simulator_assets_root: Path,
+    simulator_r_environment: Path,
+) -> dict[str, object]:
     """Claim and execute the frozen final round without scientific overrides."""
 
     from .datasets import generate_dataset_panel
     from .methods import load_method_registry
     from .publication_freeze import validate_frozen_method
     from .simulators.base import load_final_manifest_claim
+    from .simulators.runtime_assets import load_simulator_runtime_assets
     from .study import (
         assert_final_runnable,
         record_incremental_results,
@@ -5701,6 +5734,22 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
     except Exception as error:
         raise FinalRunnerContractError(
             "frozen publication method failed validation"
+        ) from error
+    try:
+        runtime_assets = load_simulator_runtime_assets(
+            selected_repository,
+            external_root=simulator_assets_root,
+            r_environment=simulator_r_environment,
+            require_outside_repository=True,
+        )
+        try:
+            preclaim_sha256 = runtime_assets.semantic_sha256
+            preclaim_receipt = runtime_assets.semantic_receipt
+        finally:
+            runtime_assets.close()
+    except Exception as error:
+        raise FinalRunnerContractError(
+            "frozen final simulator runtime preclaim failed"
         ) from error
     claim_path = destination / "execution_claim.json"
     resuming = os.path.lexists(claim_path)
@@ -5749,12 +5798,26 @@ def run_frozen_final_round(repository: Path, round_dir: Path) -> dict[str, objec
             repo=selected_repository,
             namespace="final",
             round_dir=destination,
+            simulator_assets_root=simulator_assets_root,
+            simulator_r_environment=simulator_r_environment,
         )
-        bindings, prepared = load_prepared_final_panel(selected_repository, destination)
+        bindings, prepared = load_prepared_final_panel(
+            selected_repository,
+            destination,
+            simulator_assets_root=simulator_assets_root,
+            simulator_r_environment=simulator_r_environment,
+        )
     except Exception as error:
         raise FinalRunnerContractError(
             "frozen final dataset panel is unavailable"
         ) from error
+    if (
+        status.get("runtime_assets_sha256") != preclaim_sha256
+        or status.get("runtime_assets_receipt") != preclaim_receipt
+    ):
+        raise FinalRunnerContractError(
+            "generated final simulator runtime differs from its preclaim"
+        )
     if status.get("manifest_sha256") != bindings[0].manifest_sha256:
         raise FinalRunnerContractError(
             "generated final manifest differs from prepared panel"
