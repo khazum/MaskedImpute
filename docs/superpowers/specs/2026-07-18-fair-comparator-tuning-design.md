@@ -559,6 +559,28 @@ stochastic seed denominator or plan cardinality.
 - The manuscript execution-status table must include every scheduled method,
   including unavailable and resource-exceeded methods.
 
+## Development storage and smoke erratum
+
+The development runner uses development-specific retained-artifact ceilings:
+64 KiB for each hash-only stdout/stderr receipt, 64 KiB for the canonical
+executor receipt, 64 KiB per planned JSON record, 64 MiB for one replacement
+checkpoint, and a shared 1 GiB reserve. Scaling's larger interactive log and
+receipt ceilings do not apply to this 2,896-row retained checkpoint. At the
+maximum 900-by-500 retained shape the exact fail-closed bound is approximately
+25.21 GiB. The preflight counts two raw float64 matrices for every executable
+row and the zlib compression bound for every applicable MaskImpute score matrix.
+
+The fixed nonstudy smoke input is one truth-free 900-by-500 raw-count matrix
+whose entry at `(cell, gene)` is
+`(17 * cell + 31 * gene + 7 * (cell ^ gene)) % 6`, with alternating two-batch
+labels. All thirty-four configurations run once at model seed 42 without an
+evaluator. For each method, the sum of its configuration runtimes is multiplied
+by 48 and must fit the tracked 8-hour GPU or 24-hour CPU budget; every measured
+peak must fit 48 GiB RAM and 14 GiB GPU. The receipt retains only status,
+reason, time/resource provenance, identities, and hashes; native/imputed outputs
+are discarded. Any noncompleted smoke row requires a reviewed pre-study
+amendment. Scientific execution requires this validated create-only receipt.
+
 ## Verification requirements
 
 Tests must prove at least the following:
