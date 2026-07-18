@@ -290,6 +290,31 @@ def test_authority_rejects_rehashed_signed_zero_payload_mutation() -> None:
         )
 
 
+def test_authority_rejects_rehashed_escaped_surrogate_payload() -> None:
+    payload = _tracked_payload()
+    configurations = payload["configurations"]
+    assert isinstance(configurations, list)
+    magic_default = configurations[1]
+    assert isinstance(magic_default, dict)
+    assert magic_default["configuration_id"] == "magic-t03"
+    magic_payload = magic_default["payload"]
+    assert isinstance(magic_payload, dict)
+    assert magic_payload["solver"] == "exact"
+    original_row_sha256 = magic_default["payload_sha256"]
+    original_authority_sha256 = payload["payload_sha256"]
+
+    magic_payload["solver"] = "\ud800"
+    _rehash_authority(payload)
+
+    assert magic_default["payload_sha256"] != original_row_sha256
+    assert payload["payload_sha256"] != original_authority_sha256
+    registry = load_method_registry(ROOT / "study/methods.json")
+    with pytest.raises(ComparatorTuningError):
+        parse_comparator_tuning_authority(
+            payload, registry=registry, file_sha256="a" * 64
+        )
+
+
 def test_authority_rejects_invalid_file_sha256() -> None:
     registry = load_method_registry(ROOT / "study/methods.json")
     with pytest.raises(ComparatorTuningError, match="file SHA-256"):

@@ -553,7 +553,13 @@ def parse_comparator_tuning_authority(
         seen_payload_sha256[row["method_id"]].add(row["payload_sha256"])
 
         expected_payload_json = _EXPECTED_CONFIGURATION_PAYLOADS[observed_identity]
-        if _canonical_bytes(row["payload"]) != expected_payload_json.encode("utf-8"):
+        try:
+            observed_payload_bytes = _canonical_bytes(row["payload"])
+        except (TypeError, ValueError, UnicodeError) as error:
+            raise ComparatorTuningError(
+                "comparator configuration payload is not canonical JSON data"
+            ) from error
+        if observed_payload_bytes != expected_payload_json.encode("utf-8"):
             raise ComparatorTuningError(
                 "comparator configuration payload representation differs"
             )
