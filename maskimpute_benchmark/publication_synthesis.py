@@ -14,6 +14,8 @@ from .downstream_evidence import (
     DownstreamEvidenceManifest,
     DownstreamEvidencePlan,
     build_final_downstream_evidence_plan,
+    build_final_trajectory_downstream_evidence_plan,
+    expected_final_downstream_output_directory,
     load_downstream_evidence_manifest,
     load_downstream_evidence_plan,
 )
@@ -45,6 +47,9 @@ from .scaling import (
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _NULL_DE_MAXIMUM_FPR = 0.06
 _NULL_DE_MAXIMUM_ABOVE_OBSERVED = 0.01
+_TRAJECTORY_EXECUTION_RUN_COUNT = 8
+_TRAJECTORY_RECEIPT_RESULT_FILE_COUNT = 30
+_TRAJECTORY_ENDPOINT = "trajectory_pseudotime_rank_loss"
 _SCIENTIFIC_GATE_STATUSES = frozenset({"passed", "failed", "unavailable"})
 _PAIRWISE_EXCLUSION_NAMES = frozenset(
     {
@@ -83,6 +88,8 @@ class _LoadedPublicationEvidence:
     frozen_method: Mapping[str, object]
     downstream_plan: DownstreamEvidencePlan
     downstream_manifest: DownstreamEvidenceManifest
+    trajectory_downstream_plan: DownstreamEvidencePlan
+    trajectory_downstream_manifest: DownstreamEvidenceManifest
     null_de_plan: FinalNullDEPlan
     null_de_manifest: FinalNullDEManifest
     scaling_checkpoint: ScalingCheckpoint
@@ -176,17 +183,14 @@ def _validate_freeze_prerequisite(
         frozen.get("selected_configuration_id"),
         "frozen selected configuration",
     )
-    selected_version = _text(
-        frozen.get("selected_version"), "frozen selected version"
-    )
+    selected_version = _text(frozen.get("selected_version"), "frozen selected version")
     raw_table = _sequence(
         frozen.get("selection_gate_table"), "frozen selection gate table"
     )
     table = [
         row
         for row in raw_table
-        if isinstance(row, Mapping)
-        and row.get("configuration_id") == configuration_id
+        if isinstance(row, Mapping) and row.get("configuration_id") == configuration_id
     ]
     selected = frozen.get("selected_assessment")
     if (
@@ -253,22 +257,16 @@ def _validate_downstream_bindings(
     ):
         raise PublicationSynthesisError("downstream loader result type differs")
     binding = plan.evaluated_round_binding
-    if (
-        plan.source_kind != "final"
-        or plan.evidence_scope != "all"
-        or binding is None
-    ):
+    if plan.source_kind != "final" or plan.evidence_scope != "all" or binding is None:
         raise PublicationSynthesisError(
             "downstream source must be complete frozen final evidence"
         )
     if canonical_sha256(plan.body()) != plan.plan_sha256:
         raise PublicationSynthesisError("downstream plan checksum differs")
     expected_plan_fields = {
-        "source_root": binding.repository_root,
-        "source_manifest_path": binding.final_execution_manifest_path,
-        "source_manifest_file_sha256": (
-            binding.final_execution_manifest_file_sha256
-        ),
+        "source_root": str(Path(binding.round_root) / "results/final/execution"),
+        "source_manifest_path": "execution_manifest.json",
+        "source_manifest_file_sha256": (binding.final_execution_manifest_file_sha256),
         "source_manifest_payload_sha256": (
             binding.final_execution_manifest_payload_sha256
         ),
@@ -294,8 +292,15 @@ def _validate_downstream_bindings(
         "storage_preflight_sha256": binding.storage_preflight_sha256,
         "scaling_evidence_sha256": binding.scaling_evidence_sha256,
     }
-    if any(report_inputs.get(key) != value for key, value in expected_report_fields.items()):
+    if any(
+        report_inputs.get(key) != value for key, value in expected_report_fields.items()
+    ):
         raise PublicationSynthesisError("primary evaluated-round binding differs")
+    if (
+        report_inputs.get("trajectory_evidence_sha256")
+        != binding.trajectory_evidence_sha256
+    ):
+        raise PublicationSynthesisError("primary trajectory evidence binding differs")
     if report_inputs.get("planned_run_count") != len(plan.entries):
         raise PublicationSynthesisError("primary final denominator differs")
     if (
@@ -334,6 +339,202 @@ def _validate_downstream_bindings(
         endpoint_count += len(endpoints)
     if endpoint_count != manifest.endpoint_row_count:
         raise PublicationSynthesisError("downstream endpoint denominator differs")
+
+
+def _validate_trajectory_downstream_bindings(
+    loaded: _LoadedPublicationEvidence,
+) -> None:
+    primary = loaded.downstream_plan
+    plan = loaded.trajectory_downstream_plan
+    manifest = loaded.trajectory_downstream_manifest
+    if not isinstance(plan, DownstreamEvidencePlan) or not isinstance(
+        manifest, DownstreamEvidenceManifest
+    ):
+        raise PublicationSynthesisError(
+            "trajectory downstream loader result type differs"
+        )
+    primary_binding = primary.evaluated_round_binding
+    binding = plan.evaluated_round_binding
+    if (
+        primary_binding is None
+        or binding is None
+        or binding != primary_binding
+        or plan.source_kind != "final"
+        or plan.evidence_scope != "supplementary_trajectory"
+        or canonical_sha256(plan.body()) != plan.plan_sha256
+    ):
+        raise PublicationSynthesisError(
+            "trajectory downstream evaluated-round binding differs"
+        )
+    expected_plan_fields = {
+        "source_root": str(Path(binding.round_root) / "results/trajectory/execution"),
+        "source_manifest_path": "execution_manifest.json",
+        "source_manifest_file_sha256": (
+            binding.trajectory_execution_manifest_file_sha256
+        ),
+        "source_manifest_payload_sha256": (
+            binding.trajectory_execution_manifest_payload_sha256
+        ),
+        "source_plan_sha256": binding.trajectory_plan_sha256,
+        "source_plan_authority": "independent",
+    }
+    if any(getattr(plan, key) != value for key, value in expected_plan_fields.items()):
+        raise PublicationSynthesisError("trajectory downstream source binding differs")
+    if (
+        binding.trajectory_planned_run_count != _TRAJECTORY_EXECUTION_RUN_COUNT
+        or len(plan.entries) != _TRAJECTORY_EXECUTION_RUN_COUNT
+        or binding.trajectory_result_file_count != _TRAJECTORY_RECEIPT_RESULT_FILE_COUNT
+    ):
+        raise PublicationSynthesisError("trajectory receipt denominator differs")
+    _digest(
+        binding.trajectory_result_files_sha256,
+        "trajectory receipt result-file inventory",
+    )
+    if len(plan.datasets) != 1:
+        raise PublicationSynthesisError("trajectory dataset denominator differs")
+    dataset = plan.datasets[0]
+    expected_dataset_fields = {
+        "dataset_id": binding.trajectory_dataset_id,
+        "path": str(
+            Path(binding.round_root) / "results/trajectory/dataset/evaluator.h5ad"
+        ),
+        "file_sha256": binding.trajectory_dataset_file_sha256,
+        "dataset_sha256": binding.trajectory_dataset_sha256,
+        "mechanism": "synthetic_trajectory",
+        "trajectory_root_cell_id": binding.trajectory_root_cell_id,
+        "trajectory_source_id": binding.trajectory_source_id,
+        "trajectory_authority_sha256": (binding.trajectory_registered_authority_sha256),
+        "trajectory_binding_sha256": (binding.trajectory_registered_binding_sha256),
+    }
+    if any(
+        getattr(dataset, key) != value for key, value in expected_dataset_fields.items()
+    ):
+        raise PublicationSynthesisError("trajectory registered dataset binding differs")
+    expected_statuses_sha256 = canonical_sha256(
+        [
+            {
+                "run_id": entry.run_id,
+                "status": entry.status,
+                "reason": entry.reason,
+            }
+            for entry in plan.entries
+        ]
+    )
+    if plan.source_statuses_sha256 != expected_statuses_sha256:
+        raise PublicationSynthesisError("trajectory source statuses binding differs")
+    executed_statuses = Counter(
+        entry.status for entry in plan.entries if entry.status != "not_applicable"
+    )
+    trajectory_status_counts_sha256 = canonical_sha256(
+        {
+            "executed_status_counts": dict(sorted(executed_statuses.items())),
+            "not_applicable_count": sum(
+                entry.status == "not_applicable" for entry in plan.entries
+            ),
+        }
+    )
+    if trajectory_status_counts_sha256 != binding.trajectory_status_counts_sha256:
+        raise PublicationSynthesisError("trajectory receipt status binding differs")
+    if (
+        manifest.plan_sha256 != plan.plan_sha256
+        or manifest.planned_denominator_count != len(plan.entries)
+        or len(manifest.records) != len(plan.entries)
+        or manifest.endpoint_row_count != len(plan.entries)
+    ):
+        raise PublicationSynthesisError(
+            "trajectory downstream manifest denominator differs"
+        )
+    payload = _validate_manifest_payload(
+        manifest.payload,
+        expected_sha256=manifest.manifest_sha256,
+        name="trajectory downstream manifest",
+    )
+    expected_payload = {
+        "status": "completed",
+        "plan_sha256": plan.plan_sha256,
+        "source_kind": "final",
+        "evaluator_source_sha256": plan.evaluator_source_sha256,
+        "source_manifest_path": plan.source_manifest_path,
+        "source_manifest_file_sha256": plan.source_manifest_file_sha256,
+        "source_manifest_payload_sha256": plan.source_manifest_payload_sha256,
+        "source_plan_sha256": plan.source_plan_sha256,
+        "source_input_hashes_sha256": plan.source_input_hashes_sha256,
+        "source_statuses_sha256": plan.source_statuses_sha256,
+        "source_plan_authority": plan.source_plan_authority,
+        "evaluated_round_binding_sha256": binding.binding_sha256,
+        "planned_denominator_count": len(plan.entries),
+        "recorded_denominator_count": len(plan.entries),
+        "endpoint_row_count": len(plan.entries),
+    }
+    if any(payload.get(key) != value for key, value in expected_payload.items()):
+        raise PublicationSynthesisError(
+            "trajectory downstream manifest binding differs"
+        )
+    references = payload.get("records")
+    if not isinstance(references, list) or len(references) != len(plan.entries):
+        raise PublicationSynthesisError(
+            "trajectory downstream manifest record binding differs"
+        )
+    for entry, record_value, reference in zip(
+        plan.entries,
+        manifest.records,
+        references,
+        strict=True,
+    ):
+        record = _canonical_mapping(
+            record_value,
+            seal="record_sha256",
+            name="trajectory downstream record",
+        )
+        if not isinstance(reference, Mapping) or set(reference) != {
+            "ordinal",
+            "run_id",
+            "path",
+            "sha256",
+            "record_sha256",
+        }:
+            raise PublicationSynthesisError(
+                "trajectory downstream manifest record binding differs"
+            )
+        _digest(
+            reference.get("sha256"),
+            "trajectory downstream record file checksum",
+        )
+        if (
+            reference.get("ordinal") != entry.ordinal
+            or reference.get("run_id") != entry.run_id
+            or reference.get("path") != f"records/{entry.ordinal:08d}.json"
+            or reference.get("record_sha256") != record.get("record_sha256")
+        ):
+            raise PublicationSynthesisError(
+                "trajectory downstream manifest record binding differs"
+            )
+        endpoints = record.get("endpoints")
+        if (
+            record.get("ordinal") != entry.ordinal
+            or record.get("run_id") != entry.run_id
+            or record.get("runner_method_id") != entry.method_id
+            or record.get("dataset_id") != entry.dataset_id
+            or record.get("run_status") != entry.status
+            or record.get("run_reason") != entry.reason
+            or not isinstance(endpoints, list)
+            or len(endpoints) != 1
+            or not isinstance(endpoints[0], Mapping)
+            or endpoints[0].get("endpoint") != _TRAJECTORY_ENDPOINT
+            or not isinstance(endpoints[0].get("status"), str)
+        ):
+            raise PublicationSynthesisError(
+                "trajectory downstream record denominator differs"
+            )
+        endpoint = endpoints[0]
+        if entry.status != "completed" and (
+            endpoint.get("status") != entry.status
+            or endpoint.get("reason_code") != "upstream_run_not_completed"
+            or endpoint.get("upstream_reason") != entry.reason
+        ):
+            raise PublicationSynthesisError(
+                "trajectory terminal status retention differs"
+            )
 
 
 def _validate_null_de_bindings(loaded: _LoadedPublicationEvidence) -> None:
@@ -379,9 +580,7 @@ def _validate_null_de_bindings(loaded: _LoadedPublicationEvidence) -> None:
         "plan_sha256": plan.plan_sha256,
         "source_plan_sha256": source.plan_sha256,
         "evaluated_round_binding_sha256": binding.binding_sha256,
-        "downstream_manifest_file_sha256": (
-            plan.downstream_manifest_file_sha256
-        ),
+        "downstream_manifest_file_sha256": (plan.downstream_manifest_file_sha256),
         "downstream_manifest_payload_sha256": downstream.manifest_sha256,
         "evaluator_source_sha256": plan.evaluator_source_sha256,
         "planned_denominator_count": len(source.entries),
@@ -451,6 +650,7 @@ def _validate_loaded_bindings(
         reconstruction=reconstruction,
     )
     _validate_downstream_bindings(loaded, report_inputs=inputs)
+    _validate_trajectory_downstream_bindings(loaded)
     _validate_null_de_bindings(loaded)
     frozen_sha256 = str(freeze["frozen_method_payload_sha256"])
     _validate_scaling_binding(loaded, frozen_sha256=frozen_sha256)
@@ -521,17 +721,23 @@ def _build_final_null_de_gate(
     candidate = _text(report.get("candidate_method_id"), "candidate method")
     methods = frozenset({candidate, "observed"})
     expected_entries = tuple(
-        entry for entry in loaded.null_de_plan.source_plan.entries if entry.method_id in methods
+        entry
+        for entry in loaded.null_de_plan.source_plan.entries
+        if entry.method_id in methods
     )
     records = tuple(
-        record for record in loaded.null_de_manifest.records if record.get("method_id") in methods
+        record
+        for record in loaded.null_de_manifest.records
+        if record.get("method_id") in methods
     )
+
     def unavailable() -> dict[str, object]:
         return _null_de_unavailable(
             candidate=candidate,
             expected_count=len(expected_entries),
             recorded_count=len(records),
         )
+
     expected: dict[tuple[object, ...], object] = {}
     for entry in expected_entries:
         identity = (
@@ -581,9 +787,13 @@ def _build_final_null_de_gate(
         key: sum(values) / len(values) for key, values in view_values.items()
     }
     by_draw: dict[tuple[str, str, str], dict[str, float]] = {}
-    for (method, mechanism, biological_id, technical_view, _dataset_id), value in (
-        collapsed_views.items()
-    ):
+    for (
+        method,
+        mechanism,
+        biological_id,
+        technical_view,
+        _dataset_id,
+    ), value in collapsed_views.items():
         key = (method, mechanism, biological_id)
         views = by_draw.setdefault(key, {})
         if technical_view in views:
@@ -596,10 +806,10 @@ def _build_final_null_de_gate(
     for mechanism, biological_id in sorted(draw_ids):
         candidate_views = by_draw.get((candidate, mechanism, biological_id), {})
         observed_views = by_draw.get(("observed", mechanism, biological_id), {})
-        if (
-            set(candidate_views) != {"moderate", "severe"}
-            or set(observed_views) != {"moderate", "severe"}
-        ):
+        if set(candidate_views) != {"moderate", "severe"} or set(observed_views) != {
+            "moderate",
+            "severe",
+        }:
             return unavailable()
         candidate_fpr = sum(candidate_views.values()) / 2.0
         observed_fpr = sum(observed_views.values()) / 2.0
@@ -615,9 +825,7 @@ def _build_final_null_de_gate(
     if not draws:
         return unavailable()
     maximum_fpr = max(float(row["candidate_fpr"]) for row in draws)
-    maximum_above = max(
-        float(row["candidate_minus_observed"]) for row in draws
-    )
+    maximum_above = max(float(row["candidate_minus_observed"]) for row in draws)
     failed_conditions: list[str] = []
     if maximum_fpr > _NULL_DE_MAXIMUM_FPR:
         failed_conditions.append("maximum_fpr_exceeds_limit")
@@ -626,7 +834,9 @@ def _build_final_null_de_gate(
     status = "failed" if failed_conditions else "passed"
     return {
         "status": status,
-        "reason": "prespecified_final_null_de_limit_failed" if failed_conditions else None,
+        "reason": "prespecified_final_null_de_limit_failed"
+        if failed_conditions
+        else None,
         "candidate_method_id": candidate,
         "comparator_method_id": "observed",
         "limits": {
@@ -706,6 +916,59 @@ def _scaling_summary(loaded: _LoadedPublicationEvidence) -> dict[str, object]:
     }
 
 
+def _trajectory_summary(
+    loaded: _LoadedPublicationEvidence,
+) -> dict[str, object]:
+    plan = loaded.trajectory_downstream_plan
+    manifest = loaded.trajectory_downstream_manifest
+    binding = plan.evaluated_round_binding
+    assert binding is not None
+    run_statuses: Counter[str] = Counter()
+    run_reasons: Counter[str] = Counter()
+    endpoint_statuses: Counter[str] = Counter()
+    endpoint_reasons: Counter[str] = Counter()
+    for record in manifest.records:
+        run_status = record.get("run_status")
+        run_reason = record.get("run_reason")
+        if isinstance(run_status, str):
+            run_statuses[run_status] += 1
+        if isinstance(run_reason, str):
+            run_reasons[run_reason] += 1
+        endpoints = record.get("endpoints")
+        if not isinstance(endpoints, list):
+            continue
+        for row in endpoints:
+            if not isinstance(row, Mapping):
+                continue
+            status = row.get("status")
+            reason = row.get("reason_code")
+            if isinstance(status, str):
+                endpoint_statuses[status] += 1
+            if isinstance(reason, str):
+                endpoint_reasons[reason] += 1
+    return {
+        "role": "descriptive_only",
+        "gate_influence": "none",
+        "evidence_sha256": binding.trajectory_evidence_sha256,
+        "plan_sha256": plan.plan_sha256,
+        "manifest_sha256": manifest.manifest_sha256,
+        "evaluated_round_binding_sha256": binding.binding_sha256,
+        "dataset_id": binding.trajectory_dataset_id,
+        "dataset_sha256": binding.trajectory_dataset_sha256,
+        "registered_authority_sha256": (binding.trajectory_registered_authority_sha256),
+        "registered_binding_sha256": (binding.trajectory_registered_binding_sha256),
+        "execution_authority_sha256": binding.trajectory_authority_sha256,
+        "result_files_sha256": binding.trajectory_result_files_sha256,
+        "planned_execution_run_count": binding.trajectory_planned_run_count,
+        "receipt_result_file_count": binding.trajectory_result_file_count,
+        "external_endpoint_row_count": manifest.endpoint_row_count,
+        "run_status_counts": dict(sorted(run_statuses.items())),
+        "run_reason_counts": dict(sorted(run_reasons.items())),
+        "endpoint_status_counts": dict(sorted(endpoint_statuses.items())),
+        "endpoint_reason_counts": dict(sorted(endpoint_reasons.items())),
+    }
+
+
 def _competitive_gate(
     reconstruction: Mapping[str, object],
     null_de: Mapping[str, object],
@@ -714,7 +977,9 @@ def _competitive_gate(
         "reconstruction": reconstruction.get("status"),
         "final_null_de": null_de.get("status"),
     }
-    if any(value not in _SCIENTIFIC_GATE_STATUSES for value in component_statuses.values()):
+    if any(
+        value not in _SCIENTIFIC_GATE_STATUSES for value in component_statuses.values()
+    ):
         raise PublicationSynthesisError("scientific gate status is invalid")
     if "failed" in component_statuses.values():
         status = "failed"
@@ -777,9 +1042,7 @@ def _recomputed_strongest_comparators(
     lookup: dict[tuple[str, str], Mapping[str, object]] = {}
     for row in raw_summaries:
         if not isinstance(row, Mapping):
-            raise PublicationSynthesisError(
-                "draw-collapsed method summary is invalid"
-            )
+            raise PublicationSynthesisError("draw-collapsed method summary is invalid")
         method = row.get("method_id")
         metric = row.get("metric")
         if method not in required_ids or metric not in metrics:
@@ -852,9 +1115,7 @@ def _superiority_permissions(
     pairwise_values = _sequence(
         report.get("paired_comparisons"), "primary pairwise comparisons"
     )
-    pairwise = [
-        row for row in pairwise_values if isinstance(row, Mapping)
-    ]
+    pairwise = [row for row in pairwise_values if isinstance(row, Mapping)]
     required = reconstruction.get("required_comparator_ids")
     required_ids = tuple(_sequence(required, "required comparator denominator"))
     recomputed = _recomputed_strongest_comparators(
@@ -978,12 +1239,10 @@ def _superiority_permissions(
                 and isinstance(exclusions, Mapping)
                 and set(exclusions) == _PAIRWISE_EXCLUSION_NAMES
                 and all(
-                    type(value) is int and value >= 0
-                    for value in exclusions.values()
+                    type(value) is int and value >= 0 for value in exclusions.values()
                 )
                 and all(
-                    exclusions[name] == 0
-                    for name in _FORBIDDEN_PAIRWISE_EXCLUSIONS
+                    exclusions[name] == 0 for name in _FORBIDDEN_PAIRWISE_EXCLUSIONS
                 )
             )
             if not complete_pairwise:
@@ -1051,6 +1310,12 @@ def _evidence_bindings(
         "scaling_plan_sha256": binding.scaling_plan_sha256,
         "scaling_checkpoint_sha256": loaded.scaling_checkpoint.checkpoint_sha256,
         "trajectory_evidence_sha256": trajectory_sha256,
+        "trajectory_downstream_plan_sha256": (
+            loaded.trajectory_downstream_plan.plan_sha256
+        ),
+        "trajectory_downstream_manifest_sha256": (
+            loaded.trajectory_downstream_manifest.manifest_sha256
+        ),
     }
 
 
@@ -1081,11 +1346,7 @@ def _build_publication_synthesis(
         "freeze_prerequisite": freeze,
         "downstream": _downstream_summary(loaded),
         "scaling": _scaling_summary(loaded),
-        "trajectory": {
-            "role": "descriptive_only",
-            "gate_influence": "none",
-            "evidence_sha256": trajectory_sha256,
-        },
+        "trajectory": _trajectory_summary(loaded),
         "gates": {
             "reconstruction": dict(reconstruction),
             "final_null_de": null_de,
@@ -1139,15 +1400,46 @@ def _load_publication_evidence(
         raise PublicationSynthesisError(
             "downstream source must be complete frozen final evidence"
         )
+    trajectory_downstream_plan = replay(
+        "final trajectory downstream plan",
+        build_final_trajectory_downstream_evidence_plan,
+        repository,
+        round_dir,
+    )
+    if (
+        not isinstance(trajectory_downstream_plan, DownstreamEvidencePlan)
+        or trajectory_downstream_plan.source_kind != "final"
+        or trajectory_downstream_plan.evidence_scope != "supplementary_trajectory"
+        or trajectory_downstream_plan.evaluated_round_binding is None
+    ):
+        raise PublicationSynthesisError(
+            "trajectory downstream source must be supplementary frozen final evidence"
+        )
     binding = downstream_plan.evaluated_round_binding
+    downstream_directory = replay(
+        "final downstream output location",
+        expected_final_downstream_output_directory,
+        downstream_plan,
+    )
+    trajectory_downstream_directory = replay(
+        "final trajectory downstream output location",
+        expected_final_downstream_output_directory,
+        trajectory_downstream_plan,
+    )
     bound_repository = Path(binding.repository_root)
-    downstream_directory = (
+    expected_downstream_directory = (
         bound_repository.parent
         / f"{bound_repository.name}-final-analysis"
         / "downstream"
         / binding.round_id
         / binding.evaluation_receipt_payload_sha256
     ).absolute()
+    if (
+        downstream_directory != expected_downstream_directory
+        or trajectory_downstream_directory
+        != expected_downstream_directory / "trajectory"
+    ):
+        raise PublicationSynthesisError("final downstream namespace differs")
     persisted_downstream_plan = replay(
         "persisted downstream plan",
         load_downstream_evidence_plan,
@@ -1164,6 +1456,24 @@ def _load_publication_evidence(
         "downstream manifest",
         load_downstream_evidence_manifest,
         downstream_directory,
+    )
+    persisted_trajectory_downstream_plan = replay(
+        "persisted trajectory downstream plan",
+        load_downstream_evidence_plan,
+        trajectory_downstream_directory,
+    )
+    if (
+        not isinstance(persisted_trajectory_downstream_plan, DownstreamEvidencePlan)
+        or persisted_trajectory_downstream_plan.to_dict()
+        != trajectory_downstream_plan.to_dict()
+    ):
+        raise PublicationSynthesisError(
+            "persisted trajectory downstream plan differs from independently rebuilt plan"
+        )
+    trajectory_downstream_manifest = replay(
+        "trajectory downstream manifest",
+        load_downstream_evidence_manifest,
+        trajectory_downstream_directory,
     )
     null_de_plan = replay(
         "final null-DE plan",
@@ -1199,6 +1509,8 @@ def _load_publication_evidence(
         frozen_method=frozen_method,
         downstream_plan=downstream_plan,
         downstream_manifest=downstream_manifest,
+        trajectory_downstream_plan=trajectory_downstream_plan,
+        trajectory_downstream_manifest=trajectory_downstream_manifest,
         null_de_plan=null_de_plan,
         null_de_manifest=null_de_manifest,
         scaling_checkpoint=scaling_checkpoint,
