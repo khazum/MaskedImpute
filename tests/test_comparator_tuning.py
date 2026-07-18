@@ -1,5 +1,5 @@
 import copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import hashlib
 import json
 from pathlib import Path
@@ -7,12 +7,14 @@ from pathlib import Path
 import pytest
 
 from maskimpute_benchmark.comparator_tuning import (
+    BoundComparatorConfiguration,
     ComparatorTuningError,
     DEVELOPMENT_MAX_CHECKPOINT_BYTES,
     DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
     DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
     DEVELOPMENT_MAX_RECORD_BYTES,
     DEVELOPMENT_STORAGE_RESERVE_BYTES,
+    bind_comparator_configuration_identity,
     decode_comparator_configuration,
     encode_comparator_configuration,
     load_comparator_tuning_authority,
@@ -77,6 +79,106 @@ def _set_nested(
         target = target[key]
     assert isinstance(target, dict)
     target[path[-1]] = value
+
+
+def test_configuration_method_identity_binds_every_stable_field() -> None:
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    configuration = authority.configurations_for("magic")[0]
+    spec = registry.by_id("magic")
+    bound = bind_comparator_configuration_identity(
+        configuration,
+        spec,
+        authority,
+        runtime_lock_sha256="1" * 64,
+        environment_registry_sha256="2" * 64,
+    )
+    stable_fields = (
+        "registry_method_sha256",
+        "configuration_payload_sha256",
+        "tuning_authority_file_sha256",
+        "tuning_authority_payload_sha256",
+        "source_authority_sha256",
+        "runtime_lock_sha256",
+        "environment_registry_sha256",
+    )
+    observed = set()
+    for field in stable_fields:
+        mutated = replace(bound, **{field: "f" * 64})
+        observed.add(mutated.recomputed_identity_sha256)
+        assert (
+            mutated.recomputed_identity_sha256
+            != bound.configuration_method_identity_sha256
+        )
+    assert len(observed) == len(stable_fields)
+
+
+def test_configuration_method_identities_do_not_collide_within_method() -> None:
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    identities = [
+        bind_comparator_configuration_identity(
+            row,
+            registry.by_id(row.method_id),
+            authority,
+            runtime_lock_sha256="1" * 64,
+            environment_registry_sha256="2" * 64,
+        ).configuration_method_identity_sha256
+        for row in authority.configurations_for("magic")
+    ]
+    assert len(identities) == len(set(identities)) == 4
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    (None, True, "A" * 64, "a" * 63, "g" * 64),
+)
+@pytest.mark.parametrize(
+    "field",
+    ("runtime_lock_sha256", "environment_registry_sha256"),
+)
+def test_configuration_method_identity_rejects_malformed_external_hashes(
+    field: str, malformed: object
+) -> None:
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    kwargs: dict[str, object] = {
+        "runtime_lock_sha256": "1" * 64,
+        "environment_registry_sha256": "2" * 64,
+    }
+    kwargs[field] = malformed
+    with pytest.raises(ComparatorTuningError, match="SHA-256"):
+        bind_comparator_configuration_identity(
+            authority.configurations_for("magic")[0],
+            registry.by_id("magic"),
+            authority,
+            **kwargs,
+        )
+
+
+def test_bound_configuration_rejects_malformed_hash_shapes() -> None:
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    bound = bind_comparator_configuration_identity(
+        authority.configurations_for("magic")[0],
+        registry.by_id("magic"),
+        authority,
+        runtime_lock_sha256="1" * 64,
+        environment_registry_sha256="2" * 64,
+    )
+    assert isinstance(bound, BoundComparatorConfiguration)
+    for field in (
+        "registry_method_sha256",
+        "configuration_payload_sha256",
+        "tuning_authority_file_sha256",
+        "tuning_authority_payload_sha256",
+        "source_authority_sha256",
+        "runtime_lock_sha256",
+        "environment_registry_sha256",
+        "configuration_method_identity_sha256",
+    ):
+        with pytest.raises(ComparatorTuningError, match="SHA-256"):
+            replace(bound, **{field: "not-a-sha256"})
 
 
 def test_decode_comparator_configuration_is_closed_and_exact() -> None:

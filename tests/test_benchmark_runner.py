@@ -18,6 +18,10 @@ import pytest
 
 import maskimpute_benchmark.runner as runner_module
 import maskimpute_benchmark.runtime_environments as runtime_module
+from maskimpute_benchmark.comparator_tuning import (
+    bind_comparator_configuration_identity,
+    load_comparator_tuning_authority,
+)
 from maskimpute_benchmark.methods import (
     AdapterExecution,
     MethodInput,
@@ -63,6 +67,7 @@ from maskimpute_benchmark.runtime_environments import (
     build_runtime_environment_lock,
     load_runtime_environment_lock,
 )
+from maskimpute_benchmark.protocol import canonical_sha256
 
 
 METHODS_PATH = Path("study/methods.json")
@@ -185,6 +190,20 @@ def _method_input() -> MethodInput:
     from maskimpute_benchmark.methods import prepare_method_input
 
     return prepare_method_input(view)
+
+
+def _bound_magic_configuration():
+    registry = load_method_registry(METHODS_PATH)
+    tuning_authority = load_comparator_tuning_authority(Path.cwd(), registry=registry)
+    spec = registry.by_id("magic")
+    bound = bind_comparator_configuration_identity(
+        tuning_authority.configurations_for("magic")[0],
+        spec,
+        tuning_authority,
+        runtime_lock_sha256="6" * 64,
+        environment_registry_sha256="7" * 64,
+    )
+    return spec, bound
 
 
 def _truth_dataset(counts: np.ndarray) -> ad.AnnData:
@@ -695,6 +714,325 @@ def test_method_input_hash_binds_only_truth_free_snapshot_and_is_stable() -> Non
     assert method_input_sha256(with_other_source) != first
     assert not hasattr(method_input, "layers")
     assert not hasattr(method_input, "uns")
+
+
+def test_execution_request_binds_comparator_tuning_identity_components() -> None:
+    spec, bound = _bound_magic_configuration()
+    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
+
+    serialized = configuration.to_dict()
+    assert (
+        serialized["configuration_payload_sha256"] == bound.configuration_payload_sha256
+    )
+    assert (
+        serialized["configuration_method_identity_sha256"]
+        == bound.configuration_method_identity_sha256
+    )
+    assert serialized["nonexecution_identity_sha256"] is None
+    for field in (
+        "registry_method_sha256",
+        "tuning_authority_file_sha256",
+        "tuning_authority_payload_sha256",
+        "source_authority_sha256",
+        "runtime_lock_sha256",
+        "environment_registry_sha256",
+    ):
+        assert serialized[field] == getattr(bound, field)
+
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=42,
+        configuration=configuration,
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+
+    assert request.configuration_kind == "comparator_tuning"
+    assert request.configuration_payload_sha256 == bound.configuration_payload_sha256
+    assert (
+        request.configuration_method_identity_sha256
+        == bound.configuration_method_identity_sha256
+    )
+    assert request.nonexecution_identity_sha256 is None
+    for field in (
+        "registry_method_sha256",
+        "tuning_authority_file_sha256",
+        "tuning_authority_payload_sha256",
+        "source_authority_sha256",
+        "runtime_lock_sha256",
+        "environment_registry_sha256",
+    ):
+        assert getattr(request, field) == getattr(bound, field)
+    request.validate_integrity()
+
+
+def test_execution_request_identity_digest_binds_every_comparator_component() -> None:
+    spec, bound = _bound_magic_configuration()
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=42,
+        configuration=AuthorizedConfiguration.from_bound_comparator(bound),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    stable_fields = (
+        "registry_method_sha256",
+        "configuration_payload_sha256",
+        "tuning_authority_file_sha256",
+        "tuning_authority_payload_sha256",
+        "source_authority_sha256",
+        "runtime_lock_sha256",
+        "environment_registry_sha256",
+    )
+    for index, field in enumerate(stable_fields, start=10):
+        changed = f"{index:064x}"
+        identity_values = {name: getattr(request, name) for name in stable_fields}
+        identity_values[field] = changed
+        mutated = replace(
+            request,
+            **{
+                field: changed,
+                "configuration_method_identity_sha256": canonical_sha256(
+                    {
+                        "schema": (
+                            "maskimpute-comparator-configuration-method-identity-v1"
+                        ),
+                        **identity_values,
+                    }
+                ),
+            },
+        )
+        with pytest.raises(RunnerContractError):
+            mutated.validate_integrity()
+
+    with pytest.raises(
+        RunnerContractError, match="comparator configuration identity mismatch"
+    ):
+        replace(
+            request,
+            configuration_method_identity_sha256="f" * 64,
+        ).validate_integrity()
+
+
+def test_execution_request_rejects_comparator_nonexecution_identity() -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("magic")
+    configuration = AuthorizedConfiguration.create(
+        method_id="magic",
+        configuration_id="magic-nonexecution",
+        kind="comparator_nonexecution",
+        payload={"reason": "declared_nonexecution"},
+        requires_count_score=False,
+        requires_calibration=False,
+        nonexecution_identity_sha256="e" * 64,
+    )
+
+    serialized = configuration.to_dict()
+    assert serialized["configuration_method_identity_sha256"] is None
+    assert serialized["nonexecution_identity_sha256"] == "e" * 64
+    assert all(
+        serialized[field] is None
+        for field in (
+            "registry_method_sha256",
+            "tuning_authority_file_sha256",
+            "tuning_authority_payload_sha256",
+            "source_authority_sha256",
+            "runtime_lock_sha256",
+            "environment_registry_sha256",
+        )
+    )
+
+    with pytest.raises(RunnerContractError, match="nonexecution"):
+        ExecutionRequest.create(
+            spec,
+            _method_input(),
+            model_seed=42,
+            configuration=configuration,
+            authority=_authority(maskimpute_ready=True),
+            mechanism="symsim",
+            biological_id="draw-01",
+            technical_view="moderate",
+            dataset_id="dataset-test",
+            timeout_seconds=5,
+        )
+
+
+def test_authorized_comparator_configuration_rejects_identity_mutations() -> None:
+    _spec, bound = _bound_magic_configuration()
+    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
+    for field in (
+        "registry_method_sha256",
+        "tuning_authority_file_sha256",
+        "tuning_authority_payload_sha256",
+        "source_authority_sha256",
+        "runtime_lock_sha256",
+        "environment_registry_sha256",
+        "configuration_method_identity_sha256",
+    ):
+        with pytest.raises(RunnerContractError, match="identity"):
+            replace(configuration, **{field: "f" * 64})
+    with pytest.raises(RunnerContractError, match="nonexecution identity"):
+        replace(configuration, nonexecution_identity_sha256="e" * 64)
+
+    with pytest.raises(RunnerContractError, match="nonexecution identity"):
+        AuthorizedConfiguration.create(
+            method_id="magic",
+            configuration_id="magic-nonexecution",
+            kind="comparator_nonexecution",
+            payload={"reason": "declared_nonexecution"},
+            requires_count_score=False,
+            requires_calibration=False,
+        )
+    for field in (
+        "registry_method_sha256",
+        "tuning_authority_file_sha256",
+        "tuning_authority_payload_sha256",
+        "source_authority_sha256",
+        "runtime_lock_sha256",
+        "environment_registry_sha256",
+        "configuration_method_identity_sha256",
+    ):
+        with pytest.raises(RunnerContractError, match="only its nonexecution identity"):
+            AuthorizedConfiguration.create(
+                method_id="magic",
+                configuration_id="magic-nonexecution",
+                kind="comparator_nonexecution",
+                payload={"reason": "declared_nonexecution"},
+                requires_count_score=False,
+                requires_calibration=False,
+                nonexecution_identity_sha256="e" * 64,
+                **{field: "a" * 64},
+            )
+
+
+def test_run_plan_entry_propagates_closed_configuration_identity_shape() -> None:
+    legacy = RunPlanEntry(
+        ordinal=1,
+        run_id="run-observed-test",
+        method_id="observed",
+        dataset_id="dataset-test",
+        source_dataset_sha256="a" * 64,
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        model_seed=None,
+        configuration_id="registry-default",
+        configuration_sha256="b" * 64,
+        preflight_status="planned",
+        preflight_reason=None,
+    )
+    assert legacy.configuration_payload_sha256 == legacy.configuration_sha256
+    assert legacy.configuration_method_identity_sha256 is None
+    assert legacy.nonexecution_identity_sha256 is None
+
+    tuning = replace(
+        legacy,
+        configuration_kind="comparator_tuning",
+        configuration_method_identity_sha256="c" * 64,
+    )
+    assert tuning.configuration_payload_sha256 == "b" * 64
+    assert tuning.configuration_method_identity_sha256 == "c" * 64
+    assert tuning.nonexecution_identity_sha256 is None
+
+    nonexecution = replace(
+        legacy,
+        configuration_kind="comparator_nonexecution",
+        nonexecution_identity_sha256="d" * 64,
+    )
+    assert nonexecution.configuration_method_identity_sha256 is None
+    assert nonexecution.nonexecution_identity_sha256 == "d" * 64
+
+    with pytest.raises(RunnerContractError, match="method identity"):
+        replace(
+            legacy,
+            configuration_kind="comparator_tuning",
+            configuration_method_identity_sha256=None,
+        )
+    with pytest.raises(RunnerContractError, match="nonexecution identity"):
+        replace(
+            legacy,
+            configuration_kind="comparator_nonexecution",
+            nonexecution_identity_sha256=None,
+        )
+
+
+@pytest.mark.parametrize(
+    "identity_field",
+    (
+        "registry_method_sha256",
+        "tuning_authority_file_sha256",
+        "tuning_authority_payload_sha256",
+        "source_authority_sha256",
+        "runtime_lock_sha256",
+        "environment_registry_sha256",
+        "configuration_method_identity_sha256",
+        "nonexecution_identity_sha256",
+    ),
+)
+@pytest.mark.parametrize("kind", ("registry", "candidate_search", "ablation"))
+def test_execution_request_legacy_kinds_reject_comparator_identity_fields(
+    kind: str, identity_field: str
+) -> None:
+    with pytest.raises(RunnerContractError, match="identity"):
+        AuthorizedConfiguration.create(
+            method_id="observed",
+            configuration_id=f"{kind.replace('_', '-')}-configuration",
+            kind=kind,
+            payload={"kind": kind},
+            requires_count_score=False,
+            requires_calibration=False,
+            **{identity_field: "a" * 64},
+        )
+
+
+def test_execution_request_legacy_identity_integrity_remains_strict() -> None:
+    registry = load_method_registry(METHODS_PATH)
+    authority = _authority(maskimpute_ready=True)
+    configurations = (
+        AuthorizedConfiguration.registry_default(registry.by_id("observed")),
+        next(
+            value
+            for value in authority.configurations
+            if value.kind == "candidate_search"
+        ),
+        next(value for value in authority.configurations if value.kind == "ablation"),
+    )
+    for configuration in configurations:
+        spec = registry.by_id(configuration.method_id)
+        request = ExecutionRequest.create(
+            spec,
+            _method_input(),
+            model_seed=42 if spec.stochastic else None,
+            configuration=configuration,
+            authority=authority,
+            mechanism="symsim",
+            biological_id="draw-01",
+            technical_view="moderate",
+            dataset_id="dataset-test",
+            timeout_seconds=5,
+        )
+        assert request.configuration_kind == configuration.kind
+        assert request.configuration_payload_sha256 == request.configuration_sha256
+        assert request.configuration_method_identity_sha256 is None
+        assert request.nonexecution_identity_sha256 is None
+        request.validate_integrity()
+        for mutation in (
+            {"configuration_id": "forged-configuration"},
+            {"configuration_sha256": "f" * 64},
+            {"configuration_payload_json": "{}"},
+            {"request_sha256": "f" * 64},
+        ):
+            with pytest.raises(RunnerContractError):
+                replace(request, **mutation).validate_integrity()
 
 
 def test_spawned_executor_receives_no_anndata_or_truth_slots() -> None:

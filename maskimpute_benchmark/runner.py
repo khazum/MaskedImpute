@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 import numpy as np
 
 if TYPE_CHECKING:
+    from .comparator_tuning import BoundComparatorConfiguration
     from .trajectory_dataset import RegisteredTrajectoryBinding
 
 from .methods import AdapterExecution, MethodInput, MethodSpec
@@ -642,6 +643,14 @@ class AuthorizedConfiguration:
     payload_json: str
     requires_count_score: bool
     requires_calibration: bool
+    registry_method_sha256: str | None = None
+    tuning_authority_file_sha256: str | None = None
+    tuning_authority_payload_sha256: str | None = None
+    source_authority_sha256: str | None = None
+    runtime_lock_sha256: str | None = None
+    environment_registry_sha256: str | None = None
+    configuration_method_identity_sha256: str | None = None
+    nonexecution_identity_sha256: str | None = None
 
     @classmethod
     def create(
@@ -654,6 +663,14 @@ class AuthorizedConfiguration:
         requires_count_score: bool,
         requires_calibration: bool,
         configuration_sha256: str | None = None,
+        registry_method_sha256: str | None = None,
+        tuning_authority_file_sha256: str | None = None,
+        tuning_authority_payload_sha256: str | None = None,
+        source_authority_sha256: str | None = None,
+        runtime_lock_sha256: str | None = None,
+        environment_registry_sha256: str | None = None,
+        configuration_method_identity_sha256: str | None = None,
+        nonexecution_identity_sha256: str | None = None,
     ) -> AuthorizedConfiguration:
         if not isinstance(payload, Mapping):
             raise TypeError("configuration payload must be a mapping")
@@ -670,6 +687,38 @@ class AuthorizedConfiguration:
             payload_json=payload_bytes.decode("utf-8"),
             requires_count_score=requires_count_score,
             requires_calibration=requires_calibration,
+            registry_method_sha256=registry_method_sha256,
+            tuning_authority_file_sha256=tuning_authority_file_sha256,
+            tuning_authority_payload_sha256=tuning_authority_payload_sha256,
+            source_authority_sha256=source_authority_sha256,
+            runtime_lock_sha256=runtime_lock_sha256,
+            environment_registry_sha256=environment_registry_sha256,
+            configuration_method_identity_sha256=(configuration_method_identity_sha256),
+            nonexecution_identity_sha256=nonexecution_identity_sha256,
+        )
+
+    @classmethod
+    def from_bound_comparator(
+        cls, bound: BoundComparatorConfiguration
+    ) -> AuthorizedConfiguration:
+        row = bound.configuration
+        return cls.create(
+            method_id=row.method_id,
+            configuration_id=row.configuration_id,
+            kind="comparator_tuning",
+            payload=dict(row.payload),
+            requires_count_score=False,
+            requires_calibration=False,
+            configuration_sha256=row.payload_sha256,
+            registry_method_sha256=bound.registry_method_sha256,
+            tuning_authority_file_sha256=bound.tuning_authority_file_sha256,
+            tuning_authority_payload_sha256=bound.tuning_authority_payload_sha256,
+            source_authority_sha256=bound.source_authority_sha256,
+            runtime_lock_sha256=bound.runtime_lock_sha256,
+            environment_registry_sha256=bound.environment_registry_sha256,
+            configuration_method_identity_sha256=(
+                bound.configuration_method_identity_sha256
+            ),
         )
 
     @classmethod
@@ -698,7 +747,13 @@ class AuthorizedConfiguration:
             self.configuration_id
         ):
             raise RunnerContractError("configuration_id must be safe")
-        if self.kind not in {"registry", "candidate_search", "ablation"}:
+        if self.kind not in {
+            "registry",
+            "candidate_search",
+            "ablation",
+            "comparator_tuning",
+            "comparator_nonexecution",
+        }:
             raise RunnerContractError("configuration kind is invalid")
         _require_sha256(self.configuration_sha256, "configuration checksum")
         try:
@@ -728,6 +783,71 @@ class AuthorizedConfiguration:
             )
         if self.requires_calibration and not self.requires_count_score:
             raise RunnerContractError("calibration configurations require count scores")
+        component_fields = (
+            "registry_method_sha256",
+            "tuning_authority_file_sha256",
+            "tuning_authority_payload_sha256",
+            "source_authority_sha256",
+            "runtime_lock_sha256",
+            "environment_registry_sha256",
+        )
+        if self.kind == "comparator_tuning":
+            for field_name in component_fields:
+                _require_sha256(
+                    getattr(self, field_name),
+                    f"comparator {field_name}",
+                )
+            _require_sha256(
+                self.configuration_method_identity_sha256,
+                "comparator configuration method identity",
+            )
+            if self.nonexecution_identity_sha256 is not None:
+                raise RunnerContractError(
+                    "comparator tuning forbids a nonexecution identity"
+                )
+            body = {
+                "schema": "maskimpute-comparator-configuration-method-identity-v1",
+                "registry_method_sha256": self.registry_method_sha256,
+                "configuration_payload_sha256": self.configuration_sha256,
+                "tuning_authority_file_sha256": self.tuning_authority_file_sha256,
+                "tuning_authority_payload_sha256": (
+                    self.tuning_authority_payload_sha256
+                ),
+                "source_authority_sha256": self.source_authority_sha256,
+                "runtime_lock_sha256": self.runtime_lock_sha256,
+                "environment_registry_sha256": self.environment_registry_sha256,
+            }
+            if self.configuration_method_identity_sha256 != canonical_sha256(body):
+                raise RunnerContractError("comparator configuration identity mismatch")
+        elif self.kind == "comparator_nonexecution":
+            if (
+                any(
+                    getattr(self, field_name) is not None
+                    for field_name in component_fields
+                )
+                or self.configuration_method_identity_sha256 is not None
+            ):
+                raise RunnerContractError(
+                    "comparator nonexecution carries only its nonexecution identity"
+                )
+            _require_sha256(
+                self.nonexecution_identity_sha256,
+                "comparator nonexecution identity",
+            )
+            if self.requires_count_score or self.requires_calibration:
+                raise RunnerContractError(
+                    "comparator nonexecution configuration is not executable"
+                )
+        elif (
+            any(
+                getattr(self, field_name) is not None for field_name in component_fields
+            )
+            or self.configuration_method_identity_sha256 is not None
+            or self.nonexecution_identity_sha256 is not None
+        ):
+            raise RunnerContractError(
+                "legacy configuration forbids comparator identity fields"
+            )
 
     @property
     def payload(self) -> Mapping[str, object]:
@@ -739,6 +859,17 @@ class AuthorizedConfiguration:
             "configuration_id": self.configuration_id,
             "kind": self.kind,
             "configuration_sha256": self.configuration_sha256,
+            "configuration_payload_sha256": self.configuration_sha256,
+            "registry_method_sha256": self.registry_method_sha256,
+            "tuning_authority_file_sha256": self.tuning_authority_file_sha256,
+            "tuning_authority_payload_sha256": (self.tuning_authority_payload_sha256),
+            "source_authority_sha256": self.source_authority_sha256,
+            "runtime_lock_sha256": self.runtime_lock_sha256,
+            "environment_registry_sha256": self.environment_registry_sha256,
+            "configuration_method_identity_sha256": (
+                self.configuration_method_identity_sha256
+            ),
+            "nonexecution_identity_sha256": self.nonexecution_identity_sha256,
             "payload": dict(self.payload),
             "requires_count_score": self.requires_count_score,
             "requires_calibration": self.requires_calibration,
@@ -1441,6 +1572,57 @@ class RunPlanEntry:
     configuration_kind: str = "registry"
     requires_count_score: bool = False
     requires_calibration: bool = False
+    configuration_payload_sha256: str | None = None
+    configuration_method_identity_sha256: str | None = None
+    nonexecution_identity_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.configuration_kind not in {
+            "registry",
+            "candidate_search",
+            "ablation",
+            "comparator_tuning",
+            "comparator_nonexecution",
+        }:
+            raise RunnerContractError("plan configuration kind is invalid")
+        _require_sha256(self.configuration_sha256, "plan configuration checksum")
+        if self.configuration_payload_sha256 is None:
+            object.__setattr__(
+                self,
+                "configuration_payload_sha256",
+                self.configuration_sha256,
+            )
+        _require_sha256(
+            self.configuration_payload_sha256,
+            "plan configuration payload checksum",
+        )
+        if self.configuration_payload_sha256 != self.configuration_sha256:
+            raise RunnerContractError("plan configuration payload checksum differs")
+        if self.configuration_kind == "comparator_tuning":
+            _require_sha256(
+                self.configuration_method_identity_sha256,
+                "plan comparator method identity",
+            )
+            if self.nonexecution_identity_sha256 is not None:
+                raise RunnerContractError(
+                    "comparator tuning plan entry forbids nonexecution identity"
+                )
+        elif self.configuration_kind == "comparator_nonexecution":
+            if self.configuration_method_identity_sha256 is not None:
+                raise RunnerContractError(
+                    "comparator nonexecution plan entry forbids method identity"
+                )
+            _require_sha256(
+                self.nonexecution_identity_sha256,
+                "plan comparator nonexecution identity",
+            )
+        elif (
+            self.configuration_method_identity_sha256 is not None
+            or self.nonexecution_identity_sha256 is not None
+        ):
+            raise RunnerContractError(
+                "legacy plan entry forbids comparator identity fields"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -1600,6 +1782,15 @@ def build_competition_plan(
                             configuration_kind=configuration.kind,
                             requires_count_score=configuration.requires_count_score,
                             requires_calibration=configuration.requires_calibration,
+                            configuration_payload_sha256=(
+                                configuration.configuration_sha256
+                            ),
+                            configuration_method_identity_sha256=(
+                                configuration.configuration_method_identity_sha256
+                            ),
+                            nonexecution_identity_sha256=(
+                                configuration.nonexecution_identity_sha256
+                            ),
                         )
                     )
     plan_body = {
@@ -2138,7 +2329,16 @@ class ExecutionRequest:
     configuration_id: str
     configuration_kind: str
     configuration_sha256: str
+    configuration_payload_sha256: str
     configuration_payload_json: str
+    registry_method_sha256: str | None
+    tuning_authority_file_sha256: str | None
+    tuning_authority_payload_sha256: str | None
+    source_authority_sha256: str | None
+    runtime_lock_sha256: str | None
+    environment_registry_sha256: str | None
+    configuration_method_identity_sha256: str | None
+    nonexecution_identity_sha256: str | None
     execution_authority_sha256: str
     base_configuration_json: str | None
     base_configuration_sha256: str | None
@@ -2179,6 +2379,10 @@ class ExecutionRequest:
             raise TypeError("configuration must be an AuthorizedConfiguration")
         if configuration.method_id != method_spec.id:
             raise RunnerContractError("configuration method does not match MethodSpec")
+        if configuration.kind == "comparator_nonexecution":
+            raise RunnerContractError(
+                "comparator nonexecution configuration is never executable"
+            )
         if calibration_usage not in {
             "development_holdout",
             "retained_all_development",
@@ -2276,7 +2480,24 @@ class ExecutionRequest:
             "configuration_id": configuration.configuration_id,
             "configuration_kind": configuration.kind,
             "configuration_sha256": configuration.configuration_sha256,
+            "configuration_payload_sha256": configuration.configuration_sha256,
             "configuration_payload": dict(configuration.payload),
+            "registry_method_sha256": configuration.registry_method_sha256,
+            "tuning_authority_file_sha256": (
+                configuration.tuning_authority_file_sha256
+            ),
+            "tuning_authority_payload_sha256": (
+                configuration.tuning_authority_payload_sha256
+            ),
+            "source_authority_sha256": configuration.source_authority_sha256,
+            "runtime_lock_sha256": configuration.runtime_lock_sha256,
+            "environment_registry_sha256": (configuration.environment_registry_sha256),
+            "configuration_method_identity_sha256": (
+                configuration.configuration_method_identity_sha256
+            ),
+            "nonexecution_identity_sha256": (
+                configuration.nonexecution_identity_sha256
+            ),
             "execution_authority_sha256": context.authority_sha256,
             "base_configuration_sha256": base_config_sha,
             "count_model_config_sha256": count_config_sha,
@@ -2304,7 +2525,20 @@ class ExecutionRequest:
             configuration_id=configuration.configuration_id,
             configuration_kind=configuration.kind,
             configuration_sha256=configuration.configuration_sha256,
+            configuration_payload_sha256=configuration.configuration_sha256,
             configuration_payload_json=configuration.payload_json,
+            registry_method_sha256=configuration.registry_method_sha256,
+            tuning_authority_file_sha256=(configuration.tuning_authority_file_sha256),
+            tuning_authority_payload_sha256=(
+                configuration.tuning_authority_payload_sha256
+            ),
+            source_authority_sha256=configuration.source_authority_sha256,
+            runtime_lock_sha256=configuration.runtime_lock_sha256,
+            environment_registry_sha256=(configuration.environment_registry_sha256),
+            configuration_method_identity_sha256=(
+                configuration.configuration_method_identity_sha256
+            ),
+            nonexecution_identity_sha256=(configuration.nonexecution_identity_sha256),
             execution_authority_sha256=context.authority_sha256,
             base_configuration_json=base_config_json,
             base_configuration_sha256=base_config_sha,
@@ -2323,6 +2557,67 @@ class ExecutionRequest:
         )
 
     def validate_integrity(self) -> None:
+        if self.configuration_kind == "comparator_nonexecution":
+            raise RunnerContractError(
+                "comparator nonexecution configuration is never executable"
+            )
+        if self.configuration_kind not in {
+            "registry",
+            "candidate_search",
+            "ablation",
+            "comparator_tuning",
+        }:
+            raise RunnerContractError("execution request configuration kind is invalid")
+        _require_sha256(
+            self.configuration_payload_sha256,
+            "execution request configuration payload checksum",
+        )
+        component_fields = (
+            "registry_method_sha256",
+            "tuning_authority_file_sha256",
+            "tuning_authority_payload_sha256",
+            "source_authority_sha256",
+            "runtime_lock_sha256",
+            "environment_registry_sha256",
+        )
+        if self.configuration_kind == "comparator_tuning":
+            for field_name in component_fields:
+                _require_sha256(
+                    getattr(self, field_name),
+                    f"execution request comparator {field_name}",
+                )
+            _require_sha256(
+                self.configuration_method_identity_sha256,
+                "execution request comparator method identity",
+            )
+            if self.nonexecution_identity_sha256 is not None:
+                raise RunnerContractError(
+                    "comparator tuning request forbids nonexecution identity"
+                )
+            body = {
+                "schema": "maskimpute-comparator-configuration-method-identity-v1",
+                "registry_method_sha256": self.registry_method_sha256,
+                "configuration_payload_sha256": self.configuration_payload_sha256,
+                "tuning_authority_file_sha256": self.tuning_authority_file_sha256,
+                "tuning_authority_payload_sha256": (
+                    self.tuning_authority_payload_sha256
+                ),
+                "source_authority_sha256": self.source_authority_sha256,
+                "runtime_lock_sha256": self.runtime_lock_sha256,
+                "environment_registry_sha256": self.environment_registry_sha256,
+            }
+            if self.configuration_method_identity_sha256 != canonical_sha256(body):
+                raise RunnerContractError("comparator configuration identity mismatch")
+        elif (
+            any(
+                getattr(self, field_name) is not None for field_name in component_fields
+            )
+            or self.configuration_method_identity_sha256 is not None
+            or self.nonexecution_identity_sha256 is not None
+        ):
+            raise RunnerContractError(
+                "legacy execution request forbids comparator identity fields"
+            )
         if self.calibration_usage not in {
             "development_holdout",
             "retained_all_development",
@@ -2350,7 +2645,18 @@ class ExecutionRequest:
             "configuration_id": self.configuration_id,
             "configuration_kind": self.configuration_kind,
             "configuration_sha256": self.configuration_sha256,
+            "configuration_payload_sha256": self.configuration_payload_sha256,
             "configuration_payload": configuration,
+            "registry_method_sha256": self.registry_method_sha256,
+            "tuning_authority_file_sha256": self.tuning_authority_file_sha256,
+            "tuning_authority_payload_sha256": (self.tuning_authority_payload_sha256),
+            "source_authority_sha256": self.source_authority_sha256,
+            "runtime_lock_sha256": self.runtime_lock_sha256,
+            "environment_registry_sha256": self.environment_registry_sha256,
+            "configuration_method_identity_sha256": (
+                self.configuration_method_identity_sha256
+            ),
+            "nonexecution_identity_sha256": self.nonexecution_identity_sha256,
             "execution_authority_sha256": self.execution_authority_sha256,
             "base_configuration_sha256": self.base_configuration_sha256,
             "count_model_config_sha256": self.count_model_config_sha256,
@@ -2371,6 +2677,7 @@ class ExecutionRequest:
         if (
             self.configuration_payload_json.encode() != _canonical_bytes(configuration)
             or canonical_sha256(configuration) != self.configuration_sha256
+            or self.configuration_payload_sha256 != self.configuration_sha256
             or (
                 base_configuration is None
                 and self.base_configuration_sha256 is not None

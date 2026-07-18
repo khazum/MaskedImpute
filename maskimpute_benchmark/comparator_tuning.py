@@ -24,6 +24,7 @@ from .methods import (
     SCZivaConfig,
 )
 from .methods import MethodRegistry
+from .methods.base import MethodSpec
 from .protocol import canonical_sha256
 
 
@@ -390,6 +391,112 @@ class ComparatorTuningAuthority:
 
     def configurations_for(self, method_id: str) -> tuple[ComparatorConfiguration, ...]:
         return tuple(row for row in self.configurations if row.method_id == method_id)
+
+
+@dataclass(frozen=True, slots=True)
+class BoundComparatorConfiguration:
+    """One comparator setting bound to its method and execution authorities."""
+
+    configuration: ComparatorConfiguration
+    registry_method_sha256: str
+    configuration_payload_sha256: str
+    tuning_authority_file_sha256: str
+    tuning_authority_payload_sha256: str
+    source_authority_sha256: str
+    runtime_lock_sha256: str
+    environment_registry_sha256: str
+    configuration_method_identity_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.configuration, ComparatorConfiguration):
+            raise TypeError("configuration must be a ComparatorConfiguration")
+        for field_name in (
+            "registry_method_sha256",
+            "configuration_payload_sha256",
+            "tuning_authority_file_sha256",
+            "tuning_authority_payload_sha256",
+            "source_authority_sha256",
+            "runtime_lock_sha256",
+            "environment_registry_sha256",
+            "configuration_method_identity_sha256",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not str or _SHA256.fullmatch(value) is None:
+                raise ComparatorTuningError(
+                    f"bound comparator {field_name} SHA-256 is invalid"
+                )
+
+    @property
+    def identity_body(self) -> dict[str, object]:
+        return {
+            "schema": "maskimpute-comparator-configuration-method-identity-v1",
+            "registry_method_sha256": self.registry_method_sha256,
+            "configuration_payload_sha256": self.configuration_payload_sha256,
+            "tuning_authority_file_sha256": self.tuning_authority_file_sha256,
+            "tuning_authority_payload_sha256": self.tuning_authority_payload_sha256,
+            "source_authority_sha256": self.source_authority_sha256,
+            "runtime_lock_sha256": self.runtime_lock_sha256,
+            "environment_registry_sha256": self.environment_registry_sha256,
+        }
+
+    @property
+    def recomputed_identity_sha256(self) -> str:
+        return canonical_sha256(self.identity_body)
+
+
+def bind_comparator_configuration_identity(
+    configuration: ComparatorConfiguration,
+    method_spec: MethodSpec,
+    authority: ComparatorTuningAuthority,
+    *,
+    runtime_lock_sha256: str,
+    environment_registry_sha256: str,
+) -> BoundComparatorConfiguration:
+    """Bind one comparator payload to method, source, and runtime authority."""
+
+    if not isinstance(configuration, ComparatorConfiguration):
+        raise TypeError("configuration must be a ComparatorConfiguration")
+    if not isinstance(method_spec, MethodSpec):
+        raise TypeError("method_spec must be a MethodSpec")
+    if not isinstance(authority, ComparatorTuningAuthority):
+        raise TypeError("authority must be a ComparatorTuningAuthority")
+    for value, name in (
+        (runtime_lock_sha256, "runtime lock"),
+        (environment_registry_sha256, "environment registry"),
+    ):
+        if type(value) is not str or _SHA256.fullmatch(value) is None:
+            raise ComparatorTuningError(f"{name} SHA-256 is invalid")
+    if configuration.method_id != method_spec.id:
+        raise ComparatorTuningError("configuration method differs from registry method")
+    registry_method_sha256 = canonical_sha256(asdict(method_spec))
+    source_authority_sha256 = canonical_sha256(
+        {
+            "schema": "maskimpute-comparator-source-authority-v1",
+            "method_id": method_spec.id,
+            "source": asdict(method_spec.source),
+        }
+    )
+    body = {
+        "schema": "maskimpute-comparator-configuration-method-identity-v1",
+        "registry_method_sha256": registry_method_sha256,
+        "configuration_payload_sha256": configuration.payload_sha256,
+        "tuning_authority_file_sha256": authority.file_sha256,
+        "tuning_authority_payload_sha256": authority.payload_sha256,
+        "source_authority_sha256": source_authority_sha256,
+        "runtime_lock_sha256": runtime_lock_sha256,
+        "environment_registry_sha256": environment_registry_sha256,
+    }
+    return BoundComparatorConfiguration(
+        configuration=configuration,
+        registry_method_sha256=registry_method_sha256,
+        configuration_payload_sha256=configuration.payload_sha256,
+        tuning_authority_file_sha256=authority.file_sha256,
+        tuning_authority_payload_sha256=authority.payload_sha256,
+        source_authority_sha256=source_authority_sha256,
+        runtime_lock_sha256=runtime_lock_sha256,
+        environment_registry_sha256=environment_registry_sha256,
+        configuration_method_identity_sha256=canonical_sha256(body),
+    )
 
 
 def _require_exact_mapping(
