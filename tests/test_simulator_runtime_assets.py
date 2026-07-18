@@ -92,6 +92,9 @@ def test_tracked_simulator_r_authority_uses_current_full_closure_lock() -> None:
     assert lock.file_sha256 == hashlib.sha256(lock_path.read_bytes()).hexdigest()
     assert r_authority["environment_id"] == entry.environment_id
     assert r_authority["lock_file_sha256"] == lock.file_sha256
+    assert entry.inventory_sha256 == (
+        "9d32b1df5a408cc6908ff40774482df9986d4f990e770593759e177faf421b48"
+    )
     assert set(inventory) == {
         "schema",
         "interpreter",
@@ -102,6 +105,39 @@ def test_tracked_simulator_r_authority_uses_current_full_closure_lock() -> None:
         "native_linkage_sha256",
     }
     assert inventory["runtime_roots"]
+
+
+def test_tracked_simulator_r_authority_uses_sanctioned_search_shape() -> None:
+    repository = Path(__file__).resolve().parents[1]
+    authority = json.loads(
+        (repository / "study/simulator_runtime_assets.json").read_text(encoding="utf-8")
+    )
+    lock = load_runtime_environment_lock(
+        repository / authority["r_environment"]["lock_path"]
+    )
+    roots = lock.by_id("simulator-r").inventory["runtime_roots"]
+
+    def search_shape(prefix: str) -> tuple[tuple[str, str, int, str], ...]:
+        selected = tuple(
+            (
+                root["role"].removeprefix(prefix),
+                root["kind"],
+                root["entry_count"],
+                root["content_sha256"],
+            )
+            for root in roots
+            if root["role"].startswith(prefix)
+        )
+        assert tuple(row[0] for row in selected) == ("000", "001", "002", "003")
+        assert all(row[1] == "search-directory" for row in selected)
+        assert all("symlink-hop" not in row[0] for row in selected)
+        return selected
+
+    git_shape = search_shape("git-search-directory-")
+    nvidia_shape = search_shape("nvidia-smi-search-directory-")
+
+    assert tuple(row[1:] for row in git_shape) == tuple(row[1:] for row in nvidia_shape)
+    assert not any(root["role"].startswith("loader-search-root-") for root in roots)
 
 
 def _repository(tmp_path: Path) -> Path:
