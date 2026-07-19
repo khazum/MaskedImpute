@@ -181,6 +181,81 @@ def _bound_magic_configuration():
     return spec, bound
 
 
+@pytest.fixture
+def dispatcher_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> RepositoryAdapterDispatcher:
+    registry = load_method_registry(METHODS_PATH)
+    comparator_ids = (
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+        "scziva",
+        "afmf",
+        "biaeimpute",
+        "sccr",
+        "scsdae",
+    )
+    for method_id in comparator_ids:
+        cache_path = registry.by_id(method_id).source.cache_path
+        assert cache_path is not None
+        (tmp_path / cache_path).mkdir(parents=True, exist_ok=True)
+    environments = ExecutionEnvironmentRegistry.fixed(
+        tmp_path,
+        {method_id: Path(sys.executable) for method_id in comparator_ids},
+    )
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "revalidate_for",
+        lambda _self, _method_id: None,
+    )
+    return RepositoryAdapterDispatcher(tmp_path, environments)
+
+
+@pytest.fixture
+def request_for_comparator(dispatcher_fixture: RepositoryAdapterDispatcher):
+    registry = load_method_registry(METHODS_PATH)
+    tuning_authority = load_comparator_tuning_authority(
+        Path.cwd(),
+        registry=registry,
+        require_clean=False,
+    )
+
+    def create(method_id: str, configuration_id: str) -> ExecutionRequest:
+        spec = registry.by_id(method_id)
+        row = next(
+            configuration
+            for configuration in tuning_authority.configurations_for(method_id)
+            if configuration.configuration_id == configuration_id
+        )
+        bound = bind_comparator_configuration_identity(
+            row,
+            spec,
+            tuning_authority,
+            runtime_lock_sha256="6" * 64,
+            environment_registry_sha256=(
+                dispatcher_fixture.environments.registry_sha256
+            ),
+        )
+        return ExecutionRequest.create(
+            spec,
+            _method_input(),
+            model_seed=42,
+            configuration=AuthorizedConfiguration.from_bound_comparator(bound),
+            authority=_authority(maskimpute_ready=True),
+            mechanism="symsim",
+            biological_id="draw-01",
+            technical_view="moderate",
+            dataset_id="dataset-test",
+            timeout_seconds=5,
+        )
+
+    return create
+
+
 def _configuration_with_substituted_method_component(
     field: str,
 ) -> tuple[object, AuthorizedConfiguration]:
@@ -1506,12 +1581,12 @@ def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environmen
     assert "scvi" in dispatcher.supported_method_ids
     assert "magic" in dispatcher.supported_method_ids
 
-    magic = registry.by_id("magic")
+    magic, bound_magic = _bound_magic_configuration()
     missing_request = ExecutionRequest.create(
         magic,
         _method_input(),
         model_seed=42,
-        configuration=AuthorizedConfiguration.registry_default(magic),
+        configuration=AuthorizedConfiguration.from_bound_comparator(bound_magic),
         authority=authority,
         mechanism="symsim",
         biological_id="draw-01",
@@ -1527,6 +1602,78 @@ def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environmen
         unavailable.reason,
     )
     assert environments.executable_for("scvi") == scvi_python.absolute()
+
+
+@pytest.mark.parametrize(
+    ("method_id", "configuration_id", "field", "expected"),
+    (
+        ("alra", "alra-default", "k", 0),
+        ("magic", "magic-t07", "diffusion_time", 7),
+        ("dca", "dca-h32-16-32", "hidden_size", (32, 16, 32)),
+        ("scvi", "scvi-z30", "n_latent", 30),
+        ("saver", "saver-default", "do_fast", True),
+        ("scziva", "scziva-tau-0p05", "tau", 0.05),
+        ("afmf", "afmf-sigma-4", "sigma", 4.0),
+        ("biaeimpute", "biaeimpute-z256", "latent_size", 256),
+        ("sccr", "sccr-k30", "neighbors", 30),
+        ("scsdae", "scsdae-zero-0p25", "zero_loss_weight", 0.25),
+    ),
+)
+def test_dispatcher_passes_exact_typed_comparator_config(
+    monkeypatch: pytest.MonkeyPatch,
+    dispatcher_fixture: RepositoryAdapterDispatcher,
+    request_for_comparator,
+    method_id: str,
+    configuration_id: str,
+    field: str,
+    expected: object,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_adapter(*_args, **kwargs):
+        captured["config"] = kwargs["config"]
+        raise RuntimeError("captured typed comparator config")
+
+    monkeypatch.setattr(
+        f"maskimpute_benchmark.methods.run_{method_id}",
+        fake_adapter,
+    )
+    outcome = dispatcher_fixture._execute_validated(
+        request_for_comparator(method_id, configuration_id)
+    )
+
+    assert outcome.status == "failed"
+    assert getattr(captured["config"], field) == expected
+
+
+def test_dispatcher_revalidates_comparator_payload_after_adapter_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    dispatcher_fixture: RepositoryAdapterDispatcher,
+    request_for_comparator,
+) -> None:
+    request = request_for_comparator("magic", "magic-t07")
+    observed_spec = load_method_registry(METHODS_PATH).by_id("observed")
+    execution = run_observed(observed_spec, request.method_input)
+    attempted: list[bool] = []
+
+    def mutate_config(*_args, **kwargs):
+        attempted.append(True)
+        config = kwargs.get("config")
+        if config is not None:
+            object.__setattr__(config, "diffusion_time", 11)
+        return execution
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.methods.run_magic",
+        mutate_config,
+    )
+
+    outcome = dispatcher_fixture._execute_validated(request)
+
+    assert attempted == [True]
+    assert outcome.status == "failed"
+    assert outcome.reason is not None
+    assert "detail_" in outcome.reason
 
 
 def test_execution_environment_registry_binds_exact_runtime_lock(
@@ -2941,12 +3088,24 @@ def _write_implementation_source_fixture(root: Path, *, reverse: bool = False) -
 
 
 def _two_method_plan(prepared) -> CompetitionPlan:
+    registry = load_method_registry(METHODS_PATH)
+    observed = registry.by_id("observed")
+    observed_configuration = AuthorizedConfiguration.registry_default(observed)
+    _magic, bound_magic = _bound_magic_configuration()
+    magic_configuration = AuthorizedConfiguration.from_bound_comparator(bound_magic)
     entries = (
         _entry_for(prepared, "observed", seed=None),
         replace(
-            _entry_for(prepared, "d3impute", seed=None),
+            _entry_for(prepared, "magic", seed=42),
             ordinal=2,
-            run_id="run-d3impute-test",
+            run_id="run-magic-test",
+            configuration_id=magic_configuration.configuration_id,
+            configuration_sha256=magic_configuration.configuration_sha256,
+            configuration_kind=magic_configuration.kind,
+            configuration_payload_sha256=(magic_configuration.configuration_sha256),
+            configuration_method_identity_sha256=(
+                magic_configuration.configuration_method_identity_sha256
+            ),
         ),
     )
     return _rehash_competition_plan(
@@ -2960,6 +3119,7 @@ def _two_method_plan(prepared) -> CompetitionPlan:
             },
             entries=entries,
             plan_sha256="0" * 64,
+            configurations=(observed_configuration, magic_configuration),
         )
     )
 
@@ -3003,6 +3163,29 @@ def _comparator_plan_entry(
         preflight_status=preflight_status,
         preflight_reason=preflight_reason,
     )
+
+
+def test_registry_default_comparator_request_is_rejected(tmp_path: Path) -> None:
+    prepared = _prepared_truth_dataset()
+    spec = load_method_registry(METHODS_PATH).by_id("magic")
+    configuration = AuthorizedConfiguration.registry_default(spec)
+    entry = _entry_for(prepared, "magic", seed=42)
+    plan = _single_configuration_plan(prepared, entry, configuration)
+    executor = _RecordingUnavailableExecutor()
+
+    with pytest.raises(
+        RunnerContractError,
+        match="publication comparator cannot use registry-default",
+    ):
+        execute_competition_plan(
+            plan,
+            load_method_registry(METHODS_PATH),
+            {prepared.binding.dataset_id: prepared},
+            executor,
+            CheckpointStore(tmp_path / "competition"),
+        )
+
+    assert executor.input_hashes == []
 
 
 def test_execute_competition_plan_rejects_stale_replaced_plan_checksum(

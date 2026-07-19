@@ -34,8 +34,11 @@ if TYPE_CHECKING:
     from .trajectory_dataset import RegisteredTrajectoryBinding
 
 from .comparator_tuning import (
+    ComparatorAdapterConfig,
     ComparatorTuningAuthority,
     bind_comparator_configuration_identity,
+    decode_comparator_configuration,
+    encode_comparator_configuration,
     load_comparator_tuning_authority,
 )
 from .methods import AdapterExecution, MethodInput, MethodSpec
@@ -5898,6 +5901,13 @@ def execute_competition_plan(
             raise RunnerContractError(
                 f"prepared dataset is missing for {entry.dataset_id}"
             )
+        if (
+            entry.method_id not in {"observed"}
+            and entry.configuration_id == "registry-default"
+        ):
+            raise RunnerContractError(
+                "publication comparator cannot use registry-default"
+            )
         matching_configurations = tuple(
             value
             for value in plan.configurations
@@ -5905,8 +5915,6 @@ def execute_competition_plan(
             and value.configuration_id == entry.configuration_id
             and value.configuration_sha256 == entry.configuration_sha256
         )
-        if not matching_configurations and entry.configuration_id == "registry-default":
-            matching_configurations = (AuthorizedConfiguration.registry_default(spec),)
         if len(matching_configurations) != 1:
             raise RunnerContractError(
                 f"plan lacks one exact execution configuration for {entry.run_id}"
@@ -6634,6 +6642,29 @@ class RepositoryAdapterDispatcher:
             )
         object.__setattr__(self, "repository_root", repository)
 
+    @staticmethod
+    def _comparator_config(request: ExecutionRequest) -> ComparatorAdapterConfig:
+        if request.configuration_kind != "comparator_tuning":
+            raise RunnerContractError("comparator request is not tuning-authorized")
+        payload = json.loads(
+            request.configuration_payload_json,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_unique_json_object,
+        )
+        config = decode_comparator_configuration(
+            request.method_spec.id,
+            payload,
+            expected_payload_sha256=str(request.configuration_payload_sha256),
+        )
+        encoded = encode_comparator_configuration(config)
+        if (
+            _canonical_bytes(encoded)
+            != request.configuration_payload_json.encode("utf-8")
+            or canonical_sha256(encoded) != request.configuration_payload_sha256
+        ):
+            raise RunnerContractError("decoded comparator payload checksum differs")
+        return config
+
     def _in_tree(self, request: ExecutionRequest) -> AdapterOutcome:
         if (
             request.base_configuration_json is None
@@ -6863,85 +6894,103 @@ class RepositoryAdapterDispatcher:
                     _declared_failure_reason("adapter_not_implemented", method_id)
                 )
             else:
-                executable = self.environments.executable_for(method_id)
-                if executable is None:
-                    return AdapterOutcome.unavailable(
-                        _declared_failure_reason(
-                            "environment_executable_unavailable", method_id
+                config = self._comparator_config(request)
+                try:
+                    executable = self.environments.executable_for(method_id)
+                    if executable is None:
+                        return AdapterOutcome.unavailable(
+                            _declared_failure_reason(
+                                "environment_executable_unavailable", method_id
+                            )
                         )
-                    )
-                source = request.method_spec.source.cache_path
-                if source is None:
-                    return AdapterOutcome.unavailable(
-                        _declared_failure_reason(
-                            "pinned_source_path_unavailable", method_id
+                    source = request.method_spec.source.cache_path
+                    if source is None:
+                        return AdapterOutcome.unavailable(
+                            _declared_failure_reason(
+                                "pinned_source_path_unavailable", method_id
+                            )
                         )
-                    )
-                source_dir = self.repository_root / source
-                seed = request.model_seed
-                if seed is None:
-                    return AdapterOutcome.failed(
-                        _declared_failure_reason("stochastic_seed_missing", method_id)
-                    )
-                if method_id == "alra":
-                    from .methods import run_alra
+                    source_dir = self.repository_root / source
+                    seed = request.model_seed
+                    if seed is None:
+                        return AdapterOutcome.failed(
+                            _declared_failure_reason(
+                                "stochastic_seed_missing", method_id
+                            )
+                        )
+                    if method_id == "alra":
+                        from .methods import run_alra
 
-                    execution = run_alra(
-                        request.method_spec,
-                        request.method_input,
-                        source_dir=source_dir,
-                        rscript=executable,
-                        seed=seed,
-                    )
-                elif method_id == "saver":
-                    from .methods import run_saver
+                        execution = run_alra(
+                            request.method_spec,
+                            request.method_input,
+                            source_dir=source_dir,
+                            rscript=executable,
+                            seed=seed,
+                            config=config,
+                        )
+                    elif method_id == "saver":
+                        from .methods import run_saver
 
-                    execution = run_saver(
-                        request.method_spec,
-                        request.method_input,
-                        source_dir=source_dir,
-                        rscript=executable,
-                        seed=seed,
-                        library_dir=(
-                            self.repository_root / "artifacts/envs/saver-r/library"
-                        ),
-                        lock_manifest=(
-                            self.repository_root / "environments/saver-r.lock.json"
-                        ),
-                        build_receipt=(
-                            self.repository_root
-                            / "environments/saver-r.build-receipt.json"
-                        ),
-                    )
-                else:
-                    from .methods import (
-                        run_afmf,
-                        run_biaeimpute,
-                        run_dca,
-                        run_magic,
-                        run_sccr,
-                        run_scsdae,
-                        run_scvi,
-                        run_scziva,
-                    )
+                        execution = run_saver(
+                            request.method_spec,
+                            request.method_input,
+                            source_dir=source_dir,
+                            rscript=executable,
+                            seed=seed,
+                            library_dir=(
+                                self.repository_root / "artifacts/envs/saver-r/library"
+                            ),
+                            lock_manifest=(
+                                self.repository_root / "environments/saver-r.lock.json"
+                            ),
+                            build_receipt=(
+                                self.repository_root
+                                / "environments/saver-r.build-receipt.json"
+                            ),
+                            config=config,
+                        )
+                    else:
+                        from .methods import (
+                            run_afmf,
+                            run_biaeimpute,
+                            run_dca,
+                            run_magic,
+                            run_sccr,
+                            run_scsdae,
+                            run_scvi,
+                            run_scziva,
+                        )
 
-                    functions = {
-                        "afmf": run_afmf,
-                        "biaeimpute": run_biaeimpute,
-                        "dca": run_dca,
-                        "magic": run_magic,
-                        "sccr": run_sccr,
-                        "scsdae": run_scsdae,
-                        "scvi": run_scvi,
-                        "scziva": run_scziva,
-                    }
-                    execution = functions[method_id](
-                        request.method_spec,
-                        request.method_input,
-                        source_dir=source_dir,
-                        python_executable=executable,
-                        seed=seed,
-                    )
+                        functions = {
+                            "afmf": run_afmf,
+                            "biaeimpute": run_biaeimpute,
+                            "dca": run_dca,
+                            "magic": run_magic,
+                            "sccr": run_sccr,
+                            "scsdae": run_scsdae,
+                            "scvi": run_scvi,
+                            "scziva": run_scziva,
+                        }
+                        execution = functions[method_id](
+                            request.method_spec,
+                            request.method_input,
+                            source_dir=source_dir,
+                            python_executable=executable,
+                            seed=seed,
+                            config=config,
+                        )
+                finally:
+                    encoded = encode_comparator_configuration(config)
+                    if (
+                        _canonical_bytes(encoded)
+                        != request.configuration_payload_json.encode("utf-8")
+                        or canonical_sha256(encoded)
+                        != request.configuration_payload_sha256
+                    ):
+                        raise RunnerContractError(
+                            "comparator payload changed during adapter attempt"
+                        )
             return AdapterOutcome.completed(
                 execution,
                 runtime_seconds=0,
