@@ -212,17 +212,23 @@ def dispatcher_fixture(
         "revalidate_for",
         lambda _self, _method_id: None,
     )
-    return RepositoryAdapterDispatcher(tmp_path, environments)
-
-
-@pytest.fixture
-def request_for_comparator(dispatcher_fixture: RepositoryAdapterDispatcher):
-    registry = load_method_registry(METHODS_PATH)
     tuning_authority = load_comparator_tuning_authority(
         Path.cwd(),
         registry=registry,
         require_clean=False,
     )
+    return RepositoryAdapterDispatcher(
+        tmp_path,
+        environments,
+        comparator_tuning_authority=tuning_authority,
+    )
+
+
+@pytest.fixture
+def request_for_comparator(dispatcher_fixture: RepositoryAdapterDispatcher):
+    registry = load_method_registry(METHODS_PATH)
+    tuning_authority = dispatcher_fixture.comparator_tuning_authority
+    assert tuning_authority is not None
 
     def create(method_id: str, configuration_id: str) -> ExecutionRequest:
         spec = registry.by_id(method_id)
@@ -1644,6 +1650,96 @@ def test_dispatcher_passes_exact_typed_comparator_config(
 
     assert outcome.status == "failed"
     assert getattr(captured["config"], field) == expected
+
+
+@pytest.mark.parametrize(
+    "configuration_id",
+    (
+        pytest.param("magic-t03", id="known-label-for-another-payload"),
+        pytest.param("magic-t99", id="unknown-same-method-label"),
+    ),
+)
+def test_dispatcher_rejects_relabelled_comparator_before_adapter_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    dispatcher_fixture: RepositoryAdapterDispatcher,
+    request_for_comparator,
+    configuration_id: str,
+) -> None:
+    request = _replace_request_with_recomputed_digest(
+        request_for_comparator("magic", "magic-t07"),
+        configuration_id=configuration_id,
+    )
+    request.validate_integrity()
+    observed_spec = load_method_registry(METHODS_PATH).by_id("observed")
+    execution = run_observed(observed_spec, request.method_input)
+    attempted_diffusion_times: list[int] = []
+
+    def capture_config(*_args, **kwargs):
+        attempted_diffusion_times.append(kwargs["config"].diffusion_time)
+        return execution
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.methods.run_magic",
+        capture_config,
+    )
+
+    outcome = dispatcher_fixture._execute_validated(request)
+
+    assert attempted_diffusion_times == []
+    assert outcome.status == "failed"
+
+
+@pytest.mark.parametrize(
+    "authority_field",
+    (
+        "tuning_authority_file_sha256",
+        "tuning_authority_payload_sha256",
+    ),
+)
+def test_dispatcher_rejects_different_comparator_authority_before_adapter_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    dispatcher_fixture: RepositoryAdapterDispatcher,
+    request_for_comparator,
+    authority_field: str,
+) -> None:
+    request = request_for_comparator("magic", "magic-t07")
+    substituted = "f" * 64
+    identity_body = {
+        "schema": "maskimpute-comparator-configuration-method-identity-v1",
+        "registry_method_sha256": request.registry_method_sha256,
+        "configuration_payload_sha256": request.configuration_payload_sha256,
+        "tuning_authority_file_sha256": request.tuning_authority_file_sha256,
+        "tuning_authority_payload_sha256": (request.tuning_authority_payload_sha256),
+        "source_authority_sha256": request.source_authority_sha256,
+        "runtime_lock_sha256": request.runtime_lock_sha256,
+        "environment_registry_sha256": request.environment_registry_sha256,
+    }
+    identity_body[authority_field] = substituted
+    request = _replace_request_with_recomputed_digest(
+        request,
+        **{
+            authority_field: substituted,
+            "configuration_method_identity_sha256": canonical_sha256(identity_body),
+        },
+    )
+    request.validate_integrity()
+    observed_spec = load_method_registry(METHODS_PATH).by_id("observed")
+    execution = run_observed(observed_spec, request.method_input)
+    attempted: list[bool] = []
+
+    def capture_attempt(*_args, **_kwargs):
+        attempted.append(True)
+        return execution
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.methods.run_magic",
+        capture_attempt,
+    )
+
+    outcome = dispatcher_fixture._execute_validated(request)
+
+    assert attempted == []
+    assert outcome.status == "failed"
 
 
 def test_dispatcher_revalidates_comparator_payload_after_adapter_attempt(

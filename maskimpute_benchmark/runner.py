@@ -37,7 +37,6 @@ from .comparator_tuning import (
     ComparatorAdapterConfig,
     ComparatorTuningAuthority,
     bind_comparator_configuration_identity,
-    decode_comparator_configuration,
     encode_comparator_configuration,
     load_comparator_tuning_authority,
 )
@@ -6614,6 +6613,10 @@ class RepositoryAdapterDispatcher:
     repository_root: Path
     environments: ExecutionEnvironmentRegistry
     monitor_runtime_changes: bool = True
+    comparator_tuning_authority: ComparatorTuningAuthority | None = dataclass_field(
+        default=None,
+        repr=False,
+    )
 
     @property
     def supported_method_ids(self) -> tuple[str, ...]:
@@ -6640,10 +6643,16 @@ class RepositoryAdapterDispatcher:
             raise RunnerContractError(
                 "dispatcher repository differs from environment registry"
             )
+        if self.comparator_tuning_authority is not None and not isinstance(
+            self.comparator_tuning_authority,
+            ComparatorTuningAuthority,
+        ):
+            raise TypeError(
+                "comparator_tuning_authority must be a ComparatorTuningAuthority"
+            )
         object.__setattr__(self, "repository_root", repository)
 
-    @staticmethod
-    def _comparator_config(request: ExecutionRequest) -> ComparatorAdapterConfig:
+    def _comparator_config(self, request: ExecutionRequest) -> ComparatorAdapterConfig:
         if request.configuration_kind != "comparator_tuning":
             raise RunnerContractError("comparator request is not tuning-authorized")
         payload = json.loads(
@@ -6651,16 +6660,41 @@ class RepositoryAdapterDispatcher:
             parse_constant=_reject_json_constant,
             object_pairs_hook=_unique_json_object,
         )
-        config = decode_comparator_configuration(
-            request.method_spec.id,
-            payload,
-            expected_payload_sha256=str(request.configuration_payload_sha256),
+        canonical_payload_bytes = _canonical_bytes(payload)
+        authority = self.comparator_tuning_authority
+        if authority is None:
+            registry = load_method_registry(self.repository_root / "study/methods.json")
+            authority = load_comparator_tuning_authority(
+                self.repository_root,
+                registry=registry,
+            )
+        matching_rows = tuple(
+            row
+            for row in authority.configurations
+            if row.method_id == request.method_spec.id
+            and row.configuration_id == request.configuration_id
+            and row.payload_json.encode("utf-8") == canonical_payload_bytes
+            and row.payload_sha256 == request.configuration_payload_sha256
         )
+        if len(matching_rows) != 1:
+            raise RunnerContractError(
+                "comparator request does not resolve to one exact authority row"
+            )
+        if (
+            request.tuning_authority_file_sha256 != authority.file_sha256
+            or request.tuning_authority_payload_sha256 != authority.payload_sha256
+        ):
+            raise RunnerContractError(
+                "comparator request names a different tuning authority"
+            )
+        authoritative_row = matching_rows[0]
+        config = authoritative_row.decode()
         encoded = encode_comparator_configuration(config)
         if (
             _canonical_bytes(encoded)
             != request.configuration_payload_json.encode("utf-8")
-            or canonical_sha256(encoded) != request.configuration_payload_sha256
+            or canonical_sha256(encoded) != authoritative_row.payload_sha256
+            or authoritative_row.payload_sha256 != request.configuration_payload_sha256
         ):
             raise RunnerContractError("decoded comparator payload checksum differs")
         return config
