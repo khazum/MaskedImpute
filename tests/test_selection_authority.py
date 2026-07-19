@@ -459,6 +459,7 @@ def _minimal_reconstruction_evidence(repository: Path, *, input_hashes=None):
         "planned_run_count": 0,
         "status": "completed",
         "evaluation_scope": "reconstruction_only",
+        "comparator_selection_status": "complete_terminal_denominator",
         "selection_complete": False,
         "selection_blockers": [],
         "records": [],

@@ -36,6 +36,7 @@ def _completed_checkpoint(tmp_path: Path):
         CompetitionPlan,
         DatasetBinding,
         DatasetQCPolicy,
+        DevelopmentBudget,
         RunPlanEntry,
         evaluate_adapter_outcome,
         implementation_source_sha256,
@@ -130,24 +131,32 @@ def _completed_checkpoint(tmp_path: Path):
         plan_sha256=canonical_sha256(plan_core),
     )
     execution = run_observed(spec, prepared.method_input)
+    outcome = AdapterOutcome.completed(
+        execution,
+        runtime_seconds=0.1,
+        peak_rss_bytes=1,
+        peak_gpu_bytes=0,
+    )
     attempt = evaluate_adapter_outcome(
         entry,
         prepared,
-        AdapterOutcome.completed(
-            execution,
-            runtime_seconds=0.1,
-            peak_rss_bytes=1,
-            peak_gpu_bytes=0,
-        ),
+        outcome,
+    )
+    budget = DevelopmentBudget()
+    budget.record(
+        spec,
+        entry.configuration_sha256,
+        outcome,
+        counts_toward_configuration_limit=False,
+        budget_scope=entry.method_id,
     )
     store = CheckpointStore(tmp_path / "competition")
     report = store.append(
         plan,
         None,
         attempt,
-        __import__(
-            "maskimpute_benchmark.runner", fromlist=["DevelopmentBudget"]
-        ).DevelopmentBudget(),
+        budget,
+        registry=registry,
         prepared_datasets={prepared.binding.dataset_id: prepared},
     )
     return plan, store, report, prepared
@@ -270,11 +279,12 @@ def test_completed_checkpoint_loader_rejects_cross_read_replacement(
     original_load = CheckpointStore.load
 
     def replace_after_load(
-        checkpoint_store, requested_plan, *, prepared_datasets
+        checkpoint_store, requested_plan, *, registry, prepared_datasets
     ):
         report = original_load(
             checkpoint_store,
             requested_plan,
+            registry=registry,
             prepared_datasets=prepared_datasets,
         )
         payload = json.loads(checkpoint_store.checkpoint_path.read_bytes())

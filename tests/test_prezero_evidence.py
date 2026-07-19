@@ -34,6 +34,7 @@ from maskimpute_benchmark.runner import (
     RunnerContractError,
     evaluate_adapter_outcome,
     implementation_source_sha256,
+    replay_development_budget,
 )
 from maskimpute_benchmark.protocol import canonical_sha256
 
@@ -52,6 +53,21 @@ def _prepared_datasets(
     prepared: PreparedDataset,
 ) -> dict[str, PreparedDataset]:
     return {prepared.binding.dataset_id: prepared}
+
+
+def _budget_for_attempt(plan: CompetitionPlan, attempt) -> DevelopmentBudget:
+    return replay_development_budget(
+        load_method_registry(METHODS),
+        plan.entries,
+        (
+            {
+                "run": {
+                    "status": attempt.run.status,
+                    "runtime_seconds": attempt.run.runtime_seconds,
+                }
+            },
+        ),
+    )
 
 
 def _identity_calibration_artifact():
@@ -1017,14 +1033,16 @@ def test_development_checkpoint_compresses_and_resumes_realized_score_evidence(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
     second_report = second.append(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
     evidence = first_report.records[0]["p_pre_zero_evidence"]
@@ -1047,10 +1065,10 @@ def test_development_checkpoint_compresses_and_resumes_realized_score_evidence(
     assert storage["uncompressed_nbytes"] == len(expected)
     assert first_path.read_bytes() == second_path.read_bytes()
     assert (
-        CheckpointStore(
-            first.output_dir, authority_repository=tmp_path
-        ).load(
-            plan, prepared_datasets=_prepared_datasets(prepared)
+        CheckpointStore(first.output_dir, authority_repository=tmp_path).load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=_prepared_datasets(prepared),
         )
         == first_report
     )
@@ -1068,7 +1086,8 @@ def test_development_checkpoint_rejects_coordinated_score_replacement(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=prepared_datasets,
     )
 
@@ -1105,7 +1124,11 @@ def test_development_checkpoint_rejects_coordinated_score_replacement(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="matrix differs"):
-        store.load(plan, prepared_datasets=prepared_datasets)
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=prepared_datasets,
+        )
 
 
 def test_score_authority_cache_returns_detached_matrix_and_policy(
@@ -1118,7 +1141,8 @@ def test_score_authority_cache_returns_detached_matrix_and_policy(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=prepared_datasets,
     )
     assert plan.execution_context is not None
@@ -1161,7 +1185,11 @@ def test_score_authority_cache_returns_detached_matrix_and_policy(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="policy differs"):
-        store.load(plan, prepared_datasets=prepared_datasets)
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=prepared_datasets,
+        )
 
 
 def test_development_append_validates_before_publishing_and_allows_retry(
@@ -1196,7 +1224,8 @@ def test_development_append_validates_before_publishing_and_allows_retry(
             plan,
             None,
             invalid_attempt,
-            DevelopmentBudget(),
+            _budget_for_attempt(plan, invalid_attempt),
+            registry=load_method_registry(METHODS),
             prepared_datasets=prepared_datasets,
         )
     assert not store.output_dir.exists()
@@ -1205,7 +1234,8 @@ def test_development_append_validates_before_publishing_and_allows_retry(
         plan,
         None,
         valid_attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, valid_attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=prepared_datasets,
     )
     assert report.status == "completed"
@@ -1240,7 +1270,8 @@ def test_development_restart_cleans_interrupted_intent_staging(
         plan,
         None,
         retry,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, retry),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
 
@@ -1284,7 +1315,8 @@ def test_development_restart_cleans_interrupted_run_artifact_staging(
         plan,
         None,
         retry,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, retry),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
 
@@ -1334,7 +1366,8 @@ def test_development_restart_cleans_interrupted_checkpoint_staging(
         plan,
         None,
         retry,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, retry),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
 
@@ -1377,7 +1410,8 @@ def test_development_restart_recovers_every_interrupted_artifact_boundary(
             plan,
             None,
             attempt,
-            DevelopmentBudget(),
+            _budget_for_attempt(plan, attempt),
+            registry=load_method_registry(METHODS),
             prepared_datasets=prepared_datasets,
         )
     assert not store.checkpoint_path.exists()
@@ -1392,7 +1426,8 @@ def test_development_restart_recovers_every_interrupted_artifact_boundary(
         plan,
         None,
         retry,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, retry),
+        registry=load_method_registry(METHODS),
         prepared_datasets=prepared_datasets,
     )
 
@@ -1418,7 +1453,8 @@ def test_development_restart_retains_committed_artifacts_and_closes_intent(
             plan,
             None,
             attempt,
-            DevelopmentBudget(),
+            _budget_for_attempt(plan, attempt),
+            registry=load_method_registry(METHODS),
             prepared_datasets=prepared_datasets,
         )
     assert store.checkpoint_path.is_file()
@@ -1430,7 +1466,11 @@ def test_development_restart_retains_committed_artifacts_and_closes_intent(
     }
 
     restarted = CheckpointStore(store.output_dir, authority_repository=tmp_path)
-    report = restarted.load(plan, prepared_datasets=prepared_datasets)
+    report = restarted.load(
+        plan,
+        registry=load_method_registry(METHODS),
+        prepared_datasets=prepared_datasets,
+    )
 
     assert report.status == "completed"
     assert not (store.output_dir / "transactions").exists()
@@ -1465,7 +1505,8 @@ def test_development_recovery_refuses_nonunique_or_linked_artifact(
             plan,
             None,
             attempt,
-            DevelopmentBudget(),
+            _budget_for_attempt(plan, attempt),
+            registry=load_method_registry(METHODS),
             prepared_datasets=prepared_datasets,
         )
     artifact = store.output_dir / f"runs/{attempt.run.run_id}.stdout"
@@ -1483,7 +1524,8 @@ def test_development_recovery_refuses_nonunique_or_linked_artifact(
             plan,
             None,
             attempt,
-            DevelopmentBudget(),
+            _budget_for_attempt(plan, attempt),
+            registry=load_method_registry(METHODS),
             prepared_datasets=prepared_datasets,
         )
 
@@ -1621,7 +1663,8 @@ def test_development_conversion_terminal_score_remains_exactly_authorized(
         plan,
         None,
         conversion_attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, conversion_attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=prepared_datasets,
     )
     assert report.records[0]["run"]["status"] == "unavailable"
@@ -1670,7 +1713,11 @@ def test_development_conversion_terminal_score_remains_exactly_authorized(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="p_pre_zero|matrix|policy|report"):
-        store.load(plan, prepared_datasets=prepared_datasets)
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=prepared_datasets,
+        )
 
 
 def test_development_conversion_terminal_score_cannot_be_coordinately_removed(
@@ -1705,7 +1752,8 @@ def test_development_conversion_terminal_score_cannot_be_coordinately_removed(
         plan,
         None,
         conversion_attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, conversion_attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=prepared_datasets,
     )
     stored_evidence = report.records[0]["p_pre_zero_evidence"]
@@ -1745,7 +1793,11 @@ def test_development_conversion_terminal_score_cannot_be_coordinately_removed(
 
     _rewrite_checkpoint(store, remove_score)
     with pytest.raises(RunnerContractError, match="p_pre_zero|matrix|authority"):
-        store.load(plan, prepared_datasets=prepared_datasets)
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=prepared_datasets,
+        )
 
 
 def test_development_checkpoint_rejects_rehashed_metric_drift(
@@ -1758,7 +1810,8 @@ def test_development_checkpoint_rejects_rehashed_metric_drift(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=prepared_datasets,
     )
 
@@ -1769,7 +1822,11 @@ def test_development_checkpoint_rejects_rehashed_metric_drift(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="report differs"):
-        store.load(plan, prepared_datasets=prepared_datasets)
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=prepared_datasets,
+        )
 
 
 def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
@@ -1781,7 +1838,8 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
     evidence = report.records[0]["p_pre_zero_evidence"]
@@ -1790,7 +1848,11 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
 
     path.write_bytes(original + b"tamper")
     with pytest.raises(RunnerContractError, match="p_pre_zero|score.*checksum"):
-        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=_prepared_datasets(prepared),
+        )
 
     path.write_bytes(original)
     _rewrite_checkpoint(
@@ -1800,7 +1862,11 @@ def test_development_checkpoint_rejects_score_tamper_and_partial_receipts(
         ),
     )
     with pytest.raises(RunnerContractError, match="p_pre_zero|score.*partial"):
-        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=_prepared_datasets(prepared),
+        )
 
 
 @pytest.mark.parametrize(
@@ -1831,7 +1897,8 @@ def test_development_checkpoint_rejects_semantically_invalid_score_payload(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
 
@@ -1882,7 +1949,11 @@ def test_development_checkpoint_rejects_semantically_invalid_score_payload(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="p_pre_zero|score"):
-        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=_prepared_datasets(prepared),
+        )
 
 
 def test_checkpoint_rejects_observed_zero_count_larger_than_retained_matrix(
@@ -1917,7 +1988,8 @@ def test_checkpoint_rejects_observed_zero_count_larger_than_retained_matrix(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
 
@@ -1940,7 +2012,11 @@ def test_checkpoint_rejects_observed_zero_count_larger_than_retained_matrix(
 
     _rewrite_checkpoint(store, mutate)
     with pytest.raises(RunnerContractError, match="observed_zero_count"):
-        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=_prepared_datasets(prepared),
+        )
 
 
 def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
@@ -1952,7 +2028,8 @@ def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
     evidence = report.records[0]["p_pre_zero_evidence"]
@@ -1968,7 +2045,11 @@ def test_development_checkpoint_bounded_decompression_rejects_zip_bomb(
 
     _rewrite_checkpoint(store, bind_oversized)
     with pytest.raises(RunnerContractError, match="p_pre_zero|score.*compressed"):
-        store.load(plan, prepared_datasets=_prepared_datasets(prepared))
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS),
+            prepared_datasets=_prepared_datasets(prepared),
+        )
 
 
 def test_development_evidence_manifest_includes_realized_score_artifact(
@@ -1984,7 +2065,8 @@ def test_development_evidence_manifest_includes_realized_score_artifact(
         plan,
         None,
         attempt,
-        DevelopmentBudget(),
+        _budget_for_attempt(plan, attempt),
+        registry=load_method_registry(METHODS),
         prepared_datasets=_prepared_datasets(prepared),
     )
 

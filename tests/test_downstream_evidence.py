@@ -552,6 +552,7 @@ def _development_source(tmp_path: Path):
         "planned_run_count": 2,
         "status": "completed",
         "evaluation_scope": "reconstruction_only",
+        "comparator_selection_status": "complete_terminal_denominator",
         "selection_complete": False,
         "selection_blockers": ["downstream_evidence_pending"],
         "records": records,

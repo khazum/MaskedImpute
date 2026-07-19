@@ -2608,6 +2608,7 @@ def load_completed_reconstruction_checkpoint(
         CompetitionPlan,
         RunnerContractError,
     )
+    from .methods.registry import load_method_registry
     from .protocol import canonical_sha256
 
     if not isinstance(checkpoint_directory, Path):
@@ -2619,7 +2620,13 @@ def load_completed_reconstruction_checkpoint(
         authority_repository=authority_repository,
     )
     try:
-        report = store.load(plan, prepared_datasets=prepared_datasets)
+        report = store.load(
+            plan,
+            registry=load_method_registry(
+                Path(__file__).resolve().parents[1] / "study/methods.json"
+            ),
+            prepared_datasets=prepared_datasets,
+        )
         if (
             report.status != "completed"
             or len(report.records) != report.planned_run_count
@@ -2646,6 +2653,7 @@ def load_completed_reconstruction_checkpoint(
                 "planned_run_count",
                 "status",
                 "evaluation_scope",
+                "comparator_selection_status",
                 "selection_complete",
                 "selection_blockers",
                 "records",
@@ -2668,6 +2676,8 @@ def load_completed_reconstruction_checkpoint(
             or checkpoint_payload.get("planned_run_count") != report.planned_run_count
             or checkpoint_payload.get("status") != report.status
             or checkpoint_payload.get("evaluation_scope") != report.evaluation_scope
+            or checkpoint_payload.get("comparator_selection_status")
+            != report.comparator_selection_status
             or checkpoint_payload.get("selection_complete") != report.selection_complete
             or checkpoint_payload.get("selection_blockers")
             != list(report.selection_blockers)

@@ -80,6 +80,12 @@ SELECTION_COMPLETENESS_BLOCKERS = (
     "null_de_fpr_not_evaluated",
     "orthogonal_endpoints_not_evaluated",
 )
+INTRINSIC_TERMINAL_STATUSES = frozenset(
+    {"failed", "timeout", "resource_exceeded", "unavailable"}
+)
+COMPARATOR_SELECTION_BLOCKING_STATUSES = frozenset(
+    {"budget_exhausted", "blocked_authority", "infrastructure_error"}
+)
 _IMPLEMENTATION_SOURCE_DIRECTORIES = ("maskimpute", "maskimpute_benchmark")
 _IMPLEMENTATION_SOURCE_FILES = ("scripts/run_development_competition.py",)
 _DEVELOPMENT_RUNTIME_LOCK_PATH = (
@@ -1703,6 +1709,18 @@ class RunPlanEntry:
         return asdict(self)
 
 
+def _counts_toward_configuration_limit(entry: RunPlanEntry) -> bool:
+    return entry.configuration_kind in {"candidate_search", "comparator_tuning"}
+
+
+def _budget_scope(entry: RunPlanEntry) -> str:
+    return (
+        f"{entry.method_id}:{entry.configuration_kind}"
+        if entry.method_id == "maskimpute"
+        else entry.method_id
+    )
+
+
 def _competition_plan_body(
     *,
     schema_version: int,
@@ -3231,6 +3249,58 @@ class DevelopmentBudget:
         }
 
 
+def replay_development_budget(
+    registry: MethodRegistry,
+    entries: Sequence[RunPlanEntry],
+    records: Sequence[Mapping[str, object]],
+) -> DevelopmentBudget:
+    if len(records) > len(entries):
+        raise RunnerContractError("checkpoint records are not a plan prefix")
+    budget = DevelopmentBudget()
+    for entry, stored in zip(entries, records, strict=False):
+        run = stored.get("run")
+        if not isinstance(run, Mapping):
+            raise RunnerContractError("checkpoint budget replay record is invalid")
+        budget.restore(
+            registry.by_id(entry.method_id),
+            entry.configuration_sha256,
+            str(run.get("status")),
+            run.get("runtime_seconds"),
+            counts_toward_configuration_limit=(
+                _counts_toward_configuration_limit(entry)
+            ),
+            budget_scope=_budget_scope(entry),
+        )
+    return budget
+
+
+def _comparator_selection_status(
+    entries: Sequence[RunPlanEntry],
+    records: Sequence[Mapping[str, object]],
+) -> Literal[
+    "complete_terminal_denominator",
+    "blocked_incomplete_denominator",
+]:
+    for position, entry in enumerate(entries):
+        if entry.configuration_kind != "comparator_tuning":
+            continue
+        if position >= len(records):
+            return "blocked_incomplete_denominator"
+        run = records[position].get("run")
+        if not isinstance(run, Mapping):
+            raise RunnerContractError(
+                "checkpoint comparator-selection record is invalid"
+            )
+        status = str(run.get("status"))
+        if status in COMPARATOR_SELECTION_BLOCKING_STATUSES:
+            return "blocked_incomplete_denominator"
+        if status != "completed" and status not in INTRINSIC_TERMINAL_STATUSES:
+            raise RunnerContractError(
+                "checkpoint comparator-selection status is invalid"
+            )
+    return "complete_terminal_denominator"
+
+
 @dataclass(frozen=True, slots=True)
 class RawRunResult:
     """Status-complete measured attempt before artifact paths are assigned."""
@@ -4213,6 +4283,10 @@ class CheckpointReport:
     planned_run_count: int
     status: Literal["running", "completed"]
     evaluation_scope: Literal["reconstruction_only"]
+    comparator_selection_status: Literal[
+        "complete_terminal_denominator",
+        "blocked_incomplete_denominator",
+    ]
     selection_complete: bool
     selection_blockers: tuple[str, ...]
     records: tuple[Mapping[str, object], ...]
@@ -4319,6 +4393,7 @@ class CheckpointStore:
             "planned_run_count",
             "status",
             "evaluation_scope",
+            "comparator_selection_status",
             "selection_complete",
             "selection_blockers",
             "records",
@@ -5225,11 +5300,16 @@ class CheckpointStore:
         records: Sequence[Mapping[str, object]],
         budget: DevelopmentBudget,
         *,
+        registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
     ) -> CheckpointReport:
         _validate_prepared_dataset_authority(plan, prepared_datasets)
         record_values = tuple(dict(record) for record in records)
         status = "completed" if len(record_values) == len(plan.entries) else "running"
+        comparator_selection_status = _comparator_selection_status(
+            plan.entries,
+            record_values,
+        )
         body: dict[str, object] = {
             "schema_version": 1,
             "plan_sha256": plan.plan_sha256,
@@ -5237,6 +5317,7 @@ class CheckpointStore:
             "planned_run_count": len(plan.entries),
             "status": status,
             "evaluation_scope": "reconstruction_only",
+            "comparator_selection_status": comparator_selection_status,
             "selection_complete": False,
             "selection_blockers": list(SELECTION_COMPLETENESS_BLOCKERS),
             "records": list(record_values),
@@ -5244,7 +5325,11 @@ class CheckpointStore:
         }
         body["checkpoint_sha256"] = canonical_sha256(body)
         self._publish_checkpoint(body)
-        return self.load(plan, prepared_datasets=prepared_datasets)
+        return self.load(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
 
     def append(
         self,
@@ -5253,6 +5338,7 @@ class CheckpointStore:
         attempt: EvaluatedAttempt,
         budget: DevelopmentBudget,
         *,
+        registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
     ) -> CheckpointReport:
         prepared_by_dataset = _validate_prepared_dataset_authority(
@@ -5304,6 +5390,7 @@ class CheckpointStore:
             plan,
             records,
             budget,
+            registry=registry,
             prepared_datasets=prepared_datasets,
         )
 
@@ -5714,10 +5801,13 @@ class CheckpointStore:
         self,
         plan: CompetitionPlan,
         *,
+        registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
     ) -> CheckpointReport:
         if not isinstance(plan, CompetitionPlan):
             raise TypeError("plan must be a CompetitionPlan")
+        if not isinstance(registry, MethodRegistry):
+            raise TypeError("registry must be a MethodRegistry")
         self._recover_interrupted_transactions(plan)
         prepared_by_dataset = _validate_prepared_dataset_authority(
             plan, prepared_datasets
@@ -5794,6 +5884,14 @@ class CheckpointStore:
         )
         if payload.get("status") != expected_status:
             raise RunnerContractError("checkpoint status contradicts its plan prefix")
+        comparator_selection_status = _comparator_selection_status(
+            plan.entries,
+            records,
+        )
+        if payload.get("comparator_selection_status") != comparator_selection_status:
+            raise RunnerContractError(
+                "checkpoint comparator-selection status differs from its records"
+            )
         if (
             payload.get("evaluation_scope") != "reconstruction_only"
             or payload.get("selection_complete") is not False
@@ -5806,6 +5904,13 @@ class CheckpointStore:
         budget = payload.get("budget")
         if not isinstance(budget, dict):
             raise RunnerContractError("checkpoint budget ledger is malformed")
+        replayed_budget = replay_development_budget(
+            registry,
+            plan.entries,
+            records,
+        )
+        if budget != replayed_budget.to_dict():
+            raise RunnerContractError("checkpoint budget ledger differs from replay")
         return CheckpointReport(
             schema_version=1,
             plan_sha256=plan.plan_sha256,
@@ -5813,6 +5918,7 @@ class CheckpointStore:
             planned_run_count=len(plan.entries),
             status=expected_status,
             evaluation_scope="reconstruction_only",
+            comparator_selection_status=comparator_selection_status,
             selection_complete=False,
             selection_blockers=SELECTION_COMPLETENESS_BLOCKERS,
             records=records,
@@ -5842,30 +5948,19 @@ def execute_competition_plan(
         raise TypeError("checkpoint_store must be a CheckpointStore")
     plan.validate_integrity()
     report = (
-        checkpoint_store.load(plan, prepared_datasets=prepared_datasets)
+        checkpoint_store.load(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
         if checkpoint_store.checkpoint_path.exists()
         else None
     )
-    budget = DevelopmentBudget()
-    if report is not None:
-        for stored, entry in zip(report.records, plan.entries, strict=False):
-            run = stored["run"]
-            assert isinstance(run, Mapping)
-            spec = registry.by_id(str(run["method_id"]))
-            budget.restore(
-                spec,
-                str(run["configuration_sha256"]),
-                str(run["status"]),
-                run["runtime_seconds"],
-                counts_toward_configuration_limit=(
-                    entry.configuration_kind == "candidate_search"
-                ),
-                budget_scope=(
-                    f"{spec.id}:{entry.configuration_kind}"
-                    if spec.id == "maskimpute"
-                    else spec.id
-                ),
-            )
+    budget = (
+        DevelopmentBudget()
+        if report is None
+        else replay_development_budget(registry, plan.entries, report.records)
+    )
     start = 0 if report is None else len(report.records)
     qc_policy_sha256 = plan.input_hashes.get(
         "dataset_qc_policy_sha256", DatasetQCPolicy.fixed().sha256
@@ -5945,13 +6040,9 @@ def execute_competition_plan(
                 spec,
                 entry.configuration_sha256,
                 counts_toward_configuration_limit=(
-                    entry.configuration_kind == "candidate_search"
+                    _counts_toward_configuration_limit(entry)
                 ),
-                budget_scope=(
-                    f"{spec.id}:{entry.configuration_kind}"
-                    if spec.id == "maskimpute"
-                    else spec.id
-                ),
+                budget_scope=_budget_scope(entry),
             )
             if not decision.authorized:
                 assert decision.reason is not None
@@ -5993,13 +6084,9 @@ def execute_competition_plan(
                     entry.configuration_sha256,
                     outcome,
                     counts_toward_configuration_limit=(
-                        entry.configuration_kind == "candidate_search"
+                        _counts_toward_configuration_limit(entry)
                     ),
-                    budget_scope=(
-                        f"{spec.id}:{entry.configuration_kind}"
-                        if spec.id == "maskimpute"
-                        else spec.id
-                    ),
+                    budget_scope=_budget_scope(entry),
                 )
         evaluated = evaluate_adapter_outcome(
             entry,
@@ -6012,6 +6099,7 @@ def execute_competition_plan(
             report,
             evaluated,
             budget,
+            registry=registry,
             prepared_datasets=prepared_datasets,
         )
     if report is None:
@@ -6019,6 +6107,7 @@ def execute_competition_plan(
             plan,
             (),
             budget,
+            registry=registry,
             prepared_datasets=prepared_datasets,
         )
     return report

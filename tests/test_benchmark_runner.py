@@ -3077,6 +3077,100 @@ def test_noncompleted_attempts_keep_complete_reason_coded_metric_denominator(
     assert evaluated.evaluator_output is None
 
 
+@pytest.fixture
+def magic_spec():
+    return load_method_registry(METHODS_PATH).by_id("magic")
+
+
+@pytest.fixture
+def completed_outcome() -> AdapterOutcome:
+    method_input = _method_input()
+    observed = load_method_registry(METHODS_PATH).by_id("observed")
+    return AdapterOutcome.completed(
+        run_observed(observed, method_input),
+        runtime_seconds=1,
+        peak_rss_bytes=1,
+        peak_gpu_bytes=0,
+    )
+
+
+def test_comparator_configs_share_method_budget_and_restore_exactly(
+    magic_spec, completed_outcome
+) -> None:
+    budget = DevelopmentBudget()
+    hashes = tuple(f"{value:064x}" for value in range(1, 5))
+    for digest in hashes:
+        assert budget.authorize(magic_spec, digest).authorized
+        budget.record(magic_spec, digest, completed_outcome)
+    restored = DevelopmentBudget()
+    for digest in hashes:
+        restored.restore(
+            magic_spec,
+            digest,
+            "completed",
+            completed_outcome.runtime_seconds,
+        )
+    assert restored.to_dict() == budget.to_dict()
+
+
+def test_comparator_tuning_configs_share_method_budget_configuration_limit(
+    magic_spec, completed_outcome
+) -> None:
+    prepared = _prepared_truth_dataset()
+    _spec, bound = _bound_magic_configuration()
+    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
+    entry = _comparator_plan_entry(
+        prepared,
+        configuration,
+        preflight_status="planned",
+        preflight_reason=None,
+        configuration_method_identity_sha256=(
+            configuration.configuration_method_identity_sha256
+        ),
+        nonexecution_identity_sha256=None,
+    )
+    budget = DevelopmentBudget()
+    for value in range(1, runner_module.MAX_DEVELOPMENT_CONFIGURATIONS + 1):
+        digest = f"{value:064x}"
+        row = replace(
+            entry,
+            configuration_sha256=digest,
+            configuration_payload_sha256=digest,
+        )
+        assert budget.authorize(
+            magic_spec,
+            digest,
+            counts_toward_configuration_limit=(
+                runner_module._counts_toward_configuration_limit(row)
+            ),
+            budget_scope=runner_module._budget_scope(row),
+        ).authorized
+        budget.record(
+            magic_spec,
+            digest,
+            completed_outcome,
+            counts_toward_configuration_limit=(
+                runner_module._counts_toward_configuration_limit(row)
+            ),
+            budget_scope=runner_module._budget_scope(row),
+        )
+
+    excess_digest = "f" * 64
+    excess = replace(
+        entry,
+        configuration_sha256=excess_digest,
+        configuration_payload_sha256=excess_digest,
+    )
+    assert not budget.authorize(
+        magic_spec,
+        excess_digest,
+        counts_toward_configuration_limit=(
+            runner_module._counts_toward_configuration_limit(excess)
+        ),
+        budget_scope=runner_module._budget_scope(excess),
+    ).authorized
+
+
 def test_budget_caps_configurations_and_runtime_and_counts_failures() -> None:
     registry = load_method_registry(METHODS_PATH)
     gpu_spec = registry.by_id("maskimpute")
@@ -3261,6 +3355,196 @@ def _comparator_plan_entry(
     )
 
 
+@pytest.fixture
+def completed_checkpoint_fixture(tmp_path: Path):
+    prepared = _prepared_truth_dataset()
+    plan = _two_method_plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    execute_competition_plan(
+        plan,
+        load_method_registry(METHODS_PATH),
+        {prepared.binding.dataset_id: prepared},
+        _RecordingUnavailableExecutor(),
+        store,
+    )
+    return (
+        store.checkpoint_path,
+        plan,
+        {prepared.binding.dataset_id: prepared},
+    )
+
+
+def test_checkpoint_rejects_coherently_rehashed_budget_tamper(
+    completed_checkpoint_fixture,
+) -> None:
+    checkpoint_path, plan, prepared = completed_checkpoint_fixture
+    payload = json.loads(checkpoint_path.read_text())
+    payload["budget"]["magic"]["consumed_seconds"] += 1
+    payload["checkpoint_sha256"] = canonical_sha256(
+        {key: value for key, value in payload.items() if key != "checkpoint_sha256"}
+    )
+    checkpoint_path.write_bytes(runner_module._canonical_bytes(payload) + b"\n")
+    with pytest.raises(RunnerContractError, match="budget ledger differs from replay"):
+        CheckpointStore(checkpoint_path.parent).load(
+            plan,
+            registry=load_method_registry(METHODS_PATH),
+            prepared_datasets=prepared,
+        )
+
+
+def test_incomplete_grid_is_unselectable_until_comparator_is_terminal(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    plan = _two_method_plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    with pytest.raises(KeyboardInterrupt):
+        execute_competition_plan(
+            plan,
+            load_method_registry(METHODS_PATH),
+            {prepared.binding.dataset_id: prepared},
+            _InterruptSecondExecutor(),
+            store,
+        )
+    incomplete = store.load(
+        plan,
+        registry=load_method_registry(METHODS_PATH),
+        prepared_datasets={prepared.binding.dataset_id: prepared},
+    )
+    assert incomplete.comparator_selection_status == "blocked_incomplete_denominator"
+
+    complete = execute_competition_plan(
+        plan,
+        load_method_registry(METHODS_PATH),
+        {prepared.binding.dataset_id: prepared},
+        _RecordingUnavailableExecutor(),
+        store,
+    )
+    assert complete.comparator_selection_status == "complete_terminal_denominator"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (
+        AdapterOutcome.budget_exhausted("configuration_budget_exhausted"),
+        AdapterOutcome.blocked_authority("comparator_authority_missing"),
+        AdapterOutcome.infrastructure_error("scheduler_unavailable"),
+    ),
+)
+def test_incomplete_grid_blocking_statuses_remain_unselectable(
+    tmp_path: Path,
+    outcome: AdapterOutcome,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    _spec, bound = _bound_magic_configuration()
+    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
+    entry = _comparator_plan_entry(
+        prepared,
+        configuration,
+        preflight_status="planned",
+        preflight_reason=None,
+        configuration_method_identity_sha256=(
+            configuration.configuration_method_identity_sha256
+        ),
+        nonexecution_identity_sha256=None,
+    )
+    plan = _single_configuration_plan(prepared, entry, configuration)
+    report = CheckpointStore(tmp_path / outcome.status).append(
+        plan,
+        None,
+        evaluate_adapter_outcome(entry, prepared, outcome),
+        DevelopmentBudget(),
+        registry=load_method_registry(METHODS_PATH),
+        prepared_datasets={prepared.binding.dataset_id: prepared},
+    )
+    assert report.comparator_selection_status == "blocked_incomplete_denominator"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (
+        AdapterOutcome.failed("model_failure", runtime_seconds=1),
+        AdapterOutcome.timeout(runtime_seconds=1),
+        AdapterOutcome.resource_exceeded("peak_rss_exceeded", runtime_seconds=1),
+        AdapterOutcome.unavailable("dependency_unavailable", runtime_seconds=1),
+    ),
+)
+def test_comparator_selection_intrinsic_terminal_statuses_complete_grid(
+    tmp_path: Path,
+    outcome: AdapterOutcome,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    spec, bound = _bound_magic_configuration()
+    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
+    entry = _comparator_plan_entry(
+        prepared,
+        configuration,
+        preflight_status="planned",
+        preflight_reason=None,
+        configuration_method_identity_sha256=(
+            configuration.configuration_method_identity_sha256
+        ),
+        nonexecution_identity_sha256=None,
+    )
+    plan = _single_configuration_plan(prepared, entry, configuration)
+    budget = DevelopmentBudget()
+    budget.restore(
+        spec,
+        entry.configuration_sha256,
+        outcome.status,
+        outcome.runtime_seconds,
+        counts_toward_configuration_limit=(
+            runner_module._counts_toward_configuration_limit(entry)
+        ),
+        budget_scope=runner_module._budget_scope(entry),
+    )
+    report = CheckpointStore(tmp_path / outcome.status).append(
+        plan,
+        None,
+        evaluate_adapter_outcome(entry, prepared, outcome),
+        budget,
+        registry=load_method_registry(METHODS_PATH),
+        prepared_datasets={prepared.binding.dataset_id: prepared},
+    )
+    assert report.comparator_selection_status == "complete_terminal_denominator"
+
+
+def test_persisted_infrastructure_error_is_not_selectively_retried(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    plan = _two_method_plan(prepared)
+    store = CheckpointStore(tmp_path / "competition")
+    calls = 0
+
+    def infrastructure_executor(_request: ExecutionRequest) -> AdapterOutcome:
+        nonlocal calls
+        calls += 1
+        return AdapterOutcome.infrastructure_error("scheduler_unavailable")
+
+    first = execute_competition_plan(
+        plan,
+        load_method_registry(METHODS_PATH),
+        {prepared.binding.dataset_id: prepared},
+        infrastructure_executor,
+        store,
+    )
+    assert calls == 2
+    assert first.comparator_selection_status == "blocked_incomplete_denominator"
+
+    def forbidden_retry(_request: ExecutionRequest) -> AdapterOutcome:
+        raise AssertionError("persisted infrastructure error was selectively retried")
+
+    resumed = execute_competition_plan(
+        plan,
+        load_method_registry(METHODS_PATH),
+        {prepared.binding.dataset_id: prepared},
+        forbidden_retry,
+        store,
+    )
+    assert resumed == first
+
+
 def test_registry_default_comparator_request_is_rejected(tmp_path: Path) -> None:
     prepared = _prepared_truth_dataset()
     spec = load_method_registry(METHODS_PATH).by_id("magic")
@@ -3414,7 +3698,11 @@ def test_execution_reuses_one_truth_free_input_and_checkpoints_full_denominator(
     assert all(record["run"]["status"] == "unavailable" for record in report.records)
     checkpoint_bytes = store.checkpoint_path.read_bytes()
     assert checkpoint_bytes.endswith(b"\n")
-    loaded = store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
+    loaded = store.load(
+        plan,
+        registry=load_method_registry(METHODS_PATH),
+        prepared_datasets={prepared.binding.dataset_id: prepared},
+    )
     assert loaded == report
     for record in loaded.records:
         stdout = store.output_dir / record["run"]["stdout_path"]
@@ -3440,7 +3728,9 @@ def test_resume_requires_exact_plan_and_continues_only_after_valid_prefix(
             store,
         )
     partial = store.load(
-        plan, prepared_datasets={prepared.binding.dataset_id: prepared}
+        plan,
+        registry=load_method_registry(METHODS_PATH),
+        prepared_datasets={prepared.binding.dataset_id: prepared},
     )
     assert partial.status == "running"
     assert len(partial.records) == 1
@@ -3459,7 +3749,11 @@ def test_resume_requires_exact_plan_and_continues_only_after_valid_prefix(
 
     changed = replace(plan, plan_sha256="d" * 64)
     with pytest.raises(RunnerContractError, match="plan checksum"):
-        store.load(changed, prepared_datasets={prepared.binding.dataset_id: prepared})
+        store.load(
+            changed,
+            registry=load_method_registry(METHODS_PATH),
+            prepared_datasets={prepared.binding.dataset_id: prepared},
+        )
 
 
 def test_checkpoint_resume_rejects_changed_implementation_bytes(
@@ -3497,7 +3791,11 @@ def test_checkpoint_resume_rejects_changed_implementation_bytes(
     changed = source_root / "maskimpute/a.py"
     changed.write_bytes(changed.read_bytes() + b"# changed after checkpoint\n")
     with pytest.raises(RunnerContractError, match="implementation source"):
-        store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS_PATH),
+            prepared_datasets={prepared.binding.dataset_id: prepared},
+        )
 
 
 def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
@@ -3505,6 +3803,9 @@ def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
 ) -> None:
     prepared = _prepared_truth_dataset()
     entry = _entry_for(prepared, "observed", seed=None)
+    configuration = AuthorizedConfiguration.registry_default(
+        load_method_registry(METHODS_PATH).by_id("observed")
+    )
     plan = _rehash_competition_plan(
         CompetitionPlan(
             schema_version=1,
@@ -3514,6 +3815,7 @@ def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
             },
             entries=(entry,),
             plan_sha256="0" * 64,
+            configurations=(configuration,),
         )
     )
     store = CheckpointStore(tmp_path / "competition")
@@ -3530,14 +3832,22 @@ def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
     output = store.output_dir / run["evaluator_output_path"]
     assert output.stat().st_size == prepared.method_input.counts.size * 8
     assert (
-        store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS_PATH),
+            prepared_datasets={prepared.binding.dataset_id: prepared},
+        )
         == report
     )
 
     stdout = store.output_dir / run["stdout_path"]
     stdout.write_bytes(b"tampered")
     with pytest.raises(RunnerContractError, match="stdout.*checksum"):
-        store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS_PATH),
+            prepared_datasets={prepared.binding.dataset_id: prepared},
+        )
 
 
 def test_checkpoint_loader_rejects_symlink_replacement(tmp_path: Path) -> None:
@@ -3557,7 +3867,11 @@ def test_checkpoint_loader_rejects_symlink_replacement(tmp_path: Path) -> None:
     store.checkpoint_path.symlink_to(target)
 
     with pytest.raises(RunnerContractError, match="checkpoint.*regular file|symlink"):
-        store.load(plan, prepared_datasets={prepared.binding.dataset_id: prepared})
+        store.load(
+            plan,
+            registry=load_method_registry(METHODS_PATH),
+            prepared_datasets={prepared.binding.dataset_id: prepared},
+        )
 
 
 def test_implementation_source_digest_is_sorted_raw_and_symlink_safe(

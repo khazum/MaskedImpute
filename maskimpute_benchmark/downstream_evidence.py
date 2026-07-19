@@ -118,6 +118,7 @@ _DEVELOPMENT_CHECKPOINT_FIELDS = frozenset(
         "planned_run_count",
         "status",
         "evaluation_scope",
+        "comparator_selection_status",
         "selection_complete",
         "selection_blockers",
         "records",
