@@ -468,6 +468,26 @@ def bind_comparator_configuration_identity(
             raise ComparatorTuningError(f"{name} SHA-256 is invalid")
     if configuration.method_id != method_spec.id:
         raise ComparatorTuningError("configuration method differs from registry method")
+    authority_rows = tuple(
+        row for row in authority.configurations if row == configuration
+    )
+    if len(authority_rows) != 1:
+        raise ComparatorTuningError(
+            "configuration does not resolve to one exact authority configuration"
+        )
+    authoritative_configuration = authority_rows[0]
+    try:
+        authoritative_payload = dict(authoritative_configuration.payload)
+        canonical_payload_json = _canonical_bytes(authoritative_payload).decode("utf-8")
+    except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+        raise ComparatorTuningError(
+            "authority configuration payload is invalid JSON data"
+        ) from error
+    if authoritative_configuration.payload_json != canonical_payload_json:
+        raise ComparatorTuningError(
+            "authority configuration payload is not canonical JSON"
+        )
+    authoritative_configuration.decode()
     registry_method_sha256 = canonical_sha256(asdict(method_spec))
     source_authority_sha256 = canonical_sha256(
         {
@@ -479,7 +499,7 @@ def bind_comparator_configuration_identity(
     body = {
         "schema": "maskimpute-comparator-configuration-method-identity-v1",
         "registry_method_sha256": registry_method_sha256,
-        "configuration_payload_sha256": configuration.payload_sha256,
+        "configuration_payload_sha256": authoritative_configuration.payload_sha256,
         "tuning_authority_file_sha256": authority.file_sha256,
         "tuning_authority_payload_sha256": authority.payload_sha256,
         "source_authority_sha256": source_authority_sha256,
@@ -487,9 +507,9 @@ def bind_comparator_configuration_identity(
         "environment_registry_sha256": environment_registry_sha256,
     }
     return BoundComparatorConfiguration(
-        configuration=configuration,
+        configuration=authoritative_configuration,
         registry_method_sha256=registry_method_sha256,
-        configuration_payload_sha256=configuration.payload_sha256,
+        configuration_payload_sha256=authoritative_configuration.payload_sha256,
         tuning_authority_file_sha256=authority.file_sha256,
         tuning_authority_payload_sha256=authority.payload_sha256,
         source_authority_sha256=source_authority_sha256,

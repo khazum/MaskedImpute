@@ -1587,6 +1587,14 @@ class RunPlanEntry:
             raise RunnerContractError("plan configuration kind is invalid")
         _require_sha256(self.configuration_sha256, "plan configuration checksum")
         if self.configuration_payload_sha256 is None:
+            if self.configuration_kind not in {
+                "registry",
+                "candidate_search",
+                "ablation",
+            }:
+                raise RunnerContractError(
+                    "comparator plan entry requires an explicit payload checksum"
+                )
             object.__setattr__(
                 self,
                 "configuration_payload_sha256",
@@ -1628,6 +1636,31 @@ class RunPlanEntry:
         return asdict(self)
 
 
+def _competition_plan_body(
+    *,
+    schema_version: int,
+    input_hashes: Mapping[str, str],
+    entries: Sequence[RunPlanEntry],
+    configurations: Sequence[AuthorizedConfiguration],
+    execution_context: ExecutionAuthorityContext | None,
+) -> dict[str, object]:
+    return {
+        "schema_version": schema_version,
+        "input_hashes": dict(input_hashes),
+        "entries": [entry.to_dict() for entry in entries],
+        "configurations": [value.to_dict() for value in configurations],
+        "execution_context": (
+            None if execution_context is None else asdict(execution_context)
+        ),
+        "budgets": {
+            "maximum_configurations": MAX_DEVELOPMENT_CONFIGURATIONS,
+            "gpu_seconds": MAX_GPU_BUDGET_SECONDS,
+            "cpu_seconds": MAX_CPU_BUDGET_SECONDS,
+            "failures_consume_budget_except": "infrastructure_error",
+        },
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class CompetitionPlan:
     """Immutable full development denominator and all authority hashes."""
@@ -1638,6 +1671,23 @@ class CompetitionPlan:
     plan_sha256: str
     configurations: tuple[AuthorizedConfiguration, ...] = ()
     execution_context: ExecutionAuthorityContext | None = None
+
+    @property
+    def recomputed_plan_sha256(self) -> str:
+        return canonical_sha256(
+            _competition_plan_body(
+                schema_version=self.schema_version,
+                input_hashes=self.input_hashes,
+                entries=self.entries,
+                configurations=self.configurations,
+                execution_context=self.execution_context,
+            )
+        )
+
+    def validate_integrity(self) -> None:
+        _require_sha256(self.plan_sha256, "competition plan checksum")
+        if self.plan_sha256 != self.recomputed_plan_sha256:
+            raise RunnerContractError("competition plan checksum mismatch")
 
 
 def _run_id(
@@ -1793,19 +1843,13 @@ def build_competition_plan(
                             ),
                         )
                     )
-    plan_body = {
-        "schema_version": 1,
-        "input_hashes": input_hashes,
-        "entries": [entry.to_dict() for entry in entries],
-        "configurations": [value.to_dict() for value in plan_configurations],
-        "execution_context": asdict(authority.execution_context),
-        "budgets": {
-            "maximum_configurations": MAX_DEVELOPMENT_CONFIGURATIONS,
-            "gpu_seconds": MAX_GPU_BUDGET_SECONDS,
-            "cpu_seconds": MAX_CPU_BUDGET_SECONDS,
-            "failures_consume_budget_except": "infrastructure_error",
-        },
-    }
+    plan_body = _competition_plan_body(
+        schema_version=1,
+        input_hashes=input_hashes,
+        entries=entries,
+        configurations=plan_configurations,
+        execution_context=authority.execution_context,
+    )
     return CompetitionPlan(
         schema_version=1,
         input_hashes=MappingProxyType(input_hashes),
@@ -2314,6 +2358,29 @@ def _execution_request_binding(value: Mapping[str, object]) -> str:
     return canonical_sha256(dict(value))
 
 
+def _validate_comparator_method_spec_components(
+    method_spec: MethodSpec,
+    *,
+    registry_method_sha256: str | None,
+    source_authority_sha256: str | None,
+) -> None:
+    expected_registry_method_sha256 = canonical_sha256(asdict(method_spec))
+    expected_source_authority_sha256 = canonical_sha256(
+        {
+            "schema": "maskimpute-comparator-source-authority-v1",
+            "method_id": method_spec.id,
+            "source": asdict(method_spec.source),
+        }
+    )
+    if (
+        registry_method_sha256 != expected_registry_method_sha256
+        or source_authority_sha256 != expected_source_authority_sha256
+    ):
+        raise RunnerContractError(
+            "comparator registry or source identity differs from MethodSpec"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionRequest:
     """Closed truth-free request with all configuration/artifact authority in-band."""
@@ -2379,6 +2446,12 @@ class ExecutionRequest:
             raise TypeError("configuration must be an AuthorizedConfiguration")
         if configuration.method_id != method_spec.id:
             raise RunnerContractError("configuration method does not match MethodSpec")
+        if configuration.kind == "comparator_tuning":
+            _validate_comparator_method_spec_components(
+                method_spec,
+                registry_method_sha256=configuration.registry_method_sha256,
+                source_authority_sha256=configuration.source_authority_sha256,
+            )
         if configuration.kind == "comparator_nonexecution":
             raise RunnerContractError(
                 "comparator nonexecution configuration is never executable"
@@ -2594,6 +2667,11 @@ class ExecutionRequest:
                 raise RunnerContractError(
                     "comparator tuning request forbids nonexecution identity"
                 )
+            _validate_comparator_method_spec_components(
+                self.method_spec,
+                registry_method_sha256=self.registry_method_sha256,
+                source_authority_sha256=self.source_authority_sha256,
+            )
             body = {
                 "schema": "maskimpute-comparator-configuration-method-identity-v1",
                 "registry_method_sha256": self.registry_method_sha256,
@@ -5642,7 +5720,7 @@ def execute_competition_plan(
         raise TypeError("executor must be callable")
     if not isinstance(checkpoint_store, CheckpointStore):
         raise TypeError("checkpoint_store must be a CheckpointStore")
-    _require_sha256(plan.plan_sha256, "competition plan checksum")
+    plan.validate_integrity()
     report = (
         checkpoint_store.load(plan, prepared_datasets=prepared_datasets)
         if checkpoint_store.checkpoint_path.exists()
@@ -5723,6 +5801,16 @@ def execute_competition_plan(
         ):
             raise RunnerContractError(
                 f"plan entry execution flags mismatch {entry.run_id} configuration"
+            )
+        if (
+            entry.configuration_payload_sha256 != configuration.configuration_sha256
+            or entry.configuration_method_identity_sha256
+            != configuration.configuration_method_identity_sha256
+            or entry.nonexecution_identity_sha256
+            != configuration.nonexecution_identity_sha256
+        ):
+            raise RunnerContractError(
+                f"plan entry configuration identity mismatch {entry.run_id}"
             )
         if entry.preflight_status == "blocked_authority":
             assert entry.preflight_reason is not None

@@ -129,6 +129,104 @@ def test_configuration_method_identities_do_not_collide_within_method() -> None:
     assert len(identities) == len(set(identities)) == 4
 
 
+@pytest.mark.parametrize("forgery", ("configuration_id", "payload"))
+def test_configuration_method_identity_rejects_configuration_absent_from_authority(
+    forgery: str,
+) -> None:
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    configuration = authority.configurations_for("magic")[0]
+    if forgery == "configuration_id":
+        forged = replace(configuration, configuration_id="magic-forged")
+    else:
+        payload = dict(authority.configurations_for("magic")[1].payload)
+        forged = replace(
+            configuration,
+            payload_json=json.dumps(
+                payload,
+                allow_nan=False,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            payload_sha256=canonical_sha256(payload),
+        )
+    assert forged not in authority.configurations
+
+    with pytest.raises(ComparatorTuningError, match="exact authority configuration"):
+        bind_comparator_configuration_identity(
+            forged,
+            registry.by_id("magic"),
+            authority,
+            runtime_lock_sha256="1" * 64,
+            environment_registry_sha256="2" * 64,
+        )
+
+
+def test_configuration_method_identity_rejects_row_missing_from_supplied_authority() -> (
+    None
+):
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    configuration = authority.configurations_for("magic")[0]
+    supplied_authority = replace(
+        authority,
+        configurations=tuple(
+            row for row in authority.configurations if row != configuration
+        ),
+    )
+
+    with pytest.raises(ComparatorTuningError, match="exact authority configuration"):
+        bind_comparator_configuration_identity(
+            configuration,
+            registry.by_id("magic"),
+            supplied_authority,
+            runtime_lock_sha256="1" * 64,
+            environment_registry_sha256="2" * 64,
+        )
+
+
+def test_configuration_method_identity_validates_authority_row_payload_checksum() -> (
+    None
+):
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    configuration = authority.configurations_for("magic")[0]
+    malformed = replace(configuration, payload_sha256="f" * 64)
+    supplied_authority = replace(
+        authority,
+        configurations=(malformed, *authority.configurations[1:]),
+    )
+
+    with pytest.raises(ComparatorTuningError, match="payload checksum differs"):
+        bind_comparator_configuration_identity(
+            malformed,
+            registry.by_id("magic"),
+            supplied_authority,
+            runtime_lock_sha256="1" * 64,
+            environment_registry_sha256="2" * 64,
+        )
+
+
+def test_configuration_method_identity_binds_resolved_authority_row() -> None:
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    authoritative = authority.configurations_for("magic")[0]
+    detached_equal_row = replace(authoritative)
+    assert detached_equal_row == authoritative
+    assert detached_equal_row is not authoritative
+
+    bound = bind_comparator_configuration_identity(
+        detached_equal_row,
+        registry.by_id("magic"),
+        authority,
+        runtime_lock_sha256="1" * 64,
+        environment_registry_sha256="2" * 64,
+    )
+
+    assert bound.configuration is authoritative
+
+
 @pytest.mark.parametrize(
     "malformed",
     (None, True, "A" * 64, "a" * 63, "g" * 64),

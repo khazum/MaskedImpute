@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import hashlib
 import json
 import os
@@ -206,6 +206,88 @@ def _bound_magic_configuration():
     return spec, bound
 
 
+def _configuration_with_substituted_method_component(
+    field: str,
+) -> tuple[object, AuthorizedConfiguration]:
+    spec, bound = _bound_magic_configuration()
+    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
+    substituted = "f" * 64
+    identity_body = {
+        "schema": "maskimpute-comparator-configuration-method-identity-v1",
+        "registry_method_sha256": configuration.registry_method_sha256,
+        "configuration_payload_sha256": configuration.configuration_sha256,
+        "tuning_authority_file_sha256": configuration.tuning_authority_file_sha256,
+        "tuning_authority_payload_sha256": (
+            configuration.tuning_authority_payload_sha256
+        ),
+        "source_authority_sha256": configuration.source_authority_sha256,
+        "runtime_lock_sha256": configuration.runtime_lock_sha256,
+        "environment_registry_sha256": configuration.environment_registry_sha256,
+    }
+    identity_body[field] = substituted
+    return spec, replace(
+        configuration,
+        **{
+            field: substituted,
+            "configuration_method_identity_sha256": canonical_sha256(identity_body),
+        },
+    )
+
+
+def _request_integrity_values(request: ExecutionRequest) -> dict[str, object]:
+    configuration = json.loads(request.configuration_payload_json)
+    return {
+        "method_spec_sha256": canonical_sha256(asdict(request.method_spec)),
+        "method_input_sha256": method_input_sha256(request.method_input),
+        "model_seed": request.model_seed,
+        "dataset_id": request.dataset_id,
+        "mechanism": request.mechanism,
+        "biological_id": request.biological_id,
+        "technical_view": request.technical_view,
+        "configuration_id": request.configuration_id,
+        "configuration_kind": request.configuration_kind,
+        "configuration_sha256": request.configuration_sha256,
+        "configuration_payload_sha256": request.configuration_payload_sha256,
+        "configuration_payload": configuration,
+        "registry_method_sha256": request.registry_method_sha256,
+        "tuning_authority_file_sha256": request.tuning_authority_file_sha256,
+        "tuning_authority_payload_sha256": (request.tuning_authority_payload_sha256),
+        "source_authority_sha256": request.source_authority_sha256,
+        "runtime_lock_sha256": request.runtime_lock_sha256,
+        "environment_registry_sha256": request.environment_registry_sha256,
+        "configuration_method_identity_sha256": (
+            request.configuration_method_identity_sha256
+        ),
+        "nonexecution_identity_sha256": request.nonexecution_identity_sha256,
+        "execution_authority_sha256": request.execution_authority_sha256,
+        "base_configuration_sha256": request.base_configuration_sha256,
+        "count_model_config_sha256": request.count_model_config_sha256,
+        "count_score_manifest_path": request.count_score_manifest_path,
+        "count_score_manifest_sha256": request.count_score_manifest_sha256,
+        "retained_calibration_path": request.retained_calibration_path,
+        "retained_calibration_sha256": request.retained_calibration_sha256,
+        "calibration_usage": request.calibration_usage,
+        "calibration_context": (
+            None
+            if request.calibration_context is None
+            else asdict(request.calibration_context)
+        ),
+        "timeout_seconds": request.timeout_seconds,
+        "max_rss_bytes": request.max_rss_bytes,
+        "max_gpu_bytes": request.max_gpu_bytes,
+    }
+
+
+def _replace_request_with_recomputed_digest(
+    request: ExecutionRequest, **changes: object
+) -> ExecutionRequest:
+    changed = replace(request, **changes)
+    return replace(
+        changed,
+        request_sha256=canonical_sha256(_request_integrity_values(changed)),
+    )
+
+
 def _truth_dataset(counts: np.ndarray) -> ad.AnnData:
     n_cells, n_genes = counts.shape
     cell_ids = [f"cell-{index + 1}" for index in range(n_cells)]
@@ -402,6 +484,7 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
     datasets = validate_development_manifest_payload(_manifest_payload())
 
     plan = build_competition_plan(registry, datasets, _authority())
+    plan.validate_integrity()
 
     deterministic = {"observed"}
     ordinary = {
@@ -771,6 +854,75 @@ def test_execution_request_binds_comparator_tuning_identity_components() -> None
     request.validate_integrity()
 
 
+@pytest.mark.parametrize("field", ("registry_method_sha256", "source_authority_sha256"))
+def test_execution_request_create_links_comparator_components_to_method_spec(
+    field: str,
+) -> None:
+    spec, configuration = _configuration_with_substituted_method_component(field)
+
+    with pytest.raises(RunnerContractError, match="MethodSpec"):
+        ExecutionRequest.create(
+            spec,
+            _method_input(),
+            model_seed=42,
+            configuration=configuration,
+            authority=_authority(maskimpute_ready=True),
+            mechanism="symsim",
+            biological_id="draw-01",
+            technical_view="moderate",
+            dataset_id="dataset-test",
+            timeout_seconds=5,
+        )
+
+
+@pytest.mark.parametrize("field", ("registry_method_sha256", "source_authority_sha256"))
+def test_execution_request_validation_links_comparator_components_to_method_spec(
+    field: str,
+) -> None:
+    spec, bound = _bound_magic_configuration()
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=42,
+        configuration=AuthorizedConfiguration.from_bound_comparator(bound),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    substituted = "f" * 64
+    identity_values = {
+        "registry_method_sha256": request.registry_method_sha256,
+        "configuration_payload_sha256": request.configuration_payload_sha256,
+        "tuning_authority_file_sha256": request.tuning_authority_file_sha256,
+        "tuning_authority_payload_sha256": (request.tuning_authority_payload_sha256),
+        "source_authority_sha256": request.source_authority_sha256,
+        "runtime_lock_sha256": request.runtime_lock_sha256,
+        "environment_registry_sha256": request.environment_registry_sha256,
+    }
+    identity_values[field] = substituted
+    forged_request = _replace_request_with_recomputed_digest(
+        request,
+        **{
+            field: substituted,
+            "configuration_method_identity_sha256": canonical_sha256(
+                {
+                    "schema": (
+                        "maskimpute-comparator-configuration-method-identity-v1"
+                    ),
+                    **identity_values,
+                }
+            ),
+        },
+    )
+    assert forged_request.request_sha256 != request.request_sha256
+
+    with pytest.raises(RunnerContractError, match="MethodSpec"):
+        forged_request.validate_integrity()
+
+
 def test_execution_request_identity_digest_binds_every_comparator_component() -> None:
     spec, bound = _bound_magic_configuration()
     request = ExecutionRequest.create(
@@ -962,6 +1114,45 @@ def test_run_plan_entry_propagates_closed_configuration_identity_shape() -> None
             legacy,
             configuration_kind="comparator_nonexecution",
             nonexecution_identity_sha256=None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("kind", "identity_fields"),
+    (
+        pytest.param(
+            "comparator_tuning",
+            {"configuration_method_identity_sha256": "c" * 64},
+            id="comparator-tuning",
+        ),
+        pytest.param(
+            "comparator_nonexecution",
+            {"nonexecution_identity_sha256": "d" * 64},
+            id="comparator-nonexecution",
+        ),
+    ),
+)
+def test_run_plan_entry_requires_explicit_comparator_payload_checksum(
+    kind: str, identity_fields: dict[str, str]
+) -> None:
+    with pytest.raises(RunnerContractError, match="explicit.*payload checksum"):
+        RunPlanEntry(
+            ordinal=1,
+            run_id="run-magic-test",
+            method_id="magic",
+            dataset_id="dataset-test",
+            source_dataset_sha256="a" * 64,
+            mechanism="symsim",
+            biological_id="draw-01",
+            technical_view="moderate",
+            model_seed=42,
+            configuration_id="magic-configuration",
+            configuration_sha256="b" * 64,
+            preflight_status="planned",
+            preflight_reason=None,
+            configuration_kind=kind,
+            configuration_payload_sha256=None,
+            **identity_fields,
         )
 
 
@@ -2583,6 +2774,30 @@ class _InterruptSecondExecutor:
         return AdapterOutcome.unavailable("adapter_not_configured", runtime_seconds=1)
 
 
+def _competition_plan_body(plan: CompetitionPlan) -> dict[str, object]:
+    return {
+        "schema_version": plan.schema_version,
+        "input_hashes": dict(plan.input_hashes),
+        "entries": [entry.to_dict() for entry in plan.entries],
+        "configurations": [
+            configuration.to_dict() for configuration in plan.configurations
+        ],
+        "execution_context": (
+            None if plan.execution_context is None else asdict(plan.execution_context)
+        ),
+        "budgets": {
+            "maximum_configurations": runner_module.MAX_DEVELOPMENT_CONFIGURATIONS,
+            "gpu_seconds": runner_module.MAX_GPU_BUDGET_SECONDS,
+            "cpu_seconds": runner_module.MAX_CPU_BUDGET_SECONDS,
+            "failures_consume_budget_except": "infrastructure_error",
+        },
+    }
+
+
+def _rehash_competition_plan(plan: CompetitionPlan) -> CompetitionPlan:
+    return replace(plan, plan_sha256=canonical_sha256(_competition_plan_body(plan)))
+
+
 def _write_implementation_source_fixture(root: Path, *, reverse: bool = False) -> None:
     files = {
         "maskimpute/a.py": b"first = 1\n",
@@ -2606,17 +2821,157 @@ def _two_method_plan(prepared) -> CompetitionPlan:
             run_id="run-d3impute-test",
         ),
     )
-    return CompetitionPlan(
-        schema_version=1,
-        input_hashes={
-            "dataset_manifest_sha256": prepared.binding.manifest_sha256,
-            "method_registry_sha256": SHA_B,
-            "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
-            "implementation_source_sha256": implementation_source_sha256(),
-        },
-        entries=entries,
-        plan_sha256="c" * 64,
+    return _rehash_competition_plan(
+        CompetitionPlan(
+            schema_version=1,
+            input_hashes={
+                "dataset_manifest_sha256": prepared.binding.manifest_sha256,
+                "method_registry_sha256": SHA_B,
+                "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+                "implementation_source_sha256": implementation_source_sha256(),
+            },
+            entries=entries,
+            plan_sha256="0" * 64,
+        )
     )
+
+
+def _single_configuration_plan(
+    prepared,
+    entry: RunPlanEntry,
+    configuration: AuthorizedConfiguration,
+) -> CompetitionPlan:
+    return _rehash_competition_plan(
+        CompetitionPlan(
+            schema_version=1,
+            input_hashes={
+                "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+                "implementation_source_sha256": implementation_source_sha256(),
+            },
+            entries=(entry,),
+            plan_sha256="0" * 64,
+            configurations=(configuration,),
+        )
+    )
+
+
+def _comparator_plan_entry(
+    prepared,
+    configuration: AuthorizedConfiguration,
+    *,
+    preflight_status: str,
+    preflight_reason: str | None,
+    configuration_method_identity_sha256: str | None,
+    nonexecution_identity_sha256: str | None,
+) -> RunPlanEntry:
+    return replace(
+        _entry_for(prepared, "magic", seed=42),
+        configuration_id=configuration.configuration_id,
+        configuration_sha256=configuration.configuration_sha256,
+        configuration_kind=configuration.kind,
+        configuration_payload_sha256=configuration.configuration_sha256,
+        configuration_method_identity_sha256=(configuration_method_identity_sha256),
+        nonexecution_identity_sha256=nonexecution_identity_sha256,
+        preflight_status=preflight_status,
+        preflight_reason=preflight_reason,
+    )
+
+
+def test_execute_competition_plan_rejects_stale_replaced_plan_checksum(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    _spec, bound = _bound_magic_configuration()
+    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
+    entry = _comparator_plan_entry(
+        prepared,
+        configuration,
+        preflight_status="planned",
+        preflight_reason=None,
+        configuration_method_identity_sha256=(
+            configuration.configuration_method_identity_sha256
+        ),
+        nonexecution_identity_sha256=None,
+    )
+    plan = _single_configuration_plan(prepared, entry, configuration)
+    stale = replace(plan, entries=(replace(entry, run_id="run-magic-replaced"),))
+    executor = _RecordingUnavailableExecutor()
+
+    with pytest.raises(RunnerContractError, match="competition plan checksum mismatch"):
+        execute_competition_plan(
+            stale,
+            load_method_registry(METHODS_PATH),
+            {prepared.binding.dataset_id: prepared},
+            executor,
+            CheckpointStore(tmp_path / "competition"),
+        )
+
+    assert executor.input_hashes == []
+
+
+def test_execute_competition_plan_rejects_substituted_comparator_method_identity(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    _spec, bound = _bound_magic_configuration()
+    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
+    entry = _comparator_plan_entry(
+        prepared,
+        configuration,
+        preflight_status="planned",
+        preflight_reason=None,
+        configuration_method_identity_sha256="f" * 64,
+        nonexecution_identity_sha256=None,
+    )
+    plan = _single_configuration_plan(prepared, entry, configuration)
+    executor = _RecordingUnavailableExecutor()
+
+    with pytest.raises(RunnerContractError, match="configuration identity mismatch"):
+        execute_competition_plan(
+            plan,
+            load_method_registry(METHODS_PATH),
+            {prepared.binding.dataset_id: prepared},
+            executor,
+            CheckpointStore(tmp_path / "competition"),
+        )
+
+    assert executor.input_hashes == []
+
+
+def test_execute_competition_plan_rejects_substituted_blocked_nonexecution_identity(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    configuration = AuthorizedConfiguration.create(
+        method_id="magic",
+        configuration_id="magic-nonexecution",
+        kind="comparator_nonexecution",
+        payload={"reason": "declared_nonexecution"},
+        requires_count_score=False,
+        requires_calibration=False,
+        nonexecution_identity_sha256="e" * 64,
+    )
+    entry = _comparator_plan_entry(
+        prepared,
+        configuration,
+        preflight_status="blocked_authority",
+        preflight_reason="declared_nonexecution",
+        configuration_method_identity_sha256=None,
+        nonexecution_identity_sha256="f" * 64,
+    )
+    plan = _single_configuration_plan(prepared, entry, configuration)
+    executor = _RecordingUnavailableExecutor()
+
+    with pytest.raises(RunnerContractError, match="configuration identity mismatch"):
+        execute_competition_plan(
+            plan,
+            load_method_registry(METHODS_PATH),
+            {prepared.binding.dataset_id: prepared},
+            executor,
+            CheckpointStore(tmp_path / "competition"),
+        )
+
+    assert executor.input_hashes == []
 
 
 def test_execution_reuses_one_truth_free_input_and_checkpoints_full_denominator(
@@ -2709,12 +3064,14 @@ def test_checkpoint_resume_rejects_changed_implementation_bytes(
     _write_implementation_source_fixture(source_root)
     source_sha256 = implementation_source_sha256(source_root)
     original_plan = _two_method_plan(prepared)
-    plan = replace(
-        original_plan,
-        input_hashes={
-            **original_plan.input_hashes,
-            "implementation_source_sha256": source_sha256,
-        },
+    plan = _rehash_competition_plan(
+        replace(
+            original_plan,
+            input_hashes={
+                **original_plan.input_hashes,
+                "implementation_source_sha256": source_sha256,
+            },
+        )
     )
     store = CheckpointStore(tmp_path / "competition")
     monkeypatch.setattr(
@@ -2741,14 +3098,16 @@ def test_checkpoint_revalidates_bound_raw_logs_and_common_output(
 ) -> None:
     prepared = _prepared_truth_dataset()
     entry = _entry_for(prepared, "observed", seed=None)
-    plan = CompetitionPlan(
-        schema_version=1,
-        input_hashes={
-            "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
-            "implementation_source_sha256": implementation_source_sha256(),
-        },
-        entries=(entry,),
-        plan_sha256="e" * 64,
+    plan = _rehash_competition_plan(
+        CompetitionPlan(
+            schema_version=1,
+            input_hashes={
+                "dataset_qc_policy_sha256": DatasetQCPolicy.fixed().sha256,
+                "implementation_source_sha256": implementation_source_sha256(),
+            },
+            entries=(entry,),
+            plan_sha256="0" * 64,
+        )
     )
     store = CheckpointStore(tmp_path / "competition")
 
