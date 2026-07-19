@@ -65,11 +65,11 @@ from maskimpute_benchmark.runtime_environments import (
     RuntimeEnvironmentLock,
     RuntimeEnvironmentSnapshot,
     build_runtime_environment_lock,
-    load_runtime_environment_lock,
 )
 from maskimpute_benchmark.protocol import canonical_sha256
 
 
+ROOT = Path(__file__).resolve().parents[1]
 METHODS_PATH = Path("study/methods.json")
 SHA_A = "a" * 64
 SHA_B = "b" * 64
@@ -121,35 +121,7 @@ def _manifest_payload() -> dict[str, object]:
 def _authority(*, maskimpute_ready: bool = False) -> RunnerAuthority:
     from maskimpute_benchmark.protocol import canonical_sha256
 
-    configurations = (
-        AuthorizedConfiguration.create(
-            method_id="maskimpute",
-            configuration_id="v27-reference",
-            kind="candidate_search",
-            payload={"method_version": "v27", "score_policy": "direct"},
-            requires_count_score=True,
-            requires_calibration=False,
-        ),
-        AuthorizedConfiguration.create(
-            method_id="maskimpute",
-            configuration_id="calibrated-score",
-            kind="ablation",
-            payload={
-                "changed_component": "score",
-                "score_source": "retained_calibrator",
-            },
-            requires_count_score=True,
-            requires_calibration=True,
-        ),
-        AuthorizedConfiguration.create(
-            method_id="capacity-matched-ae",
-            configuration_id="capacity-matched-ae",
-            kind="ablation",
-            payload={"changed_component": "masking", "score_source": "not_applied"},
-            requires_count_score=False,
-            requires_calibration=False,
-        ),
-    )
+    tracked = load_runner_authority()
     return RunnerAuthority(
         schema_version=1,
         authority_sha256="1" * 64,
@@ -157,7 +129,7 @@ def _authority(*, maskimpute_ready: bool = False) -> RunnerAuthority:
         selection_contract_sha256="3" * 64,
         development_search_sha256="4" * 64,
         ablation_registry_sha256="5" * 64,
-        base_configuration_id="v27-reference",
+        base_configuration_id=tracked.configurations[0].configuration_id,
         base_configuration_sha256=canonical_sha256({"method_version": "v27"}),
         base_configuration=(("method_version", "v27"),),
         count_model_config=(("n_folds", 5),),
@@ -174,7 +146,10 @@ def _authority(*, maskimpute_ready: bool = False) -> RunnerAuthority:
         retained_calibration_path=(
             "artifacts/study/development/calibration/retained_calibration.json"
         ),
-        configurations=configurations,
+        configurations=tracked.configurations,
+        comparator_tuning_file_sha256=tracked.comparator_tuning_file_sha256,
+        comparator_tuning_payload_sha256=tracked.comparator_tuning_payload_sha256,
+        comparator_tuning=tracked.comparator_tuning,
     )
 
 
@@ -483,18 +458,19 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
     registry = load_method_registry(METHODS_PATH)
     datasets = validate_development_manifest_payload(_manifest_payload())
 
-    plan = build_competition_plan(registry, datasets, _authority())
+    plan = build_competition_plan(
+        registry,
+        datasets,
+        _authority(),
+        execution_environment_sha256="7" * 64,
+        runtime_lock_sha256="6" * 64,
+    )
     plan.validate_integrity()
 
     deterministic = {"observed"}
-    ordinary = {
-        method.id
-        for method in registry.methods
-        if method.execution_scope == "same_input_required"
-        and method.id not in {"maskimpute", "capacity-matched-ae"}
-    }
-    expected_per_dataset = (
-        sum(1 if method_id in deterministic else 3 for method_id in ordinary) + 3 * 3
+    expected_per_dataset = sum(
+        1 if configuration.method_id in deterministic else 3
+        for configuration in plan.configurations
     )
     expected = len(datasets) * expected_per_dataset
     assert len(plan.entries) == expected
@@ -506,6 +482,14 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
     } & {entry.method_id for entry in plan.entries}
     assert plan.input_hashes["dataset_manifest_sha256"] == SHA_A
     assert plan.input_hashes["method_registry_sha256"] == "2" * 64
+    assert plan.input_hashes["execution_environment_sha256"] == "7" * 64
+    assert plan.input_hashes["runtime_lock_sha256"] == "6" * 64
+    assert plan.input_hashes["comparator_tuning_file_sha256"] == (
+        _authority().comparator_tuning_file_sha256
+    )
+    assert plan.input_hashes["comparator_tuning_payload_sha256"] == (
+        _authority().comparator_tuning_payload_sha256
+    )
     assert plan.input_hashes["implementation_source_sha256"] == (
         implementation_source_sha256()
     )
@@ -513,7 +497,7 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
         expected_seeds = (None,) if entry.method_id in deterministic else (42, 43, 44)
         assert entry.model_seed in expected_seeds
         if entry.method_id == "maskimpute":
-            assert entry.configuration_id in {"v27-reference", "calibrated-score"}
+            assert entry.configuration_kind in {"candidate_search", "ablation"}
             assert entry.preflight_status == "blocked_authority"
             assert entry.preflight_reason in {
                 "count_score_authority_pending",
@@ -521,9 +505,18 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
             }
         elif entry.method_id == "capacity-matched-ae":
             assert entry.configuration_id == "capacity-matched-ae"
+            assert entry.preflight_status == "blocked_authority"
+            assert (
+                entry.preflight_reason == "count_score_or_calibration_authority_pending"
+            )
+        elif entry.method_id == "observed":
+            assert entry.configuration_id == "registry-default"
+            assert entry.configuration_kind == "registry"
             assert entry.preflight_status == "planned"
         else:
-            assert entry.configuration_id == "registry-default"
+            assert entry.configuration_id != "registry-default"
+            assert entry.configuration_kind == "comparator_tuning"
+            assert entry.configuration_method_identity_sha256 is not None
             assert entry.preflight_status == "planned"
     assert (
         sum(entry.method_id == "capacity-matched-ae" for entry in plan.entries)
@@ -531,73 +524,129 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
     )
 
 
-def test_tracked_cross_scope_lock_preserves_exact_development_denominator() -> None:
-    registry = load_method_registry(METHODS_PATH)
-    lock = load_runtime_environment_lock(
-        Path("environments/development-runtime.lock.json")
+def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> None:
+    authority = load_runner_authority()
+    registry = load_method_registry(ROOT / "study/methods.json")
+    bindings = validate_development_manifest_payload(_manifest_payload())
+    plan = build_competition_plan(
+        registry,
+        bindings,
+        authority,
+        execution_environment_sha256="2" * 64,
+        runtime_lock_sha256="1" * 64,
     )
-    lock_ids = tuple(entry.environment_id for entry in lock.entries)
-    lock_only_ids = runner_module.derive_lock_only_environment_ids(registry)
-    live_ids = tuple(
-        sorted(
-            {
-                (
-                    "benchmark"
-                    if spec.id in {"observed", "capacity-matched-ae", "maskimpute"}
-                    else spec.id
-                )
-                for spec in registry.methods
-                if spec.execution_scope == "same_input_required"
-                and spec.environment.status == "ready"
-            }
-        )
+    assert len(plan.entries) == 2_896
+    assert len({entry.run_id for entry in plan.entries}) == 2_896
+    comparator_rows = [
+        entry
+        for entry in plan.entries
+        if entry.configuration_kind == "comparator_tuning"
+    ]
+    assert len(comparator_rows) == 1_632
+    assert {entry.method_id for entry in comparator_rows} == {
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+        "scziva",
+        "afmf",
+        "biaeimpute",
+        "sccr",
+        "scsdae",
+    }
+    assert all(
+        entry.configuration_id != "registry-default" for entry in comparator_rows
     )
+    assert all(entry.configuration_method_identity_sha256 for entry in comparator_rows)
+    for configuration in (
+        value for value in plan.configurations if value.kind == "comparator_tuning"
+    ):
+        block = [
+            entry
+            for entry in comparator_rows
+            if entry.method_id == configuration.method_id
+            and entry.configuration_id == configuration.configuration_id
+        ]
+        assert len(block) == 48
+        positions = [plan.entries.index(entry) for entry in block]
+        assert positions == list(range(min(positions), min(positions) + 48))
+    assert len(plan.configurations) == 61
+    assert not ({"d3impute", "sctsi"} & {entry.method_id for entry in plan.entries})
 
-    assert lock_ids == (
-        "afmf",
-        "alra",
-        "benchmark",
-        "biaeimpute",
-        "d3impute",
-        "dca",
-        "magic",
-        "saver",
-        "sccr",
-        "scsdae",
-        "sctsi",
-        "scvi",
-        "scziva",
-    )
-    assert live_ids == (
-        "afmf",
-        "alra",
-        "benchmark",
-        "biaeimpute",
-        "dca",
-        "magic",
-        "saver",
-        "sccr",
-        "scsdae",
-        "scvi",
-        "scziva",
-    )
-    assert lock_only_ids == ("d3impute", "sctsi")
-    assert set(live_ids).isdisjoint(lock_only_ids)
-    assert set(lock_ids) == set(live_ids) | set(lock_only_ids)
+    cursor = 0
+    for configuration in plan.configurations:
+        seeds = (None,) if configuration.method_id == "observed" else (42, 43, 44)
+        expected_cells = [
+            (binding.dataset_id, seed) for binding in bindings for seed in seeds
+        ]
+        block = plan.entries[cursor : cursor + len(expected_cells)]
+        assert [(row.dataset_id, row.model_seed) for row in block] == expected_cells
+        assert {(row.method_id, row.configuration_id) for row in block} == {
+            (configuration.method_id, configuration.configuration_id)
+        }
+        cursor += len(expected_cells)
+    assert cursor == len(plan.entries)
+
+    tuning = authority.comparator_tuning
+    assert tuple(
+        (row.method_id, row.configuration_id)
+        for row in plan.configurations
+        if row.kind == "comparator_tuning"
+    ) == tuple((row.method_id, row.configuration_id) for row in tuning.configurations)
+    for method_id in tuning.method_order:
+        configured = tuning.configurations_for(method_id)
+        assert configured[0].is_upstream_default
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"execution_environment_sha256": "2" * 64},
+        {"runtime_lock_sha256": "1" * 64},
+    ),
+)
+def test_plan_building_requires_both_runtime_identity_hashes(kwargs) -> None:
+    with pytest.raises(RunnerContractError, match="plan runtime identity is absent"):
+        build_competition_plan(
+            load_method_registry(ROOT / "study/methods.json"),
+            validate_development_manifest_payload(_manifest_payload()),
+            load_runner_authority(),
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize(
+    "loader",
+    (
+        runner_module.load_v28_revision_authority,
+        runner_module.load_v29_revision_authority,
+    ),
+)
+def test_revision_plan_contains_exactly_one_48_row_maskimpute_candidate(loader) -> None:
+    authority = loader()
+    registry = load_method_registry(ROOT / "study/methods.json")
+    bindings = validate_development_manifest_payload(_manifest_payload())
 
     plan = build_competition_plan(
         registry,
-        validate_development_manifest_payload(_manifest_payload()),
-        load_runner_authority(),
+        bindings,
+        authority,
+        execution_environment_sha256="2" * 64,
+        runtime_lock_sha256="1" * 64,
     )
 
-    assert len(plan.entries) == 1_744
-    assert {entry.method_id for entry in plan.entries} == {
-        spec.id
-        for spec in registry.methods
-        if spec.execution_scope == "same_input_required"
+    assert authority.plan_scope == "revision_candidate_only"
+    assert len(authority.configurations) == 1
+    assert len(plan.configurations) == 1
+    assert len(plan.entries) == 48
+    assert {entry.method_id for entry in plan.entries} == {"maskimpute"}
+    assert {entry.configuration_id for entry in plan.entries} == {
+        authority.configurations[0].configuration_id
     }
-    assert {"d3impute", "sctsi"}.isdisjoint(entry.method_id for entry in plan.entries)
+    assert [(entry.dataset_id, entry.model_seed) for entry in plan.entries] == [
+        (binding.dataset_id, seed) for binding in bindings for seed in (42, 43, 44)
+    ]
 
 
 def test_authority_derives_first_twenty_search_configs_and_excludes_budget_overruns() -> (
@@ -751,6 +800,14 @@ def test_clean_publication_authority_loads_pending_revalidation_bindings() -> No
     assert authority.count_score_manifest_sha256 is None
     assert authority.retained_calibration_status == "pending"
     assert authority.retained_calibration_sha256 is None
+    assert authority.plan_scope == "base_full_panel"
+    assert len(authority.comparator_tuning.configurations) == 34
+    assert authority.comparator_tuning_file_sha256 == (
+        selection_authority.comparator_tuning_file_sha256
+    )
+    assert authority.comparator_tuning_payload_sha256 == (
+        selection_authority.comparator_tuning_payload_sha256
+    )
     assert selection_authority.file_sha256["study/comparator_tuning.json"] == (
         selection_authority.comparator_tuning_file_sha256
     )
@@ -760,19 +817,29 @@ def test_ready_maskimpute_authority_removes_only_its_preflight_block() -> None:
     registry = load_method_registry(METHODS_PATH)
     datasets = validate_development_manifest_payload(_manifest_payload())
 
-    blocked = build_competition_plan(registry, datasets, _authority())
+    blocked = build_competition_plan(
+        registry,
+        datasets,
+        _authority(),
+        execution_environment_sha256="7" * 64,
+        runtime_lock_sha256="6" * 64,
+    )
     ready = build_competition_plan(
-        registry, datasets, _authority(maskimpute_ready=True)
+        registry,
+        datasets,
+        _authority(maskimpute_ready=True),
+        execution_environment_sha256="7" * 64,
+        runtime_lock_sha256="6" * 64,
     )
 
     assert all(
         entry.preflight_status == "planned"
         for entry in ready.entries
-        if entry.method_id == "maskimpute"
+        if entry.requires_count_score
     )
     assert [
         replace(entry, preflight_status="planned", preflight_reason=None)
-        if entry.method_id == "maskimpute"
+        if entry.requires_count_score
         else entry
         for entry in blocked.entries
     ] == list(ready.entries)
@@ -1373,7 +1440,7 @@ def test_spawned_executor_round_trips_maskimpute_result() -> None:
     configuration = next(
         value
         for value in authority.configurations
-        if value.configuration_id == "v27-reference"
+        if value.configuration_id == "v27-c01-direct-r1-g1"
     )
     request = ExecutionRequest.create(
         spec,
@@ -1648,7 +1715,19 @@ def test_development_competition_forwards_registry_derived_lock_only_scope(
     def fixed(*args, **kwargs):
         captured["fixed_args"] = args
         captured["fixed_kwargs"] = kwargs
-        return type("EnvironmentFixture", (), {"registry_sha256": "7" * 64})()
+        return type(
+            "EnvironmentFixture",
+            (),
+            {
+                "registry_sha256": "7" * 64,
+                "runtime_lock_sha256": "8" * 64,
+            },
+        )()
+
+    def build(*args, **kwargs):
+        captured["plan_args"] = args
+        captured["plan_kwargs"] = kwargs
+        return object()
 
     monkeypatch.setattr(
         runner_module,
@@ -1665,9 +1744,7 @@ def test_development_competition_forwards_registry_derived_lock_only_scope(
         "load_method_registry",
         lambda _path: registry,
     )
-    monkeypatch.setattr(
-        runner_module, "build_competition_plan", lambda *_a, **_k: object()
-    )
+    monkeypatch.setattr(runner_module, "build_competition_plan", build)
     monkeypatch.setattr(
         runner_module, "RepositoryAdapterDispatcher", lambda *_a: object()
     )
@@ -1690,6 +1767,57 @@ def test_development_competition_forwards_registry_derived_lock_only_scope(
         "d3impute",
         "sctsi",
     )
+    assert captured["plan_kwargs"] == {
+        "execution_environment_sha256": "7" * 64,
+        "runtime_lock_sha256": "8" * 64,
+    }
+
+
+def test_development_competition_requires_runtime_lock_checksum(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.methods as methods_module
+
+    registry = load_method_registry(METHODS_PATH)
+    environments = type(
+        "EnvironmentFixture",
+        (),
+        {"registry_sha256": "7" * 64, "runtime_lock_sha256": None},
+    )()
+    monkeypatch.setattr(
+        runner_module,
+        "ExecutionEnvironmentRegistry",
+        type(
+            "RegistryFixture",
+            (),
+            {"fixed": staticmethod(lambda *_args, **_kwargs: environments)},
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "load_prepared_development_panel",
+        lambda _authority: ((), {}),
+    )
+    monkeypatch.setattr(
+        methods_module,
+        "load_method_registry",
+        lambda _path: registry,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "build_competition_plan",
+        lambda *_args, **_kwargs: pytest.fail("plan construction must not begin"),
+    )
+
+    with pytest.raises(
+        RunnerContractError, match="development runtime lock checksum is absent"
+    ):
+        runner_module._run_competition_with_authority(
+            tmp_path / "competition",
+            _authority(maskimpute_ready=True),
+            environment_overrides=None,
+        )
 
 
 def test_execution_environment_registry_rejects_runtime_drift(
@@ -2167,7 +2295,7 @@ def test_calibrated_development_completion_requires_matching_lodo_fold_receipt()
     configuration = next(
         value
         for value in _authority(maskimpute_ready=True).configurations
-        if value.configuration_id == "calibrated-score"
+        if value.configuration_id == "v27-c02-calibrated-r1-g0p5"
     )
     request = ExecutionRequest.create(
         spec,
@@ -2231,7 +2359,7 @@ def test_final_calibrated_request_uses_all_development_without_lodo_receipt() ->
     configuration = next(
         value
         for value in authority.configurations
-        if value.configuration_id == "calibrated-score"
+        if value.configuration_id == "v27-c02-calibrated-r1-g0p5"
     )
 
     request = ExecutionRequest.create(

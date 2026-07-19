@@ -33,8 +33,13 @@ if TYPE_CHECKING:
     from .comparator_tuning import BoundComparatorConfiguration
     from .trajectory_dataset import RegisteredTrajectoryBinding
 
+from .comparator_tuning import (
+    ComparatorTuningAuthority,
+    bind_comparator_configuration_identity,
+    load_comparator_tuning_authority,
+)
 from .methods import AdapterExecution, MethodInput, MethodSpec
-from .methods.registry import MethodRegistry
+from .methods.registry import MethodRegistry, load_method_registry
 from .prezero_evidence import (
     PreZeroEvidence,
     PreZeroEvidenceError,
@@ -1018,11 +1023,25 @@ def load_runner_authority() -> RunnerAuthority:
 
     repository = Path(__file__).resolve().parents[1]
     try:
+        registry = load_method_registry(repository / "study/methods.json")
+        comparator_tuning = load_comparator_tuning_authority(
+            repository,
+            registry=registry,
+            require_clean=False,
+        )
         selection = load_publication_execution_authority()
     except Exception as error:
         raise RunnerContractError(
             f"publication execution authority is unavailable: {error}"
         ) from error
+    if (
+        comparator_tuning.file_sha256 != selection.comparator_tuning_file_sha256
+        or comparator_tuning.payload_sha256
+        != selection.comparator_tuning_payload_sha256
+    ):
+        raise RunnerContractError(
+            "comparator tuning hashes differ from selection authority"
+        )
     ledger = _load_strict_json(
         repository / "study/development_search.json", "development search ledger"
     )
@@ -1068,8 +1087,21 @@ def load_runner_authority() -> RunnerAuthority:
     search = [value for value in configurations if value.kind == "candidate_search"]
     authority_body = {
         "schema": "maskimpute-development-runner-authority-v1",
+        "plan_scope": "base_full_panel",
         "file_sha256": file_hashes,
         "configurations": [value.to_dict() for value in configurations],
+        "comparator_tuning_file_sha256": comparator_tuning.file_sha256,
+        "comparator_tuning_payload_sha256": comparator_tuning.payload_sha256,
+        "comparator_tuning_configurations": [
+            {
+                "method_id": row.method_id,
+                "configuration_id": row.configuration_id,
+                "payload": dict(row.payload),
+                "payload_sha256": row.payload_sha256,
+                "is_upstream_default": row.is_upstream_default,
+            }
+            for row in comparator_tuning.configurations
+        ],
         "base_maskimpute_config_sha256": selection.base_maskimpute_config_sha256,
         "count_model_config_sha256": selection.count_model_config_sha256,
         "dataset_qc_policy_sha256": selection.dataset_qc_policy_sha256,
@@ -1099,6 +1131,10 @@ def load_runner_authority() -> RunnerAuthority:
         count_score_manifest_path=selection.count_score_manifest.path,
         retained_calibration_path=selection.retained_calibration.path,
         configurations=configurations,
+        comparator_tuning_file_sha256=comparator_tuning.file_sha256,
+        comparator_tuning_payload_sha256=comparator_tuning.payload_sha256,
+        comparator_tuning=comparator_tuning,
+        plan_scope="base_full_panel",
     )
 
 
@@ -1126,6 +1162,12 @@ class RunnerAuthority:
     count_score_manifest_path: str
     retained_calibration_path: str
     configurations: tuple[AuthorizedConfiguration, ...]
+    comparator_tuning_file_sha256: str
+    comparator_tuning_payload_sha256: str
+    comparator_tuning: ComparatorTuningAuthority
+    plan_scope: Literal["base_full_panel", "revision_candidate_only"] = (
+        "base_full_panel"
+    )
 
     def __post_init__(self) -> None:
         if self.schema_version != 1 or type(self.schema_version) is not int:
@@ -1139,8 +1181,22 @@ class RunnerAuthority:
             "base_configuration_sha256",
             "count_model_config_sha256",
             "dataset_qc_policy_sha256",
+            "comparator_tuning_file_sha256",
+            "comparator_tuning_payload_sha256",
         ):
             _require_sha256(getattr(self, name), name)
+        if not isinstance(self.comparator_tuning, ComparatorTuningAuthority):
+            raise RunnerContractError(
+                "comparator_tuning must be a ComparatorTuningAuthority"
+            )
+        if (
+            self.comparator_tuning_file_sha256 != self.comparator_tuning.file_sha256
+            or self.comparator_tuning_payload_sha256
+            != self.comparator_tuning.payload_sha256
+        ):
+            raise RunnerContractError("runner comparator tuning checksum mismatch")
+        if self.plan_scope not in {"base_full_panel", "revision_candidate_only"}:
+            raise RunnerContractError("runner authority plan scope is invalid")
         if not isinstance(self.base_configuration_id, str) or not _SAFE_ID.fullmatch(
             self.base_configuration_id
         ):
@@ -1194,23 +1250,38 @@ class RunnerAuthority:
             raise RunnerContractError(
                 "runner authority configuration identities repeat"
             )
-        search_count = sum(
-            value.method_id == "maskimpute" and value.kind == "candidate_search"
-            for value in self.configurations
-        )
-        if not 1 <= search_count <= MAX_DEVELOPMENT_CONFIGURATIONS:
-            raise RunnerContractError(
-                "MaskImpute candidate-search configuration count must lie in [1, 20]"
+        if self.plan_scope == "base_full_panel":
+            search_count = sum(
+                value.method_id == "maskimpute" and value.kind == "candidate_search"
+                for value in self.configurations
             )
-        capacity = [
-            value
-            for value in self.configurations
-            if value.method_id == "capacity-matched-ae"
-        ]
-        if len(capacity) != 1:
-            raise RunnerContractError(
-                "capacity-matched-ae must have exactly one authority configuration"
+            capacity_count = sum(
+                value.method_id == "capacity-matched-ae" and value.kind == "ablation"
+                for value in self.configurations
             )
+            if (
+                len(self.configurations) != 26
+                or search_count != MAX_DEVELOPMENT_CONFIGURATIONS
+                or capacity_count != 1
+                or sum(value.method_id == "maskimpute" for value in self.configurations)
+                != 25
+                or any(
+                    value.method_id not in {"maskimpute", "capacity-matched-ae"}
+                    for value in self.configurations
+                )
+            ):
+                raise RunnerContractError(
+                    "base runner authority requires the exact 26 configurations"
+                )
+        else:
+            if (
+                len(self.configurations) != 1
+                or self.configurations[0].method_id != "maskimpute"
+                or self.configurations[0].kind != "candidate_search"
+            ):
+                raise RunnerContractError(
+                    "revision runner authority requires exactly one MaskImpute candidate"
+                )
 
     @property
     def maskimpute_ready(self) -> bool:
@@ -1330,21 +1401,14 @@ def load_v28_revision_authority() -> RunnerAuthority:
     )
     if maskimpute_decoder_for_configuration(candidate)[0] != "negative_binomial":
         raise RunnerContractError("v28 revision does not resolve to NB dispatch")
-    capacity = tuple(
-        value
-        for value in base.configurations
-        if value.method_id == "capacity-matched-ae"
-    )
-    if len(capacity) != 1:
-        raise RunnerContractError("v28 authority lacks one fixed capacity control")
     authority_body = {
         "schema": "maskimpute-v28-revision-runner-authority-v1",
+        "plan_scope": "revision_candidate_only",
         "base_runner_authority_sha256": base.authority_sha256,
         "revision_file_sha256": revision_sha256,
         "parent_configuration_id": parent.configuration_id,
         "parent_configuration_sha256": parent.configuration_sha256,
         "configuration": candidate.to_dict(),
-        "capacity_control": capacity[0].to_dict(),
     }
     return RunnerAuthority(
         schema_version=base.schema_version,
@@ -1366,7 +1430,11 @@ def load_v28_revision_authority() -> RunnerAuthority:
         dataset_qc_policy_sha256=base.dataset_qc_policy_sha256,
         count_score_manifest_path=base.count_score_manifest_path,
         retained_calibration_path=base.retained_calibration_path,
-        configurations=(candidate, capacity[0]),
+        configurations=(candidate,),
+        comparator_tuning_file_sha256=base.comparator_tuning_file_sha256,
+        comparator_tuning_payload_sha256=base.comparator_tuning_payload_sha256,
+        comparator_tuning=base.comparator_tuning,
+        plan_scope="revision_candidate_only",
     )
 
 
@@ -1428,22 +1496,15 @@ def load_v29_revision_authority() -> RunnerAuthority:
         requires_calibration=True,
         configuration_sha256=revision.configuration_sha256,
     )
-    capacity = tuple(
-        value
-        for value in base.configurations
-        if value.method_id == "capacity-matched-ae"
-    )
-    if len(capacity) != 1:
-        raise RunnerContractError("v29 authority lacks one fixed capacity control")
     authority_body = {
         "schema": "maskimpute-v29-revision-runner-authority-v1",
+        "plan_scope": "revision_candidate_only",
         "base_runner_authority_sha256": base.authority_sha256,
         "v28_revision_authority_sha256": v28.authority_sha256,
         "revision_file_sha256": revision.file_sha256,
         "parent_configuration_id": parent.configuration_id,
         "parent_configuration_sha256": parent.configuration_sha256,
         "configuration": candidate.to_dict(),
-        "capacity_control": capacity[0].to_dict(),
     }
     return RunnerAuthority(
         schema_version=base.schema_version,
@@ -1465,7 +1526,11 @@ def load_v29_revision_authority() -> RunnerAuthority:
         dataset_qc_policy_sha256=base.dataset_qc_policy_sha256,
         count_score_manifest_path=base.count_score_manifest_path,
         retained_calibration_path=base.retained_calibration_path,
-        configurations=(candidate, capacity[0]),
+        configurations=(candidate,),
+        comparator_tuning_file_sha256=base.comparator_tuning_file_sha256,
+        comparator_tuning_payload_sha256=base.comparator_tuning_payload_sha256,
+        comparator_tuning=base.comparator_tuning,
+        plan_scope="revision_candidate_only",
     )
 
 
@@ -1709,6 +1774,7 @@ def build_competition_plan(
     authority: RunnerAuthority,
     *,
     execution_environment_sha256: str | None = None,
+    runtime_lock_sha256: str | None = None,
 ) -> CompetitionPlan:
     """Build the exhaustive method x dataset x seed denominator."""
 
@@ -1716,11 +1782,12 @@ def build_competition_plan(
         raise TypeError("registry must be a MethodRegistry")
     if not isinstance(authority, RunnerAuthority):
         raise TypeError("authority must be a RunnerAuthority")
-    if execution_environment_sha256 is None:
-        execution_environment_sha256 = "0" * 64
+    if execution_environment_sha256 is None or runtime_lock_sha256 is None:
+        raise RunnerContractError("plan runtime identity is absent")
     _require_sha256(
         execution_environment_sha256, "execution environment registry checksum"
     )
+    _require_sha256(runtime_lock_sha256, "runtime lock checksum")
     dataset_values = tuple(datasets)
     if len(dataset_values) != 16 or not all(
         isinstance(binding, DatasetBinding) for binding in dataset_values
@@ -1748,6 +1815,11 @@ def build_competition_plan(
         "ablation_registry_sha256": authority.ablation_registry_sha256,
         "runner_authority_sha256": authority.authority_sha256,
         "execution_environment_sha256": execution_environment_sha256,
+        "runtime_lock_sha256": runtime_lock_sha256,
+        "comparator_tuning_file_sha256": (authority.comparator_tuning_file_sha256),
+        "comparator_tuning_payload_sha256": (
+            authority.comparator_tuning_payload_sha256
+        ),
         "base_configuration_sha256": authority.base_configuration_sha256,
         "count_model_config_sha256": authority.count_model_config_sha256,
         "dataset_qc_policy_sha256": authority.dataset_qc_policy_sha256,
@@ -1766,43 +1838,61 @@ def build_competition_plan(
         )
         for method_id in {value.method_id for value in authority.configurations}
     }
+    planned_specs = (
+        tuple(spec for spec in registry.methods if spec.id == "maskimpute")
+        if authority.plan_scope == "revision_candidate_only"
+        else tuple(
+            spec
+            for spec in registry.methods
+            if spec.execution_scope == "same_input_required"
+        )
+    )
     plan_configurations: list[AuthorizedConfiguration] = []
-    for spec in registry.methods:
-        if spec.execution_scope != "same_input_required":
-            continue
-        if spec.id in {"maskimpute", "capacity-matched-ae"}:
+    configurations_by_method: dict[str, tuple[AuthorizedConfiguration, ...]] = {}
+    for spec in planned_specs:
+        if spec.id == "observed":
+            configurations = (AuthorizedConfiguration.registry_default(spec),)
+        elif spec.id in {"maskimpute", "capacity-matched-ae"}:
             configurations = authority_by_method.get(spec.id, ())
             if not configurations:
                 raise RunnerContractError(
                     f"tracked authority has no configuration for {spec.id}"
                 )
         else:
-            configurations = (AuthorizedConfiguration.registry_default(spec),)
+            configurations = tuple(
+                AuthorizedConfiguration.from_bound_comparator(
+                    bind_comparator_configuration_identity(
+                        row,
+                        spec,
+                        authority.comparator_tuning,
+                        runtime_lock_sha256=runtime_lock_sha256,
+                        environment_registry_sha256=(execution_environment_sha256),
+                    )
+                )
+                for row in authority.comparator_tuning.configurations_for(spec.id)
+            )
+            if not configurations:
+                raise RunnerContractError(
+                    f"comparator tuning has no configuration for {spec.id}"
+                )
+        configurations_by_method[spec.id] = configurations
         plan_configurations.extend(configurations)
     ordinal = 0
-    for binding in dataset_values:
-        for spec in registry.methods:
-            if spec.execution_scope != "same_input_required":
-                continue
-            configurations = tuple(
-                value for value in plan_configurations if value.method_id == spec.id
-            )
-            seeds: tuple[int | None, ...] = (
-                DEVELOPMENT_MODEL_SEEDS if spec.stochastic else (None,)
-            )
-            for configuration in configurations:
-                if (
-                    configuration.requires_calibration
-                    and not authority.maskimpute_ready
-                ):
-                    blocked_reason = "count_score_or_calibration_authority_pending"
-                elif (
-                    configuration.requires_count_score
-                    and authority.count_score_manifest_status != "ready"
-                ):
-                    blocked_reason = "count_score_authority_pending"
-                else:
-                    blocked_reason = None
+    for spec in planned_specs:
+        seeds: tuple[int | None, ...] = (
+            DEVELOPMENT_MODEL_SEEDS if spec.stochastic else (None,)
+        )
+        for configuration in configurations_by_method[spec.id]:
+            if configuration.requires_calibration and not authority.maskimpute_ready:
+                blocked_reason = "count_score_or_calibration_authority_pending"
+            elif (
+                configuration.requires_count_score
+                and authority.count_score_manifest_status != "ready"
+            ):
+                blocked_reason = "count_score_authority_pending"
+            else:
+                blocked_reason = None
+            for binding in dataset_values:
                 for seed in seeds:
                     ordinal += 1
                     entries.append(
@@ -1843,6 +1933,34 @@ def build_competition_plan(
                             ),
                         )
                     )
+    if authority.plan_scope == "base_full_panel":
+        component_counts = {
+            "observed": sum(entry.method_id == "observed" for entry in entries),
+            "capacity": sum(
+                entry.method_id == "capacity-matched-ae" for entry in entries
+            ),
+            "maskimpute": sum(entry.method_id == "maskimpute" for entry in entries),
+            "comparators": sum(
+                entry.configuration_kind == "comparator_tuning" for entry in entries
+            ),
+        }
+        if component_counts != {
+            "observed": 16,
+            "capacity": 48,
+            "maskimpute": 1_200,
+            "comparators": 1_632,
+        }:
+            raise RunnerContractError("development plan component denominator differs")
+    elif (
+        len(entries) != 48
+        or len(plan_configurations) != 1
+        or any(
+            entry.method_id != "maskimpute"
+            or entry.configuration_kind != "candidate_search"
+            for entry in entries
+        )
+    ):
+        raise RunnerContractError("revision candidate plan denominator differs")
     plan_body = _competition_plan_body(
         schema_version=1,
         input_hashes=input_hashes,
@@ -7138,11 +7256,14 @@ def _run_competition_with_authority(
         r_library_paths={"saver": (repository / "artifacts/envs/saver-r/library",)},
         lock_only_environment_ids=derive_lock_only_environment_ids(registry),
     )
+    if environments.runtime_lock_sha256 is None:
+        raise RunnerContractError("development runtime lock checksum is absent")
     plan = build_competition_plan(
         registry,
         bindings,
         authority,
         execution_environment_sha256=environments.registry_sha256,
+        runtime_lock_sha256=environments.runtime_lock_sha256,
     )
     dispatcher = RepositoryAdapterDispatcher(repository, environments)
     return execute_competition_plan(
