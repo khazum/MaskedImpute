@@ -31,6 +31,7 @@ import numpy as np
 
 if TYPE_CHECKING:
     from .comparator_tuning import BoundComparatorConfiguration
+    from .fair_comparator_plan import DirectCompetitionPlan
     from .trajectory_dataset import RegisteredTrajectoryBinding
 
 from .comparator_tuning import (
@@ -38,7 +39,6 @@ from .comparator_tuning import (
     ComparatorAuthorityReference,
     ComparatorMethodBinding,
     ComparatorTuningAuthority,
-    bind_comparator_configuration_identity,
     comparator_method_binding,
     encode_comparator_configuration,
     load_comparator_tuning_authority,
@@ -1824,6 +1824,24 @@ def _run_id(
     )
 
 
+def build_fair_comparator_plan(
+    registry: MethodRegistry,
+    datasets: Sequence[DatasetBinding],
+    authority: RunnerAuthority,
+    prepared_datasets: Sequence[PreparedDataset],
+) -> DirectCompetitionPlan:
+    """Build the direct-identity fair-comparator development plan."""
+
+    from .fair_comparator_plan import build_direct_competition_plan
+
+    return build_direct_competition_plan(
+        registry,
+        datasets,
+        authority,
+        prepared_datasets,
+    )
+
+
 def build_competition_plan(
     registry: MethodRegistry,
     datasets: Sequence[DatasetBinding],
@@ -1844,6 +1862,10 @@ def build_competition_plan(
         execution_environment_sha256, "execution environment registry checksum"
     )
     _require_sha256(runtime_lock_sha256, "runtime lock checksum")
+    if authority.plan_scope == "base_full_panel":
+        raise RunnerContractError(
+            "direct fair-comparator planning requires build_fair_comparator_plan"
+        )
     dataset_values = tuple(datasets)
     if len(dataset_values) != 16 or not all(
         isinstance(binding, DatasetBinding) for binding in dataset_values
@@ -1911,22 +1933,9 @@ def build_competition_plan(
                     f"tracked authority has no configuration for {spec.id}"
                 )
         else:
-            configurations = tuple(
-                AuthorizedConfiguration.from_bound_comparator(
-                    bind_comparator_configuration_identity(
-                        row,
-                        spec,
-                        authority.comparator_tuning,
-                        runtime_lock_sha256=runtime_lock_sha256,
-                        environment_registry_sha256=(execution_environment_sha256),
-                    )
-                )
-                for row in authority.comparator_tuning.configurations_for(spec.id)
+            raise RunnerContractError(
+                "legacy competition planning does not accept comparator methods"
             )
-            if not configurations:
-                raise RunnerContractError(
-                    f"comparator tuning has no configuration for {spec.id}"
-                )
         configurations_by_method[spec.id] = configurations
         plan_configurations.extend(configurations)
     ordinal = 0
@@ -7852,6 +7861,7 @@ __all__ = [
     "RunnerContractError",
     "SpawnedRepositoryExecutor",
     "build_competition_plan",
+    "build_fair_comparator_plan",
     "derive_lock_only_environment_ids",
     "derive_authorized_configurations",
     "execute_adapter_in_spawned_process",

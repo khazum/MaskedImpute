@@ -34,6 +34,7 @@ from maskimpute_benchmark.runner import (
     AuthorizedConfiguration,
     DevelopmentBudget,
     DatasetBinding,
+    DatasetQCAudit,
     ExecutionRequest,
     CheckpointStore,
     CalibrationFoldReceipt,
@@ -42,6 +43,7 @@ from maskimpute_benchmark.runner import (
     RunnerAuthority,
     RunnerContractError,
     DatasetQCPolicy,
+    PreparedDataset,
     ResourceSample,
     ExecutionEnvironmentRegistry,
     RepositoryAdapterDispatcher,
@@ -49,6 +51,7 @@ from maskimpute_benchmark.runner import (
     prepare_dataset_pair_for_execution,
     prepare_dataset_for_execution,
     build_competition_plan,
+    build_fair_comparator_plan,
     execute_adapter_in_spawned_process,
     evaluate_adapter_outcome,
     enforce_calibration_fold_receipt,
@@ -384,6 +387,40 @@ def _truth_dataset(counts: np.ndarray) -> ad.AnnData:
     return dataset
 
 
+def _prepared_plan_inputs(bindings) -> tuple[PreparedDataset, ...]:
+    values = []
+    for ordinal, binding in enumerate(bindings, start=1):
+        method_input = replace(
+            _method_input(),
+            source_dataset_sha256=binding.dataset_sha256,
+        )
+        evaluator_dataset = _truth_dataset(
+            np.asarray([[ordinal, 0, 1], [0, ordinal + 1, 0]], dtype=np.int64)
+        )
+        draw_index = int(binding.biological_id.removeprefix("draw-"))
+        evaluator_dataset.obs["draw"] = [draw_index, draw_index]
+        evaluator_dataset.uns["provenance"]["seeds"] = {
+            "biological": 10_000 + ordinal,
+            "measurement": 20_000 + ordinal,
+        }
+        values.append(
+            PreparedDataset(
+                binding=binding,
+                audit=DatasetQCAudit(
+                    excluded_cell_count=0,
+                    excluded_cell_ids_sha256="e" * 64,
+                    retained_cell_count=2,
+                    retained_cell_ids_sha256="f" * 64,
+                    excluded_cell_ids=(),
+                    retained_cell_ids=method_input.obs_ids,
+                ),
+                method_input=method_input,
+                evaluator_dataset=evaluator_dataset,
+            )
+        )
+    return tuple(values)
+
+
 def _truth_probe_executor(request: ExecutionRequest) -> AdapterOutcome:
     try:
         getattr(request.method_input, "layers")
@@ -535,22 +572,20 @@ def test_development_manifest_rejects_nonfinalized_authority(
         validate_development_manifest_payload(payload)
 
 
-def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> None:
+def test_direct_plan_is_full_denominator_with_fixed_seed_policy() -> None:
     registry = load_method_registry(METHODS_PATH)
     datasets = validate_development_manifest_payload(_manifest_payload())
 
-    plan = build_competition_plan(
+    plan = build_fair_comparator_plan(
         registry,
         datasets,
         _authority(),
-        execution_environment_sha256="7" * 64,
-        runtime_lock_sha256="6" * 64,
+        _prepared_plan_inputs(datasets),
     )
-    plan.validate_integrity()
 
     deterministic = {"observed"}
     expected_per_dataset = sum(
-        1 if configuration.method_id in deterministic else 3
+        1 if configuration.method.method_id in deterministic else 3
         for configuration in plan.configurations
     )
     expected = len(datasets) * expected_per_dataset
@@ -560,43 +595,39 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
         method.id
         for method in registry.methods
         if method.execution_scope != "same_input_required"
-    } & {entry.method_id for entry in plan.entries}
-    assert plan.input_hashes["dataset_manifest_sha256"] == SHA_A
-    assert plan.input_hashes["method_registry_sha256"] == "2" * 64
-    assert plan.input_hashes["execution_environment_sha256"] == "7" * 64
-    assert plan.input_hashes["runtime_lock_sha256"] == "6" * 64
-    assert "comparator_tuning_file_sha256" not in plan.input_hashes
-    assert "comparator_tuning_payload_sha256" not in plan.input_hashes
-    assert plan.input_hashes["implementation_source_sha256"] == (
-        implementation_source_sha256()
-    )
+    } & {entry.identity.method_id for entry in plan.entries}
     for entry in plan.entries:
-        expected_seeds = (None,) if entry.method_id in deterministic else (42, 43, 44)
-        assert entry.model_seed in expected_seeds
-        if entry.method_id == "maskimpute":
-            assert entry.configuration_kind in {"candidate_search", "ablation"}
+        identity = entry.identity
+        expected_seeds = (
+            (None,) if identity.method_id in deterministic else (42, 43, 44)
+        )
+        assert identity.model_seed in expected_seeds
+        if identity.method_id == "maskimpute":
+            assert identity.configuration_kind in {"candidate_search", "ablation"}
             assert entry.preflight_status == "blocked_authority"
             assert entry.preflight_reason in {
                 "count_score_authority_pending",
                 "count_score_or_calibration_authority_pending",
             }
-        elif entry.method_id == "capacity-matched-ae":
-            assert entry.configuration_id == "capacity-matched-ae"
+        elif identity.method_id == "capacity-matched-ae":
+            assert identity.configuration_id == "capacity-matched-ae"
             assert entry.preflight_status == "blocked_authority"
             assert (
                 entry.preflight_reason == "count_score_or_calibration_authority_pending"
             )
-        elif entry.method_id == "observed":
-            assert entry.configuration_id == "registry-default"
-            assert entry.configuration_kind == "registry"
+        elif identity.method_id == "observed":
+            assert identity.configuration_id == "registry-default"
+            assert identity.configuration_kind == "registry"
             assert entry.preflight_status == "planned"
         else:
-            assert entry.configuration_id != "registry-default"
-            assert entry.configuration_kind == "comparator_tuning"
-            assert entry.configuration_method_identity_sha256 is not None
+            assert identity.configuration_id != "registry-default"
+            assert identity.configuration_kind == "comparator_tuning"
             assert entry.preflight_status == "planned"
     assert (
-        sum(entry.method_id == "capacity-matched-ae" for entry in plan.entries)
+        sum(
+            entry.identity.method_id == "capacity-matched-ae"
+            for entry in plan.entries
+        )
         == len(datasets) * 3
     )
 
@@ -605,22 +636,21 @@ def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> No
     authority = load_runner_authority()
     registry = load_method_registry(ROOT / "study/methods.json")
     bindings = validate_development_manifest_payload(_manifest_payload())
-    plan = build_competition_plan(
+    plan = build_fair_comparator_plan(
         registry,
         bindings,
         authority,
-        execution_environment_sha256="2" * 64,
-        runtime_lock_sha256="1" * 64,
+        _prepared_plan_inputs(bindings),
     )
     assert len(plan.entries) == 2_896
     assert len({entry.run_id for entry in plan.entries}) == 2_896
     comparator_rows = [
         entry
         for entry in plan.entries
-        if entry.configuration_kind == "comparator_tuning"
+        if entry.identity.configuration_kind == "comparator_tuning"
     ]
     assert len(comparator_rows) == 1_632
-    assert {entry.method_id for entry in comparator_rows} == {
+    assert {entry.identity.method_id for entry in comparator_rows} == {
         "alra",
         "magic",
         "dca",
@@ -633,43 +663,56 @@ def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> No
         "scsdae",
     }
     assert all(
-        entry.configuration_id != "registry-default" for entry in comparator_rows
+        entry.identity.configuration_id != "registry-default"
+        for entry in comparator_rows
     )
-    assert all(entry.configuration_method_identity_sha256 for entry in comparator_rows)
     for configuration in (
-        value for value in plan.configurations if value.kind == "comparator_tuning"
+        value
+        for value in plan.configurations
+        if value.configuration_kind == "comparator_tuning"
     ):
         block = [
             entry
             for entry in comparator_rows
-            if entry.method_id == configuration.method_id
-            and entry.configuration_id == configuration.configuration_id
+            if entry.identity.method_id == configuration.method.method_id
+            and entry.identity.configuration_id == configuration.configuration_id
         ]
         assert len(block) == 48
         positions = [plan.entries.index(entry) for entry in block]
         assert positions == list(range(min(positions), min(positions) + 48))
     assert len(plan.configurations) == 61
-    assert not ({"d3impute", "sctsi"} & {entry.method_id for entry in plan.entries})
+    assert not (
+        {"d3impute", "sctsi"}
+        & {entry.identity.method_id for entry in plan.entries}
+    )
 
     cursor = 0
     for configuration in plan.configurations:
-        seeds = (None,) if configuration.method_id == "observed" else (42, 43, 44)
+        seeds = (
+            (None,)
+            if configuration.method.method_id == "observed"
+            else (42, 43, 44)
+        )
         expected_cells = [
             (binding.dataset_id, seed) for binding in bindings for seed in seeds
         ]
         block = plan.entries[cursor : cursor + len(expected_cells)]
-        assert [(row.dataset_id, row.model_seed) for row in block] == expected_cells
-        assert {(row.method_id, row.configuration_id) for row in block} == {
-            (configuration.method_id, configuration.configuration_id)
+        assert [
+            (row.identity.dataset_id, row.identity.model_seed) for row in block
+        ] == expected_cells
+        assert {
+            (row.identity.method_id, row.identity.configuration_id) for row in block
+        } == {
+            (configuration.method.method_id, configuration.configuration_id)
         }
         cursor += len(expected_cells)
     assert cursor == len(plan.entries)
 
     tuning = authority.comparator_tuning
     assert tuple(
-        (row.method_id, row.configuration_id)
+        (row.method.method_id, row.configuration_id)
         for row in plan.configurations
-        if row.kind == "comparator_tuning"
+        if row.configuration_kind == "comparator_tuning"
     ) == tuple((row.method_id, row.configuration_id) for row in tuning.configurations)
     for method_id in tuning.method_order:
         configured = tuning.configurations_for(method_id)
@@ -690,6 +733,17 @@ def test_plan_building_requires_both_runtime_identity_hashes(kwargs) -> None:
             validate_development_manifest_payload(_manifest_payload()),
             load_runner_authority(),
             **kwargs,
+        )
+
+
+def test_legacy_plan_builder_rejects_the_direct_fair_comparator_scope() -> None:
+    with pytest.raises(RunnerContractError, match="build_fair_comparator_plan"):
+        build_competition_plan(
+            load_method_registry(ROOT / "study/methods.json"),
+            validate_development_manifest_payload(_manifest_payload()),
+            load_runner_authority(),
+            execution_environment_sha256="2" * 64,
+            runtime_lock_sha256="1" * 64,
         )
 
 
@@ -894,19 +948,18 @@ def test_ready_maskimpute_authority_removes_only_its_preflight_block() -> None:
     registry = load_method_registry(METHODS_PATH)
     datasets = validate_development_manifest_payload(_manifest_payload())
 
-    blocked = build_competition_plan(
+    prepared = _prepared_plan_inputs(datasets)
+    blocked = build_fair_comparator_plan(
         registry,
         datasets,
         _authority(),
-        execution_environment_sha256="7" * 64,
-        runtime_lock_sha256="6" * 64,
+        prepared,
     )
-    ready = build_competition_plan(
+    ready = build_fair_comparator_plan(
         registry,
         datasets,
         _authority(maskimpute_ready=True),
-        execution_environment_sha256="7" * 64,
-        runtime_lock_sha256="6" * 64,
+        prepared,
     )
 
     assert all(
@@ -920,7 +973,7 @@ def test_ready_maskimpute_authority_removes_only_its_preflight_block() -> None:
         else entry
         for entry in blocked.entries
     ] == list(ready.entries)
-    assert blocked.plan_sha256 != ready.plan_sha256
+    assert blocked != ready
 
 
 def test_method_input_hash_binds_only_truth_free_snapshot_and_is_stable() -> None:
