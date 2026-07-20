@@ -468,6 +468,62 @@ def test_direct_projection_rejects_incomplete_comparator_denominator(
         )
 
 
+def test_direct_projection_requires_selected_row_in_terminal_comparator_entries(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
+        project_direct_comparator_evidence,
+    )
+    from maskimpute_benchmark.fair_comparator_checkpoint import (
+        replay_direct_development_budget,
+    )
+
+    checkpoint_path, plan, registry, prepared, authority, _selected = (
+        _direct_projection_checkpoint(tmp_path)
+    )
+    selected = authority.configurations_for("magic")[2:3]
+    changed_plan = replace(plan, entries=plan.entries[:-1])
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["plan_snapshot"] = changed_plan.to_dict()
+    checkpoint["planned_run_count"] = len(changed_plan.entries)
+    checkpoint["records"] = checkpoint["records"][:-1]
+    checkpoint["status"] = "completed"
+    checkpoint["comparator_selection_status"] = "complete_terminal_denominator"
+    checkpoint["budget"] = replay_direct_development_budget(
+        registry,
+        changed_plan.entries,
+        checkpoint["records"],
+    ).to_dict()
+    checkpoint_path.write_text(
+        json.dumps(
+            checkpoint,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DevelopmentEvaluationError, match="checkpoint validation"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            changed_plan,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=ComparatorAuthorityReference(
+                path="study/comparator_tuning.json",
+                schema_version=2,
+                authority_revision="fair-comparator-direct-v1",
+            ),
+            comparator_authority=authority,
+            selected_rows=selected,
+        )
+
+
 def test_direct_projection_rejects_payload_plan_record_and_authority_drift(
     tmp_path: Path,
 ) -> None:

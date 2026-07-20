@@ -25,6 +25,7 @@ from .fair_comparator_plan import (
     describe_prepared_input,
     direct_json_value,
     direct_run_id,
+    validate_direct_competition_plan,
 )
 from .methods import MethodRegistry, MethodSpec
 from .runner import (
@@ -852,6 +853,11 @@ class DirectCheckpointStore:
         registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
     ) -> DirectCheckpointReport:
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
         snapshot = _validate_plan(plan)
         descriptors = _prepared_descriptors(plan, prepared_datasets)
         record_values = tuple(
@@ -884,6 +890,11 @@ class DirectCheckpointStore:
     ) -> DirectCheckpointReport:
         if not isinstance(attempt, DirectEvaluatedAttempt):
             raise TypeError("attempt must be a DirectEvaluatedAttempt")
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
         if os.path.lexists(self.path):
             current = self.load(
                 plan,
@@ -1135,6 +1146,11 @@ class DirectCheckpointStore:
         registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
     ) -> DirectCheckpointReport:
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
         self._recover_interrupted_transaction(
             plan,
             registry=registry,

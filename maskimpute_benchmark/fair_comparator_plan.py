@@ -10,7 +10,9 @@ from typing import Literal
 import numpy as np
 
 from .comparator_tuning import (
+    AUTHORITY_REVISION,
     ComparatorMethodBinding,
+    _canonical_comparator_tuning_authority,
     bind_comparator_configuration_identity,
     comparator_method_binding,
 )
@@ -451,6 +453,337 @@ def _validate_direct_plan(
         raise RunnerContractError("direct revision candidate denominator differs")
 
 
+def _direct_values_equal(left: object, right: object) -> bool:
+    if is_dataclass(left) or is_dataclass(right):
+        if (
+            not is_dataclass(left)
+            or not is_dataclass(right)
+            or isinstance(left, type)
+            or isinstance(right, type)
+            or type(left) is not type(right)
+        ):
+            return False
+        return all(
+            _direct_values_equal(getattr(left, item.name), getattr(right, item.name))
+            for item in fields(left)
+        )
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            return False
+        return set(left) == set(right) and all(
+            _direct_values_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+        if type(left) is not type(right) or len(left) != len(right):
+            return False
+        return all(
+            _direct_values_equal(first, second)
+            for first, second in zip(left, right, strict=True)
+        )
+    if type(left) is float and type(right) is float:
+        return left.hex() == right.hex()
+    return type(left) is type(right) and left == right
+
+
+def _direct_configuration_payload(
+    payload: object,
+    *,
+    name: str,
+) -> dict[str, object]:
+    if type(payload) is not tuple:
+        raise RunnerContractError(f"{name} is not a frozen JSON object")
+    encoded = direct_json_value(payload, payload=True)
+    if not isinstance(encoded, Mapping) or len(encoded) != len(payload):
+        raise RunnerContractError(f"{name} is not a unique JSON object")
+    try:
+        canonical = _freeze_payload_mapping(encoded)
+    except RunnerContractError as error:
+        raise RunnerContractError(f"{name} is not canonical JSON") from error
+    canonical_encoded = direct_json_value(canonical, payload=True)
+    if not _direct_values_equal(encoded, canonical_encoded):
+        raise RunnerContractError(f"{name} is not canonical JSON")
+    return dict(encoded)
+
+
+def validate_direct_competition_plan(
+    plan: DirectCompetitionPlan,
+    *,
+    registry: MethodRegistry,
+    prepared_datasets: Mapping[str, PreparedDataset],
+) -> None:
+    """Validate every direct plan/configuration/entry/input binding."""
+
+    if not isinstance(plan, DirectCompetitionPlan):
+        raise TypeError("plan must be a DirectCompetitionPlan")
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    if not isinstance(prepared_datasets, Mapping):
+        raise TypeError("prepared_datasets must be a mapping")
+    if (
+        type(plan.schema_version) is not int
+        or plan.schema_version != 1
+        or plan.identity_mode != "direct-v1"
+        or type(plan.authority_revision) is not str
+        or plan.authority_revision != AUTHORITY_REVISION
+        or type(plan.inputs) is not tuple
+        or type(plan.configurations) is not tuple
+        or type(plan.entries) is not tuple
+    ):
+        raise RunnerContractError("direct plan schema, mode, or revision differs")
+    if not plan.inputs or not plan.configurations or not plan.entries:
+        raise RunnerContractError("direct plan denominator must not be empty")
+
+    input_ids = tuple(descriptor.dataset_id for descriptor in plan.inputs)
+    if (
+        any(
+            type(descriptor) is not PreparedInputDescriptor
+            for descriptor in plan.inputs
+        )
+        or len(input_ids) != len(set(input_ids))
+        or any(type(value) is not str or not value for value in input_ids)
+        or set(prepared_datasets) != set(input_ids)
+    ):
+        raise RunnerContractError(
+            "prepared dataset authority does not exactly cover the direct plan"
+        )
+    prepared_by_id: dict[str, PreparedDataset] = {}
+    for descriptor in plan.inputs:
+        prepared = prepared_datasets.get(descriptor.dataset_id)
+        if not isinstance(prepared, PreparedDataset):
+            raise RunnerContractError("direct prepared dataset authority is invalid")
+        observed = describe_prepared_input(prepared)
+        if not _direct_values_equal(observed, descriptor):
+            raise RunnerContractError("direct prepared input descriptor differs")
+        prepared_by_id[descriptor.dataset_id] = prepared
+
+    authority = _canonical_comparator_tuning_authority()
+    authority_rows = {
+        (row.method_id, row.configuration_id): row for row in authority.configurations
+    }
+    configurations: dict[tuple[str, str], DirectAuthorizedConfiguration] = {}
+    configuration_order: list[tuple[str, str]] = []
+    comparator_configurations: list[DirectAuthorizedConfiguration] = []
+    for configuration in plan.configurations:
+        if type(configuration) is not DirectAuthorizedConfiguration:
+            raise RunnerContractError("direct plan configuration is invalid")
+        method_id = configuration.method.method_id
+        if (
+            type(method_id) is not str
+            or type(configuration.configuration_id) is not str
+            or type(configuration.configuration_kind) is not str
+            or configuration.configuration_kind
+            not in {"registry", "ablation", "candidate_search", "comparator_tuning"}
+            or type(configuration.requires_count_score) is not bool
+            or type(configuration.requires_calibration) is not bool
+        ):
+            raise RunnerContractError("direct plan configuration identity is invalid")
+        try:
+            expected_method = comparator_method_binding(registry.by_id(method_id))
+        except KeyError as error:
+            raise RunnerContractError(
+                f"direct plan references unknown method {method_id}"
+            ) from error
+        if not _direct_values_equal(configuration.method, expected_method):
+            raise RunnerContractError("direct plan method projection differs")
+        payload = _direct_configuration_payload(
+            configuration.payload,
+            name="direct plan configuration payload",
+        )
+        key = (method_id, configuration.configuration_id)
+        if key in configurations:
+            raise RunnerContractError("direct plan configuration keys are not unique")
+        configurations[key] = configuration
+        configuration_order.append(key)
+        authoritative = authority_rows.get(key)
+        if authoritative is not None and (
+            configuration.configuration_kind != "comparator_tuning"
+            or configuration.requires_count_score
+            or configuration.requires_calibration
+        ):
+            raise RunnerContractError("direct comparator configuration was relabelled")
+        if configuration.configuration_kind == "comparator_tuning":
+            if authoritative is None or not _direct_values_equal(
+                payload, dict(authoritative.payload)
+            ):
+                raise RunnerContractError(
+                    "direct comparator configuration differs from authority"
+                )
+            comparator_configurations.append(configuration)
+
+    ordinals = tuple(entry.identity.ordinal for entry in plan.entries)
+    if any(type(value) is not int for value in ordinals) or ordinals != tuple(
+        range(1, len(plan.entries) + 1)
+    ):
+        raise RunnerContractError("direct plan ordinals are not contiguous")
+    run_ids = tuple(entry.run_id for entry in plan.entries)
+    if len(run_ids) != len(set(run_ids)):
+        raise RunnerContractError("direct plan run IDs are not unique")
+
+    positions: dict[tuple[str, str], list[int]] = {
+        key: [] for key in configuration_order
+    }
+    preflight_by_configuration: dict[tuple[str, str], set[tuple[str, str | None]]] = {
+        key: set() for key in configuration_order
+    }
+    for position, entry in enumerate(plan.entries):
+        if (
+            type(entry) is not DirectPlanEntry
+            or type(entry.identity) is not ComparatorRunIdentity
+        ):
+            raise RunnerContractError("direct plan entry is invalid")
+        identity = entry.identity
+        method_id = identity.method.method_id
+        if (
+            identity.workflow_schema != _WORKFLOW_SCHEMA
+            or identity.authority_revision != plan.authority_revision
+            or type(identity.configuration_id) is not str
+            or type(identity.configuration_kind) is not str
+        ):
+            raise RunnerContractError("direct plan entry workflow or identity differs")
+        if entry.run_id != direct_run_id(identity):
+            raise RunnerContractError("direct checkpoint plan run ID differs")
+        try:
+            spec = registry.by_id(method_id)
+        except KeyError as error:
+            raise RunnerContractError(
+                f"direct plan references unknown method {method_id}"
+            ) from error
+        expected_method = comparator_method_binding(spec)
+        if not _direct_values_equal(identity.method, expected_method):
+            raise RunnerContractError("direct plan method projection differs")
+        key = (method_id, identity.configuration_id)
+        configuration = configurations.get(key)
+        if (
+            configuration is None
+            or identity.configuration_kind != configuration.configuration_kind
+            or not _direct_values_equal(identity.method, configuration.method)
+            or not _direct_values_equal(
+                _direct_configuration_payload(
+                    identity.configuration_payload,
+                    name="direct plan entry payload",
+                ),
+                _direct_configuration_payload(
+                    configuration.payload,
+                    name="direct plan configuration payload",
+                ),
+            )
+            or entry.requires_count_score is not configuration.requires_count_score
+            or entry.requires_calibration is not configuration.requires_calibration
+        ):
+            raise RunnerContractError(
+                "direct plan entry does not resolve to exactly one configuration"
+            )
+        prepared = prepared_by_id.get(identity.dataset_id)
+        if prepared is None:
+            raise RunnerContractError("direct plan entry references an unknown input")
+        descriptor = plan.inputs[input_ids.index(identity.dataset_id)]
+        _mask_seed, draw_index = _evaluator_seed_and_draw(prepared)
+        if (
+            type(identity.mechanism) is not str
+            or identity.mechanism != prepared.binding.mechanism
+            or type(identity.biological_id) is not str
+            or identity.biological_id != prepared.binding.biological_id
+            or type(identity.technical_view) is not str
+            or identity.technical_view != prepared.binding.technical_view
+            or type(identity.mask_seed) is not int
+            or identity.mask_seed != descriptor.mask_seed
+            or type(identity.draw_index) is not int
+            or identity.draw_index != draw_index
+            or (
+                spec.stochastic
+                and (type(identity.model_seed) is not int or identity.model_seed < 0)
+            )
+            or (not spec.stochastic and identity.model_seed is not None)
+        ):
+            raise RunnerContractError("direct plan entry input binding differs")
+        if entry.preflight_status == "planned":
+            if entry.preflight_reason is not None:
+                raise RunnerContractError("direct planned preflight has a reason")
+        elif entry.preflight_status == "blocked_authority":
+            expected_reason = (
+                "count_score_or_calibration_authority_pending"
+                if configuration.requires_calibration
+                else "count_score_authority_pending"
+                if configuration.requires_count_score
+                else None
+            )
+            if entry.preflight_reason != expected_reason or expected_reason is None:
+                raise RunnerContractError("direct blocked preflight reason differs")
+        else:
+            raise RunnerContractError("direct preflight status differs")
+        positions[key].append(position)
+        preflight_by_configuration[key].add(
+            (entry.preflight_status, entry.preflight_reason)
+        )
+
+    cursor = 0
+    expected_input_ids = set(input_ids)
+    for key in configuration_order:
+        block = positions[key]
+        if (
+            not block
+            or block != list(range(cursor, cursor + len(block)))
+            or {plan.entries[position].identity.dataset_id for position in block}
+            != expected_input_ids
+            or len(preflight_by_configuration[key]) != 1
+        ):
+            raise RunnerContractError(
+                "direct plan configuration blocks are absent, duplicated, or relabelled"
+            )
+        cursor += len(block)
+    if cursor != len(plan.entries):
+        raise RunnerContractError(
+            "direct plan entries differ from configuration blocks"
+        )
+
+    if len(plan.inputs) == 16:
+        if comparator_configurations:
+            expected_pairs = tuple(authority_rows)
+            observed_pairs = tuple(
+                (value.method.method_id, value.configuration_id)
+                for value in comparator_configurations
+            )
+            component_counts = {
+                "observed": sum(
+                    entry.identity.method_id == "observed" for entry in plan.entries
+                ),
+                "capacity": sum(
+                    entry.identity.method_id == "capacity-matched-ae"
+                    for entry in plan.entries
+                ),
+                "maskimpute": sum(
+                    entry.identity.method_id == "maskimpute" for entry in plan.entries
+                ),
+                "comparators": sum(
+                    entry.identity.configuration_kind == "comparator_tuning"
+                    for entry in plan.entries
+                ),
+            }
+            if (
+                len(plan.configurations) != 61
+                or len(plan.entries) != 2_896
+                or observed_pairs != expected_pairs
+                or component_counts
+                != {
+                    "observed": 16,
+                    "capacity": 48,
+                    "maskimpute": 1_200,
+                    "comparators": 1_632,
+                }
+            ):
+                raise RunnerContractError("direct development plan denominator differs")
+        elif (
+            len(plan.configurations) != 1
+            or len(plan.entries) != 48
+            or any(
+                entry.identity.method_id != "maskimpute"
+                or entry.identity.configuration_kind != "candidate_search"
+                for entry in plan.entries
+            )
+        ):
+            raise RunnerContractError("direct revision candidate denominator differs")
+
+
 def build_direct_competition_plan(
     registry: MethodRegistry,
     datasets: Sequence[DatasetBinding],
@@ -557,6 +890,13 @@ def build_direct_competition_plan(
         configurations=configurations,
     )
     _validate_direct_plan(plan, authority)
+    validate_direct_competition_plan(
+        plan,
+        registry=registry,
+        prepared_datasets={
+            value.binding.dataset_id: value for value in prepared_values
+        },
+    )
     return plan
 
 
@@ -577,4 +917,5 @@ __all__ = [
     "describe_prepared_input",
     "direct_json_value",
     "direct_run_id",
+    "validate_direct_competition_plan",
 ]

@@ -25,8 +25,10 @@ from .comparator_tuning import (
     ComparatorAuthorityReference,
     ComparatorConfiguration,
     ComparatorMethodBinding,
+    ComparatorTuningError,
     ComparatorTuningAuthority,
     comparator_method_binding,
+    validate_comparator_tuning_authority,
 )
 
 
@@ -110,12 +112,26 @@ def project_direct_selected_comparators(
     rows = tuple(selected_rows)
     if not all(isinstance(row, ComparatorConfiguration) for row in rows):
         raise TypeError("selected_rows must contain ComparatorConfiguration values")
+    try:
+        validate_comparator_tuning_authority(comparator_authority)
+    except ComparatorTuningError as error:
+        raise SelectionAuthorityError(
+            "direct comparator authority differs from the tracked contract"
+        ) from error
     expected_reference = ComparatorAuthorityReference(
         path="study/comparator_tuning.json",
-        schema_version=comparator_authority.schema_version,
-        authority_revision=comparator_authority.authority_revision,
+        schema_version=2,
+        authority_revision="fair-comparator-direct-v1",
     )
-    if comparator_reference != expected_reference:
+    if (
+        type(comparator_reference.path) is not str
+        or comparator_reference.path != expected_reference.path
+        or type(comparator_reference.schema_version) is not int
+        or comparator_reference.schema_version != expected_reference.schema_version
+        or type(comparator_reference.authority_revision) is not str
+        or comparator_reference.authority_revision
+        != expected_reference.authority_revision
+    ):
         raise SelectionAuthorityError("direct comparator authority reference differs")
     selected: dict[str, object] = {}
     for row in rows:

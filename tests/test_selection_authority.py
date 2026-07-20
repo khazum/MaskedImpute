@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Mapping
 from dataclasses import replace
 import inspect
 import hashlib
@@ -36,6 +37,15 @@ FORBIDDEN_DIRECT_IDENTITY_TOKENS = (
     "fingerprint",
     "sha",
 )
+FORBIDDEN_DIRECT_HELPERS = {
+    "canonical_sha256",
+    "method_input_sha256",
+    "implementation_source_sha256",
+    "_file_sha256",
+    "_stable_file_sha256",
+    "_digest",
+    "sha256",
+}
 
 
 def _direct_schema_keys(value: object) -> tuple[str, ...]:
@@ -55,12 +65,429 @@ def _forbidden_direct_key(name: str) -> bool:
     )
 
 
-def _call_name(node: ast.Call) -> str | None:
-    if isinstance(node.func, ast.Name):
-        return node.func.id
-    if isinstance(node.func, ast.Attribute):
-        return node.func.attr
+def _module_symbol_aliases(tree: ast.Module) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            for imported in node.names:
+                local = imported.asname or imported.name.split(".")[0]
+                aliases[local] = imported.name
+        elif isinstance(node, ast.ImportFrom):
+            prefix = "" if node.module is None else f"{node.module}."
+            for imported in node.names:
+                local = imported.asname or imported.name
+                aliases[local] = f"{prefix}{imported.name}"
+    return aliases
+
+
+def _resolve_symbol(node: ast.AST, aliases: Mapping[str, str]) -> str | None:
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        owner = _resolve_symbol(node.value, aliases)
+        return None if owner is None else f"{owner}.{node.attr}"
     return None
+
+
+def _literal_string(node: ast.AST, strings: Mapping[str, str]) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return strings.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _literal_string(node.left, strings)
+        right = _literal_string(node.right, strings)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr):
+        values: list[str] = []
+        for value in node.values:
+            if isinstance(value, ast.FormattedValue):
+                resolved = _literal_string(value.value, strings)
+            else:
+                resolved = _literal_string(value, strings)
+            if resolved is None:
+                return None
+            values.append(resolved)
+        return "".join(values)
+    return None
+
+
+def _scope_aliases(
+    scope: ast.AST,
+    module_aliases: Mapping[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    symbols = dict(module_aliases)
+    strings: dict[str, str] = {}
+    assignments = tuple(
+        node
+        for node in ast.walk(scope)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+    )
+    for _pass in range(len(assignments) + 1):
+        changed = False
+        for assignment in assignments:
+            targets = (
+                assignment.targets
+                if isinstance(assignment, ast.Assign)
+                else (assignment.target,)
+            )
+            value = assignment.value
+            if value is None:
+                continue
+            symbol = _resolve_symbol(value, symbols)
+            string = _literal_string(value, strings)
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if symbol is not None and symbols.get(target.id) != symbol:
+                    symbols[target.id] = symbol
+                    changed = True
+                if string is not None and strings.get(target.id) != string:
+                    strings[target.id] = string
+                    changed = True
+        if not changed:
+            break
+    return symbols, strings
+
+
+def _audited_direct_scope(node: ast.AST) -> bool:
+    return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+        "direct" in node.name.casefold().split("_")
+        or "fair_comparator" in node.name.casefold()
+    )
+
+
+def _direct_source_audit_findings(
+    source: str,
+    *,
+    shared: bool,
+) -> tuple[str, ...]:
+    tree = ast.parse(source)
+    module_aliases = _module_symbol_aliases(tree)
+    scopes: tuple[ast.AST, ...] = (
+        tuple(node for node in ast.walk(tree) if _audited_direct_scope(node))
+        if shared
+        else (tree,)
+    )
+    findings: set[str] = set()
+    if not shared:
+        for local, imported in module_aliases.items():
+            leaf = imported.rsplit(".", 1)[-1]
+            if imported == "hashlib" or leaf in FORBIDDEN_DIRECT_HELPERS:
+                findings.add(f"forbidden import {local}={imported}")
+    for scope in scopes:
+        symbols, strings = _scope_aliases(scope, module_aliases)
+        for call in (node for node in ast.walk(scope) if isinstance(node, ast.Call)):
+            resolved = _resolve_symbol(call.func, symbols)
+            if resolved is not None and (
+                resolved == "hashlib"
+                or resolved.startswith("hashlib.")
+                or resolved.rsplit(".", 1)[-1] in FORBIDDEN_DIRECT_HELPERS
+            ):
+                findings.add(f"forbidden call {resolved}")
+        for dictionary in (
+            node for node in ast.walk(scope) if isinstance(node, ast.Dict)
+        ):
+            for key in dictionary.keys:
+                if key is None:
+                    continue
+                resolved_key = _literal_string(key, strings)
+                if resolved_key is not None and _forbidden_direct_key(resolved_key):
+                    findings.add(f"forbidden generated key {resolved_key}")
+
+    if not shared:
+        symbols, _strings = _scope_aliases(tree, module_aliases)
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            decorators = tuple(
+                decorator.func if isinstance(decorator, ast.Call) else decorator
+                for decorator in node.decorator_list
+            )
+            if not any(
+                (resolved := _resolve_symbol(decorator, symbols)) is not None
+                and resolved.rsplit(".", 1)[-1] == "dataclass"
+                for decorator in decorators
+            ):
+                continue
+            for child in node.body:
+                if (
+                    isinstance(child, ast.AnnAssign)
+                    and isinstance(child.target, ast.Name)
+                    and _forbidden_direct_key(child.target.id)
+                ):
+                    findings.add(f"forbidden dataclass field {child.target.id}")
+    return tuple(sorted(findings))
+
+
+def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
+    import anndata as ad
+    import numpy as np
+    import pandas as pd
+
+    from maskimpute_benchmark.comparator_tuning import (
+        ComparatorAuthorityReference,
+        comparator_method_binding,
+        load_comparator_tuning_authority,
+    )
+    from maskimpute_benchmark.fair_comparator_checkpoint import (
+        DirectCheckpointReport,
+    )
+    from maskimpute_benchmark.fair_comparator_execution import (
+        DirectEvaluatedAttempt,
+        DirectExecutionRequest,
+        DirectLogReceipt,
+        DirectPreZeroEvidence,
+        DirectRunResult,
+    )
+    from maskimpute_benchmark.fair_comparator_plan import (
+        ComparatorRunIdentity,
+        DirectAuthorizedConfiguration,
+        DirectCompetitionPlan,
+        DirectPlanEntry,
+        PreparedInputDescriptor,
+        direct_run_id,
+    )
+    from maskimpute_benchmark.methods import (
+        load_method_registry,
+        prepare_method_input,
+    )
+    from maskimpute_benchmark.runner import SELECTION_COMPLETENESS_BLOCKERS
+    from maskimpute_benchmark.selection import project_direct_selected_comparators
+
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    row = authority.configurations_for("magic")[0]
+    spec = registry.by_id("magic")
+    method = comparator_method_binding(spec)
+
+    def freeze(value: object) -> object:
+        if isinstance(value, dict):
+            return tuple((key, freeze(nested)) for key, nested in sorted(value.items()))
+        if isinstance(value, list):
+            return tuple(freeze(nested) for nested in value)
+        return value
+
+    payload = freeze(dict(row.payload))
+    assert isinstance(payload, tuple)
+    configuration = DirectAuthorizedConfiguration(
+        method=method,
+        configuration_id=row.configuration_id,
+        configuration_kind="comparator_tuning",
+        payload=payload,
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+    identity = ComparatorRunIdentity(
+        workflow_schema="maskimpute-fair-comparator-run-v1",
+        authority_revision="fair-comparator-direct-v1",
+        ordinal=1,
+        method=method,
+        configuration_id=row.configuration_id,
+        configuration_kind="comparator_tuning",
+        configuration_payload=payload,
+        dataset_id="dataset-synthetic",
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        mask_seed=20_001,
+        model_seed=42,
+        draw_index=1,
+    )
+    entry = DirectPlanEntry(
+        run_id=direct_run_id(identity),
+        identity=identity,
+        preflight_status="planned",
+        preflight_reason=None,
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+    descriptor = PreparedInputDescriptor(
+        dataset_id="dataset-synthetic",
+        source_reference="synthetic/in-memory",
+        preprocessing_revision="paired-zero-library-union-v1",
+        shape=(2, 2),
+        dtype="<f8",
+        cell_ids=("cell-1", "cell-2"),
+        gene_ids=("gene-1", "gene-2"),
+        batch_labels=(),
+        total_count=3.0,
+        nonzero_count=2,
+        minimum=0.0,
+        maximum=2.0,
+        mechanism="symsim",
+        mask_seed=20_001,
+        technical_view="moderate",
+    )
+    plan = DirectCompetitionPlan(
+        schema_version=1,
+        identity_mode="direct-v1",
+        authority_revision="fair-comparator-direct-v1",
+        inputs=(descriptor,),
+        entries=(entry,),
+        configurations=(configuration,),
+    )
+    counts = np.asarray([[1, 0], [0, 2]], dtype=np.int64)
+    view = ad.AnnData(
+        X=counts,
+        obs=pd.DataFrame(index=descriptor.cell_ids),
+        var=pd.DataFrame(index=descriptor.gene_ids),
+    )
+    view.uns["source_dataset_sha256"] = "a" * 64
+    view.uns["allowed_covariates"] = {"obs": [], "var": []}
+    method_input = prepare_method_input(view)
+    request = DirectExecutionRequest(
+        identity=identity,
+        method_spec=spec,
+        method_input=method_input,
+        timeout_seconds=1.0,
+        max_rss_bytes=1,
+        max_gpu_bytes=0,
+    )
+    reason = "synthetic_unavailable"
+    attempt = DirectEvaluatedAttempt(
+        run=DirectRunResult(
+            run_id=entry.run_id,
+            identity=identity,
+            status="unavailable",
+            reason=reason,
+            runtime_seconds=1.0,
+            peak_rss_bytes=1,
+            peak_gpu_bytes=0,
+            rss_measurement="synthetic_parent_rss",
+            gpu_measurement="not_applicable_cpu",
+            excluded_cell_count=0,
+            excluded_cell_ids=(),
+            retained_cell_count=2,
+            retained_cell_ids=descriptor.cell_ids,
+            retained_gene_count=2,
+            observed_zero_count=2,
+            stdout=DirectLogReceipt(
+                stream="stdout",
+                original_byte_count=0,
+                capture_policy="discard_content",
+                terminal_reason=reason,
+            ),
+            stderr=DirectLogReceipt(
+                stream="stderr",
+                original_byte_count=0,
+                capture_policy="discard_content",
+                terminal_reason=reason,
+            ),
+        ),
+        metrics=(),
+        native_output=None,
+        native_output_scale=None,
+        evaluator_output=None,
+        p_pre_zero_evidence=DirectPreZeroEvidence(
+            applicable=False,
+            status="not_applicable",
+            reason="method_does_not_emit_p_pre_zero",
+            shape=None,
+            dtype=None,
+            encoding=None,
+            path=None,
+            compressed_byte_count=0,
+        ),
+    )
+    checkpoint = DirectCheckpointReport(
+        schema_version=1,
+        identity_mode="direct-v1",
+        authority_revision="fair-comparator-direct-v1",
+        plan_snapshot=plan.to_dict(),
+        input_descriptors=(descriptor,),
+        planned_run_count=1,
+        status="completed",
+        evaluation_scope="reconstruction_only",
+        comparator_selection_status="complete_terminal_denominator",
+        selection_complete=False,
+        selection_blockers=SELECTION_COMPLETENESS_BLOCKERS,
+        records=(attempt.to_dict(),),
+        budget={},
+    )
+    projection = project_direct_selected_comparators(
+        ComparatorAuthorityReference(
+            path="study/comparator_tuning.json",
+            schema_version=2,
+            authority_revision="fair-comparator-direct-v1",
+        ),
+        authority,
+        (row,),
+    )
+    return {
+        "request": request.to_dict(),
+        "plan": plan.to_dict(),
+        "attempt": attempt.to_dict(),
+        "checkpoint": checkpoint.to_dict(),
+        "projection": projection,
+    }
+
+
+@pytest.mark.parametrize(
+    ("source", "shared"),
+    (
+        (
+            """
+from provenance import canonical_sha256
+
+def project_direct_payload(value):
+    summarize = canonical_sha256
+    return summarize(value)
+""",
+            True,
+        ),
+        (
+            """
+import provenance as provenance_helpers
+
+def project_direct_payload(value):
+    return provenance_helpers.canonical_sha256(value)
+""",
+            True,
+        ),
+        (
+            """
+import dataclasses as dc
+
+@dc.dataclass(frozen=True)
+class DirectPlan:
+    plan_sha256: str
+""",
+            False,
+        ),
+        (
+            """
+def project_direct_payload(value):
+    key = "plan_" + "sha256"
+    return {key: value}
+""",
+            True,
+        ),
+    ),
+)
+def test_direct_source_audit_rejects_alias_and_generated_key_evasions(
+    source: str,
+    shared: bool,
+) -> None:
+    assert _direct_source_audit_findings(source, shared=shared)
+
+
+def test_direct_source_audit_leaves_unrelated_legacy_functions_out_of_scope() -> None:
+    source = """
+from provenance import canonical_sha256
+
+def legacy_projection(value):
+    alias = canonical_sha256
+    return {"plan_sha256": alias(value)}
+
+def project_direct_payload(value):
+    return {"payload": value}
+"""
+    assert _direct_source_audit_findings(source, shared=True) == ()
 
 
 def test_scoped_direct_source_and_schema_migration_audit() -> None:
@@ -87,54 +514,9 @@ def test_scoped_direct_source_and_schema_migration_audit() -> None:
         "maskimpute_benchmark/fair_comparator_execution.py",
         "maskimpute_benchmark/fair_comparator_checkpoint.py",
     )
-    forbidden_helpers = {
-        "canonical_sha256",
-        "method_input_sha256",
-        "implementation_source_sha256",
-        "_file_sha256",
-        "_stable_file_sha256",
-        "_digest",
-    }
     for relative in direct_modules:
-        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
-        imports = tuple(
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.Import, ast.ImportFrom))
-            for alias in node.names
-        )
-        calls = tuple(
-            name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call)
-            if (name := _call_name(node)) is not None
-        )
-        assert "hashlib" not in imports
-        assert not (forbidden_helpers & set(imports))
-        assert not (forbidden_helpers & set(calls))
-        for node in tree.body:
-            if not isinstance(node, ast.ClassDef):
-                continue
-            if not any(
-                isinstance(decorator, (ast.Name, ast.Call))
-                and (
-                    (isinstance(decorator, ast.Name) and decorator.id == "dataclass")
-                    or (
-                        isinstance(decorator, ast.Call)
-                        and isinstance(decorator.func, ast.Name)
-                        and decorator.func.id == "dataclass"
-                    )
-                )
-                for decorator in node.decorator_list
-            ):
-                continue
-            fields = tuple(
-                child.target.id
-                for child in node.body
-                if isinstance(child, ast.AnnAssign)
-                and isinstance(child.target, ast.Name)
-            )
-            assert not any(_forbidden_direct_key(field) for field in fields)
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert _direct_source_audit_findings(source, shared=False) == (), relative
 
     shared_modules = (
         "maskimpute_benchmark/runner.py",
@@ -143,24 +525,25 @@ def test_scoped_direct_source_and_schema_migration_audit() -> None:
         "maskimpute_benchmark/selection.py",
     )
     for relative in shared_modules:
-        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
-        scoped = tuple(
-            node
-            for node in ast.walk(tree)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and (
-                "direct" in node.name.casefold().split("_")
-                or "fair_comparator" in node.name.casefold()
-            )
-        )
-        for function in scoped:
-            calls = {
-                name
-                for node in ast.walk(function)
-                if isinstance(node, ast.Call)
-                if (name := _call_name(node)) is not None
-            }
-            assert not (forbidden_helpers & calls), (relative, function.name, calls)
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert _direct_source_audit_findings(source, shared=True) == (), relative
+
+
+def test_scoped_direct_schema_audit_covers_every_synthetic_artifact() -> None:
+    artifacts = _synthetic_direct_artifacts()
+
+    assert tuple(artifacts) == (
+        "request",
+        "plan",
+        "attempt",
+        "checkpoint",
+        "projection",
+    )
+    assert not any(
+        _forbidden_direct_key(key)
+        for artifact in artifacts.values()
+        for key in _direct_schema_keys(artifact)
+    )
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -306,6 +689,55 @@ def test_direct_selected_projection_rejects_duplicate_or_drifted_authority_rows(
             replace(reference, schema_version=3),
             authority,
             (row,),
+        )
+    with pytest.raises(SelectionAuthorityError, match="authority reference differs"):
+        project_direct_selected_comparators(
+            replace(reference, schema_version=2.0),
+            authority,
+            (row,),
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("schema-version", "authority-revision", "closed-authority-field"),
+)
+def test_direct_selected_projection_rejects_coherently_forged_authority(
+    mutation: str,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import (
+        ComparatorAuthorityReference,
+        load_comparator_tuning_authority,
+    )
+    from maskimpute_benchmark.methods import load_method_registry
+    from maskimpute_benchmark.selection import (
+        SelectionAuthorityError,
+        project_direct_selected_comparators,
+    )
+
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    if mutation == "schema-version":
+        forged = replace(authority, schema_version=3)
+    elif mutation == "authority-revision":
+        forged = replace(authority, authority_revision="fair-comparator-direct-v2")
+    else:
+        forged = replace(authority, contract_id="forged-comparator-contract")
+    reference = ComparatorAuthorityReference(
+        path="study/comparator_tuning.json",
+        schema_version=forged.schema_version,
+        authority_revision=forged.authority_revision,
+    )
+
+    with pytest.raises(SelectionAuthorityError, match="authority"):
+        project_direct_selected_comparators(
+            reference,
+            forged,
+            forged.configurations_for("magic")[:1],
         )
 
 

@@ -535,7 +535,7 @@ def _require_exact_literal(value: object, expected: object, name: str) -> None:
                 observed_mapping[key], expected_item, f"{name}.{key}"
             )
         return
-    if type(expected) is list:
+    if type(expected) in {list, tuple}:
         if len(value) != len(expected):
             raise ComparatorTuningError(f"{name} differs from the tracked contract")
         for index, (observed_item, expected_item) in enumerate(
@@ -543,8 +543,55 @@ def _require_exact_literal(value: object, expected: object, name: str) -> None:
         ):
             _require_exact_literal(observed_item, expected_item, f"{name}[{index}]")
         return
+    if type(expected) is float and value.hex() != expected.hex():
+        raise ComparatorTuningError(f"{name} differs from the tracked contract")
     if value != expected:
         raise ComparatorTuningError(f"{name} differs from the tracked contract")
+
+
+def _canonical_comparator_tuning_authority() -> ComparatorTuningAuthority:
+    configurations = tuple(
+        ComparatorConfiguration(
+            method_id=method_id,
+            configuration_id=configuration_id,
+            payload_json=_EXPECTED_CONFIGURATION_PAYLOADS[
+                (method_id, configuration_id)
+            ],
+            is_upstream_default=is_upstream_default,
+        )
+        for method_id, configuration_id, is_upstream_default, _config in (
+            _EXPECTED_CONFIGURATION_SPECS
+        )
+    )
+    return ComparatorTuningAuthority(
+        schema_version=2,
+        contract_id="maskimpute-comparator-tuning-v1",
+        authority_revision=AUTHORITY_REVISION,
+        method_order=_EXPECTED_METHOD_ORDER,
+        configurations=configurations,
+        scheduled_same_input_ids=_EXPECTED_SCHEDULED_SAME_INPUT_IDS,
+        required_control_ids=_EXPECTED_REQUIRED_CONTROL_IDS,
+        established_comparator_ids=_EXPECTED_ESTABLISHED_COMPARATOR_IDS,
+        modern_core_ids=_EXPECTED_MODERN_CORE_IDS,
+        model_seeds=EXPECTED_MODEL_SEEDS,
+        selection_metrics=EXPECTED_METRICS,
+        receipt_path=COMPARATOR_SELECTION_RELATIVE_PATH,
+        smoke_receipt_path=COMPARATOR_SMOKE_RELATIVE_PATH,
+    )
+
+
+def validate_comparator_tuning_authority(
+    authority: ComparatorTuningAuthority,
+) -> None:
+    """Require the complete, fixed schema-2 comparator authority value."""
+
+    if not isinstance(authority, ComparatorTuningAuthority):
+        raise TypeError("authority must be a ComparatorTuningAuthority")
+    _require_exact_literal(
+        asdict(authority),
+        asdict(_canonical_comparator_tuning_authority()),
+        "comparator tuning authority",
+    )
 
 
 def parse_comparator_tuning_authority(

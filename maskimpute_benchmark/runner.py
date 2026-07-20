@@ -6097,7 +6097,10 @@ def execute_fair_comparator_plan(
         replay_direct_development_budget,
     )
     from .fair_comparator_execution import DirectEvaluatedAttempt
-    from .fair_comparator_plan import DirectCompetitionPlan
+    from .fair_comparator_plan import (
+        DirectCompetitionPlan,
+        validate_direct_competition_plan,
+    )
 
     if not isinstance(plan, DirectCompetitionPlan):
         raise TypeError("plan must be a DirectCompetitionPlan")
@@ -6111,6 +6114,11 @@ def execute_fair_comparator_plan(
         raise TypeError("executor must be callable")
     if not isinstance(checkpoint_store, DirectCheckpointStore):
         raise TypeError("checkpoint_store must be a DirectCheckpointStore")
+    validate_direct_competition_plan(
+        plan,
+        registry=registry,
+        prepared_datasets=prepared_datasets,
+    )
     report = (
         checkpoint_store.load(
             plan,

@@ -61,15 +61,24 @@ def project_direct_comparator_evidence(
     """Validate terminal direct evidence and emit the plain comparator handoff."""
 
     from .comparator_tuning import (
+        AUTHORITY_REVISION,
         ComparatorAuthorityReference,
         ComparatorConfiguration,
+        ComparatorTuningError,
         ComparatorTuningAuthority,
-        comparator_method_binding,
+        validate_comparator_tuning_authority,
     )
     from .fair_comparator_checkpoint import DirectCheckpointStore
-    from .fair_comparator_plan import DirectCompetitionPlan, direct_json_value
+    from .fair_comparator_plan import (
+        DirectCompetitionPlan,
+        validate_direct_competition_plan,
+    )
     from .methods import MethodRegistry
-    from .runner import PreparedDataset, RunnerContractError
+    from .runner import (
+        INTRINSIC_TERMINAL_STATUSES,
+        PreparedDataset,
+        RunnerContractError,
+    )
     from .selection import (
         SelectionAuthorityError,
         project_direct_selected_comparators,
@@ -96,76 +105,52 @@ def project_direct_comparator_evidence(
         raise DevelopmentEvaluationError("direct comparator identity mode differs")
     if (
         comparator_reference.path != "study/comparator_tuning.json"
-        or comparator_reference.schema_version != comparator_authority.schema_version
-        or comparator_reference.authority_revision
-        != comparator_authority.authority_revision
-        or plan.authority_revision != comparator_reference.authority_revision
+        or type(comparator_reference.schema_version) is not int
+        or comparator_reference.schema_version != 2
+        or comparator_reference.authority_revision != AUTHORITY_REVISION
+        or comparator_authority.schema_version != 2
+        or comparator_authority.authority_revision != AUTHORITY_REVISION
+        or plan.authority_revision != AUTHORITY_REVISION
     ):
         raise DevelopmentEvaluationError("direct comparator authority differs")
-
-    authority_rows = {
-        (row.method_id, row.configuration_id): row
-        for row in comparator_authority.configurations
-    }
-    if len(authority_rows) != len(comparator_authority.configurations):
-        raise DevelopmentEvaluationError("direct comparator authority is ambiguous")
-    plan_configuration_keys: set[tuple[str, str]] = set()
     try:
-        for configuration in plan.configurations:
-            if configuration.configuration_kind != "comparator_tuning":
-                continue
-            method_id = configuration.method.method_id
-            key = (method_id, configuration.configuration_id)
-            authoritative = authority_rows.get(key)
-            encoded = direct_json_value(configuration)
-            if (
-                authoritative is None
-                or not isinstance(encoded, dict)
-                or encoded.get("payload") != dict(authoritative.payload)
-                or configuration.method
-                != comparator_method_binding(registry.by_id(method_id))
-            ):
-                raise DevelopmentEvaluationError(
-                    "direct comparator plan configuration differs from authority"
-                )
-            plan_configuration_keys.add(key)
-        for entry in plan.entries:
-            identity = entry.identity
-            if identity.configuration_kind != "comparator_tuning":
-                continue
-            key = (identity.method.method_id, identity.configuration_id)
-            authoritative = authority_rows.get(key)
-            encoded = direct_json_value(identity)
-            if (
-                authoritative is None
-                or key not in plan_configuration_keys
-                or not isinstance(encoded, dict)
-                or encoded.get("configuration_payload") != dict(authoritative.payload)
-                or identity.method
-                != comparator_method_binding(registry.by_id(identity.method.method_id))
-            ):
-                raise DevelopmentEvaluationError(
-                    "direct comparator plan entry differs from authority"
-                )
+        validate_comparator_tuning_authority(comparator_authority)
+    except ComparatorTuningError as error:
+        raise DevelopmentEvaluationError(
+            "direct comparator authority differs"
+        ) from error
+    try:
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
         report = DirectCheckpointStore(checkpoint_path).load(
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
         )
-    except (KeyError, RunnerContractError) as error:
+    except RunnerContractError as error:
         raise DevelopmentEvaluationError(
-            "direct comparator checkpoint validation failed"
+            f"direct comparator checkpoint validation failed: {error}"
         ) from error
     if report.comparator_selection_status != "complete_terminal_denominator":
         raise DevelopmentEvaluationError(
             "direct comparator denominator is not terminal"
         )
+    terminal_comparator_keys = {
+        (entry.identity.method.method_id, entry.identity.configuration_id)
+        for entry, record in zip(plan.entries, report.records, strict=True)
+        if entry.identity.configuration_kind == "comparator_tuning"
+        and isinstance(record.get("run"), Mapping)
+        and record["run"].get("status") in INTRINSIC_TERMINAL_STATUSES
+    }
     if any(
-        (row.method_id, row.configuration_id) not in plan_configuration_keys
+        (row.method_id, row.configuration_id) not in terminal_comparator_keys
         for row in rows
     ):
         raise DevelopmentEvaluationError(
-            "selected comparator row is absent from the direct plan"
+            "selected comparator row is absent from the terminal direct denominator"
         )
     try:
         return project_direct_selected_comparators(

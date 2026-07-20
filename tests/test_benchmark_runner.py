@@ -3470,12 +3470,15 @@ def test_execute_fair_comparator_plan_rejects_replaced_direct_run_identity(
         entries=(replace(plan.entries[0], run_id="run-magic-replaced"),),
     )
 
+    def executor_must_not_run(*_args):
+        raise AssertionError("executor called before direct plan validation")
+
     with pytest.raises(RunnerContractError, match="direct checkpoint plan run ID"):
         execute_fair_comparator_plan(
             stale,
             registry,
             prepared_datasets,
-            lambda _entry, _prepared, _decision: _direct_magic_attempt(stale),
+            executor_must_not_run,
             DirectCheckpointStore(tmp_path / "direct-checkpoint.json"),
         )
 
@@ -3495,12 +3498,15 @@ def test_execute_fair_comparator_plan_rejects_substituted_method_projection(
     changed_entry = replace(plan.entries[0], identity=changed_identity)
     changed_plan = replace(plan, entries=(changed_entry,))
 
+    def executor_must_not_run(*_args):
+        raise AssertionError("executor called before direct plan validation")
+
     with pytest.raises(RunnerContractError, match="method projection differs"):
         execute_fair_comparator_plan(
             changed_plan,
             registry,
             prepared_datasets,
-            lambda _entry, _prepared, _decision: _direct_magic_attempt(changed_plan),
+            executor_must_not_run,
             DirectCheckpointStore(tmp_path / "direct-checkpoint.json"),
         )
 

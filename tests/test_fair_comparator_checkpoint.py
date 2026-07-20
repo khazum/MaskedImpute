@@ -193,6 +193,122 @@ def _direct_checkpoint_fixture():
     return plan, registry, {prepared.binding.dataset_id: prepared}
 
 
+def _replace_direct_entry_identity(
+    plan: DirectCompetitionPlan,
+    position: int = 0,
+    **changes: object,
+) -> DirectCompetitionPlan:
+    identity = replace(plan.entries[position].identity, **changes)
+    entry = replace(
+        plan.entries[position],
+        run_id=direct_run_id(identity),
+        identity=identity,
+    )
+    entries = list(plan.entries)
+    entries[position] = entry
+    return replace(plan, entries=tuple(entries))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "relabel-comparator-entry",
+        "configuration-without-entry",
+        "duplicate-configuration",
+    ),
+)
+def test_direct_plan_binding_validator_rejects_missing_duplicate_or_relabelled_blocks(
+    mutation: str,
+) -> None:
+    plan, registry, prepared_datasets = _direct_checkpoint_fixture()
+    if mutation == "relabel-comparator-entry":
+        changed = _replace_direct_entry_identity(
+            plan,
+            configuration_kind="candidate_search",
+        )
+    elif mutation == "configuration-without-entry":
+        changed = replace(plan, entries=plan.entries[:-1])
+    else:
+        changed = replace(
+            plan,
+            configurations=(*plan.configurations, plan.configurations[0]),
+        )
+
+    with pytest.raises(RunnerContractError):
+        direct_plan_module.validate_direct_competition_plan(
+            changed,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "schema",
+        "mode",
+        "revision",
+        "workflow",
+        "flags",
+        "preflight",
+        "input",
+    ),
+)
+def test_direct_plan_binding_validator_rejects_contract_and_input_drift(
+    mutation: str,
+) -> None:
+    plan, registry, prepared_datasets = _direct_checkpoint_fixture()
+    if mutation == "schema":
+        changed = replace(plan, schema_version=True)
+    elif mutation == "mode":
+        changed = replace(plan, identity_mode="legacy-v1")
+    elif mutation == "revision":
+        changed = replace(plan, authority_revision="fair-comparator-direct-v2")
+    elif mutation == "workflow":
+        changed = _replace_direct_entry_identity(plan, workflow_schema="forged-v1")
+    elif mutation == "flags":
+        changed_entry = replace(plan.entries[0], requires_count_score=True)
+        changed = replace(plan, entries=(changed_entry, *plan.entries[1:]))
+    elif mutation == "preflight":
+        changed_entry = replace(plan.entries[0], preflight_reason="caller-claim")
+        changed = replace(plan, entries=(changed_entry, *plan.entries[1:]))
+    else:
+        changed_descriptor = replace(plan.inputs[0], mechanism="sergio")
+        changed = replace(plan, inputs=(changed_descriptor,))
+
+    with pytest.raises(RunnerContractError):
+        direct_plan_module.validate_direct_competition_plan(
+            changed,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+
+@pytest.mark.parametrize("replacement", (True, 5.0))
+def test_direct_plan_binding_validator_rejects_numeric_payload_type_coercion(
+    replacement: object,
+) -> None:
+    plan, registry, prepared_datasets = _direct_checkpoint_fixture()
+    configuration = plan.configurations[0]
+    payload = tuple(
+        (name, replacement if name == "knn" else value)
+        for name, value in configuration.payload
+    )
+    changed_configuration = replace(configuration, payload=payload)
+    changed = _replace_direct_entry_identity(plan, configuration_payload=payload)
+    changed = replace(
+        changed,
+        configurations=(changed_configuration, *plan.configurations[1:]),
+    )
+
+    with pytest.raises(RunnerContractError):
+        direct_plan_module.validate_direct_competition_plan(
+            changed,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+
 def _attempt(
     entry: DirectPlanEntry,
     *,
@@ -292,8 +408,18 @@ def _collision_plan() -> tuple[
     payload = direct_plan_module._freeze_payload_mapping(  # noqa: SLF001
         {"nested": [["a", 1]]}
     )
-    configuration = replace(plan.configurations[0], payload=payload)
-    identity = replace(plan.entries[0].identity, configuration_payload=payload)
+    configuration = replace(
+        plan.configurations[0],
+        configuration_id="synthetic-nested",
+        configuration_kind="candidate_search",
+        payload=payload,
+    )
+    identity = replace(
+        plan.entries[0].identity,
+        configuration_id=configuration.configuration_id,
+        configuration_kind=configuration.configuration_kind,
+        configuration_payload=payload,
+    )
     entry = replace(
         plan.entries[0],
         run_id=direct_run_id(identity),
@@ -389,7 +515,10 @@ def test_direct_checkpoint_rejects_complete_plan_identity_drift(
             entries=(replace(plan.entries[0], identity=identity), *plan.entries[1:]),
         )
 
-    with pytest.raises(RunnerContractError, match="plan snapshot|ordinals"):
+    with pytest.raises(
+        RunnerContractError,
+        match="plan snapshot|ordinals|configuration|method projection",
+    ):
         store.load(changed, registry=registry, prepared_datasets=prepared)
 
 
