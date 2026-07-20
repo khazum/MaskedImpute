@@ -325,13 +325,35 @@ def test_runner_fair_comparator_entry_point_delegates_to_direct_plan() -> None:
     assert delegated == direct
 
 
-def test_prepared_descriptor_requires_exact_evaluator_seed_and_draw_integers() -> None:
+def test_prepared_descriptor_normalizes_real_h5ad_mask_seed(tmp_path: Path) -> None:
+    _plan, _registry, _datasets, prepared = _direct_fixture()
+    path = tmp_path / "prepared-evaluator.h5ad"
+    prepared[0].evaluator_dataset.write_h5ad(path)
+    evaluator_dataset = ad.read_h5ad(path)
+    stored_seed = evaluator_dataset.uns["provenance"]["seeds"]["measurement"]
+    assert isinstance(stored_seed, np.integer)
+
+    descriptor = describe_prepared_input(
+        replace(prepared[0], evaluator_dataset=evaluator_dataset)
+    )
+
+    assert descriptor.mask_seed == 20_001
+    assert type(descriptor.mask_seed) is int
+
+
+@pytest.mark.parametrize("mask_seed", (True, -1))
+def test_prepared_descriptor_rejects_invalid_evaluator_mask_seed(
+    mask_seed: object,
+) -> None:
     _plan, _registry, _datasets, prepared = _direct_fixture()
     bad_seed = prepared[0].evaluator_dataset.copy()
-    bad_seed.uns["provenance"]["seeds"]["measurement"] = np.int64(20_001)
+    bad_seed.uns["provenance"]["seeds"]["measurement"] = mask_seed
     with pytest.raises(RunnerContractError, match="mask seed"):
         describe_prepared_input(replace(prepared[0], evaluator_dataset=bad_seed))
 
+
+def test_prepared_descriptor_requires_exact_evaluator_draw_integer() -> None:
+    _plan, _registry, _datasets, prepared = _direct_fixture()
     bad_draw = prepared[0].evaluator_dataset.copy()
     bad_draw.obs["draw"] = np.asarray([1.0, 1.0], dtype=np.float64)
     with pytest.raises(RunnerContractError, match="draw index"):

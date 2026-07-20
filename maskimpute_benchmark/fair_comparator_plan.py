@@ -181,10 +181,15 @@ def _evaluator_seed_and_draw(prepared: PreparedDataset) -> tuple[int, int]:
     provenance = getattr(evaluator, "uns", {}).get("provenance")
     seeds = provenance.get("seeds") if isinstance(provenance, Mapping) else None
     mask_seed = seeds.get("measurement") if isinstance(seeds, Mapping) else None
-    if type(mask_seed) is not int or mask_seed < 0:
+    if (
+        isinstance(mask_seed, (bool, np.bool_))
+        or not isinstance(mask_seed, (int, np.integer))
+        or mask_seed < 0
+    ):
         raise RunnerContractError(
             "prepared input mask seed must be an exact nonnegative integer"
         )
+    normalized_mask_seed = int(mask_seed)
     obs = getattr(evaluator, "obs", None)
     if obs is None or "draw" not in obs:
         raise RunnerContractError("prepared input draw index metadata is absent")
@@ -197,7 +202,7 @@ def _evaluator_seed_and_draw(prepared: PreparedDataset) -> tuple[int, int]:
         raise RunnerContractError(
             "prepared input draw index must be one exact positive integer"
         )
-    return mask_seed, draw_values[0]
+    return normalized_mask_seed, draw_values[0]
 
 
 def describe_prepared_input(prepared: PreparedDataset) -> PreparedInputDescriptor:
