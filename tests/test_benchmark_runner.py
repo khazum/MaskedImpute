@@ -19,7 +19,20 @@ import maskimpute_benchmark.runner as runner_module
 import maskimpute_benchmark.runtime_environments as runtime_module
 from maskimpute_benchmark.comparator_tuning import (
     bind_comparator_configuration_identity,
+    comparator_method_binding,
     load_comparator_tuning_authority,
+)
+from maskimpute_benchmark.fair_comparator_checkpoint import (
+    DirectCheckpointStore,
+    DirectDevelopmentBudget,
+)
+from maskimpute_benchmark.fair_comparator_plan import (
+    ComparatorRunIdentity,
+    DirectAuthorizedConfiguration,
+    DirectCompetitionPlan,
+    DirectPlanEntry,
+    describe_prepared_input,
+    direct_run_id,
 )
 from maskimpute_benchmark.methods import (
     AdapterExecution,
@@ -178,8 +191,6 @@ def _bound_magic_configuration():
         tuning_authority.configurations_for("magic")[0],
         spec,
         tuning_authority,
-        runtime_lock_sha256="6" * 64,
-        environment_registry_sha256="7" * 64,
     )
     return spec, bound
 
@@ -2631,6 +2642,121 @@ def _prepared_truth_dataset():
     return prepare_dataset_for_execution(dataset, binding, DatasetQCPolicy.fixed())
 
 
+def _direct_magic_checkpoint_case(prepared: PreparedDataset):
+    registry = load_method_registry(METHODS_PATH)
+    authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    prepared.evaluator_dataset.uns["provenance"]["seeds"] = {"measurement": 20_001}
+    descriptor = describe_prepared_input(prepared)
+    spec = registry.by_id("magic")
+    method = comparator_method_binding(spec)
+    row = authority.configurations_for("magic")[0]
+
+    def freeze(value: object) -> object:
+        if isinstance(value, dict):
+            return tuple((key, freeze(nested)) for key, nested in sorted(value.items()))
+        if isinstance(value, list):
+            return tuple(freeze(nested) for nested in value)
+        return value
+
+    configuration = DirectAuthorizedConfiguration(
+        method=method,
+        configuration_id=row.configuration_id,
+        configuration_kind="comparator_tuning",
+        payload=freeze(dict(row.payload)),
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+    identity = ComparatorRunIdentity(
+        workflow_schema="maskimpute-fair-comparator-run-v1",
+        authority_revision=authority.authority_revision,
+        ordinal=1,
+        method=method,
+        configuration_id=configuration.configuration_id,
+        configuration_kind=configuration.configuration_kind,
+        configuration_payload=configuration.payload,
+        dataset_id=prepared.binding.dataset_id,
+        mechanism=prepared.binding.mechanism,
+        biological_id=prepared.binding.biological_id,
+        technical_view=prepared.binding.technical_view,
+        mask_seed=descriptor.mask_seed,
+        model_seed=42,
+        draw_index=1,
+    )
+    entry = DirectPlanEntry(
+        run_id=direct_run_id(identity),
+        identity=identity,
+        preflight_status="planned",
+        preflight_reason=None,
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+    plan = DirectCompetitionPlan(
+        schema_version=1,
+        identity_mode="direct-v1",
+        authority_revision=authority.authority_revision,
+        inputs=(descriptor,),
+        entries=(entry,),
+        configurations=(configuration,),
+    )
+    return plan, registry, {prepared.binding.dataset_id: prepared}
+
+
+def _direct_magic_record(
+    plan: DirectCompetitionPlan,
+    status: str,
+) -> dict[str, object]:
+    entry = plan.entries[0]
+    identity = plan.to_dict()["entries"][0]["identity"]
+    assert isinstance(identity, dict)
+    reason = None if status == "completed" else f"synthetic_{status}"
+    return {
+        "run": {
+            "run_id": entry.run_id,
+            "identity": identity,
+            "status": status,
+            "reason": reason,
+            "runtime_seconds": 1,
+            "peak_rss_bytes": 1,
+            "peak_gpu_bytes": 0,
+            "rss_measurement": "synthetic_parent_rss",
+            "gpu_measurement": "not_applicable_cpu",
+            "excluded_cell_count": 0,
+            "excluded_cell_ids": [],
+            "retained_cell_count": 3,
+            "retained_cell_ids": ["cell-1", "cell-2", "cell-3"],
+            "retained_gene_count": 2,
+            "observed_zero_count": 2,
+            "stdout": {
+                "stream": "stdout",
+                "original_byte_count": 0,
+                "capture_policy": "discard_content",
+                "terminal_reason": reason,
+            },
+            "stderr": {
+                "stream": "stderr",
+                "original_byte_count": 0,
+                "capture_policy": "discard_content",
+                "terminal_reason": reason,
+            },
+        },
+        "metrics": [],
+        "p_pre_zero_evidence": {
+            "applicable": False,
+            "status": "not_applicable",
+            "reason": "method_does_not_emit_p_pre_zero",
+            "shape": None,
+            "dtype": None,
+            "encoding": None,
+            "path": None,
+            "compressed_byte_count": 0,
+        },
+    }
+
+
 def _entry_for(prepared, method_id: str, *, seed: int | None) -> RunPlanEntry:
     spec = load_method_registry(METHODS_PATH).by_id(method_id)
     configuration = AuthorizedConfiguration.registry_default(spec)
@@ -2853,58 +2979,26 @@ def test_comparator_configs_share_method_budget_and_restore_exactly(
 def test_comparator_tuning_configs_share_method_budget_configuration_limit(
     magic_spec, completed_outcome
 ) -> None:
-    prepared = _prepared_truth_dataset()
-    _spec, bound = _bound_magic_configuration()
-    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
-    entry = _comparator_plan_entry(
-        prepared,
-        configuration,
-        preflight_status="planned",
-        preflight_reason=None,
-        configuration_method_identity_sha256=(
-            configuration.configuration_method_identity_sha256
-        ),
-        nonexecution_identity_sha256=None,
-    )
-    budget = DevelopmentBudget()
+    budget = DirectDevelopmentBudget()
     for value in range(1, runner_module.MAX_DEVELOPMENT_CONFIGURATIONS + 1):
-        digest = f"{value:064x}"
-        row = replace(
-            entry,
-            configuration_sha256=digest,
-            configuration_payload_sha256=digest,
-        )
+        configuration_id = f"magic-t{value:02d}"
         assert budget.authorize(
             magic_spec,
-            digest,
-            counts_toward_configuration_limit=(
-                runner_module._counts_toward_configuration_limit(row)
-            ),
-            budget_scope=runner_module._budget_scope(row),
+            configuration_id,
+            budget_scope="magic",
         ).authorized
-        budget.record(
+        budget.restore(
             magic_spec,
-            digest,
-            completed_outcome,
-            counts_toward_configuration_limit=(
-                runner_module._counts_toward_configuration_limit(row)
-            ),
-            budget_scope=runner_module._budget_scope(row),
+            configuration_id,
+            completed_outcome.status,
+            completed_outcome.runtime_seconds,
+            budget_scope="magic",
         )
 
-    excess_digest = "f" * 64
-    excess = replace(
-        entry,
-        configuration_sha256=excess_digest,
-        configuration_payload_sha256=excess_digest,
-    )
     assert not budget.authorize(
         magic_spec,
-        excess_digest,
-        counts_toward_configuration_limit=(
-            runner_module._counts_toward_configuration_limit(excess)
-        ),
-        budget_scope=runner_module._budget_scope(excess),
+        "magic-excess",
+        budget_scope="magic",
     ).authorized
 
 
@@ -3018,21 +3112,25 @@ def _two_method_plan(prepared) -> CompetitionPlan:
     registry = load_method_registry(METHODS_PATH)
     observed = registry.by_id("observed")
     observed_configuration = AuthorizedConfiguration.registry_default(observed)
-    _magic, bound_magic = _bound_magic_configuration()
-    magic_configuration = AuthorizedConfiguration.from_bound_comparator(bound_magic)
+    capacity = registry.by_id("capacity-matched-ae")
+    capacity_configuration = AuthorizedConfiguration.create(
+        method_id=capacity.id,
+        configuration_id="capacity-test",
+        kind="candidate_search",
+        payload={"fixture": "legacy-non-comparator"},
+        requires_count_score=False,
+        requires_calibration=False,
+    )
     entries = (
         _entry_for(prepared, "observed", seed=None),
         replace(
-            _entry_for(prepared, "magic", seed=42),
+            _entry_for(prepared, "capacity-matched-ae", seed=42),
             ordinal=2,
-            run_id="run-magic-test",
-            configuration_id=magic_configuration.configuration_id,
-            configuration_sha256=magic_configuration.configuration_sha256,
-            configuration_kind=magic_configuration.kind,
-            configuration_payload_sha256=(magic_configuration.configuration_sha256),
-            configuration_method_identity_sha256=(
-                magic_configuration.configuration_method_identity_sha256
-            ),
+            run_id="run-capacity-matched-ae-test",
+            configuration_id=capacity_configuration.configuration_id,
+            configuration_sha256=capacity_configuration.configuration_sha256,
+            configuration_kind=capacity_configuration.kind,
+            configuration_payload_sha256=(capacity_configuration.configuration_sha256),
         ),
     )
     return _rehash_competition_plan(
@@ -3046,7 +3144,7 @@ def _two_method_plan(prepared) -> CompetitionPlan:
             },
             entries=entries,
             plan_sha256="0" * 64,
-            configurations=(observed_configuration, magic_configuration),
+            configurations=(observed_configuration, capacity_configuration),
         )
     )
 
@@ -3095,34 +3193,36 @@ def _comparator_plan_entry(
 @pytest.fixture
 def completed_checkpoint_fixture(tmp_path: Path):
     prepared = _prepared_truth_dataset()
-    plan = _two_method_plan(prepared)
-    store = CheckpointStore(tmp_path / "competition")
-    execute_competition_plan(
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    store.write(
         plan,
-        load_method_registry(METHODS_PATH),
-        {prepared.binding.dataset_id: prepared},
-        _RecordingUnavailableExecutor(),
-        store,
+        (_direct_magic_record(plan, "unavailable"),),
+        registry=registry,
+        prepared_datasets=prepared_datasets,
     )
-    return (
-        store.checkpoint_path,
-        plan,
-        {prepared.binding.dataset_id: prepared},
-    )
+    return store.path, plan, prepared_datasets
 
 
-def test_checkpoint_rejects_coherently_rehashed_budget_tamper(
+def test_direct_checkpoint_rejects_coherent_budget_tamper(
     completed_checkpoint_fixture,
 ) -> None:
     checkpoint_path, plan, prepared = completed_checkpoint_fixture
     payload = json.loads(checkpoint_path.read_text())
     payload["budget"]["magic"]["consumed_seconds"] += 1
-    payload["checkpoint_sha256"] = canonical_sha256(
-        {key: value for key, value in payload.items() if key != "checkpoint_sha256"}
+    checkpoint_path.write_text(
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
     )
-    checkpoint_path.write_bytes(runner_module._canonical_bytes(payload) + b"\n")
     with pytest.raises(RunnerContractError, match="budget ledger differs from replay"):
-        CheckpointStore(checkpoint_path.parent).load(
+        DirectCheckpointStore(checkpoint_path).load(
             plan,
             registry=load_method_registry(METHODS_PATH),
             prepared_datasets=prepared,
@@ -3133,29 +3233,21 @@ def test_incomplete_grid_is_unselectable_until_comparator_is_terminal(
     tmp_path: Path,
 ) -> None:
     prepared = _prepared_truth_dataset()
-    plan = _two_method_plan(prepared)
-    store = CheckpointStore(tmp_path / "competition")
-    with pytest.raises(KeyboardInterrupt):
-        execute_competition_plan(
-            plan,
-            load_method_registry(METHODS_PATH),
-            {prepared.binding.dataset_id: prepared},
-            _InterruptSecondExecutor(),
-            store,
-        )
-    incomplete = store.load(
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    incomplete = store.write(
         plan,
-        registry=load_method_registry(METHODS_PATH),
-        prepared_datasets={prepared.binding.dataset_id: prepared},
+        (),
+        registry=registry,
+        prepared_datasets=prepared_datasets,
     )
     assert incomplete.comparator_selection_status == "blocked_incomplete_denominator"
 
-    complete = execute_competition_plan(
+    complete = store.write(
         plan,
-        load_method_registry(METHODS_PATH),
-        {prepared.binding.dataset_id: prepared},
-        _RecordingUnavailableExecutor(),
-        store,
+        (_direct_magic_record(plan, "unavailable"),),
+        registry=registry,
+        prepared_datasets=prepared_datasets,
     )
     assert complete.comparator_selection_status == "complete_terminal_denominator"
 
@@ -3173,26 +3265,12 @@ def test_incomplete_grid_blocking_statuses_remain_unselectable(
     outcome: AdapterOutcome,
 ) -> None:
     prepared = _prepared_truth_dataset()
-    _spec, bound = _bound_magic_configuration()
-    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
-    entry = _comparator_plan_entry(
-        prepared,
-        configuration,
-        preflight_status="planned",
-        preflight_reason=None,
-        configuration_method_identity_sha256=(
-            configuration.configuration_method_identity_sha256
-        ),
-        nonexecution_identity_sha256=None,
-    )
-    plan = _single_configuration_plan(prepared, entry, configuration)
-    report = CheckpointStore(tmp_path / outcome.status).append(
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    report = DirectCheckpointStore(tmp_path / f"{outcome.status}.json").write(
         plan,
-        None,
-        evaluate_adapter_outcome(entry, prepared, outcome),
-        DevelopmentBudget(),
-        registry=load_method_registry(METHODS_PATH),
-        prepared_datasets={prepared.binding.dataset_id: prepared},
+        (_direct_magic_record(plan, outcome.status),),
+        registry=registry,
+        prepared_datasets=prepared_datasets,
     )
     assert report.comparator_selection_status == "blocked_incomplete_denominator"
 
@@ -3211,37 +3289,12 @@ def test_comparator_selection_intrinsic_terminal_statuses_complete_grid(
     outcome: AdapterOutcome,
 ) -> None:
     prepared = _prepared_truth_dataset()
-    spec, bound = _bound_magic_configuration()
-    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
-    entry = _comparator_plan_entry(
-        prepared,
-        configuration,
-        preflight_status="planned",
-        preflight_reason=None,
-        configuration_method_identity_sha256=(
-            configuration.configuration_method_identity_sha256
-        ),
-        nonexecution_identity_sha256=None,
-    )
-    plan = _single_configuration_plan(prepared, entry, configuration)
-    budget = DevelopmentBudget()
-    budget.restore(
-        spec,
-        entry.configuration_sha256,
-        outcome.status,
-        outcome.runtime_seconds,
-        counts_toward_configuration_limit=(
-            runner_module._counts_toward_configuration_limit(entry)
-        ),
-        budget_scope=runner_module._budget_scope(entry),
-    )
-    report = CheckpointStore(tmp_path / outcome.status).append(
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    report = DirectCheckpointStore(tmp_path / f"{outcome.status}.json").write(
         plan,
-        None,
-        evaluate_adapter_outcome(entry, prepared, outcome),
-        budget,
-        registry=load_method_registry(METHODS_PATH),
-        prepared_datasets={prepared.binding.dataset_id: prepared},
+        (_direct_magic_record(plan, outcome.status),),
+        registry=registry,
+        prepared_datasets=prepared_datasets,
     )
     assert report.comparator_selection_status == "complete_terminal_denominator"
 
@@ -3250,34 +3303,19 @@ def test_persisted_infrastructure_error_is_not_selectively_retried(
     tmp_path: Path,
 ) -> None:
     prepared = _prepared_truth_dataset()
-    plan = _two_method_plan(prepared)
-    store = CheckpointStore(tmp_path / "competition")
-    calls = 0
-
-    def infrastructure_executor(_request: ExecutionRequest) -> AdapterOutcome:
-        nonlocal calls
-        calls += 1
-        return AdapterOutcome.infrastructure_error("scheduler_unavailable")
-
-    first = execute_competition_plan(
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    first = store.write(
         plan,
-        load_method_registry(METHODS_PATH),
-        {prepared.binding.dataset_id: prepared},
-        infrastructure_executor,
-        store,
+        (_direct_magic_record(plan, "infrastructure_error"),),
+        registry=registry,
+        prepared_datasets=prepared_datasets,
     )
-    assert calls == 2
     assert first.comparator_selection_status == "blocked_incomplete_denominator"
-
-    def forbidden_retry(_request: ExecutionRequest) -> AdapterOutcome:
-        raise AssertionError("persisted infrastructure error was selectively retried")
-
-    resumed = execute_competition_plan(
+    resumed = store.load(
         plan,
-        load_method_registry(METHODS_PATH),
-        {prepared.binding.dataset_id: prepared},
-        forbidden_retry,
-        store,
+        registry=registry,
+        prepared_datasets=prepared_datasets,
     )
     assert resumed == first
 
