@@ -17,6 +17,94 @@ import pandas as pd
 import pytest
 
 
+def test_direct_downstream_projection_routes_only_closed_direct_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark import development_evaluation
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamEvidenceError,
+        validate_direct_comparator_projection,
+    )
+
+    expected = {
+        "comparator_authority": {
+            "path": "study/comparator_tuning.json",
+            "schema_version": 2,
+            "authority_revision": "fair-comparator-direct-v1",
+        },
+        "selected_comparators": {
+            "magic": {
+                "configuration_id": "magic-t01-default",
+                "payload": {"solver": "exact"},
+            }
+        },
+    }
+    calls = []
+
+    def project(*args: object, **kwargs: object) -> dict[str, object]:
+        calls.append((args, kwargs))
+        return expected
+
+    monkeypatch.setattr(
+        development_evaluation,
+        "project_direct_comparator_evidence",
+        project,
+    )
+    plan = SimpleNamespace(identity_mode="direct-v1")
+    validated = validate_direct_comparator_projection(
+        expected,
+        Path("synthetic-checkpoint.json"),
+        plan,
+        registry=object(),
+        prepared_datasets={},
+        comparator_reference=object(),
+        comparator_authority=object(),
+        selected_rows=(),
+    )
+    assert validated == expected
+    assert len(calls) == 1
+
+    changed = copy.deepcopy(expected)
+    changed["selected_comparators"]["magic"]["payload"]["solver"] = "drifted"
+    with pytest.raises(DownstreamEvidenceError, match="projection differs"):
+        validate_direct_comparator_projection(
+            changed,
+            Path("synthetic-checkpoint.json"),
+            plan,
+            registry=object(),
+            prepared_datasets={},
+            comparator_reference=object(),
+            comparator_authority=object(),
+            selected_rows=(),
+        )
+
+    mixed = copy.deepcopy(expected)
+    mixed["selection_receipt"] = {"selection_complete": True}
+    with pytest.raises(DownstreamEvidenceError, match="schema"):
+        validate_direct_comparator_projection(
+            mixed,
+            Path("synthetic-checkpoint.json"),
+            plan,
+            registry=object(),
+            prepared_datasets={},
+            comparator_reference=object(),
+            comparator_authority=object(),
+            selected_rows=(),
+        )
+
+    with pytest.raises(DownstreamEvidenceError, match="identity mode"):
+        validate_direct_comparator_projection(
+            expected,
+            Path("synthetic-checkpoint.json"),
+            SimpleNamespace(identity_mode="legacy-v1"),
+            registry=object(),
+            prepared_datasets={},
+            comparator_reference=object(),
+            comparator_authority=object(),
+            selected_rows=(),
+        )
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False

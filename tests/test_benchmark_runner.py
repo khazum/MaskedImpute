@@ -26,6 +26,12 @@ from maskimpute_benchmark.fair_comparator_checkpoint import (
     DirectCheckpointStore,
     DirectDevelopmentBudget,
 )
+from maskimpute_benchmark.fair_comparator_execution import (
+    DirectEvaluatedAttempt,
+    DirectLogReceipt,
+    DirectPreZeroEvidence,
+    DirectRunResult,
+)
 from maskimpute_benchmark.fair_comparator_plan import (
     ComparatorRunIdentity,
     DirectAuthorizedConfiguration,
@@ -67,6 +73,7 @@ from maskimpute_benchmark.runner import (
     execute_adapter_in_spawned_process,
     evaluate_adapter_outcome,
     execute_fair_comparator_request,
+    execute_fair_comparator_plan,
     enforce_calibration_fold_receipt,
     execute_competition_plan,
     derive_authorized_configurations,
@@ -635,10 +642,7 @@ def test_direct_plan_is_full_denominator_with_fixed_seed_policy() -> None:
             assert identity.configuration_kind == "comparator_tuning"
             assert entry.preflight_status == "planned"
     assert (
-        sum(
-            entry.identity.method_id == "capacity-matched-ae"
-            for entry in plan.entries
-        )
+        sum(entry.identity.method_id == "capacity-matched-ae" for entry in plan.entries)
         == len(datasets) * 3
     )
 
@@ -693,16 +697,13 @@ def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> No
         assert positions == list(range(min(positions), min(positions) + 48))
     assert len(plan.configurations) == 61
     assert not (
-        {"d3impute", "sctsi"}
-        & {entry.identity.method_id for entry in plan.entries}
+        {"d3impute", "sctsi"} & {entry.identity.method_id for entry in plan.entries}
     )
 
     cursor = 0
     for configuration in plan.configurations:
         seeds = (
-            (None,)
-            if configuration.method.method_id == "observed"
-            else (42, 43, 44)
+            (None,) if configuration.method.method_id == "observed" else (42, 43, 44)
         )
         expected_cells = [
             (binding.dataset_id, seed) for binding in bindings for seed in seeds
@@ -2757,6 +2758,122 @@ def _direct_magic_record(
     }
 
 
+def _direct_magic_attempt(plan: DirectCompetitionPlan) -> DirectEvaluatedAttempt:
+    entry = plan.entries[0]
+    reason = "synthetic_unavailable"
+    return DirectEvaluatedAttempt(
+        run=DirectRunResult(
+            run_id=entry.run_id,
+            identity=entry.identity,
+            status="unavailable",
+            reason=reason,
+            runtime_seconds=1,
+            peak_rss_bytes=1,
+            peak_gpu_bytes=0,
+            rss_measurement="synthetic_parent_rss",
+            gpu_measurement="not_applicable_cpu",
+            excluded_cell_count=0,
+            excluded_cell_ids=(),
+            retained_cell_count=3,
+            retained_cell_ids=("cell-1", "cell-2", "cell-3"),
+            retained_gene_count=2,
+            observed_zero_count=2,
+            stdout=DirectLogReceipt(
+                stream="stdout",
+                original_byte_count=0,
+                capture_policy="discard_content",
+                terminal_reason=reason,
+            ),
+            stderr=DirectLogReceipt(
+                stream="stderr",
+                original_byte_count=0,
+                capture_policy="discard_content",
+                terminal_reason=reason,
+            ),
+        ),
+        metrics=(),
+        native_output=None,
+        native_output_scale=None,
+        evaluator_output=None,
+        p_pre_zero_evidence=DirectPreZeroEvidence(
+            applicable=False,
+            status="not_applicable",
+            reason="method_does_not_emit_p_pre_zero",
+            shape=None,
+            dtype=None,
+            encoding=None,
+            path=None,
+            compressed_byte_count=0,
+        ),
+    )
+
+
+def test_fair_comparator_plan_execution_uses_only_direct_checkpoint_and_fake_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    calls = []
+
+    def fake_attempt(entry, supplied_prepared, decision):
+        calls.append((entry, supplied_prepared, decision))
+        assert decision.authorized
+        return _direct_magic_attempt(plan)
+
+    monkeypatch.setattr(
+        runner_module,
+        "CheckpointStore",
+        lambda *_args, **_kwargs: pytest.fail("legacy checkpoint route used"),
+    )
+    report = execute_fair_comparator_plan(
+        plan,
+        registry,
+        prepared_datasets,
+        fake_attempt,
+        DirectCheckpointStore(tmp_path / "direct-checkpoint.json"),
+    )
+
+    assert report.identity_mode == "direct-v1"
+    assert report.status == "completed"
+    assert report.plan_snapshot == plan.to_dict()
+    assert len(report.records) == 1
+    assert len(calls) == 1
+
+
+def test_development_base_entry_routes_to_fair_comparator_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = object()
+    captured = {}
+
+    def direct_base(output_dir, authority, *, environment_overrides):
+        captured.update(
+            output_dir=output_dir,
+            authority=authority,
+            environment_overrides=environment_overrides,
+        )
+        return sentinel
+
+    monkeypatch.setattr(
+        runner_module,
+        "_run_fair_comparator_base_with_authority",
+        direct_base,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_run_competition_with_authority",
+        lambda *_args, **_kwargs: pytest.fail("legacy base route used"),
+    )
+    result = runner_module.run_development_competition(tmp_path / "competition")
+
+    assert result is sentinel
+    assert captured["output_dir"] == tmp_path / "competition"
+    assert captured["authority"].plan_scope == "base_full_panel"
+    assert captured["environment_overrides"] is None
+
+
 def _entry_for(prepared, method_id: str, *, seed: int | None) -> RunPlanEntry:
     spec = load_method_registry(METHODS_PATH).by_id(method_id)
     configuration = AuthorizedConfiguration.registry_default(spec)
@@ -3343,65 +3460,51 @@ def test_registry_default_comparator_request_is_rejected(tmp_path: Path) -> None
     assert executor.input_hashes == []
 
 
-def test_execute_competition_plan_rejects_stale_replaced_plan_checksum(
+def test_execute_fair_comparator_plan_rejects_replaced_direct_run_identity(
     tmp_path: Path,
 ) -> None:
     prepared = _prepared_truth_dataset()
-    _spec, bound = _bound_magic_configuration()
-    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
-    entry = _comparator_plan_entry(
-        prepared,
-        configuration,
-        preflight_status="planned",
-        preflight_reason=None,
-        configuration_method_identity_sha256=(
-            configuration.configuration_method_identity_sha256
-        ),
-        nonexecution_identity_sha256=None,
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    stale = replace(
+        plan,
+        entries=(replace(plan.entries[0], run_id="run-magic-replaced"),),
     )
-    plan = _single_configuration_plan(prepared, entry, configuration)
-    stale = replace(plan, entries=(replace(entry, run_id="run-magic-replaced"),))
-    executor = _RecordingUnavailableExecutor()
 
-    with pytest.raises(RunnerContractError, match="competition plan checksum mismatch"):
-        execute_competition_plan(
+    with pytest.raises(RunnerContractError, match="direct checkpoint plan run ID"):
+        execute_fair_comparator_plan(
             stale,
-            load_method_registry(METHODS_PATH),
-            {prepared.binding.dataset_id: prepared},
-            executor,
-            CheckpointStore(tmp_path / "competition"),
+            registry,
+            prepared_datasets,
+            lambda _entry, _prepared, _decision: _direct_magic_attempt(stale),
+            DirectCheckpointStore(tmp_path / "direct-checkpoint.json"),
         )
 
-    assert executor.input_hashes == []
+    assert not (tmp_path / "direct-checkpoint.json").exists()
 
 
-def test_execute_competition_plan_rejects_substituted_comparator_method_identity(
+def test_execute_fair_comparator_plan_rejects_substituted_method_projection(
     tmp_path: Path,
 ) -> None:
     prepared = _prepared_truth_dataset()
-    _spec, bound = _bound_magic_configuration()
-    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
-    entry = _comparator_plan_entry(
-        prepared,
-        configuration,
-        preflight_status="planned",
-        preflight_reason=None,
-        configuration_method_identity_sha256="f" * 64,
-        nonexecution_identity_sha256=None,
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    changed_method = replace(
+        plan.entries[0].identity.method,
+        adapter_key="substituted-adapter",
     )
-    plan = _single_configuration_plan(prepared, entry, configuration)
-    executor = _RecordingUnavailableExecutor()
+    changed_identity = replace(plan.entries[0].identity, method=changed_method)
+    changed_entry = replace(plan.entries[0], identity=changed_identity)
+    changed_plan = replace(plan, entries=(changed_entry,))
 
-    with pytest.raises(RunnerContractError, match="configuration identity mismatch"):
-        execute_competition_plan(
-            plan,
-            load_method_registry(METHODS_PATH),
-            {prepared.binding.dataset_id: prepared},
-            executor,
-            CheckpointStore(tmp_path / "competition"),
+    with pytest.raises(RunnerContractError, match="method projection differs"):
+        execute_fair_comparator_plan(
+            changed_plan,
+            registry,
+            prepared_datasets,
+            lambda _entry, _prepared, _decision: _direct_magic_attempt(changed_plan),
+            DirectCheckpointStore(tmp_path / "direct-checkpoint.json"),
         )
 
-    assert executor.input_hashes == []
+    assert not (tmp_path / "direct-checkpoint.json").exists()
 
 
 def test_execute_competition_plan_rejects_substituted_blocked_nonexecution_identity(

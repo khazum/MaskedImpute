@@ -23,7 +23,9 @@ from typing import Any
 
 from .comparator_tuning import (
     ComparatorAuthorityReference,
+    ComparatorConfiguration,
     ComparatorMethodBinding,
+    ComparatorTuningAuthority,
     comparator_method_binding,
 )
 
@@ -92,6 +94,54 @@ _AUTHORITY_PATHS = (
 
 class SelectionAuthorityError(RuntimeError):
     """Raised when tracked authority or bound development artifacts are invalid."""
+
+
+def project_direct_selected_comparators(
+    comparator_reference: ComparatorAuthorityReference,
+    comparator_authority: ComparatorTuningAuthority,
+    selected_rows: Sequence[ComparatorConfiguration],
+) -> dict[str, object]:
+    """Return the closed direct comparator handoff for authoritative rows."""
+
+    if not isinstance(comparator_reference, ComparatorAuthorityReference):
+        raise TypeError("comparator_reference must be a ComparatorAuthorityReference")
+    if not isinstance(comparator_authority, ComparatorTuningAuthority):
+        raise TypeError("comparator_authority must be a ComparatorTuningAuthority")
+    rows = tuple(selected_rows)
+    if not all(isinstance(row, ComparatorConfiguration) for row in rows):
+        raise TypeError("selected_rows must contain ComparatorConfiguration values")
+    expected_reference = ComparatorAuthorityReference(
+        path="study/comparator_tuning.json",
+        schema_version=comparator_authority.schema_version,
+        authority_revision=comparator_authority.authority_revision,
+    )
+    if comparator_reference != expected_reference:
+        raise SelectionAuthorityError("direct comparator authority reference differs")
+    selected: dict[str, object] = {}
+    for row in rows:
+        matches = tuple(
+            candidate
+            for candidate in comparator_authority.configurations
+            if candidate == row
+        )
+        if len(matches) != 1:
+            raise SelectionAuthorityError(
+                "selected comparator row is not exact authority evidence"
+            )
+        if row.method_id in selected:
+            raise SelectionAuthorityError("selected comparator methods must be unique")
+        selected[row.method_id] = {
+            "configuration_id": row.configuration_id,
+            "payload": dict(row.payload),
+        }
+    return {
+        "comparator_authority": {
+            "path": comparator_reference.path,
+            "schema_version": comparator_reference.schema_version,
+            "authority_revision": comparator_reference.authority_revision,
+        },
+        "selected_comparators": selected,
+    }
 
 
 def _safe_id(value: object, name: str) -> str:
@@ -2270,9 +2320,8 @@ def _load_selection_authority(
         "max_gpu_gib",
     }
     raw_method_bindings = contract["comparator_method_bindings"]
-    if (
-        type(raw_method_bindings) is not list
-        or len(raw_method_bindings) != len(comparator_tuning.method_order)
+    if type(raw_method_bindings) is not list or len(raw_method_bindings) != len(
+        comparator_tuning.method_order
     ):
         raise SelectionAuthorityError(
             "comparator method binding snapshots are incomplete"
@@ -2286,9 +2335,7 @@ def _load_selection_authority(
             method_binding_fields,
             f"comparator method binding {index}",
         )
-        expected_binding = comparator_method_binding(
-            method_registry.by_id(method_id)
-        )
+        expected_binding = comparator_method_binding(method_registry.by_id(method_id))
         for field_name in method_binding_fields:
             observed = binding_payload[field_name]
             expected = getattr(expected_binding, field_name)
@@ -4199,6 +4246,7 @@ __all__ = [
     "attach_downstream_evidence_to_selection_result",
     "finalize_development_artifact_bindings",
     "load_publication_execution_authority",
+    "project_direct_selected_comparators",
     "select_development_candidate",
     "validate_downstream_selection_completeness",
 ]

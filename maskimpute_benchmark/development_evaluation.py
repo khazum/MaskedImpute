@@ -48,6 +48,137 @@ class DevelopmentEvaluationError(RuntimeError):
     """Raised when selection evidence is incomplete, inconsistent, or altered."""
 
 
+def project_direct_comparator_evidence(
+    checkpoint_path: Path,
+    plan: object,
+    *,
+    registry: object,
+    prepared_datasets: Mapping[str, PreparedDataset],
+    comparator_reference: object,
+    comparator_authority: object,
+    selected_rows: Sequence[object],
+) -> dict[str, object]:
+    """Validate terminal direct evidence and emit the plain comparator handoff."""
+
+    from .comparator_tuning import (
+        ComparatorAuthorityReference,
+        ComparatorConfiguration,
+        ComparatorTuningAuthority,
+        comparator_method_binding,
+    )
+    from .fair_comparator_checkpoint import DirectCheckpointStore
+    from .fair_comparator_plan import DirectCompetitionPlan, direct_json_value
+    from .methods import MethodRegistry
+    from .runner import PreparedDataset, RunnerContractError
+    from .selection import (
+        SelectionAuthorityError,
+        project_direct_selected_comparators,
+    )
+
+    if not isinstance(checkpoint_path, Path):
+        raise TypeError("checkpoint_path must be a pathlib.Path")
+    if not isinstance(plan, DirectCompetitionPlan):
+        raise TypeError("plan must be a DirectCompetitionPlan")
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    if not isinstance(prepared_datasets, Mapping) or not all(
+        isinstance(value, PreparedDataset) for value in prepared_datasets.values()
+    ):
+        raise TypeError("prepared_datasets must map to PreparedDataset values")
+    if not isinstance(comparator_reference, ComparatorAuthorityReference):
+        raise TypeError("comparator_reference must be a ComparatorAuthorityReference")
+    if not isinstance(comparator_authority, ComparatorTuningAuthority):
+        raise TypeError("comparator_authority must be a ComparatorTuningAuthority")
+    rows = tuple(selected_rows)
+    if not all(isinstance(row, ComparatorConfiguration) for row in rows):
+        raise TypeError("selected_rows must contain ComparatorConfiguration values")
+    if plan.identity_mode != "direct-v1":
+        raise DevelopmentEvaluationError("direct comparator identity mode differs")
+    if (
+        comparator_reference.path != "study/comparator_tuning.json"
+        or comparator_reference.schema_version != comparator_authority.schema_version
+        or comparator_reference.authority_revision
+        != comparator_authority.authority_revision
+        or plan.authority_revision != comparator_reference.authority_revision
+    ):
+        raise DevelopmentEvaluationError("direct comparator authority differs")
+
+    authority_rows = {
+        (row.method_id, row.configuration_id): row
+        for row in comparator_authority.configurations
+    }
+    if len(authority_rows) != len(comparator_authority.configurations):
+        raise DevelopmentEvaluationError("direct comparator authority is ambiguous")
+    plan_configuration_keys: set[tuple[str, str]] = set()
+    try:
+        for configuration in plan.configurations:
+            if configuration.configuration_kind != "comparator_tuning":
+                continue
+            method_id = configuration.method.method_id
+            key = (method_id, configuration.configuration_id)
+            authoritative = authority_rows.get(key)
+            encoded = direct_json_value(configuration)
+            if (
+                authoritative is None
+                or not isinstance(encoded, dict)
+                or encoded.get("payload") != dict(authoritative.payload)
+                or configuration.method
+                != comparator_method_binding(registry.by_id(method_id))
+            ):
+                raise DevelopmentEvaluationError(
+                    "direct comparator plan configuration differs from authority"
+                )
+            plan_configuration_keys.add(key)
+        for entry in plan.entries:
+            identity = entry.identity
+            if identity.configuration_kind != "comparator_tuning":
+                continue
+            key = (identity.method.method_id, identity.configuration_id)
+            authoritative = authority_rows.get(key)
+            encoded = direct_json_value(identity)
+            if (
+                authoritative is None
+                or key not in plan_configuration_keys
+                or not isinstance(encoded, dict)
+                or encoded.get("configuration_payload") != dict(authoritative.payload)
+                or identity.method
+                != comparator_method_binding(registry.by_id(identity.method.method_id))
+            ):
+                raise DevelopmentEvaluationError(
+                    "direct comparator plan entry differs from authority"
+                )
+        report = DirectCheckpointStore(checkpoint_path).load(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+    except (KeyError, RunnerContractError) as error:
+        raise DevelopmentEvaluationError(
+            "direct comparator checkpoint validation failed"
+        ) from error
+    if report.comparator_selection_status != "complete_terminal_denominator":
+        raise DevelopmentEvaluationError(
+            "direct comparator denominator is not terminal"
+        )
+    if any(
+        (row.method_id, row.configuration_id) not in plan_configuration_keys
+        for row in rows
+    ):
+        raise DevelopmentEvaluationError(
+            "selected comparator row is absent from the direct plan"
+        )
+    try:
+        return project_direct_selected_comparators(
+            comparator_reference,
+            comparator_authority,
+            rows,
+        )
+    except SelectionAuthorityError as error:
+        raise DevelopmentEvaluationError(
+            "direct comparator projection validation failed"
+        ) from error
+
+
 @dataclass(frozen=True, slots=True)
 class RawArtifactBinding:
     """One immutable reconstruction file bound by its verified raw-byte hash."""
@@ -1160,10 +1291,7 @@ def _decode_orthogonal_output(
         "orthogonal compressed method output",
         max_bytes=maximum_compressed,
     )
-    if (
-        len(compressed) != compressed_nbytes
-        or actual_sha256 != compressed_sha256
-    ):
+    if len(compressed) != compressed_nbytes or actual_sha256 != compressed_sha256:
         raise DevelopmentEvaluationError(
             "orthogonal compressed output checksum or size mismatch"
         )
@@ -1887,11 +2015,7 @@ def _orthogonal_output_matrix(
         return None
     path = record.get("output_path")
     shape = record.get("output_shape")
-    if (
-        not isinstance(path, str)
-        or not isinstance(shape, list)
-        or len(shape) != 2
-    ):
+    if not isinstance(path, str) or not isinstance(shape, list) or len(shape) != 2:
         raise DevelopmentEvaluationError("orthogonal output binding is malformed")
     output_path = evidence.output_directory.joinpath(*PurePosixPath(path).parts)
     _require_regular_file(output_path, "orthogonal evaluator output")
@@ -3757,6 +3881,7 @@ __all__ = [
     "prepare_cite_seq_source",
     "prepare_tung_source",
     "prepare_real_orthogonal_panel",
+    "project_direct_comparator_evidence",
     "produce_orthogonal_outputs",
     "rna_protein_concordance_units",
     "run_real_orthogonal_outputs",

@@ -31,11 +31,15 @@ import numpy as np
 
 if TYPE_CHECKING:
     from .comparator_tuning import BoundComparatorConfiguration
+    from .fair_comparator_checkpoint import (
+        DirectCheckpointReport,
+        DirectCheckpointStore,
+    )
     from .fair_comparator_execution import (
         DirectEvaluatedAttempt,
         DirectExecutionRequest,
     )
-    from .fair_comparator_plan import DirectCompetitionPlan
+    from .fair_comparator_plan import DirectCompetitionPlan, DirectPlanEntry
     from .trajectory_dataset import RegisteredTrajectoryBinding
 
 from .comparator_tuning import (
@@ -1186,8 +1190,7 @@ class RunnerAuthority:
                 "comparator_tuning_reference must be a ComparatorAuthorityReference"
             )
         if (
-            self.comparator_tuning_reference.path
-            != "study/comparator_tuning.json"
+            self.comparator_tuning_reference.path != "study/comparator_tuning.json"
             or self.comparator_tuning_reference.schema_version
             != self.comparator_tuning.schema_version
             or self.comparator_tuning_reference.authority_revision
@@ -1198,7 +1201,10 @@ class RunnerAuthority:
             raise RunnerContractError(
                 "runner comparator method bindings must be immutable"
             )
-        if tuple(self.comparator_method_bindings) != self.comparator_tuning.method_order:
+        if (
+            tuple(self.comparator_method_bindings)
+            != self.comparator_tuning.method_order
+        ):
             raise RunnerContractError(
                 "runner comparator method bindings are incomplete or reordered"
             )
@@ -6070,6 +6076,148 @@ def execute_competition_plan(
     return report
 
 
+def execute_fair_comparator_plan(
+    plan: DirectCompetitionPlan,
+    registry: MethodRegistry,
+    prepared_datasets: Mapping[str, PreparedDataset],
+    executor: Callable[
+        [DirectPlanEntry, PreparedDataset, BudgetDecision],
+        DirectEvaluatedAttempt,
+    ],
+    checkpoint_store: DirectCheckpointStore,
+) -> DirectCheckpointReport:
+    """Execute/resume one direct plan through injected evaluated attempts."""
+
+    from .fair_comparator_checkpoint import (
+        DirectCheckpointStore,
+        DirectDevelopmentBudget,
+        budget_scope,
+        configuration_budget_key,
+        counts_toward_configuration_limit,
+        replay_direct_development_budget,
+    )
+    from .fair_comparator_execution import DirectEvaluatedAttempt
+    from .fair_comparator_plan import DirectCompetitionPlan
+
+    if not isinstance(plan, DirectCompetitionPlan):
+        raise TypeError("plan must be a DirectCompetitionPlan")
+    if plan.identity_mode != "direct-v1":
+        raise RunnerContractError("direct fair-comparator plan mode differs")
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    if not isinstance(prepared_datasets, Mapping):
+        raise TypeError("prepared_datasets must be a mapping")
+    if not callable(executor):
+        raise TypeError("executor must be callable")
+    if not isinstance(checkpoint_store, DirectCheckpointStore):
+        raise TypeError("checkpoint_store must be a DirectCheckpointStore")
+    report = (
+        checkpoint_store.load(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+        if os.path.lexists(checkpoint_store.path)
+        else None
+    )
+    budget = (
+        DirectDevelopmentBudget()
+        if report is None
+        else replay_direct_development_budget(
+            registry,
+            plan.entries,
+            report.records,
+        )
+    )
+    start = 0 if report is None else len(report.records)
+    for entry in plan.entries[start:]:
+        try:
+            spec = registry.by_id(entry.identity.method.method_id)
+        except KeyError as error:
+            raise RunnerContractError(
+                f"direct plan references unknown method {entry.identity.method.method_id}"
+            ) from error
+        prepared = prepared_datasets.get(entry.identity.dataset_id)
+        if not isinstance(prepared, PreparedDataset):
+            raise RunnerContractError(
+                f"direct prepared dataset is missing for {entry.identity.dataset_id}"
+            )
+        if entry.preflight_status == "blocked_authority":
+            if entry.preflight_reason is None:
+                raise RunnerContractError("direct preflight blocker lacks a reason")
+            decision = BudgetDecision(
+                authorized=False,
+                reason=entry.preflight_reason,
+                remaining_seconds=0.0,
+                timeout_seconds=0.0,
+            )
+        else:
+            decision = budget.authorize(
+                spec,
+                configuration_budget_key(entry),
+                counts_toward_configuration_limit=(
+                    counts_toward_configuration_limit(entry)
+                ),
+                budget_scope=budget_scope(entry),
+            )
+        attempt = executor(entry, prepared, decision)
+        if not isinstance(attempt, DirectEvaluatedAttempt):
+            raise RunnerContractError(
+                "direct attempt executor returned a noncanonical value"
+            )
+        if entry.preflight_status == "blocked_authority":
+            if (
+                attempt.run.status != "blocked_authority"
+                or attempt.run.reason != entry.preflight_reason
+            ):
+                raise RunnerContractError(
+                    "direct preflight attempt differs from its blocker"
+                )
+        elif not decision.authorized:
+            if (
+                attempt.run.status != "budget_exhausted"
+                or attempt.run.reason != decision.reason
+            ):
+                raise RunnerContractError(
+                    "direct budget attempt differs from its decision"
+                )
+        elif attempt.run.status in {"blocked_authority", "budget_exhausted"}:
+            raise RunnerContractError(
+                "authorized direct attempt returned a caller selection blocker"
+            )
+        if (
+            decision.authorized
+            and attempt.run.status != "infrastructure_error"
+            and float(attempt.run.runtime_seconds) > decision.remaining_seconds
+        ):
+            raise RunnerContractError("direct attempt exceeded its method budget")
+        if attempt.run.status not in COMPARATOR_SELECTION_BLOCKING_STATUSES:
+            budget.record(
+                spec,
+                configuration_budget_key(entry),
+                attempt,
+                counts_toward_configuration_limit=(
+                    counts_toward_configuration_limit(entry)
+                ),
+                budget_scope=budget_scope(entry),
+            )
+        report = checkpoint_store.append(
+            plan,
+            report,
+            attempt,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+    if report is None:
+        report = checkpoint_store.write(
+            plan,
+            (),
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+    return report
+
+
 class AdapterExecutor(Protocol):
     """Dependency-injected adapter dispatch boundary."""
 
@@ -7451,13 +7599,36 @@ def run_development_competition(
     output_dir: Path,
     *,
     environment_overrides: Mapping[str, Path] | None = None,
-) -> CheckpointReport:
+) -> DirectCheckpointReport:
     """Run/resume the fixed tracked development competition with no design overrides."""
 
-    return _run_competition_with_authority(
+    return _run_fair_comparator_base_with_authority(
         output_dir,
         load_runner_authority(),
         environment_overrides=environment_overrides,
+    )
+
+
+def _run_fair_comparator_base_with_authority(
+    output_dir: Path,
+    authority: RunnerAuthority,
+    *,
+    environment_overrides: Mapping[str, Path] | None,
+) -> DirectCheckpointReport:
+    """Keep the base command on the direct path until storage preflight lands."""
+
+    if not isinstance(output_dir, Path):
+        raise TypeError("output_dir must be a pathlib.Path")
+    if not isinstance(authority, RunnerAuthority):
+        raise TypeError("authority must be a RunnerAuthority")
+    if authority.plan_scope != "base_full_panel":
+        raise RunnerContractError("fair-comparator base authority scope differs")
+    if environment_overrides is not None and not isinstance(
+        environment_overrides, Mapping
+    ):
+        raise TypeError("environment_overrides must be a mapping or None")
+    raise RunnerContractError(
+        "direct fair-comparator execution awaits the Task 8 storage preflight"
     )
 
 
@@ -7970,6 +8141,7 @@ __all__ = [
     "execute_adapter_in_spawned_process",
     "execute_direct_adapter_in_spawned_process",
     "execute_competition_plan",
+    "execute_fair_comparator_plan",
     "execute_fair_comparator_request",
     "evaluate_adapter_outcome",
     "enforce_calibration_fold_receipt",

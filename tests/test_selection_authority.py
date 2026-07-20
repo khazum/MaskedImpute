@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ast
+from dataclasses import replace
 import inspect
 import hashlib
 import json
@@ -26,6 +28,139 @@ AUTHORITY_FILES = (
     "study/selection_contract.json",
     "study/development_search.json",
 )
+
+FORBIDDEN_DIRECT_IDENTITY_TOKENS = (
+    "hash",
+    "digest",
+    "checksum",
+    "fingerprint",
+    "sha",
+)
+
+
+def _direct_schema_keys(value: object) -> tuple[str, ...]:
+    if isinstance(value, dict):
+        return tuple(value) + tuple(
+            key for nested in value.values() for key in _direct_schema_keys(nested)
+        )
+    if isinstance(value, list):
+        return tuple(key for nested in value for key in _direct_schema_keys(nested))
+    return ()
+
+
+def _forbidden_direct_key(name: str) -> bool:
+    lowered = name.casefold()
+    return lowered != "shape" and any(
+        token in lowered for token in FORBIDDEN_DIRECT_IDENTITY_TOKENS
+    )
+
+
+def _call_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def test_scoped_direct_source_and_schema_migration_audit() -> None:
+    tuning = json.loads((ROOT / "study/comparator_tuning.json").read_text())
+    contract = json.loads((ROOT / "study/selection_contract.json").read_text())
+    search = json.loads((ROOT / "study/development_search.json").read_text())
+    tracked_sections = (
+        tuning,
+        {
+            "comparator_tuning": contract["comparator_tuning"],
+            "comparator_method_bindings": contract["comparator_method_bindings"],
+        },
+        {"comparator_tuning": search["authority"]["comparator_tuning"]},
+    )
+    assert not any(
+        _forbidden_direct_key(key)
+        for section in tracked_sections
+        for key in _direct_schema_keys(section)
+    )
+
+    direct_modules = (
+        "maskimpute_benchmark/comparator_tuning.py",
+        "maskimpute_benchmark/fair_comparator_plan.py",
+        "maskimpute_benchmark/fair_comparator_execution.py",
+        "maskimpute_benchmark/fair_comparator_checkpoint.py",
+    )
+    forbidden_helpers = {
+        "canonical_sha256",
+        "method_input_sha256",
+        "implementation_source_sha256",
+        "_file_sha256",
+        "_stable_file_sha256",
+        "_digest",
+    }
+    for relative in direct_modules:
+        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+        imports = tuple(
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in node.names
+        )
+        calls = tuple(
+            name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            if (name := _call_name(node)) is not None
+        )
+        assert "hashlib" not in imports
+        assert not (forbidden_helpers & set(imports))
+        assert not (forbidden_helpers & set(calls))
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if not any(
+                isinstance(decorator, (ast.Name, ast.Call))
+                and (
+                    (isinstance(decorator, ast.Name) and decorator.id == "dataclass")
+                    or (
+                        isinstance(decorator, ast.Call)
+                        and isinstance(decorator.func, ast.Name)
+                        and decorator.func.id == "dataclass"
+                    )
+                )
+                for decorator in node.decorator_list
+            ):
+                continue
+            fields = tuple(
+                child.target.id
+                for child in node.body
+                if isinstance(child, ast.AnnAssign)
+                and isinstance(child.target, ast.Name)
+            )
+            assert not any(_forbidden_direct_key(field) for field in fields)
+
+    shared_modules = (
+        "maskimpute_benchmark/runner.py",
+        "maskimpute_benchmark/development_evaluation.py",
+        "maskimpute_benchmark/downstream_evidence.py",
+        "maskimpute_benchmark/selection.py",
+    )
+    for relative in shared_modules:
+        tree = ast.parse((ROOT / relative).read_text(encoding="utf-8"))
+        scoped = tuple(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and (
+                "direct" in node.name.casefold().split("_")
+                or "fair_comparator" in node.name.casefold()
+            )
+        )
+        for function in scoped:
+            calls = {
+                name
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+                if (name := _call_name(node)) is not None
+            }
+            assert not (forbidden_helpers & calls), (relative, function.name, calls)
 
 
 def _write_json(path: Path, payload: object) -> None:
@@ -125,6 +260,52 @@ def test_selection_authority_carries_direct_comparator_reference() -> None:
     with pytest.raises(TypeError):
         authority.comparator_method_bindings["magic"] = (
             authority.comparator_method_bindings["magic"]
+        )
+
+
+def test_direct_selected_projection_rejects_duplicate_or_drifted_authority_rows() -> (
+    None
+):
+    from maskimpute_benchmark.comparator_tuning import (
+        ComparatorAuthorityReference,
+        load_comparator_tuning_authority,
+    )
+    from maskimpute_benchmark.methods import load_method_registry
+    from maskimpute_benchmark.selection import (
+        SelectionAuthorityError,
+        project_direct_selected_comparators,
+    )
+
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    reference = ComparatorAuthorityReference(
+        path="study/comparator_tuning.json",
+        schema_version=authority.schema_version,
+        authority_revision=authority.authority_revision,
+    )
+    row = authority.configurations_for("magic")[0]
+    with pytest.raises(SelectionAuthorityError, match="methods must be unique"):
+        project_direct_selected_comparators(
+            reference,
+            authority,
+            (row, row),
+        )
+    drifted = replace(row, payload_json=row.payload_json.replace('"knn":5', '"knn":7'))
+    with pytest.raises(SelectionAuthorityError, match="exact authority evidence"):
+        project_direct_selected_comparators(
+            reference,
+            authority,
+            (drifted,),
+        )
+    with pytest.raises(SelectionAuthorityError, match="authority reference differs"):
+        project_direct_selected_comparators(
+            replace(reference, schema_version=3),
+            authority,
+            (row,),
         )
 
 
@@ -739,9 +920,7 @@ def _reconstruction_inputs(authority, status, payload):
 def _minimal_orthogonal_evidence(repository: Path):
     from maskimpute_benchmark.selection import _canonical_sha256
 
-    output_relative = (
-        "outputs/source-test--observed--deterministic.log2-cp10k-f64.zlib"
-    )
+    output_relative = "outputs/source-test--observed--deterministic.log2-cp10k-f64.zlib"
     root = repository / "artifacts/study/development/evaluation/orthogonal"
     output_path = root / output_relative
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1128,14 +1307,12 @@ def test_schema_four_selection_requires_downstream_and_revalidates_legacy_envelo
         {
             "schema_version": 4,
             "revision_versions": [],
-                "downstream_evidence": {
-                    "path": stage_paths.downstream_directory,
-                    "source_selection_input_path": (
-                        stage_paths.source_selection_input
-                    ),
-                    "source_selection_input_file_sha256": source_file_sha,
-                    "source_selection_result_sha256": payload["result_sha256"],
-                    "manifest_file_sha256": "1" * 64,
+            "downstream_evidence": {
+                "path": stage_paths.downstream_directory,
+                "source_selection_input_path": (stage_paths.source_selection_input),
+                "source_selection_input_file_sha256": source_file_sha,
+                "source_selection_result_sha256": payload["result_sha256"],
+                "manifest_file_sha256": "1" * 64,
                 "manifest_sha256": "2" * 64,
                 "plan_sha256": "3" * 64,
                 "planned_denominator_count": 1,

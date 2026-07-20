@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import gzip
 import io
@@ -160,6 +161,427 @@ def _completed_checkpoint(tmp_path: Path):
         prepared_datasets={prepared.binding.dataset_id: prepared},
     )
     return plan, store, report, prepared
+
+
+def _direct_projection_checkpoint(tmp_path: Path):
+    from maskimpute_benchmark.comparator_tuning import (
+        comparator_method_binding,
+        load_comparator_tuning_authority,
+    )
+    from maskimpute_benchmark.fair_comparator_checkpoint import DirectCheckpointStore
+    from maskimpute_benchmark.fair_comparator_plan import (
+        ComparatorRunIdentity,
+        DirectAuthorizedConfiguration,
+        DirectCompetitionPlan,
+        DirectPlanEntry,
+        describe_prepared_input,
+        direct_run_id,
+    )
+    from maskimpute_benchmark.methods import load_method_registry
+
+    _legacy_plan, _legacy_store, _legacy_report, prepared = _completed_checkpoint(
+        tmp_path
+    )
+    prepared.evaluator_dataset.uns["provenance"]["seeds"] = {"measurement": 20_001}
+    registry = load_method_registry(Path("study/methods.json"))
+    authority = load_comparator_tuning_authority(
+        Path.cwd(), registry=registry, require_clean=False
+    )
+    descriptor = describe_prepared_input(prepared)
+    spec = registry.by_id("magic")
+    method = comparator_method_binding(spec)
+
+    def freeze(value: object) -> object:
+        if isinstance(value, dict):
+            return tuple((key, freeze(nested)) for key, nested in sorted(value.items()))
+        if isinstance(value, list):
+            return tuple(freeze(nested) for nested in value)
+        return value
+
+    selected_rows = authority.configurations_for("magic")[:1]
+    plan_rows = authority.configurations_for("magic")[:3]
+    configurations = tuple(
+        DirectAuthorizedConfiguration(
+            method=method,
+            configuration_id=row.configuration_id,
+            configuration_kind="comparator_tuning",
+            payload=freeze(dict(row.payload)),
+            requires_count_score=False,
+            requires_calibration=False,
+        )
+        for row in plan_rows
+    )
+    entries = []
+    for ordinal, configuration in enumerate(configurations, start=1):
+        identity = ComparatorRunIdentity(
+            workflow_schema="maskimpute-fair-comparator-run-v1",
+            authority_revision=authority.authority_revision,
+            ordinal=ordinal,
+            method=method,
+            configuration_id=configuration.configuration_id,
+            configuration_kind=configuration.configuration_kind,
+            configuration_payload=configuration.payload,
+            dataset_id=prepared.binding.dataset_id,
+            mechanism=prepared.binding.mechanism,
+            biological_id=prepared.binding.biological_id,
+            technical_view=prepared.binding.technical_view,
+            mask_seed=descriptor.mask_seed,
+            model_seed=42,
+            draw_index=1,
+        )
+        entries.append(
+            DirectPlanEntry(
+                run_id=direct_run_id(identity),
+                identity=identity,
+                preflight_status="planned",
+                preflight_reason=None,
+                requires_count_score=False,
+                requires_calibration=False,
+            )
+        )
+    plan = DirectCompetitionPlan(
+        schema_version=1,
+        identity_mode="direct-v1",
+        authority_revision=authority.authority_revision,
+        inputs=(descriptor,),
+        entries=tuple(entries),
+        configurations=configurations,
+    )
+
+    identity_rows = plan.to_dict()["entries"]
+    assert isinstance(identity_rows, list)
+    records = []
+    for entry, encoded in zip(plan.entries, identity_rows, strict=True):
+        assert isinstance(encoded, dict)
+        reason = "synthetic_unavailable"
+        records.append(
+            {
+                "run": {
+                    "run_id": entry.run_id,
+                    "identity": encoded["identity"],
+                    "status": "unavailable",
+                    "reason": reason,
+                    "runtime_seconds": 1.0,
+                    "peak_rss_bytes": 1,
+                    "peak_gpu_bytes": 0,
+                    "rss_measurement": "synthetic_parent_rss",
+                    "gpu_measurement": "not_applicable_cpu",
+                    "excluded_cell_count": prepared.audit.excluded_cell_count,
+                    "excluded_cell_ids": list(prepared.audit.excluded_cell_ids),
+                    "retained_cell_count": prepared.audit.retained_cell_count,
+                    "retained_cell_ids": list(prepared.audit.retained_cell_ids),
+                    "retained_gene_count": prepared.method_input.shape[1],
+                    "observed_zero_count": int(
+                        (prepared.method_input.counts == 0).sum()
+                    ),
+                    "stdout": {
+                        "stream": "stdout",
+                        "original_byte_count": 0,
+                        "capture_policy": "discard_content",
+                        "terminal_reason": reason,
+                    },
+                    "stderr": {
+                        "stream": "stderr",
+                        "original_byte_count": 0,
+                        "capture_policy": "discard_content",
+                        "terminal_reason": reason,
+                    },
+                },
+                "metrics": [],
+                "p_pre_zero_evidence": {
+                    "applicable": False,
+                    "status": "not_applicable",
+                    "reason": "method_does_not_emit_p_pre_zero",
+                    "shape": None,
+                    "dtype": None,
+                    "encoding": None,
+                    "path": None,
+                    "compressed_byte_count": 0,
+                },
+            }
+        )
+    store = DirectCheckpointStore(tmp_path / "direct-checkpoint.json")
+    store.write(
+        plan,
+        records,
+        registry=registry,
+        prepared_datasets={prepared.binding.dataset_id: prepared},
+    )
+    return (
+        store.path,
+        plan,
+        registry,
+        {prepared.binding.dataset_id: prepared},
+        authority,
+        selected_rows,
+    )
+
+
+def _all_direct_keys(value: object) -> tuple[str, ...]:
+    if isinstance(value, dict):
+        return tuple(value) + tuple(
+            key for nested in value.values() for key in _all_direct_keys(nested)
+        )
+    if isinstance(value, list):
+        return tuple(key for nested in value for key in _all_direct_keys(nested))
+    return ()
+
+
+def _contains_forbidden_identity_key(value: object) -> bool:
+    forbidden = ("hash", "digest", "checksum", "fingerprint", "sha")
+    return any(
+        key.casefold() != "shape" and token in key.casefold()
+        for key in _all_direct_keys(value)
+        for token in forbidden
+    )
+
+
+def test_direct_checkpoint_projects_full_selected_comparator_payloads(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        project_direct_comparator_evidence,
+    )
+
+    (
+        checkpoint_path,
+        plan,
+        registry,
+        prepared,
+        authority,
+        selected_rows,
+    ) = _direct_projection_checkpoint(tmp_path)
+    projection = project_direct_comparator_evidence(
+        checkpoint_path,
+        plan,
+        registry=registry,
+        prepared_datasets=prepared,
+        comparator_reference=ComparatorAuthorityReference(
+            path="study/comparator_tuning.json",
+            schema_version=authority.schema_version,
+            authority_revision=authority.authority_revision,
+        ),
+        comparator_authority=authority,
+        selected_rows=selected_rows,
+    )
+
+    assert projection["comparator_authority"] == {
+        "path": "study/comparator_tuning.json",
+        "schema_version": 2,
+        "authority_revision": "fair-comparator-direct-v1",
+    }
+    assert projection["selected_comparators"] == {
+        row.method_id: {
+            "configuration_id": row.configuration_id,
+            "payload": dict(row.payload),
+        }
+        for row in selected_rows
+    }
+    assert not _contains_forbidden_identity_key(projection)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("plan_sha256", "0" * 64),
+        ("selection_complete", True),
+        ("selection_receipt", {"selection_complete": True}),
+    ),
+)
+def test_direct_projection_rejects_mixed_or_caller_selection_claims(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
+        project_direct_comparator_evidence,
+    )
+
+    checkpoint_path, plan, registry, prepared, authority, selected = (
+        _direct_projection_checkpoint(tmp_path)
+    )
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    payload[field] = value
+    checkpoint_path.write_text(
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    reference = ComparatorAuthorityReference(
+        path="study/comparator_tuning.json",
+        schema_version=authority.schema_version,
+        authority_revision=authority.authority_revision,
+    )
+    with pytest.raises(DevelopmentEvaluationError, match="checkpoint validation"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            plan,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=reference,
+            comparator_authority=authority,
+            selected_rows=selected,
+        )
+
+
+def test_direct_projection_rejects_incomplete_comparator_denominator(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
+        project_direct_comparator_evidence,
+    )
+    from maskimpute_benchmark.fair_comparator_checkpoint import DirectCheckpointStore
+
+    checkpoint_path, plan, registry, prepared, authority, selected = (
+        _direct_projection_checkpoint(tmp_path)
+    )
+    DirectCheckpointStore(checkpoint_path).write(
+        plan,
+        (),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+    with pytest.raises(DevelopmentEvaluationError, match="denominator is not terminal"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            plan,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=ComparatorAuthorityReference(
+                path="study/comparator_tuning.json",
+                schema_version=authority.schema_version,
+                authority_revision=authority.authority_revision,
+            ),
+            comparator_authority=authority,
+            selected_rows=selected,
+        )
+
+
+def test_direct_projection_rejects_payload_plan_record_and_authority_drift(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
+        project_direct_comparator_evidence,
+    )
+
+    checkpoint_path, plan, registry, prepared, authority, selected = (
+        _direct_projection_checkpoint(tmp_path)
+    )
+    reference = ComparatorAuthorityReference(
+        path="study/comparator_tuning.json",
+        schema_version=authority.schema_version,
+        authority_revision=authority.authority_revision,
+    )
+    configuration = plan.configurations[0]
+    changed_payload = tuple(
+        (name, 7 if name == "knn" else value) for name, value in configuration.payload
+    )
+    changed_configuration = replace(configuration, payload=changed_payload)
+    changed_identity = replace(
+        plan.entries[0].identity,
+        configuration_payload=changed_payload,
+    )
+    changed_entry = replace(plan.entries[0], identity=changed_identity)
+    changed_plan = replace(
+        plan,
+        configurations=(changed_configuration, *plan.configurations[1:]),
+        entries=(changed_entry, *plan.entries[1:]),
+    )
+    with pytest.raises(DevelopmentEvaluationError, match="configuration differs"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            changed_plan,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=reference,
+            comparator_authority=authority,
+            selected_rows=selected,
+        )
+
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["records"][0]["run"]["identity"]["configuration_id"] = "drifted"
+    checkpoint_path.write_text(
+        json.dumps(
+            checkpoint,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(DevelopmentEvaluationError, match="checkpoint validation"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            plan,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=reference,
+            comparator_authority=authority,
+            selected_rows=selected,
+        )
+
+    mismatched_reference = replace(
+        reference,
+        authority_revision="fair-comparator-direct-v2",
+    )
+    with pytest.raises(DevelopmentEvaluationError, match="authority differs"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            plan,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=mismatched_reference,
+            comparator_authority=authority,
+            selected_rows=selected,
+        )
+
+
+def test_direct_projection_does_not_reinterpret_legacy_checkpoint_routes(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import (
+        ComparatorAuthorityReference,
+        load_comparator_tuning_authority,
+    )
+    from maskimpute_benchmark.development_evaluation import (
+        project_direct_comparator_evidence,
+    )
+    from maskimpute_benchmark.methods import load_method_registry
+
+    legacy_plan, legacy_store, _report, prepared = _completed_checkpoint(tmp_path)
+    registry = load_method_registry(Path("study/methods.json"))
+    authority = load_comparator_tuning_authority(
+        Path.cwd(), registry=registry, require_clean=False
+    )
+    with pytest.raises(TypeError, match="DirectCompetitionPlan"):
+        project_direct_comparator_evidence(
+            legacy_store.checkpoint_path,
+            legacy_plan,
+            registry=registry,
+            prepared_datasets={prepared.binding.dataset_id: prepared},
+            comparator_reference=ComparatorAuthorityReference(
+                path="study/comparator_tuning.json",
+                schema_version=authority.schema_version,
+                authority_revision=authority.authority_revision,
+            ),
+            comparator_authority=authority,
+            selected_rows=(),
+        )
 
 
 def test_null_de_uses_deterministic_balanced_stratified_split() -> None:
@@ -846,22 +1268,17 @@ def test_orthogonal_output_producer_exposes_only_truth_free_method_input(
     assert all(record["status"] == "completed" for record in evidence.records)
     assert all(len(record["output_file_sha256"]) == 64 for record in evidence.records)
     assert all(
-        record["output_encoding"] == "zlib_raw_f64_v1"
-        for record in evidence.records
+        record["output_encoding"] == "zlib_raw_f64_v1" for record in evidence.records
     )
     assert all(
         str(record["output_path"]).endswith(".log2-cp10k-f64.zlib")
         for record in evidence.records
     )
     completed_record = evidence.records[1]
-    compressed_path = evidence.output_directory / str(
-        completed_record["output_path"]
-    )
+    compressed_path = evidence.output_directory / str(completed_record["output_path"])
     compressed = compressed_path.read_bytes()
     raw = zlib.decompress(compressed)
-    expected_raw = np.asarray(
-        executor(seen[-1]), dtype="<f8", order="C"
-    )
+    expected_raw = np.asarray(executor(seen[-1]), dtype="<f8", order="C")
     from maskimpute_benchmark.methods import count_equivalent_to_log2_cp10k
 
     expected_raw = np.asarray(
@@ -870,9 +1287,10 @@ def test_orthogonal_output_producer_exposes_only_truth_free_method_input(
     assert raw == expected_raw
     assert completed_record["output_compressed_nbytes"] == len(compressed)
     assert completed_record["output_uncompressed_nbytes"] == len(raw)
-    assert completed_record["output_uncompressed_sha256"] == hashlib.sha256(
-        raw
-    ).hexdigest()
+    assert (
+        completed_record["output_uncompressed_sha256"]
+        == hashlib.sha256(raw).hexdigest()
+    )
     assert len(evidence.manifest_sha256) == 64
     assert evidence.manifest_path.read_bytes().endswith(b"\n")
 

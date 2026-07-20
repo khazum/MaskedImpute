@@ -519,6 +519,82 @@ class DownstreamEvidenceError(ValueError):
     """Raised when source, dataset, resume, or output evidence is invalid."""
 
 
+def _direct_projection_equal(left: object, right: object) -> bool:
+    if isinstance(left, Mapping) or isinstance(right, Mapping):
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            return False
+        return set(left) == set(right) and all(
+            _direct_projection_equal(left[key], right[key]) for key in left
+        )
+    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
+        if type(left) is not type(right) or len(left) != len(right):
+            return False
+        return all(
+            _direct_projection_equal(first, second)
+            for first, second in zip(left, right, strict=True)
+        )
+    if type(left) is float and type(right) is float:
+        return left.hex() == right.hex()
+    return type(left) is type(right) and left == right
+
+
+def validate_direct_comparator_projection(
+    projection: object,
+    checkpoint_path: Path,
+    plan: object,
+    *,
+    registry: object,
+    prepared_datasets: Mapping[str, object],
+    comparator_reference: object,
+    comparator_authority: object,
+    selected_rows: Sequence[object],
+) -> dict[str, object]:
+    """Revalidate the complete direct source before downstream handoff."""
+
+    if getattr(plan, "identity_mode", None) != "direct-v1":
+        raise DownstreamEvidenceError("direct comparator identity mode differs")
+    if not isinstance(projection, Mapping) or set(projection) != {
+        "comparator_authority",
+        "selected_comparators",
+    }:
+        raise DownstreamEvidenceError("direct comparator projection schema differs")
+    reference = projection.get("comparator_authority")
+    selected = projection.get("selected_comparators")
+    if not isinstance(reference, Mapping) or set(reference) != {
+        "path",
+        "schema_version",
+        "authority_revision",
+    }:
+        raise DownstreamEvidenceError("direct comparator authority schema differs")
+    if not isinstance(selected, Mapping) or any(
+        not isinstance(method_id, str)
+        or not method_id
+        or not isinstance(row, Mapping)
+        or set(row) != {"configuration_id", "payload"}
+        or not isinstance(row.get("configuration_id"), str)
+        or not row.get("configuration_id")
+        or type(row.get("payload")) is not dict
+        for method_id, row in selected.items()
+    ):
+        raise DownstreamEvidenceError(
+            "direct selected comparator projection schema differs"
+        )
+    from .development_evaluation import project_direct_comparator_evidence
+
+    expected = project_direct_comparator_evidence(
+        checkpoint_path,
+        plan,
+        registry=registry,
+        prepared_datasets=prepared_datasets,
+        comparator_reference=comparator_reference,
+        comparator_authority=comparator_authority,
+        selected_rows=selected_rows,
+    )
+    if not _direct_projection_equal(projection, expected):
+        raise DownstreamEvidenceError("direct comparator projection differs")
+    return expected
+
+
 def _canonical_bytes(value: object) -> bytes:
     try:
         return json.dumps(
@@ -1478,7 +1554,9 @@ class DownstreamEvidencePlan:
                 value.to_dict() for value in self.development_sources
             ],
             "datasets": [value.to_dict() for value in self.datasets],
-            "configurations": [value.to_dict() for value in self.configurations],
+            "configurations": [
+                _legacy_configuration_payload(value) for value in self.configurations
+            ],
             "entries": [value.to_dict() for value in self.entries],
             "planned_denominator_count": len(self.entries),
         }
@@ -1561,6 +1639,17 @@ _CONFIGURATION_FIELDS = frozenset(
         "requires_calibration",
     }
 )
+
+
+def _legacy_configuration_payload(
+    configuration: AuthorizedConfiguration,
+) -> dict[str, object]:
+    """Preserve the established non-comparator downstream configuration schema."""
+
+    if not isinstance(configuration, AuthorizedConfiguration):
+        raise TypeError("configuration must be an AuthorizedConfiguration")
+    encoded = configuration.to_dict()
+    return {name: encoded[name] for name in _CONFIGURATION_FIELDS}
 
 
 def _method_artifact_sha256(configuration: AuthorizedConfiguration) -> str:
@@ -2824,7 +2913,7 @@ def _configuration_from_payload(value: object) -> AuthorizedConfiguration:
         raise DownstreamEvidenceError(
             "persisted configuration authority is invalid"
         ) from error
-    if configuration.to_dict() != dict(value):
+    if _legacy_configuration_payload(configuration) != dict(value):
         raise DownstreamEvidenceError("persisted configuration authority differs")
     _method_artifact_sha256(configuration)
     return configuration
@@ -5880,5 +5969,6 @@ __all__ = [
     "load_downstream_evidence_manifest",
     "load_downstream_evidence_plan",
     "run_downstream_evidence",
+    "validate_direct_comparator_projection",
     "validate_downstream_evidence_completeness",
 ]

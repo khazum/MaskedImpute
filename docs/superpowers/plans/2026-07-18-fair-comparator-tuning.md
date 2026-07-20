@@ -1,5 +1,34 @@
 # Fair Comparator Tuning Implementation Plan
 
+## Governing direct-identity amendment (2026-07-20)
+
+The approved direct-identity design at
+`docs/superpowers/specs/2026-07-20-direct-identity-fair-comparator-design.md`
+and its implementation plan at
+`docs/superpowers/plans/2026-07-20-direct-identity-fair-comparator.md` govern
+the fair-comparator segment of this plan. Tasks 8--18 below retain all of their
+scientific grid, denominator, budget, readiness, selection, propagation,
+documentation, and verification requirements, but their identity and artifact
+mechanisms must use the following substitutions:
+
+| Superseded mechanism | Required direct replacement |
+| --- | --- |
+| configuration or payload content summary | full typed payload plus configuration ID |
+| comparator authority file/payload summary | path, schema version, and `authority_revision`, followed by full authority validation |
+| method/source/configuration identity summary | `ComparatorMethodBinding` compared field by field |
+| request or entry summary | complete `ComparatorRunIdentity` |
+| plan summary and input-summary map | complete ordered plan snapshot plus `PreparedInputDescriptor` values |
+| stdout/stderr summary | canonical stream name, original byte count, capture policy, and terminal reason |
+| smoke/selection receipt summary | full canonical receipt bytes and recomputed derived values |
+| create-only concurrent equality through summaries | byte-for-byte comparison of complete canonical artifacts |
+
+Every digest-oriented fair-comparator code snippet or field in the older Tasks
+8--18 text is superseded. Implementers must remove it rather than reproduce,
+rename, alias, or dual-write it. Every later Task 8--18 brief must include both
+governing paths above, the direct plan's Global Constraints, and this
+substitution table before work begins. Reviews apply the direct requirements
+first and preserve the older task text only as the binding scientific contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace default-only comparator evaluation with a bounded, development-only 34-configuration tuning competition whose selected comparator identities propagate unchanged through candidate selection, revision assessment, publication freeze, final evaluation, trajectory evaluation, scaling, analysis, and the Genome Biology manuscript.
