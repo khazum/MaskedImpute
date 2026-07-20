@@ -478,6 +478,261 @@ def test_saver_direct_wrapper_bypasses_all_legacy_content_summaries(
 
 
 @pytest.mark.parametrize(
+    "method_id",
+    (
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+        "scziva",
+        "afmf",
+        "biaeimpute",
+        "sccr",
+        "scsdae",
+    ),
+)
+def test_real_direct_wrappers_do_not_construct_legacy_summaries_on_missing_executable(
+    method_id: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _adapter_module(method_id)
+    method_input = _method_input(cells=120, genes=120)
+    source_dir = tmp_path / method_id
+    source_dir.mkdir()
+    missing = tmp_path / f"missing-{method_id}"
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("direct wrapper constructed a legacy content summary")
+
+    monkeypatch.setattr(module, "snapshot_method_output", forbidden)
+    if method_id == "scsdae":
+        monkeypatch.setattr(
+            module,
+            "verify_pinned_source",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                revision="revision", tree="tree", url="url"
+            ),
+        )
+        monkeypatch.setattr(module, "SCSDaeUnavailableError", forbidden)
+        monkeypatch.setattr(module, "SCSDaeAttemptReceipt", forbidden)
+        monkeypatch.setattr(module.hashlib, "sha256", forbidden)
+    monkeypatch.setattr(
+        module,
+        "require_executable",
+        lambda _path: (_ for _ in ()).throw(
+            AdapterUnavailableError(
+                "environment_executable_missing",
+                "synthetic missing executable",
+                stdout=b"missing-out",
+                stderr=b"missing-err",
+            )
+        ),
+    )
+    kwargs: dict[str, object] = {
+        "source_dir": source_dir,
+        "seed": 42,
+    }
+    if method_id in {"alra", "saver"}:
+        kwargs["rscript"] = missing
+    else:
+        kwargs["python_executable"] = missing
+    if method_id == "saver":
+        kwargs.update(
+            library_dir=tmp_path / "library",
+            lock_manifest=tmp_path / "lock.json",
+            build_receipt=tmp_path / "build.json",
+        )
+
+    with pytest.raises(AdapterUnavailableError) as captured:
+        getattr(module, f"run_{method_id}_direct")(
+            _registry().by_id(method_id),
+            method_input,
+            **kwargs,
+        )
+
+    assert type(captured.value) is AdapterUnavailableError
+    assert captured.value.reason_code == "environment_executable_missing"
+    assert captured.value.stdout == b"missing-out"
+    assert captured.value.stderr == b"missing-err"
+    assert not hasattr(captured.value, "attempt_receipt")
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_reason", "expected_stdout", "expected_stderr"),
+    (
+        (
+            "probe",
+            "legacy_gpu_kernel_incompatible",
+            b"MASKIMPUTE_LEGACY_GPU_KERNEL_INCOMPATIBLE",
+            b"probe-err",
+        ),
+        (
+            "run",
+            "upstream_process_failed",
+            b"probe-out\nrun-out",
+            b"probe-err\nrun-err",
+        ),
+        (
+            "malformed_output",
+            "malformed_upstream_output",
+            b"probe-out\nrun-out",
+            b"probe-err\nrun-err",
+        ),
+    ),
+)
+def test_scsdae_direct_failure_paths_never_construct_attempt_receipts(
+    failure_stage: str,
+    expected_reason: str,
+    expected_stdout: bytes,
+    expected_stderr: bytes,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _adapter_module("scsdae")
+    method_input = _method_input(cells=8, genes=6)
+    source_dir = tmp_path / "scsdae"
+    source_dir.mkdir()
+    (source_dir / "pure_ae_new.py").write_text("# synthetic\n", encoding="utf-8")
+    executable = tmp_path / "python"
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("direct scSDAE constructed a legacy content summary")
+
+    monkeypatch.setattr(
+        module,
+        "verify_pinned_source",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            revision="revision", tree="tree", url="url"
+        ),
+    )
+    monkeypatch.setattr(module, "require_executable", lambda _path: executable)
+    monkeypatch.setattr(module, "SCSDaeUnavailableError", forbidden)
+    monkeypatch.setattr(module, "SCSDaeAttemptReceipt", forbidden)
+    monkeypatch.setattr(module.hashlib, "sha256", forbidden)
+    calls = 0
+
+    def fake_execute(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if failure_stage == "probe" and calls == 1:
+            raise AdapterUnavailableError(
+                "upstream_process_failed",
+                "synthetic probe failure",
+                command=(str(executable), "probe"),
+                stdout=b"MASKIMPUTE_LEGACY_GPU_KERNEL_INCOMPATIBLE",
+                stderr=b"probe-err",
+            )
+        if failure_stage == "run" and calls == 2:
+            raise AdapterUnavailableError(
+                "upstream_process_failed",
+                "synthetic run failure",
+                command=(str(executable), "run"),
+                stdout=b"run-out",
+                stderr=b"run-err",
+            )
+        if calls == 1:
+            return SimpleNamespace(stdout=b"probe-out", stderr=b"probe-err")
+        return SimpleNamespace(stdout=b"run-out", stderr=b"run-err")
+
+    monkeypatch.setattr(module, "execute_pinned_command", fake_execute)
+    monkeypatch.setattr(
+        module,
+        "read_npy_output",
+        lambda _path: np.ones((1, 1), dtype=np.float64),
+    )
+    monkeypatch.setattr(module, "read_environment_receipt", lambda *_a, **_k: ())
+
+    with pytest.raises(AdapterUnavailableError) as captured:
+        module.run_scsdae_direct(
+            _registry().by_id("scsdae"),
+            method_input,
+            source_dir=source_dir,
+            python_executable=executable,
+            seed=42,
+        )
+
+    assert type(captured.value) is AdapterUnavailableError
+    assert captured.value.reason_code == expected_reason
+    assert captured.value.stdout == expected_stdout
+    assert captured.value.stderr == expected_stderr
+    assert not hasattr(captured.value, "attempt_receipt")
+    assert calls == (1 if failure_stage == "probe" else 2)
+
+
+def test_sccr_direct_wrapper_uses_identity_free_driver_and_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _adapter_module("sccr")
+    spec = _registry().by_id("sccr")
+    method_input = _method_input(cells=20, genes=10)
+    source_dir = tmp_path / "sccr"
+    source_dir.mkdir()
+    executable = tmp_path / "python"
+    captured: dict[str, object] = {}
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("direct scCR constructed a legacy content summary")
+
+    def fake_execute(_spec, _source_dir, command, **_kwargs):
+        driver = command[4]
+        assert "graph_contract_sha256" not in driver
+        assert "graph_contract_revision" not in driver
+        assert "graph_contract_url" not in driver
+        output_path = Path(command[7])
+        receipt_path = Path(command[8])
+        np.save(
+            output_path,
+            module.log1p_cp10k(method_input.counts),
+            allow_pickle=False,
+        )
+        receipt = {
+            "device": "cpu",
+            "numpy_version": "2.0.0",
+            "python_version": "3.12.0",
+            "sccr_module": str(source_dir / "scCR.py"),
+            "torch_num_threads": "3",
+            "torch_version": "2.4.1",
+        }
+        receipt_path.write_text(
+            "".join(f"{key}\t{receipt[key]}\n" for key in sorted(receipt)),
+            encoding="utf-8",
+        )
+        captured["receipt"] = receipt
+        captured["driver"] = driver
+        return SimpleNamespace(stdout=b"out", stderr=b"err")
+
+    monkeypatch.setattr(module, "snapshot_method_output", forbidden)
+    monkeypatch.setattr(module, "require_executable", lambda _path: executable)
+    monkeypatch.setattr(module, "execute_pinned_command", fake_execute)
+
+    execution = module.run_sccr_direct(
+        spec,
+        method_input,
+        source_dir=source_dir,
+        python_executable=executable,
+        seed=42,
+        config=module.SCCRConfig(neighbors=3, gene_neighbors=1),
+    )
+
+    assert tuple(field.name for field in fields(execution)) == (
+        "output",
+        "stdout",
+        "stderr",
+    )
+    assert set(captured["receipt"]) == {
+        "device",
+        "numpy_version",
+        "python_version",
+        "sccr_module",
+        "torch_num_threads",
+        "torch_version",
+    }
+
+
+@pytest.mark.parametrize(
     ("factory", "message"),
     [
         (lambda: scziva_adapter.SCZivaConfig(num_epochs=0), "num_epochs"),

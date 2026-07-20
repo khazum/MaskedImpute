@@ -573,6 +573,8 @@ def _run_scsdae_impl(
     try:
         executable = require_executable(python_executable)
     except AdapterUnavailableError as error:
+        if _direct:
+            raise
         raise SCSDaeUnavailableError(
             error,
             source=source_receipt,
@@ -673,6 +675,8 @@ def _run_scsdae_impl(
                 )
             else:
                 error = _legacy_failure_reason(original)
+            if _direct:
+                raise error from original
             raise SCSDaeUnavailableError(
                 error,
                 source=source_receipt,
@@ -737,6 +741,8 @@ def _run_scsdae_impl(
                 probe.stdout,
                 probe.stderr,
             )
+            if _direct:
+                raise error from original
             raise SCSDaeUnavailableError(
                 error,
                 source=source_receipt,
@@ -768,6 +774,8 @@ def _run_scsdae_impl(
                 probe.stdout,
                 probe.stderr,
             )
+            if _direct:
+                raise error from original
             raise SCSDaeUnavailableError(
                 error,
                 source=source_receipt,

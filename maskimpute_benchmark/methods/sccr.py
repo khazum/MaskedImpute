@@ -180,6 +180,12 @@ receipt_path.write_text(
 """
 )
 
+_SCCR_DIRECT_DRIVER = "".join(
+    line
+    for line in _SCCR_DRIVER.splitlines(keepends=True)
+    if not line.lstrip().startswith('"graph_contract_')
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SCCRConfig:
@@ -444,7 +450,7 @@ def _run_sccr_impl(
             "-B",
             "-I",
             "-c",
-            _SCCR_DRIVER,
+            _SCCR_DIRECT_DRIVER if _direct else _SCCR_DRIVER,
             str(source_dir.resolve()),
             str(input_path),
             str(output_path),
@@ -471,21 +477,25 @@ def _run_sccr_impl(
             },
         )
         output = read_npy_output(output_path)
-        receipt = read_environment_receipt(
-            receipt_path,
-            expected_keys=frozenset(
+        expected_receipt_keys = {
+            "device",
+            "numpy_version",
+            "python_version",
+            "sccr_module",
+            "torch_num_threads",
+            "torch_version",
+        }
+        if not _direct:
+            expected_receipt_keys.update(
                 {
-                    "device",
                     "graph_contract_revision",
                     "graph_contract_sha256",
                     "graph_contract_url",
-                    "numpy_version",
-                    "python_version",
-                    "sccr_module",
-                    "torch_num_threads",
-                    "torch_version",
                 }
-            ),
+            )
+        receipt = read_environment_receipt(
+            receipt_path,
+            expected_keys=frozenset(expected_receipt_keys),
         )
         if _direct:
             return DirectAdapterExecution(
