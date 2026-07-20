@@ -42,8 +42,7 @@ def _freeze_nested_payload(value: object) -> object:
         if not all(isinstance(key, str) for key in value):
             raise RunnerContractError("direct configuration keys must be strings")
         return _FrozenJsonObject(
-            (key, _freeze_payload(nested))
-            for key, nested in sorted(value.items())
+            (key, _freeze_payload(nested)) for key, nested in sorted(value.items())
         )
     if isinstance(value, (list, tuple)):
         return _FrozenJsonList(_freeze_payload(nested) for nested in value)
@@ -62,8 +61,7 @@ def _freeze_payload_mapping(
     value: Mapping[str, object],
 ) -> tuple[tuple[str, object], ...]:
     return tuple(
-        (key, _freeze_nested_payload(nested))
-        for key, nested in sorted(value.items())
+        (key, _freeze_nested_payload(nested)) for key, nested in sorted(value.items())
     )
 
 
@@ -74,9 +72,7 @@ def _thaw_payload(value: object) -> object:
         return [_thaw_payload(item) for item in value]
     if isinstance(value, tuple):
         if all(
-            isinstance(item, tuple)
-            and len(item) == 2
-            and isinstance(item[0], str)
+            isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
             for item in value
         ):
             return {item[0]: _thaw_payload(item[1]) for item in value}
@@ -84,21 +80,23 @@ def _thaw_payload(value: object) -> object:
     return value
 
 
-def _direct_json_value(value: object, *, payload: bool = False) -> object:
+def direct_json_value(value: object, *, payload: bool = False) -> object:
+    """Encode one direct dataclass/value without losing JSON container types."""
+
     if payload:
         return _thaw_payload(value)
     if is_dataclass(value) and not isinstance(value, type):
         return {
-            item.name: _direct_json_value(
+            item.name: direct_json_value(
                 getattr(value, item.name),
                 payload=item.name in {"payload", "configuration_payload"},
             )
             for item in fields(value)
         }
     if isinstance(value, tuple):
-        return [_direct_json_value(item) for item in value]
+        return [direct_json_value(item) for item in value]
     if isinstance(value, Mapping):
-        return {str(key): _direct_json_value(nested) for key, nested in value.items()}
+        return {str(key): direct_json_value(nested) for key, nested in value.items()}
     return value
 
 
@@ -308,9 +306,7 @@ def _configuration_grid(
         )
     )
     plan_configurations: list[DirectAuthorizedConfiguration] = []
-    configurations_by_method: dict[
-        str, tuple[DirectAuthorizedConfiguration, ...]
-    ] = {}
+    configurations_by_method: dict[str, tuple[DirectAuthorizedConfiguration, ...]] = {}
     for spec in planned_specs:
         method = comparator_method_binding(spec)
         if spec.id == "observed":
@@ -347,8 +343,7 @@ def _configuration_grid(
                     authority.comparator_tuning,
                 )
                 if (
-                    bound.authority_reference
-                    != authority.comparator_tuning_reference
+                    bound.authority_reference != authority.comparator_tuning_reference
                     or bound.method != authority_method
                 ):
                     raise RunnerContractError(
@@ -359,9 +354,7 @@ def _configuration_grid(
                         method=bound.method,
                         configuration_id=bound.configuration.configuration_id,
                         configuration_kind="comparator_tuning",
-                        payload=_freeze_payload_mapping(
-                            bound.configuration.payload
-                        ),
+                        payload=_freeze_payload_mapping(bound.configuration.payload),
                         requires_count_score=False,
                         requires_calibration=False,
                     )
@@ -423,10 +416,13 @@ def _validate_direct_plan(
             (row.method_id, row.configuration_id)
             for row in authority.comparator_tuning.configurations
         )
-        if tuple(
-            (configuration.method.method_id, configuration.configuration_id)
-            for configuration in comparator_configurations
-        ) != expected_pairs:
+        if (
+            tuple(
+                (configuration.method.method_id, configuration.configuration_id)
+                for configuration in comparator_configurations
+            )
+            != expected_pairs
+        ):
             raise RunnerContractError(
                 "direct comparator configuration order differs from authority"
             )
@@ -435,8 +431,7 @@ def _validate_direct_plan(
                 index
                 for index, entry in enumerate(plan.entries)
                 if entry.identity.method_id == configuration.method.method_id
-                and entry.identity.configuration_id
-                == configuration.configuration_id
+                and entry.identity.configuration_id == configuration.configuration_id
             ]
             if len(positions) != 48 or positions != list(
                 range(positions[0], positions[0] + 48)
@@ -549,9 +544,7 @@ def build_direct_competition_plan(
                                 else "planned"
                             ),
                             preflight_reason=blocked_reason,
-                            requires_count_score=(
-                                configuration.requires_count_score
-                            ),
+                            requires_count_score=(configuration.requires_count_score),
                             requires_calibration=configuration.requires_calibration,
                         )
                     )
@@ -568,7 +561,7 @@ def build_direct_competition_plan(
 
 
 def _direct_plan_to_json(plan: DirectCompetitionPlan) -> dict[str, object]:
-    encoded = _direct_json_value(plan)
+    encoded = direct_json_value(plan)
     if not isinstance(encoded, dict):
         raise AssertionError("direct plan encoding must produce an object")
     return encoded
@@ -582,5 +575,6 @@ __all__ = [
     "PreparedInputDescriptor",
     "build_direct_competition_plan",
     "describe_prepared_input",
+    "direct_json_value",
     "direct_run_id",
 ]

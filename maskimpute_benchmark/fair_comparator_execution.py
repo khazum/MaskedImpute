@@ -26,6 +26,7 @@ from .fair_comparator_plan import (
     DirectPlanEntry,
     PreparedInputDescriptor,
     describe_prepared_input,
+    direct_json_value,
     direct_run_id,
 )
 from .methods import (
@@ -94,37 +95,8 @@ def _direct_equal(left: object, right: object) -> bool:
     return type(left) is type(right) and left == right
 
 
-def _thaw(value: object) -> object:
-    if isinstance(value, tuple):
-        if all(
-            isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
-            for item in value
-        ):
-            return {item[0]: _thaw(item[1]) for item in value}
-        return [_thaw(item) for item in value]
-    return value
-
-
-def _json_value(value: object, *, payload: bool = False) -> object:
-    if payload:
-        return _thaw(value)
-    if is_dataclass(value) and not isinstance(value, type):
-        return {
-            item.name: _json_value(
-                getattr(value, item.name),
-                payload=item.name == "configuration_payload",
-            )
-            for item in fields(value)
-        }
-    if isinstance(value, tuple):
-        return [_json_value(item) for item in value]
-    if isinstance(value, Mapping):
-        return {str(key): _json_value(nested) for key, nested in value.items()}
-    return value
-
-
 def _identity_dict(identity: ComparatorRunIdentity) -> dict[str, object]:
-    encoded = _json_value(identity)
+    encoded = direct_json_value(identity)
     if not isinstance(encoded, dict):  # pragma: no cover - dataclass invariant
         raise AssertionError("direct run identity must encode as an object")
     return encoded
@@ -136,6 +108,7 @@ def _require_nonnegative_number(value: object, name: str) -> int | float:
         or not isinstance(value, (int, float))
         or not math.isfinite(float(value))
         or value < 0
+        or (value == 0 and math.copysign(1.0, float(value)) < 0.0)
     ):
         raise RunnerContractError(f"{name} must be a finite nonnegative number")
     return value
@@ -174,7 +147,7 @@ class DirectExecutionRequest:
 
         return {
             "identity": _identity_dict(self.identity),
-            "method": _json_value(self.identity.method),
+            "method": direct_json_value(self.identity.method),
             "input": {
                 "shape": list(self.method_input.shape),
                 "dtype": self.method_input.counts.dtype.str,
@@ -280,7 +253,7 @@ class DirectRunResult:
             raise RunnerContractError("direct run log receipts are inconsistent")
 
     def to_dict(self) -> dict[str, object]:
-        encoded = _json_value(self)
+        encoded = direct_json_value(self)
         if not isinstance(encoded, dict):  # pragma: no cover - dataclass invariant
             raise AssertionError("direct run result must encode as an object")
         return encoded
@@ -318,7 +291,7 @@ class DirectMetricRow:
             raise RunnerContractError("completed direct metric is inconsistent")
 
     def to_dict(self) -> dict[str, object]:
-        encoded = _json_value(self)
+        encoded = direct_json_value(self)
         if not isinstance(encoded, dict):  # pragma: no cover - dataclass invariant
             raise AssertionError("direct metric must encode as an object")
         return encoded
@@ -388,7 +361,7 @@ class DirectPreZeroEvidence:
             )
 
     def to_dict(self) -> dict[str, object]:
-        encoded = _json_value(self)
+        encoded = direct_json_value(self)
         if not isinstance(encoded, dict):  # pragma: no cover - dataclass invariant
             raise AssertionError("direct p_pre_zero evidence must encode as an object")
         return encoded

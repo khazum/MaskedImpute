@@ -14,6 +14,7 @@ from maskimpute_benchmark.comparator_tuning import (
     comparator_method_binding,
     load_comparator_tuning_authority,
 )
+import maskimpute_benchmark.fair_comparator_plan as direct_plan_module
 from maskimpute_benchmark.fair_comparator_checkpoint import (
     DirectCheckpointStore,
     DirectDevelopmentBudget,
@@ -279,6 +280,43 @@ def _rewrite(path: Path, mutate) -> None:
         )
         + "\n",
         encoding="utf-8",
+    )
+
+
+def _collision_plan() -> tuple[
+    DirectCompetitionPlan,
+    object,
+    dict[str, PreparedDataset],
+]:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    payload = direct_plan_module._freeze_payload_mapping(  # noqa: SLF001
+        {"nested": [["a", 1]]}
+    )
+    configuration = replace(plan.configurations[0], payload=payload)
+    identity = replace(plan.entries[0].identity, configuration_payload=payload)
+    entry = replace(
+        plan.entries[0],
+        run_id=direct_run_id(identity),
+        identity=identity,
+    )
+    return (
+        replace(
+            plan,
+            entries=(entry, *plan.entries[1:]),
+            configurations=(configuration, *plan.configurations[1:]),
+        ),
+        registry,
+        prepared,
+    )
+
+
+def _registry_with_method(registry, method_id: str, replacement):
+    return replace(
+        registry,
+        methods=tuple(
+            replacement if method.id == method_id else method
+            for method in registry.methods
+        ),
     )
 
 
@@ -641,3 +679,257 @@ def test_direct_checkpoint_rejects_noncontiguous_plan_ordinals(tmp_path: Path) -
             registry=registry,
             prepared_datasets=prepared,
         )
+
+
+@pytest.mark.parametrize("identity_owner", ("run", "metric"))
+def test_review_direct_record_identity_preserves_nested_list_of_pairs(
+    identity_owner: str,
+) -> None:
+    plan, _registry, _prepared = _collision_plan()
+    record = _attempt(plan.entries[0]).to_dict()
+    expected = plan.to_dict()["entries"][0]["identity"]
+    observed = (
+        record["run"]["identity"]
+        if identity_owner == "run"
+        else record["metrics"][0]["identity"]
+    )
+
+    assert observed == expected
+    assert observed["configuration_payload"]["nested"] == [["a", 1]]
+
+
+def test_review_direct_checkpoint_rejects_list_object_identity_collision(
+    tmp_path: Path,
+) -> None:
+    plan, registry, prepared = _collision_plan()
+    record = _attempt(plan.entries[0]).to_dict()
+    for identity in (
+        record["run"]["identity"],
+        record["metrics"][0]["identity"],
+    ):
+        identity["configuration_payload"]["nested"] = {"a": 1}
+
+    with pytest.raises(RunnerContractError, match="identity"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
+@pytest.mark.parametrize("field", ("schema_version", "planned_run_count"))
+def test_review_direct_checkpoint_rejects_bool_report_integer(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    store.write(
+        plan,
+        _terminal_prefix(plan, 1),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+    _rewrite(store.path, lambda payload: payload.__setitem__(field, True))
+
+    with pytest.raises(RunnerContractError, match="schema|denominator|integer"):
+        store.load(plan, registry=registry, prepared_datasets=prepared)
+
+
+def test_review_direct_checkpoint_rejects_bool_intent_schema_version(
+    tmp_path: Path,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    store.write(
+        plan,
+        _terminal_prefix(plan, 1),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+    store._publish_transaction_intent(  # noqa: SLF001
+        plan,
+        1,
+        plan.entries[1],
+        _attempt(plan.entries[1]),
+    )
+    _rewrite(
+        store.intent_path,
+        lambda payload: payload.__setitem__("schema_version", True),
+    )
+
+    with pytest.raises(RunnerContractError, match="schema|plan snapshot"):
+        store.load(plan, registry=registry, prepared_datasets=prepared)
+
+
+def test_review_direct_checkpoint_rejects_signed_negative_zero_runtime(
+    tmp_path: Path,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    record = _terminal_prefix(plan, 1)[0]
+    record["run"]["runtime_seconds"] = -0.0
+
+    with pytest.raises(RunnerContractError, match="runtime|negative"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
+def test_review_direct_budget_rejects_signed_negative_zero() -> None:
+    plan, registry, _prepared = _direct_checkpoint_fixture()
+
+    with pytest.raises(RunnerContractError, match="runtime|negative"):
+        DirectDevelopmentBudget().restore(
+            registry.by_id("magic"),
+            plan.entries[0].identity.configuration_id,
+            "completed",
+            -0.0,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        (lambda value: value.__setitem__("applicable", 1), "applicability"),
+        (
+            lambda value: value.__setitem__("shape", {"legacy_sha256": "a" * 64}),
+            "shape|evidence",
+        ),
+        (lambda value: value.__setitem__("status", ["not_applicable"]), "status"),
+        (
+            lambda value: value.update(
+                {
+                    "applicable": True,
+                    "status": "completed",
+                    "reason": None,
+                    "shape": [2, 3],
+                    "dtype": "<f8",
+                    "encoding": "zlib",
+                    "path": "../outside.zlib",
+                    "compressed_byte_count": 1,
+                }
+            ),
+            "path|evidence",
+        ),
+    ),
+)
+def test_review_direct_checkpoint_rejects_malformed_prezero_evidence(
+    tmp_path: Path,
+    mutation,
+    message: str,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    record = _terminal_prefix(plan, 1)[0]
+    mutation(record["p_pre_zero_evidence"])
+
+    with pytest.raises(RunnerContractError, match=message):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "gpu_class",
+        "timeout",
+        "source_cache",
+        "scale",
+        "seed_policy",
+        "resource_limit",
+    ),
+)
+def test_review_direct_checkpoint_rejects_registry_method_projection_drift(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    spec = registry.by_id("magic")
+    if drift == "gpu_class":
+        changed = replace(
+            spec,
+            resources=replace(
+                spec.resources, gpu_required=not spec.resources.gpu_required
+            ),
+        )
+    elif drift == "timeout":
+        changed = replace(
+            spec,
+            resources=replace(
+                spec.resources,
+                timeout_seconds=spec.resources.timeout_seconds + 1,
+            ),
+        )
+    elif drift == "source_cache":
+        changed = replace(spec, source=replace(spec.source, cache_path="wrong/cache"))
+    elif drift == "scale":
+        changed = replace(spec, output_scale=f"{spec.output_scale}-drift")
+    elif drift == "seed_policy":
+        changed = replace(spec, seed_policy=f"{spec.seed_policy}-drift")
+    else:
+        changed = replace(
+            spec,
+            resources=replace(
+                spec.resources,
+                max_rss_gib=spec.resources.max_rss_gib + 1,
+            ),
+        )
+    changed_registry = _registry_with_method(registry, "magic", changed)
+
+    with pytest.raises(RunnerContractError, match="method projection|registry"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            _terminal_prefix(plan, 1),
+            registry=changed_registry,
+            prepared_datasets=prepared,
+        )
+
+
+@pytest.mark.parametrize("registry_change", ("missing", "duplicate"))
+def test_review_direct_checkpoint_rejects_missing_or_duplicate_registry_method(
+    tmp_path: Path,
+    registry_change: str,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    if registry_change == "missing":
+        methods = tuple(method for method in registry.methods if method.id != "magic")
+    else:
+        methods = (*registry.methods, registry.by_id("magic"))
+    changed_registry = replace(registry, methods=methods)
+
+    with pytest.raises(RunnerContractError, match="method|registry"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            _terminal_prefix(plan, 1),
+            registry=changed_registry,
+            prepared_datasets=prepared,
+        )
+
+
+def test_review_direct_checkpoint_rejects_stale_historical_transaction(
+    tmp_path: Path,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    store.write(
+        plan,
+        _terminal_prefix(plan, 3),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+    store._publish_transaction_intent(  # noqa: SLF001
+        plan,
+        0,
+        plan.entries[0],
+        _attempt(plan.entries[0]),
+    )
+
+    with pytest.raises(RunnerContractError, match="stale|position"):
+        store.load(plan, registry=registry, prepared_datasets=prepared)

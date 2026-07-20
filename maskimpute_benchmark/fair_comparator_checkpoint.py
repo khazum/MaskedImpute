@@ -7,17 +7,23 @@ from dataclasses import dataclass, fields, is_dataclass
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
 import tempfile
 from typing import Any, Literal
 
-from .fair_comparator_execution import DirectEvaluatedAttempt, DirectRunResult
+from .comparator_tuning import comparator_method_binding
+from .fair_comparator_execution import (
+    DirectEvaluatedAttempt,
+    DirectPreZeroEvidence,
+    DirectRunResult,
+)
 from .fair_comparator_plan import (
     DirectCompetitionPlan,
     DirectPlanEntry,
     PreparedInputDescriptor,
     describe_prepared_input,
+    direct_json_value,
     direct_run_id,
 )
 from .methods import MethodRegistry, MethodSpec
@@ -145,35 +151,6 @@ def _direct_equal(left: object, right: object) -> bool:
     return type(left) is type(right) and left == right
 
 
-def _thaw_payload(value: object) -> object:
-    if isinstance(value, tuple):
-        if all(
-            isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
-            for item in value
-        ):
-            return {item[0]: _thaw_payload(item[1]) for item in value}
-        return [_thaw_payload(item) for item in value]
-    return value
-
-
-def _json_value(value: object, *, payload: bool = False) -> object:
-    if payload:
-        return _thaw_payload(value)
-    if is_dataclass(value) and not isinstance(value, type):
-        return {
-            item.name: _json_value(
-                getattr(value, item.name),
-                payload=item.name in {"payload", "configuration_payload"},
-            )
-            for item in fields(value)
-        }
-    if isinstance(value, tuple):
-        return [_json_value(item) for item in value]
-    if isinstance(value, Mapping):
-        return {str(key): _json_value(nested) for key, nested in value.items()}
-    return value
-
-
 def _canonical_bytes(value: object) -> bytes:
     try:
         return json.dumps(
@@ -220,6 +197,7 @@ def _require_nonnegative_number(value: object, name: str) -> float:
         or not isinstance(value, (int, float))
         or not math.isfinite(float(value))
         or value < 0
+        or (value == 0 and math.copysign(1.0, float(value)) < 0.0)
     ):
         raise RunnerContractError(f"{name} must be a finite nonnegative number")
     return float(value)
@@ -404,7 +382,7 @@ class DirectDevelopmentBudget:
 
 
 def _expected_identity(entry: DirectPlanEntry) -> Mapping[str, object]:
-    encoded = _json_value(entry.identity)
+    encoded = direct_json_value(entry.identity)
     if not isinstance(encoded, Mapping):  # pragma: no cover - dataclass invariant
         raise AssertionError("direct entry identity must encode as an object")
     return encoded
@@ -417,16 +395,62 @@ def _validate_log(value: object, stream: str, reason: object) -> None:
         value.get("stream") != stream
         or value.get("capture_policy") != "discard_content"
         or value.get("terminal_reason") != reason
-        or isinstance(value.get("original_byte_count"), bool)
         or type(value.get("original_byte_count")) is not int
         or int(value["original_byte_count"]) < 0
     ):
         raise RunnerContractError("direct checkpoint log receipt is invalid")
 
 
+def _validate_prezero_evidence(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _PREZERO_KEYS:
+        raise RunnerContractError("direct checkpoint p_pre_zero evidence is invalid")
+    if type(value.get("applicable")) is not bool:
+        raise RunnerContractError(
+            "direct checkpoint p_pre_zero applicability is invalid"
+        )
+    if not isinstance(value.get("status"), str):
+        raise RunnerContractError("direct checkpoint p_pre_zero status is invalid")
+    shape_value = value.get("shape")
+    shape = tuple(shape_value) if isinstance(shape_value, list) else shape_value
+    try:
+        evidence = DirectPreZeroEvidence(
+            applicable=value.get("applicable"),
+            status=value.get("status"),
+            reason=value.get("reason"),
+            shape=shape,
+            dtype=value.get("dtype"),
+            encoding=value.get("encoding"),
+            path=value.get("path"),
+            compressed_byte_count=value.get("compressed_byte_count"),
+        )
+    except RunnerContractError:
+        raise
+    except (TypeError, ValueError) as error:
+        raise RunnerContractError(
+            "direct checkpoint p_pre_zero evidence is invalid"
+        ) from error
+    if evidence.path is not None:
+        relative = PurePosixPath(evidence.path)
+        if (
+            relative.is_absolute()
+            or not relative.parts
+            or ".." in relative.parts
+            or relative.as_posix() != evidence.path
+        ):
+            raise RunnerContractError(
+                "direct checkpoint p_pre_zero evidence path is unsafe"
+            )
+    encoded = direct_json_value(evidence)
+    if not isinstance(encoded, dict) or not _direct_equal(encoded, value):
+        raise RunnerContractError("direct checkpoint p_pre_zero evidence is invalid")
+    return encoded
+
+
 def _validate_record(
     value: object,
     entry: DirectPlanEntry,
+    *,
+    expected_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if not isinstance(value, Mapping) or set(value) != {
         "run",
@@ -438,9 +462,11 @@ def _validate_record(
     run = record.get("run")
     if not isinstance(run, Mapping) or set(run) != _RUN_KEYS:
         raise RunnerContractError("direct checkpoint run has wrong schema")
-    expected_identity = _expected_identity(entry)
+    identity_snapshot = (
+        _expected_identity(entry) if expected_identity is None else expected_identity
+    )
     if (
-        not _direct_equal(run.get("identity"), expected_identity)
+        not _direct_equal(run.get("identity"), identity_snapshot)
         or run.get("run_id") != entry.run_id
     ):
         raise RunnerContractError("direct checkpoint record identity differs from plan")
@@ -485,7 +511,7 @@ def _validate_record(
     for metric in metrics:
         if not isinstance(metric, Mapping) or set(metric) != _METRIC_KEYS:
             raise RunnerContractError("direct checkpoint metric has wrong schema")
-        if not _direct_equal(metric.get("identity"), expected_identity):
+        if not _direct_equal(metric.get("identity"), identity_snapshot):
             raise RunnerContractError(
                 "direct checkpoint metric identity differs from plan"
             )
@@ -513,10 +539,46 @@ def _validate_record(
                 raise RunnerContractError("direct checkpoint metric is inconsistent")
         elif metric.get("status") != "completed" or metric_reason is not None:
             raise RunnerContractError("direct checkpoint metric is inconsistent")
-    evidence = record.get("p_pre_zero_evidence")
-    if not isinstance(evidence, Mapping) or set(evidence) != _PREZERO_KEYS:
-        raise RunnerContractError("direct checkpoint p_pre_zero evidence is invalid")
+    record["p_pre_zero_evidence"] = _validate_prezero_evidence(
+        record.get("p_pre_zero_evidence")
+    )
     return json.loads(_canonical_bytes(record).decode("utf-8"))
+
+
+def _resolve_direct_method_specs(
+    registry: MethodRegistry,
+    entries: Sequence[DirectPlanEntry],
+) -> dict[str, MethodSpec]:
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    entry_values = tuple(entries)
+    if not all(isinstance(entry, DirectPlanEntry) for entry in entry_values):
+        raise TypeError("entries must contain DirectPlanEntry values")
+    if not all(isinstance(spec, MethodSpec) for spec in registry.methods):
+        raise RunnerContractError("direct method registry is invalid")
+
+    method_ids = tuple(
+        dict.fromkeys(entry.identity.method.method_id for entry in entry_values)
+    )
+    resolved: dict[str, MethodSpec] = {}
+    for method_id in method_ids:
+        matches = tuple(spec for spec in registry.methods if spec.id == method_id)
+        if len(matches) != 1:
+            raise RunnerContractError(
+                "direct method registry must resolve each referenced method exactly once"
+            )
+        resolved[method_id] = matches[0]
+
+    for entry in entry_values:
+        method_id = entry.identity.method.method_id
+        if not _direct_equal(
+            comparator_method_binding(resolved[method_id]),
+            entry.identity.method,
+        ):
+            raise RunnerContractError(
+                "direct method projection differs from the method registry"
+            )
+    return resolved
 
 
 def replay_direct_development_budget(
@@ -524,21 +586,18 @@ def replay_direct_development_budget(
     entries: Sequence[DirectPlanEntry],
     records: Sequence[Mapping[str, object]],
 ) -> DirectDevelopmentBudget:
-    if not isinstance(registry, MethodRegistry):
-        raise TypeError("registry must be a MethodRegistry")
     entry_values = tuple(entries)
     record_values = tuple(records)
     if len(record_values) > len(entry_values):
         raise RunnerContractError("direct checkpoint records are not a plan prefix")
+    resolved = _resolve_direct_method_specs(registry, entry_values)
     budget = DirectDevelopmentBudget()
     for entry, stored in zip(entry_values, record_values, strict=False):
-        if not isinstance(entry, DirectPlanEntry):
-            raise TypeError("entries must contain DirectPlanEntry values")
         record = _validate_record(stored, entry)
         run = record["run"]
         assert isinstance(run, dict)
         budget.restore(
-            registry.by_id(entry.identity.method.method_id),
+            resolved[entry.identity.method.method_id],
             configuration_budget_key(entry),
             str(run.get("status")),
             run.get("runtime_seconds"),
@@ -597,7 +656,7 @@ class DirectCheckpointReport:
     budget: Mapping[str, object]
 
     def to_dict(self) -> dict[str, object]:
-        encoded = _json_value(self)
+        encoded = direct_json_value(self)
         if not isinstance(encoded, dict):  # pragma: no cover - dataclass invariant
             raise AssertionError("direct checkpoint must encode as an object")
         return encoded
@@ -648,14 +707,21 @@ def _prepared_descriptors(
 def _validate_plan(plan: DirectCompetitionPlan) -> dict[str, object]:
     if not isinstance(plan, DirectCompetitionPlan):
         raise TypeError("plan must be a DirectCompetitionPlan")
-    if plan.identity_mode != "direct-v1" or not plan.authority_revision:
+    if (
+        type(plan.schema_version) is not int
+        or plan.schema_version != 1
+        or plan.identity_mode != "direct-v1"
+        or not isinstance(plan.authority_revision, str)
+        or not plan.authority_revision
+    ):
         raise RunnerContractError("direct checkpoint plan mode is invalid")
     if any(
         entry.identity.authority_revision != plan.authority_revision
         for entry in plan.entries
     ):
         raise RunnerContractError("direct checkpoint plan authority differs")
-    if tuple(entry.identity.ordinal for entry in plan.entries) != tuple(
+    ordinals = tuple(entry.identity.ordinal for entry in plan.entries)
+    if any(type(ordinal) is not int for ordinal in ordinals) or ordinals != tuple(
         range(1, len(plan.entries) + 1)
     ):
         raise RunnerContractError("direct checkpoint plan ordinals are not contiguous")
@@ -672,6 +738,20 @@ def _validate_plan(plan: DirectCompetitionPlan) -> dict[str, object]:
     }:
         raise RunnerContractError("direct checkpoint plan snapshot is invalid")
     return snapshot
+
+
+def _snapshot_identity(
+    snapshot: Mapping[str, object],
+    position: int,
+) -> Mapping[str, object]:
+    entries = snapshot.get("entries")
+    if not isinstance(entries, list) or position >= len(entries):
+        raise RunnerContractError("direct checkpoint plan snapshot is invalid")
+    entry = entries[position]
+    identity = entry.get("identity") if isinstance(entry, Mapping) else None
+    if not isinstance(identity, Mapping):
+        raise RunnerContractError("direct checkpoint plan snapshot is invalid")
+    return identity
 
 
 class DirectCheckpointStore:
@@ -747,7 +827,7 @@ class DirectCheckpointStore:
             "identity_mode": "direct-v1",
             "authority_revision": plan.authority_revision,
             "plan_snapshot": plan.to_dict(),
-            "input_descriptors": [_json_value(value) for value in descriptors],
+            "input_descriptors": [direct_json_value(value) for value in descriptors],
             "planned_run_count": len(plan.entries),
             "status": status,
             "evaluation_scope": "reconstruction_only",
@@ -770,11 +850,17 @@ class DirectCheckpointStore:
         registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
     ) -> DirectCheckpointReport:
-        _validate_plan(plan)
+        snapshot = _validate_plan(plan)
         descriptors = _prepared_descriptors(plan, prepared_datasets)
         record_values = tuple(
-            _validate_record(value, entry)
-            for value, entry in zip(records, plan.entries, strict=False)
+            _validate_record(
+                value,
+                entry,
+                expected_identity=_snapshot_identity(snapshot, position),
+            )
+            for position, (value, entry) in enumerate(
+                zip(records, plan.entries, strict=False)
+            )
         )
         if len(records) > len(plan.entries):
             raise RunnerContractError("direct checkpoint records are not a plan prefix")
@@ -821,7 +907,11 @@ class DirectCheckpointStore:
             )
         position = len(records)
         entry = plan.entries[position]
-        record = _validate_record(attempt.to_dict(), entry)
+        record = _validate_record(
+            attempt.to_dict(),
+            entry,
+            expected_identity=_snapshot_identity(_validate_plan(plan), position),
+        )
         self._publish_transaction_intent(plan, position, entry, attempt)
         descriptors = _prepared_descriptors(plan, prepared_datasets)
         self._publish(
@@ -850,8 +940,12 @@ class DirectCheckpointStore:
             or not _direct_equal(entry, plan.entries[position])
         ):
             raise RunnerContractError("direct transaction position is invalid")
-        record = _validate_record(attempt.to_dict(), entry)
-        identity = _expected_identity(entry)
+        identity = _snapshot_identity(snapshot, position)
+        record = _validate_record(
+            attempt.to_dict(),
+            entry,
+            expected_identity=identity,
+        )
         body = {
             "schema_version": 1,
             "identity_mode": "direct-v1",
@@ -888,7 +982,8 @@ class DirectCheckpointStore:
             raise RunnerContractError("direct transaction intent has wrong schema")
         snapshot = _validate_plan(plan)
         if (
-            intent.get("schema_version") != 1
+            type(intent.get("schema_version")) is not int
+            or intent.get("schema_version") != 1
             or intent.get("identity_mode") != "direct-v1"
             or intent.get("authority_revision") != plan.authority_revision
             or not _direct_equal(intent.get("plan_snapshot"), snapshot)
@@ -903,9 +998,14 @@ class DirectCheckpointStore:
         ):
             raise RunnerContractError("direct transaction position is invalid")
         entry = plan.entries[position]
-        if not _direct_equal(intent.get("entry_identity"), _expected_identity(entry)):
+        identity = _snapshot_identity(snapshot, position)
+        if not _direct_equal(intent.get("entry_identity"), identity):
             raise RunnerContractError("direct transaction entry identity differs")
-        record = _validate_record(intent.get("record"), entry)
+        record = _validate_record(
+            intent.get("record"),
+            entry,
+            expected_identity=identity,
+        )
         descriptors = _prepared_descriptors(plan, prepared_datasets)
         if os.path.lexists(self.path):
             report = self._load_current(
@@ -916,17 +1016,19 @@ class DirectCheckpointStore:
             records = list(report.records)
         else:
             records = []
-        if position > len(records):
-            raise RunnerContractError("direct transaction is not the next position")
-        if position < len(records):
+        if position == len(records):
+            self._publish(
+                self.path,
+                self._body(plan, descriptors, (*records, record), registry),
+            )
+        elif records and position == len(records) - 1:
             if not _direct_equal(records[position], record):
                 raise RunnerContractError(
                     "durable direct transaction differs from its record"
                 )
         else:
-            self._publish(
-                self.path,
-                self._body(plan, descriptors, (*records, record), registry),
+            raise RunnerContractError(
+                "direct transaction position is stale or is not the next position"
             )
         self.intent_path.unlink()
 
@@ -946,11 +1048,14 @@ class DirectCheckpointStore:
         snapshot = _validate_plan(plan)
         descriptors = _prepared_descriptors(plan, prepared_datasets)
         if (
-            payload.get("schema_version") != 1
+            type(payload.get("schema_version")) is not int
+            or payload.get("schema_version") != 1
             or payload.get("identity_mode") != "direct-v1"
             or payload.get("authority_revision") != plan.authority_revision
         ):
-            raise RunnerContractError("direct checkpoint identity mode is invalid")
+            raise RunnerContractError(
+                "direct checkpoint schema or identity mode is invalid"
+            )
         if not _direct_equal(payload.get("plan_snapshot"), snapshot):
             raise RunnerContractError("direct checkpoint plan snapshot differs")
         stored_descriptors = payload.get("input_descriptors")
@@ -961,14 +1066,22 @@ class DirectCheckpointStore:
         )
         if not _direct_equal(decoded_descriptors, descriptors):
             raise RunnerContractError("direct checkpoint input descriptors differ")
-        if payload.get("planned_run_count") != len(plan.entries):
+        if type(payload.get("planned_run_count")) is not int or payload.get(
+            "planned_run_count"
+        ) != len(plan.entries):
             raise RunnerContractError("direct checkpoint planned denominator changed")
         values = payload.get("records")
         if not isinstance(values, list) or len(values) > len(plan.entries):
             raise RunnerContractError("direct checkpoint records are not a plan prefix")
         records = tuple(
-            _validate_record(value, entry)
-            for value, entry in zip(values, plan.entries, strict=False)
+            _validate_record(
+                value,
+                entry,
+                expected_identity=_snapshot_identity(snapshot, position),
+            )
+            for position, (value, entry) in enumerate(
+                zip(values, plan.entries, strict=False)
+            )
         )
         expected_status = (
             "completed" if len(records) == len(plan.entries) else "running"
