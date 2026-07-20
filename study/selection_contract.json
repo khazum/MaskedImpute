@@ -52,7 +52,11 @@
     ]
   },
   "dataset_qc_policy_sha256": "81dc2ecd1749d9390e499ae21fabb8d3b08f40eec58334c860cd9a23dd4fc2d7",
-  "comparator_tuning_path": "study/comparator_tuning.json",
+  "comparator_tuning": {
+    "path": "study/comparator_tuning.json",
+    "schema_version": 2,
+    "authority_revision": "fair-comparator-direct-v1"
+  },
   "scheduled_same_input_ids": [
     "observed",
     "capacity-matched-ae",
@@ -84,8 +88,6 @@
     "biaeimpute",
     "sccr"
   ],
-  "comparator_tuning_file_sha256": "36f61c8cc6a3f68e96fa708c5e9d6edff8c49d3a58fe612278c00be3887c33a4",
-  "comparator_tuning_payload_sha256": "3508cf3df8d5899b435be8526cd0747541d944f096899191584b29799eae6fee",
   "orthogonal_endpoints": [
     {
       "id": "rna_protein_concordance",

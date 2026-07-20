@@ -1,5 +1,5 @@
 import copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import inspect
 import json
 from pathlib import Path
@@ -104,6 +104,71 @@ def test_tracked_comparator_authority_uses_only_direct_identity() -> None:
     )
     parameters = inspect.signature(decode_comparator_configuration).parameters
     assert tuple(parameters) == ("method_id", "payload")
+
+
+def test_bound_comparator_contains_full_method_projection() -> None:
+    from maskimpute_benchmark.comparator_tuning import (
+        bind_comparator_configuration_identity,
+        comparator_method_binding,
+    )
+
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(
+        ROOT, registry=registry, require_clean=False
+    )
+    row = authority.configurations_for("magic")[0]
+    bound = bind_comparator_configuration_identity(
+        row, registry.by_id("magic"), authority
+    )
+    assert bound.configuration == row
+    assert bound.authority_reference.authority_revision == authority.authority_revision
+    assert bound.method == comparator_method_binding(registry.by_id("magic"))
+
+
+def test_comparator_binding_rejects_detached_or_noncanonical_authority_rows() -> None:
+    from maskimpute_benchmark.comparator_tuning import (
+        bind_comparator_configuration_identity,
+    )
+
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(
+        ROOT, registry=registry, require_clean=False
+    )
+    row = authority.configurations_for("magic")[0]
+
+    with pytest.raises(ComparatorTuningError, match="registry method"):
+        bind_comparator_configuration_identity(row, registry.by_id("dca"), authority)
+
+    with pytest.raises(ComparatorTuningError, match="one exact authority"):
+        bind_comparator_configuration_identity(
+            replace(row, configuration_id="magic-detached"),
+            registry.by_id("magic"),
+            authority,
+        )
+
+    noncanonical = replace(row, payload_json=json.dumps(dict(row.payload), indent=2))
+    noncanonical_authority = replace(
+        authority,
+        configurations=(
+            noncanonical,
+            *tuple(item for item in authority.configurations if item != row),
+        ),
+    )
+    with pytest.raises(ComparatorTuningError, match="not canonical JSON"):
+        bind_comparator_configuration_identity(
+            noncanonical,
+            registry.by_id("magic"),
+            noncanonical_authority,
+        )
+
+    duplicate_authority = replace(
+        authority,
+        configurations=(*authority.configurations, row),
+    )
+    with pytest.raises(ComparatorTuningError, match="one exact authority"):
+        bind_comparator_configuration_identity(
+            row, registry.by_id("magic"), duplicate_authority
+        )
 
 
 def test_all_normative_configurations_round_trip_exactly() -> None:

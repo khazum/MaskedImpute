@@ -21,6 +21,8 @@ import tempfile
 from types import MappingProxyType
 from typing import Any
 
+from .comparator_tuning import ComparatorAuthorityReference
+
 
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
 _ENDPOINT_ID = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
@@ -79,7 +81,6 @@ _AUTHORITY_PATHS = (
     "study/methods.json",
     "study/ablations.json",
     "study/calibration_contract.json",
-    "study/comparator_tuning.json",
     "study/selection_contract.json",
     "study/development_search.json",
 )
@@ -260,8 +261,7 @@ class SelectionAuthority:
     required_control_ids: tuple[str, ...]
     established_comparator_ids: tuple[str, ...]
     modern_core_ids: tuple[str, ...]
-    comparator_tuning_file_sha256: str
-    comparator_tuning_payload_sha256: str
+    comparator_tuning: ComparatorAuthorityReference
     attempts: tuple[CandidateAttempt, ...]
     declarations: tuple[MethodDeclaration, ...]
     endpoint_policies: tuple[EndpointPolicy, ...]
@@ -2032,13 +2032,11 @@ def _load_selection_authority(
             "calibration_contract_sha256",
             "dataset_qc_policy",
             "dataset_qc_policy_sha256",
-            "comparator_tuning_path",
+            "comparator_tuning",
             "scheduled_same_input_ids",
             "required_control_ids",
             "established_comparator_ids",
             "modern_core_ids",
-            "comparator_tuning_file_sha256",
-            "comparator_tuning_payload_sha256",
             "orthogonal_endpoints",
             "revision_policy",
             "equivalence_policy",
@@ -2220,8 +2218,34 @@ def _load_selection_authority(
     }
     if payloads["study/calibration_contract.json"] != expected_calibration_contract:
         raise SelectionAuthorityError("calibration retention contract is invalid")
-    if contract["comparator_tuning_path"] != "study/comparator_tuning.json":
-        raise SelectionAuthorityError("comparator tuning path is not canonical")
+    comparator_reference_payload = _exact_authority_mapping(
+        contract["comparator_tuning"],
+        {"path", "schema_version", "authority_revision"},
+        "comparator tuning reference",
+    )
+    if (
+        type(comparator_reference_payload["path"]) is not str
+        or comparator_reference_payload["path"] != "study/comparator_tuning.json"
+        or type(comparator_reference_payload["schema_version"]) is not int
+        or comparator_reference_payload["schema_version"] != 2
+        or type(comparator_reference_payload["authority_revision"]) is not str
+        or comparator_reference_payload["authority_revision"]
+        != "fair-comparator-direct-v1"
+    ):
+        raise SelectionAuthorityError("comparator tuning reference is invalid")
+    comparator_reference = ComparatorAuthorityReference(
+        path=comparator_reference_payload["path"],
+        schema_version=comparator_reference_payload["schema_version"],
+        authority_revision=comparator_reference_payload["authority_revision"],
+    )
+    if (
+        comparator_reference.schema_version != comparator_tuning.schema_version
+        or comparator_reference.authority_revision
+        != comparator_tuning.authority_revision
+    ):
+        raise SelectionAuthorityError(
+            "comparator tuning reference differs from the parsed authority"
+        )
     scheduled_same_input_ids = (
         tuple(contract["scheduled_same_input_ids"])
         if type(contract["scheduled_same_input_ids"]) is list
@@ -2258,22 +2282,6 @@ def _load_selection_authority(
         raise SelectionAuthorityError(
             "modern-core denominator differs from comparator tuning authority"
         )
-    comparator_tuning_file_sha256 = _authority_sha(
-        contract["comparator_tuning_file_sha256"],
-        "comparator tuning file checksum",
-    )
-    if (
-        comparator_tuning_file_sha256 != comparator_tuning.file_sha256
-        or comparator_tuning_file_sha256 != file_hashes["study/comparator_tuning.json"]
-    ):
-        raise SelectionAuthorityError("comparator tuning file checksum mismatch")
-    comparator_tuning_payload_sha256 = _authority_sha(
-        contract["comparator_tuning_payload_sha256"],
-        "comparator tuning payload checksum",
-    )
-    if comparator_tuning_payload_sha256 != comparator_tuning.payload_sha256:
-        raise SelectionAuthorityError("comparator tuning payload checksum mismatch")
-
     endpoint_rows = contract["orthogonal_endpoints"]
     if type(endpoint_rows) is not list or not endpoint_rows:
         raise SelectionAuthorityError("orthogonal endpoint contract is empty")
@@ -2467,26 +2475,46 @@ def _load_selection_authority(
             "development_panel_sha256",
             "methods_sha256",
             "selection_contract_sha256",
-            "comparator_tuning_file_sha256",
-            "comparator_tuning_payload_sha256",
+            "comparator_tuning",
             "ablations_sha256",
             "calibration_contract_sha256",
         },
         "development search authority",
     )
-    expected_ledger_hashes = {
+    ledger_comparator_payload = _exact_authority_mapping(
+        ledger_authority["comparator_tuning"],
+        {"path", "schema_version", "authority_revision"},
+        "development search comparator tuning reference",
+    )
+    if (
+        type(ledger_comparator_payload["path"]) is not str
+        or type(ledger_comparator_payload["schema_version"]) is not int
+        or type(ledger_comparator_payload["authority_revision"]) is not str
+    ):
+        raise SelectionAuthorityError(
+            "development search comparator tuning reference is invalid"
+        )
+    ledger_comparator_reference = ComparatorAuthorityReference(
+        path=ledger_comparator_payload["path"],
+        schema_version=ledger_comparator_payload["schema_version"],
+        authority_revision=ledger_comparator_payload["authority_revision"],
+    )
+    if ledger_comparator_reference != comparator_reference:
+        raise SelectionAuthorityError(
+            "development search comparator tuning reference differs"
+        )
+    expected_ledger_authority = {
         "protocol_sha256": file_hashes["study/protocol.json"],
         "development_panel_sha256": file_hashes["study/development_panel.json"],
         "methods_sha256": file_hashes["study/methods.json"],
         "selection_contract_sha256": file_hashes["study/selection_contract.json"],
-        "comparator_tuning_file_sha256": comparator_tuning_file_sha256,
-        "comparator_tuning_payload_sha256": comparator_tuning_payload_sha256,
+        "comparator_tuning": comparator_reference_payload,
         "ablations_sha256": file_hashes["study/ablations.json"],
         "calibration_contract_sha256": file_hashes["study/calibration_contract.json"],
     }
-    if ledger_authority != expected_ledger_hashes:
+    if ledger_authority != expected_ledger_authority:
         raise SelectionAuthorityError(
-            "development search ledger authority hashes do not match tracked files"
+            "development search ledger authority does not match tracked files"
         )
 
     calibration = _exact_authority_mapping(
@@ -2772,8 +2800,7 @@ def _load_selection_authority(
         required_control_ids=required_control_ids,
         established_comparator_ids=established_comparator_ids,
         modern_core_ids=modern_core_ids,
-        comparator_tuning_file_sha256=comparator_tuning_file_sha256,
-        comparator_tuning_payload_sha256=comparator_tuning_payload_sha256,
+        comparator_tuning=comparator_reference,
         attempts=attempt_values,
         declarations=declaration_values,
         endpoint_policies=tuple(endpoint_policies),

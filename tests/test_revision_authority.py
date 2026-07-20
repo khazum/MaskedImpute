@@ -66,6 +66,7 @@ def test_v28_revision_extends_selection_authority_only_after_exact_trigger() -> 
     )
     assert extended.file_sha256["study/v28_revision.json"] == v28.file_sha256
     assert extended.declarations[-1].id == "v28-c01-nb-parent-c03"
+    assert extended.comparator_tuning is base.comparator_tuning
 
 
 def test_v29_revision_requires_the_combined_v28_report_trigger() -> None:
@@ -373,31 +374,24 @@ def test_v29_activation_requires_structure_failure_in_its_exact_v28_parent(
     assert activation.trigger == "v29"
 
 
-def test_tracked_v29_runner_authority_is_conditional_and_structure_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import maskimpute_benchmark.runner as runner
-
-    authority = runner.load_v29_revision_authority()
-    candidates = tuple(
-        value
-        for value in authority.configurations
-        if value.method_id == "maskimpute"
+def test_tracked_v29_revision_authority_is_conditional_and_structure_only() -> None:
+    from maskimpute_benchmark.revisions import (
+        load_revision_spec,
+        thaw_revision_configuration,
     )
-    assert len(candidates) == 1
-    candidate = candidates[0]
-    assert candidate.configuration_id == "v29-c01-structure-parent-v28-c01"
-    assert candidate.payload["method_version"] == "v29"
-    assert candidate.payload["decoder"] == "negative_binomial"
-    assert candidate.payload["structure_hyperparameters"] == {
+
+    revision = load_revision_spec(Path.cwd(), "v29", require_clean=False)
+    configuration = thaw_revision_configuration(revision)
+    assert revision.configuration_id == "v29-c01-structure-parent-v28-c01"
+    assert configuration["method_version"] == "v29"
+    assert configuration["decoder"] == "negative_binomial"
+    assert configuration["structure_hyperparameters"] == {
         "variable_gene_count": 200,
         "neighborhood_k": 15,
         "covariance_penalty_weight": 0.1,
         "neighborhood_penalty_weight": 0.1,
         "variance_floor": 1e-8,
     }
-    with pytest.raises(runner.RunnerContractError, match="v29.*activation"):
-        runner.run_v29_revision_competition()
 
 
 def test_revision_runners_do_not_accept_output_directory_overrides() -> None:

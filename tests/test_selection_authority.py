@@ -15,6 +15,57 @@ import zlib
 import pytest
 
 
+ROOT = Path(__file__).resolve().parents[1]
+AUTHORITY_FILES = (
+    "study/protocol.json",
+    "study/development_panel.json",
+    "study/methods.json",
+    "study/ablations.json",
+    "study/calibration_contract.json",
+    "study/comparator_tuning.json",
+    "study/selection_contract.json",
+    "study/development_search.json",
+)
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _authority_repository(tmp_path: Path) -> Path:
+    repository = tmp_path / "repository"
+    for relative in AUTHORITY_FILES:
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    return repository
+
+
+def _refresh_legacy_authority_references(repository: Path) -> None:
+    ledger_path = repository / "study/development_search.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    authority = ledger["authority"]
+    authority["protocol_sha256"] = hashlib.sha256(
+        (repository / "study/protocol.json").read_bytes()
+    ).hexdigest()
+    authority["development_panel_sha256"] = hashlib.sha256(
+        (repository / "study/development_panel.json").read_bytes()
+    ).hexdigest()
+    authority["methods_sha256"] = hashlib.sha256(
+        (repository / "study/methods.json").read_bytes()
+    ).hexdigest()
+    authority["selection_contract_sha256"] = hashlib.sha256(
+        (repository / "study/selection_contract.json").read_bytes()
+    ).hexdigest()
+    authority["ablations_sha256"] = hashlib.sha256(
+        (repository / "study/ablations.json").read_bytes()
+    ).hexdigest()
+    authority["calibration_contract_sha256"] = hashlib.sha256(
+        (repository / "study/calibration_contract.json").read_bytes()
+    ).hexdigest()
+    _write_json(ledger_path, ledger)
+
+
 METRICS = (
     "mse",
     "mse_dropout",
@@ -24,6 +75,156 @@ METRICS = (
     "mse_non_dropout_nonzero",
     "null_de_fpr",
 )
+
+
+def test_selection_contract_binds_comparator_authority_by_direct_reference() -> None:
+    contract = json.loads((ROOT / "study/selection_contract.json").read_text())
+    reference = contract["comparator_tuning"]
+    assert reference == {
+        "path": "study/comparator_tuning.json",
+        "schema_version": 2,
+        "authority_revision": "fair-comparator-direct-v1",
+    }
+
+
+def test_development_search_binds_comparator_authority_by_direct_reference() -> None:
+    ledger = json.loads((ROOT / "study/development_search.json").read_text())
+    reference = ledger["authority"]["comparator_tuning"]
+    assert reference == {
+        "path": "study/comparator_tuning.json",
+        "schema_version": 2,
+        "authority_revision": "fair-comparator-direct-v1",
+    }
+
+
+def test_selection_authority_carries_direct_comparator_reference() -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.selection import _load_selection_authority
+
+    authority = _load_selection_authority(ROOT, require_clean=False)
+    assert authority.comparator_tuning == ComparatorAuthorityReference(
+        path="study/comparator_tuning.json",
+        schema_version=2,
+        authority_revision="fair-comparator-direct-v1",
+    )
+    assert "study/comparator_tuning.json" not in authority.file_sha256
+    assert not hasattr(authority, "comparator_tuning_file_sha256")
+    assert not hasattr(authority, "comparator_tuning_payload_sha256")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "method-projection",
+        "authority-revision",
+        "authority-path",
+        "schema-version",
+        "full-payload",
+        "row-order",
+    ),
+)
+def test_selection_authority_rejects_coherently_reencoded_direct_linkage_drift(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    from maskimpute_benchmark.selection import (
+        SelectionAuthorityError,
+        _load_selection_authority,
+    )
+
+    repository = _authority_repository(tmp_path)
+    contract_path = repository / "study/selection_contract.json"
+    ledger_path = repository / "study/development_search.json"
+    tuning_path = repository / "study/comparator_tuning.json"
+    methods_path = repository / "study/methods.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    tuning = json.loads(tuning_path.read_text(encoding="utf-8"))
+
+    if mutation == "method-projection":
+        methods = json.loads(methods_path.read_text(encoding="utf-8"))
+        magic = next(row for row in methods["methods"] if row["id"] == "magic")
+        magic["execution_scope"] = "external_reference_only"
+        magic["track"] = "external_reference"
+        _write_json(methods_path, methods)
+    elif mutation == "authority-revision":
+        tuning["authority_revision"] = "fair-comparator-direct-v2"
+        contract["comparator_tuning"]["authority_revision"] = (
+            "fair-comparator-direct-v2"
+        )
+        ledger["authority"]["comparator_tuning"]["authority_revision"] = (
+            "fair-comparator-direct-v2"
+        )
+    elif mutation == "authority-path":
+        contract["comparator_tuning"]["path"] = "study/other-comparator.json"
+        ledger["authority"]["comparator_tuning"]["path"] = "study/other-comparator.json"
+    elif mutation == "schema-version":
+        tuning["schema_version"] = 3
+        contract["comparator_tuning"]["schema_version"] = 3
+        ledger["authority"]["comparator_tuning"]["schema_version"] = 3
+    elif mutation == "full-payload":
+        tuning["configurations"][1]["payload"]["diffusion_time"] = 2
+    elif mutation == "row-order":
+        rows = tuning["configurations"]
+        rows[1], rows[2] = rows[2], rows[1]
+    else:  # pragma: no cover - parametrization is closed above
+        raise AssertionError(mutation)
+
+    _write_json(tuning_path, tuning)
+    _write_json(contract_path, contract)
+    _write_json(ledger_path, ledger)
+    _refresh_legacy_authority_references(repository)
+
+    with pytest.raises(SelectionAuthorityError):
+        _load_selection_authority(repository, require_clean=False)
+
+
+def test_direct_reference_migration_preserves_unrelated_legacy_authority_values() -> (
+    None
+):
+    base = "3258fad89226954295fd7b9cfd097401e33637f5"
+
+    def at_base(relative: str) -> dict[str, object]:
+        raw = subprocess.run(
+            ["git", "show", f"{base}:{relative}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        return json.loads(raw)
+
+    old_contract = at_base("study/selection_contract.json")
+    new_contract = json.loads(
+        (ROOT / "study/selection_contract.json").read_text(encoding="utf-8")
+    )
+    old_contract.pop("comparator_tuning_path")
+    old_contract.pop("comparator_tuning_file_sha256")
+    old_contract.pop("comparator_tuning_payload_sha256")
+    new_contract.pop("comparator_tuning")
+    assert json.dumps(new_contract, separators=(",", ":")) == json.dumps(
+        old_contract, separators=(",", ":")
+    )
+
+    old_ledger = at_base("study/development_search.json")
+    new_ledger = json.loads(
+        (ROOT / "study/development_search.json").read_text(encoding="utf-8")
+    )
+    old_ledger["authority"].pop("comparator_tuning_file_sha256")
+    old_ledger["authority"].pop("comparator_tuning_payload_sha256")
+    new_ledger["authority"].pop("comparator_tuning")
+    new_ledger["authority"]["selection_contract_sha256"] = old_ledger["authority"][
+        "selection_contract_sha256"
+    ]
+    assert json.dumps(new_ledger, separators=(",", ":")) == json.dumps(
+        old_ledger, separators=(",", ":")
+    )
+    tracked_selection_bytes = (ROOT / "study/selection_contract.json").read_bytes()
+    assert (
+        json.loads((ROOT / "study/development_search.json").read_text())["authority"][
+            "selection_contract_sha256"
+        ]
+        == hashlib.sha256(tracked_selection_bytes).hexdigest()
+    )
 
 
 def _dataset_rows():
@@ -82,11 +283,6 @@ def _ready_repository(tmp_path: Path):
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     contract_path = repository / "study/selection_contract.json"
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    tuning_path = repository / "study/comparator_tuning.json"
-    tuning = json.loads(tuning_path.read_text(encoding="utf-8"))
-    tuning_file_sha256 = hashlib.sha256(tuning_path.read_bytes()).hexdigest()
-    contract["comparator_tuning_file_sha256"] = tuning_file_sha256
-    contract["comparator_tuning_payload_sha256"] = tuning["payload_sha256"]
     contract_path.write_text(
         json.dumps(contract, indent=2) + "\n",
         encoding="utf-8",
@@ -94,8 +290,6 @@ def _ready_repository(tmp_path: Path):
     ledger["authority"]["selection_contract_sha256"] = hashlib.sha256(
         contract_path.read_bytes()
     ).hexdigest()
-    ledger["authority"]["comparator_tuning_file_sha256"] = tuning_file_sha256
-    ledger["authority"]["comparator_tuning_payload_sha256"] = tuning["payload_sha256"]
     entries = []
     for row in _dataset_rows():
         label = ":".join(
@@ -780,8 +974,9 @@ def test_selection_authority_uses_exact_comparator_readiness_sets() -> None:
     )
     assert authority.modern_core_ids == ("scziva", "afmf", "biaeimpute", "sccr")
     assert "biaeimpute" in authority.scheduled_same_input_ids
-    assert len(authority.comparator_tuning_file_sha256) == 64
-    assert len(authority.comparator_tuning_payload_sha256) == 64
+    assert authority.comparator_tuning.path == "study/comparator_tuning.json"
+    assert authority.comparator_tuning.schema_version == 2
+    assert authority.comparator_tuning.authority_revision == "fair-comparator-direct-v1"
     assert all(
         not declaration.required_for_claim
         for declaration in authority.declarations

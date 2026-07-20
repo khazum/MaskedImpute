@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import subprocess
@@ -198,6 +199,34 @@ def test_registry_derives_exact_selection_same_input_denominator() -> None:
         "sccr",
         "scsdae",
     )
+
+
+def test_comparator_method_binding_projects_every_execution_identity_field() -> None:
+    from maskimpute_benchmark.comparator_tuning import comparator_method_binding
+
+    registry = load_method_registry(METHODS_PATH)
+    spec = registry.by_id("magic")
+    binding = comparator_method_binding(spec)
+
+    assert asdict(binding) == {
+        "method_id": "magic",
+        "execution_scope": "same_input_required",
+        "integration_status": "implemented",
+        "adapter_key": "magic",
+        "environment_id": "magic-python",
+        "environment_status": "ready",
+        "source_kind": "git",
+        "source_url": "https://github.com/KrishnaswamyLab/MAGIC.git",
+        "source_revision": "3a4ffdbe435716bb3b2fbe78f434c6cdc8dd8d78",
+        "source_tree": "438dd149656a51b7f9f80251b5cf5300954a1c28",
+        "source_freeze_binding": None,
+        "gpu_mode": "forbidden",
+        "timeout_seconds": 21_600,
+        "max_rss_gib": 48,
+        "max_gpu_gib": 0,
+    }
+    drifted = replace(binding, timeout_seconds=binding.timeout_seconds + 1)
+    assert drifted != comparator_method_binding(spec)
 
 
 def test_sczn_source_attempt_receipt_binds_packaging_license_labels_and_output() -> (
