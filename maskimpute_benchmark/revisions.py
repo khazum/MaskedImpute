@@ -500,6 +500,7 @@ def derive_extended_selection_authority(
         established_comparator_ids=base.established_comparator_ids,
         modern_core_ids=base.modern_core_ids,
         comparator_tuning=base.comparator_tuning,
+        comparator_method_bindings=base.comparator_method_bindings,
         attempts=attempt_values,
         declarations=declaration_values,
         endpoint_policies=base.endpoint_policies,

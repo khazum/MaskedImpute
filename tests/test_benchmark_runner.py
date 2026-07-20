@@ -147,8 +147,8 @@ def _authority(*, maskimpute_ready: bool = False) -> RunnerAuthority:
             "artifacts/study/development/calibration/retained_calibration.json"
         ),
         configurations=tracked.configurations,
-        comparator_tuning_file_sha256=tracked.comparator_tuning_file_sha256,
-        comparator_tuning_payload_sha256=tracked.comparator_tuning_payload_sha256,
+        comparator_tuning_reference=tracked.comparator_tuning_reference,
+        comparator_method_bindings=tracked.comparator_method_bindings,
         comparator_tuning=tracked.comparator_tuning,
     )
 
@@ -565,12 +565,8 @@ def test_plan_is_full_denominator_with_fixed_seed_policy_and_bound_hashes() -> N
     assert plan.input_hashes["method_registry_sha256"] == "2" * 64
     assert plan.input_hashes["execution_environment_sha256"] == "7" * 64
     assert plan.input_hashes["runtime_lock_sha256"] == "6" * 64
-    assert plan.input_hashes["comparator_tuning_file_sha256"] == (
-        _authority().comparator_tuning_file_sha256
-    )
-    assert plan.input_hashes["comparator_tuning_payload_sha256"] == (
-        _authority().comparator_tuning_payload_sha256
-    )
+    assert "comparator_tuning_file_sha256" not in plan.input_hashes
+    assert "comparator_tuning_payload_sha256" not in plan.input_hashes
     assert plan.input_hashes["implementation_source_sha256"] == (
         implementation_source_sha256()
     )
@@ -883,15 +879,15 @@ def test_clean_publication_authority_loads_pending_revalidation_bindings() -> No
     assert authority.retained_calibration_sha256 is None
     assert authority.plan_scope == "base_full_panel"
     assert len(authority.comparator_tuning.configurations) == 34
-    assert authority.comparator_tuning_file_sha256 == (
-        selection_authority.comparator_tuning_file_sha256
+    assert authority.comparator_tuning_reference == (
+        selection_authority.comparator_tuning
     )
-    assert authority.comparator_tuning_payload_sha256 == (
-        selection_authority.comparator_tuning_payload_sha256
+    assert authority.comparator_method_bindings == (
+        selection_authority.comparator_method_bindings
     )
-    assert selection_authority.file_sha256["study/comparator_tuning.json"] == (
-        selection_authority.comparator_tuning_file_sha256
-    )
+    assert not hasattr(authority, "comparator_tuning_file_sha256")
+    assert not hasattr(authority, "comparator_tuning_payload_sha256")
+    assert "study/comparator_tuning.json" not in selection_authority.file_sha256
 
 
 def test_ready_maskimpute_authority_removes_only_its_preflight_block() -> None:

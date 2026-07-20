@@ -21,7 +21,11 @@ import tempfile
 from types import MappingProxyType
 from typing import Any
 
-from .comparator_tuning import ComparatorAuthorityReference
+from .comparator_tuning import (
+    ComparatorAuthorityReference,
+    ComparatorMethodBinding,
+    comparator_method_binding,
+)
 
 
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
@@ -262,6 +266,7 @@ class SelectionAuthority:
     established_comparator_ids: tuple[str, ...]
     modern_core_ids: tuple[str, ...]
     comparator_tuning: ComparatorAuthorityReference
+    comparator_method_bindings: Mapping[str, ComparatorMethodBinding]
     attempts: tuple[CandidateAttempt, ...]
     declarations: tuple[MethodDeclaration, ...]
     endpoint_policies: tuple[EndpointPolicy, ...]
@@ -2033,6 +2038,7 @@ def _load_selection_authority(
             "dataset_qc_policy",
             "dataset_qc_policy_sha256",
             "comparator_tuning",
+            "comparator_method_bindings",
             "scheduled_same_input_ids",
             "required_control_ids",
             "established_comparator_ids",
@@ -2246,6 +2252,55 @@ def _load_selection_authority(
         raise SelectionAuthorityError(
             "comparator tuning reference differs from the parsed authority"
         )
+    method_binding_fields = {
+        "method_id",
+        "execution_scope",
+        "integration_status",
+        "adapter_key",
+        "environment_id",
+        "environment_status",
+        "source_kind",
+        "source_url",
+        "source_revision",
+        "source_tree",
+        "source_freeze_binding",
+        "gpu_mode",
+        "timeout_seconds",
+        "max_rss_gib",
+        "max_gpu_gib",
+    }
+    raw_method_bindings = contract["comparator_method_bindings"]
+    if (
+        type(raw_method_bindings) is not list
+        or len(raw_method_bindings) != len(comparator_tuning.method_order)
+    ):
+        raise SelectionAuthorityError(
+            "comparator method binding snapshots are incomplete"
+        )
+    comparator_method_bindings: dict[str, ComparatorMethodBinding] = {}
+    for index, (raw_binding, method_id) in enumerate(
+        zip(raw_method_bindings, comparator_tuning.method_order, strict=True)
+    ):
+        binding_payload = _exact_authority_mapping(
+            raw_binding,
+            method_binding_fields,
+            f"comparator method binding {index}",
+        )
+        expected_binding = comparator_method_binding(
+            method_registry.by_id(method_id)
+        )
+        for field_name in method_binding_fields:
+            observed = binding_payload[field_name]
+            expected = getattr(expected_binding, field_name)
+            if type(observed) is not type(expected) or observed != expected:
+                raise SelectionAuthorityError(
+                    f"comparator method binding {method_id} differs"
+                )
+        if expected_binding.method_id in comparator_method_bindings:
+            raise SelectionAuthorityError("comparator method bindings are duplicated")
+        comparator_method_bindings[expected_binding.method_id] = expected_binding
+    if tuple(comparator_method_bindings) != comparator_tuning.method_order:
+        raise SelectionAuthorityError("comparator method bindings are reordered")
     scheduled_same_input_ids = (
         tuple(contract["scheduled_same_input_ids"])
         if type(contract["scheduled_same_input_ids"]) is list
@@ -2801,6 +2856,7 @@ def _load_selection_authority(
         established_comparator_ids=established_comparator_ids,
         modern_core_ids=modern_core_ids,
         comparator_tuning=comparator_reference,
+        comparator_method_bindings=MappingProxyType(comparator_method_bindings),
         attempts=attempt_values,
         declarations=declaration_values,
         endpoint_policies=tuple(endpoint_policies),

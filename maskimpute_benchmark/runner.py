@@ -35,8 +35,11 @@ if TYPE_CHECKING:
 
 from .comparator_tuning import (
     ComparatorAdapterConfig,
+    ComparatorAuthorityReference,
+    ComparatorMethodBinding,
     ComparatorTuningAuthority,
     bind_comparator_configuration_identity,
+    comparator_method_binding,
     encode_comparator_configuration,
     load_comparator_tuning_authority,
 )
@@ -1042,13 +1045,25 @@ def load_runner_authority() -> RunnerAuthority:
         raise RunnerContractError(
             f"publication execution authority is unavailable: {error}"
         ) from error
+    comparator_reference = selection.comparator_tuning
     if (
-        comparator_tuning.file_sha256 != selection.comparator_tuning_file_sha256
-        or comparator_tuning.payload_sha256
-        != selection.comparator_tuning_payload_sha256
+        comparator_reference.path != "study/comparator_tuning.json"
+        or comparator_reference.schema_version != comparator_tuning.schema_version
+        or comparator_reference.authority_revision
+        != comparator_tuning.authority_revision
     ):
         raise RunnerContractError(
-            "comparator tuning hashes differ from selection authority"
+            "comparator tuning reference differs from selection authority"
+        )
+    comparator_method_bindings = MappingProxyType(
+        {
+            method_id: comparator_method_binding(registry.by_id(method_id))
+            for method_id in comparator_tuning.method_order
+        }
+    )
+    if comparator_method_bindings != selection.comparator_method_bindings:
+        raise RunnerContractError(
+            "comparator method bindings differ from selection authority"
         )
     ledger = _load_strict_json(
         repository / "study/development_search.json", "development search ledger"
@@ -1070,7 +1085,6 @@ def load_runner_authority() -> RunnerAuthority:
         "study/selection_contract.json",
         "study/development_search.json",
         "study/calibration_contract.json",
-        "study/comparator_tuning.json",
     }
     if set(file_hashes) != required_files:
         raise RunnerContractError("selection authority file hash set is incomplete")
@@ -1094,18 +1108,19 @@ def load_runner_authority() -> RunnerAuthority:
         raise RunnerContractError("selection QC policy cannot be adapted") from error
     search = [value for value in configurations if value.kind == "candidate_search"]
     authority_body = {
-        "schema": "maskimpute-development-runner-authority-v1",
+        "schema": "maskimpute-development-runner-authority-direct-v1",
         "plan_scope": "base_full_panel",
         "file_sha256": file_hashes,
         "configurations": [value.to_dict() for value in configurations],
-        "comparator_tuning_file_sha256": comparator_tuning.file_sha256,
-        "comparator_tuning_payload_sha256": comparator_tuning.payload_sha256,
+        "comparator_tuning": asdict(comparator_reference),
+        "comparator_method_bindings": [
+            asdict(binding) for binding in comparator_method_bindings.values()
+        ],
         "comparator_tuning_configurations": [
             {
                 "method_id": row.method_id,
                 "configuration_id": row.configuration_id,
                 "payload": dict(row.payload),
-                "payload_sha256": row.payload_sha256,
                 "is_upstream_default": row.is_upstream_default,
             }
             for row in comparator_tuning.configurations
@@ -1139,8 +1154,8 @@ def load_runner_authority() -> RunnerAuthority:
         count_score_manifest_path=selection.count_score_manifest.path,
         retained_calibration_path=selection.retained_calibration.path,
         configurations=configurations,
-        comparator_tuning_file_sha256=comparator_tuning.file_sha256,
-        comparator_tuning_payload_sha256=comparator_tuning.payload_sha256,
+        comparator_tuning_reference=comparator_reference,
+        comparator_method_bindings=comparator_method_bindings,
         comparator_tuning=comparator_tuning,
         plan_scope="base_full_panel",
     )
@@ -1170,8 +1185,8 @@ class RunnerAuthority:
     count_score_manifest_path: str
     retained_calibration_path: str
     configurations: tuple[AuthorizedConfiguration, ...]
-    comparator_tuning_file_sha256: str
-    comparator_tuning_payload_sha256: str
+    comparator_tuning_reference: ComparatorAuthorityReference
+    comparator_method_bindings: Mapping[str, ComparatorMethodBinding]
     comparator_tuning: ComparatorTuningAuthority
     plan_scope: Literal["base_full_panel", "revision_candidate_only"] = (
         "base_full_panel"
@@ -1189,20 +1204,41 @@ class RunnerAuthority:
             "base_configuration_sha256",
             "count_model_config_sha256",
             "dataset_qc_policy_sha256",
-            "comparator_tuning_file_sha256",
-            "comparator_tuning_payload_sha256",
         ):
             _require_sha256(getattr(self, name), name)
         if not isinstance(self.comparator_tuning, ComparatorTuningAuthority):
             raise RunnerContractError(
                 "comparator_tuning must be a ComparatorTuningAuthority"
             )
-        if (
-            self.comparator_tuning_file_sha256 != self.comparator_tuning.file_sha256
-            or self.comparator_tuning_payload_sha256
-            != self.comparator_tuning.payload_sha256
+        if not isinstance(
+            self.comparator_tuning_reference, ComparatorAuthorityReference
         ):
-            raise RunnerContractError("runner comparator tuning checksum mismatch")
+            raise RunnerContractError(
+                "comparator_tuning_reference must be a ComparatorAuthorityReference"
+            )
+        if (
+            self.comparator_tuning_reference.path
+            != "study/comparator_tuning.json"
+            or self.comparator_tuning_reference.schema_version
+            != self.comparator_tuning.schema_version
+            or self.comparator_tuning_reference.authority_revision
+            != self.comparator_tuning.authority_revision
+        ):
+            raise RunnerContractError("runner comparator tuning reference mismatch")
+        if type(self.comparator_method_bindings) is not MappingProxyType:
+            raise RunnerContractError(
+                "runner comparator method bindings must be immutable"
+            )
+        if tuple(self.comparator_method_bindings) != self.comparator_tuning.method_order:
+            raise RunnerContractError(
+                "runner comparator method bindings are incomplete or reordered"
+            )
+        if any(
+            not isinstance(binding, ComparatorMethodBinding)
+            or binding.method_id != method_id
+            for method_id, binding in self.comparator_method_bindings.items()
+        ):
+            raise RunnerContractError("runner comparator method binding is invalid")
         if self.plan_scope not in {"base_full_panel", "revision_candidate_only"}:
             raise RunnerContractError("runner authority plan scope is invalid")
         if not isinstance(self.base_configuration_id, str) or not _SAFE_ID.fullmatch(
@@ -1439,8 +1475,8 @@ def load_v28_revision_authority() -> RunnerAuthority:
         count_score_manifest_path=base.count_score_manifest_path,
         retained_calibration_path=base.retained_calibration_path,
         configurations=(candidate,),
-        comparator_tuning_file_sha256=base.comparator_tuning_file_sha256,
-        comparator_tuning_payload_sha256=base.comparator_tuning_payload_sha256,
+        comparator_tuning_reference=base.comparator_tuning_reference,
+        comparator_method_bindings=base.comparator_method_bindings,
         comparator_tuning=base.comparator_tuning,
         plan_scope="revision_candidate_only",
     )
@@ -1535,8 +1571,8 @@ def load_v29_revision_authority() -> RunnerAuthority:
         count_score_manifest_path=base.count_score_manifest_path,
         retained_calibration_path=base.retained_calibration_path,
         configurations=(candidate,),
-        comparator_tuning_file_sha256=base.comparator_tuning_file_sha256,
-        comparator_tuning_payload_sha256=base.comparator_tuning_payload_sha256,
+        comparator_tuning_reference=base.comparator_tuning_reference,
+        comparator_method_bindings=base.comparator_method_bindings,
         comparator_tuning=base.comparator_tuning,
         plan_scope="revision_candidate_only",
     )
@@ -1836,10 +1872,6 @@ def build_competition_plan(
         "runner_authority_sha256": authority.authority_sha256,
         "execution_environment_sha256": execution_environment_sha256,
         "runtime_lock_sha256": runtime_lock_sha256,
-        "comparator_tuning_file_sha256": (authority.comparator_tuning_file_sha256),
-        "comparator_tuning_payload_sha256": (
-            authority.comparator_tuning_payload_sha256
-        ),
         "base_configuration_sha256": authority.base_configuration_sha256,
         "count_model_config_sha256": authority.count_model_config_sha256,
         "dataset_qc_policy_sha256": authority.dataset_qc_policy_sha256,

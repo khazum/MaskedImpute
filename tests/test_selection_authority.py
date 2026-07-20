@@ -110,12 +110,27 @@ def test_selection_authority_carries_direct_comparator_reference() -> None:
     assert "study/comparator_tuning.json" not in authority.file_sha256
     assert not hasattr(authority, "comparator_tuning_file_sha256")
     assert not hasattr(authority, "comparator_tuning_payload_sha256")
+    assert tuple(authority.comparator_method_bindings) == (
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+        "scziva",
+        "afmf",
+        "biaeimpute",
+        "sccr",
+        "scsdae",
+    )
+    with pytest.raises(TypeError):
+        authority.comparator_method_bindings["magic"] = (
+            authority.comparator_method_bindings["magic"]
+        )
 
 
 @pytest.mark.parametrize(
     "mutation",
     (
-        "method-projection",
         "authority-revision",
         "authority-path",
         "schema-version",
@@ -136,18 +151,11 @@ def test_selection_authority_rejects_coherently_reencoded_direct_linkage_drift(
     contract_path = repository / "study/selection_contract.json"
     ledger_path = repository / "study/development_search.json"
     tuning_path = repository / "study/comparator_tuning.json"
-    methods_path = repository / "study/methods.json"
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     tuning = json.loads(tuning_path.read_text(encoding="utf-8"))
 
-    if mutation == "method-projection":
-        methods = json.loads(methods_path.read_text(encoding="utf-8"))
-        magic = next(row for row in methods["methods"] if row["id"] == "magic")
-        magic["execution_scope"] = "external_reference_only"
-        magic["track"] = "external_reference"
-        _write_json(methods_path, methods)
-    elif mutation == "authority-revision":
+    if mutation == "authority-revision":
         tuning["authority_revision"] = "fair-comparator-direct-v2"
         contract["comparator_tuning"]["authority_revision"] = (
             "fair-comparator-direct-v2"
@@ -179,6 +187,26 @@ def test_selection_authority_rejects_coherently_reencoded_direct_linkage_drift(
         _load_selection_authority(repository, require_clean=False)
 
 
+def test_selection_authority_rejects_coherent_comparator_resource_projection_drift(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.selection import (
+        SelectionAuthorityError,
+        _load_selection_authority,
+    )
+
+    repository = _authority_repository(tmp_path)
+    methods_path = repository / "study/methods.json"
+    methods = json.loads(methods_path.read_text(encoding="utf-8"))
+    magic = next(row for row in methods["methods"] if row["id"] == "magic")
+    magic["resources"]["timeout_seconds"] += 1
+    _write_json(methods_path, methods)
+    _refresh_legacy_authority_references(repository)
+
+    with pytest.raises(SelectionAuthorityError, match="method binding"):
+        _load_selection_authority(repository, require_clean=False)
+
+
 def test_direct_reference_migration_preserves_unrelated_legacy_authority_values() -> (
     None
 ):
@@ -201,6 +229,7 @@ def test_direct_reference_migration_preserves_unrelated_legacy_authority_values(
     old_contract.pop("comparator_tuning_file_sha256")
     old_contract.pop("comparator_tuning_payload_sha256")
     new_contract.pop("comparator_tuning")
+    new_contract.pop("comparator_method_bindings")
     assert json.dumps(new_contract, separators=(",", ":")) == json.dumps(
         old_contract, separators=(",", ":")
     )
