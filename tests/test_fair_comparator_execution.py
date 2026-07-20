@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import asdict, replace
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
+import time
 import zlib
 
 import anndata as ad
@@ -28,11 +31,11 @@ from maskimpute_benchmark.fair_comparator_plan import (
     direct_run_id,
 )
 from maskimpute_benchmark.methods import (
-    AdapterExecution,
+    DirectAdapterExecution,
     count_equivalent_to_log2_cp10k,
+    finalize_direct_method_output,
     load_method_registry,
     prepare_method_input,
-    snapshot_method_output,
 )
 from maskimpute_benchmark.metrics import reconstruction_metrics
 from maskimpute_benchmark.runner import (
@@ -178,28 +181,51 @@ def _direct_case(
 
 
 def _completed_outcome(request: DirectExecutionRequest) -> AdapterOutcome:
-    snapshot = snapshot_method_output(
+    output = finalize_direct_method_output(
         request.method_spec,
         request.method_input,
         request.method_input.counts,
-        source_dataset_sha256=request.method_input.source_dataset_sha256,
         output_scale=request.method_spec.output_scale,
         obs_ids=request.method_input.obs_ids,
         var_ids=request.method_input.var_ids,
     )
     return AdapterOutcome.completed(
-        AdapterExecution(
-            snapshot=snapshot,
-            compatibility_log=(),
-            environment_receipt=(),
+        DirectAdapterExecution(
+            output=output,
             stdout=b"abc",
             stderr=b"err",
-            command=None,
         ),
         runtime_seconds=1.5,
         peak_rss_bytes=128,
         peak_gpu_bytes=0,
     )
+
+
+def _slow_direct_executor(_request: DirectExecutionRequest) -> AdapterOutcome:
+    time.sleep(0.4)
+    return AdapterOutcome.unavailable("child_completed")
+
+
+def _direct_terminal_executor(_request: DirectExecutionRequest) -> AdapterOutcome:
+    return AdapterOutcome.unavailable("synthetic_terminal")
+
+
+class _DirectFixedResourceSampler:
+    def __init__(self, *, rss: int | None, gpu: int | None) -> None:
+        self.rss = rss
+        self.gpu = gpu
+
+    def sample(self, _process_id: int, *, gpu_required: bool):
+        from maskimpute_benchmark.runner import ResourceSample
+
+        return ResourceSample(
+            peak_rss_bytes=self.rss,
+            peak_gpu_bytes=self.gpu if gpu_required else 0,
+            rss_provenance="synthetic_parent_rss",
+            gpu_provenance=(
+                "synthetic_parent_gpu" if gpu_required else "not_applicable_cpu"
+            ),
+        )
 
 
 def test_all_ten_comparator_adapters_receive_exact_authority_payloads() -> None:
@@ -217,22 +243,18 @@ def test_all_ten_comparator_adapters_receive_exact_authority_payloads() -> None:
     def adapter(method_id: str):
         def spy(spec, method_input, *, seed, config):
             received[method_id] = config
-            snapshot = snapshot_method_output(
+            output = finalize_direct_method_output(
                 spec,
                 method_input,
                 method_input.counts,
-                source_dataset_sha256=method_input.source_dataset_sha256,
                 output_scale=spec.output_scale,
                 obs_ids=method_input.obs_ids,
                 var_ids=method_input.var_ids,
             )
-            execution = AdapterExecution(
-                snapshot=snapshot,
-                compatibility_log=(),
-                environment_receipt=(),
+            execution = DirectAdapterExecution(
+                output=output,
                 stdout=b"abc",
                 stderr=b"",
-                command=None,
             )
             return AdapterOutcome.completed(
                 execution,
@@ -409,6 +431,52 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
             prepared,
             descriptor,
             spec,
+            row,
+            timeout_seconds=5,
+        )
+
+
+@pytest.mark.parametrize(
+    "changed_spec",
+    (
+        lambda spec: replace(
+            spec,
+            source=replace(spec.source, cache_path="other-cache"),
+        ),
+        lambda spec: replace(spec, input_scale="other-input"),
+        lambda spec: replace(spec, output_scale="other-output"),
+        lambda spec: replace(spec, stochastic=False),
+        lambda spec: replace(spec, seed_policy="other-seed-policy"),
+        lambda spec: replace(
+            spec,
+            resources=replace(spec.resources, cpu_cores=spec.resources.cpu_cores + 1),
+        ),
+        lambda spec: replace(
+            spec,
+            preserves_observed_positives=not spec.preserves_observed_positives,
+        ),
+    ),
+    ids=(
+        "source-cache-path",
+        "input-scale",
+        "output-scale",
+        "stochastic",
+        "seed-policy",
+        "cpu-cores",
+        "observed-positive-policy",
+    ),
+)
+def test_create_direct_request_binds_every_execution_relevant_method_field(
+    changed_spec,
+) -> None:
+    _request, entry, prepared, descriptor, spec, row, _authority = _direct_case()
+
+    with pytest.raises(RunnerContractError, match="method projection"):
+        create_direct_request(
+            entry,
+            prepared,
+            descriptor,
+            changed_spec(spec),
             row,
             timeout_seconds=5,
         )
@@ -624,6 +692,24 @@ def test_execute_direct_request_rejects_numeric_type_coercion_after_dispatch(
             "infrastructure_error",
             "worker_protocol_error",
         ),
+        (
+            {
+                "magic": lambda *_args, **_kwargs: AdapterOutcome.blocked_authority(
+                    "authority_blocked"
+                )
+            },
+            "blocked_authority",
+            "authority_blocked",
+        ),
+        (
+            {
+                "magic": lambda *_args, **_kwargs: AdapterOutcome.budget_exhausted(
+                    "budget_spent"
+                )
+            },
+            "budget_exhausted",
+            "budget_spent",
+        ),
     ),
 )
 def test_execute_direct_request_preserves_terminal_outcomes(
@@ -716,6 +802,101 @@ def test_direct_prezero_rejects_symlinked_storage_ancestor(tmp_path: Path) -> No
 
     with pytest.raises(RunnerContractError, match="owned"):
         evidence.reopen(tmp_path)
+
+
+def test_direct_prezero_rejects_regular_file_owned_by_another_uid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    matrix = np.asarray([[0.25]], dtype="<f8")
+    compressed = zlib.compress(matrix.tobytes(order="C"))
+    path = tmp_path / "value.zlib"
+    path.write_bytes(compressed)
+    evidence = DirectPreZeroEvidence(
+        applicable=True,
+        status="completed",
+        reason=None,
+        shape=(1, 1),
+        dtype="<f8",
+        encoding="zlib",
+        path="value.zlib",
+        compressed_byte_count=len(compressed),
+    )
+    original_lstat = Path.lstat
+
+    def foreign_owner(selected: Path):
+        metadata = original_lstat(selected)
+        if selected == path:
+            return SimpleNamespace(st_mode=metadata.st_mode, st_uid=os.getuid() + 1)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", foreign_owner)
+
+    with pytest.raises(RunnerContractError, match="owner"):
+        evidence.reopen(tmp_path)
+
+
+def test_direct_spawned_executor_enforces_deadline_with_parent_telemetry() -> None:
+    from maskimpute_benchmark import runner as runner_module
+
+    request, _entry, _prepared_value, _descriptor, _spec, _row, _authority = (
+        _direct_case()
+    )
+    execute = getattr(runner_module, "execute_direct_adapter_in_spawned_process", None)
+    assert execute is not None, "direct measured executor is absent"
+
+    outcome = execute(
+        replace(request, timeout_seconds=0.05),
+        _slow_direct_executor,
+        poll_interval_seconds=0.01,
+        resource_sampler=_DirectFixedResourceSampler(rss=123_456, gpu=0),
+    )
+
+    assert outcome.status == "timeout"
+    assert outcome.runtime_seconds >= 0.05
+    assert outcome.peak_rss_bytes == 123_456
+    assert outcome.rss_measurement == "synthetic_parent_rss"
+
+
+def test_direct_spawned_executor_fails_closed_without_required_gpu_telemetry() -> (
+    None
+):
+    from maskimpute_benchmark import runner as runner_module
+
+    request, _entry, _prepared_value, _descriptor, _spec, _row, _authority = (
+        _direct_case("dca")
+    )
+    execute = getattr(runner_module, "execute_direct_adapter_in_spawned_process", None)
+    assert execute is not None, "direct measured executor is absent"
+
+    outcome = execute(
+        request,
+        _direct_terminal_executor,
+        poll_interval_seconds=0.01,
+        resource_sampler=_DirectFixedResourceSampler(rss=123_456, gpu=None),
+    )
+
+    assert outcome.status == "infrastructure_error"
+    assert outcome.reason == "resource_telemetry_unavailable"
+
+
+def test_direct_and_legacy_spawn_entry_points_reject_the_other_request_type() -> None:
+    from maskimpute_benchmark import runner as runner_module
+
+    request, _entry, _prepared_value, _descriptor, _spec, _row, _authority = (
+        _direct_case()
+    )
+
+    with pytest.raises(TypeError, match="ExecutionRequest"):
+        runner_module.execute_adapter_in_spawned_process(
+            request,
+            _direct_terminal_executor,
+        )
+    with pytest.raises(TypeError, match="DirectExecutionRequest"):
+        runner_module.execute_direct_adapter_in_spawned_process(
+            object(),
+            _direct_terminal_executor,
+        )
 
 
 def test_direct_record_constructors_reject_unknown_fields() -> None:

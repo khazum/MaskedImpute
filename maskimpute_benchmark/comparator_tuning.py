@@ -132,7 +132,8 @@ EXPECTED_SMOKE = {
     "output_retention": "discarded_without_evaluator_or_metrics",
 }
 
-_EXPECTED_METHOD_ORDER = tuple(_CONFIG_TYPES)
+COMPARATOR_METHOD_IDS = tuple(_CONFIG_TYPES)
+_EXPECTED_METHOD_ORDER = COMPARATOR_METHOD_IDS
 _EXPECTED_SCHEDULED_SAME_INPUT_IDS = (
     "observed",
     "capacity-matched-ae",
@@ -408,11 +409,18 @@ class ComparatorMethodBinding:
     source_url: str | None
     source_revision: str | None
     source_tree: str | None
+    source_cache_path: str | None
     source_freeze_binding: str | None
+    input_scale: str
+    output_scale: str
+    stochastic: bool
+    seed_policy: str
     gpu_mode: str
+    cpu_cores: int
     timeout_seconds: int
     max_rss_gib: int | float
     max_gpu_gib: int | float
+    preserves_observed_positives: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,11 +448,18 @@ def comparator_method_binding(method_spec: MethodSpec) -> ComparatorMethodBindin
         source_url=method_spec.source.url,
         source_revision=method_spec.source.revision,
         source_tree=method_spec.source.tree,
+        source_cache_path=method_spec.source.cache_path,
         source_freeze_binding=method_spec.source.freeze_binding,
+        input_scale=method_spec.input_scale,
+        output_scale=method_spec.output_scale,
+        stochastic=method_spec.stochastic,
+        seed_policy=method_spec.seed_policy,
         gpu_mode=method_spec.resources.gpu_mode,
+        cpu_cores=method_spec.resources.cpu_cores,
         timeout_seconds=method_spec.resources.timeout_seconds,
         max_rss_gib=method_spec.resources.max_rss_gib,
         max_gpu_gib=method_spec.resources.max_gpu_gib,
+        preserves_observed_positives=method_spec.preserves_observed_positives,
     )
 
 

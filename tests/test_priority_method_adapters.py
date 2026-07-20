@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 import importlib
 from pathlib import Path
 import shutil
@@ -16,11 +16,9 @@ from scipy.stats import boxcox
 
 import maskimpute_benchmark.methods as benchmark_methods
 from maskimpute_benchmark.methods import (
-    AdapterExecution,
     SourceSpec,
     load_method_registry,
     prepare_method_input,
-    snapshot_method_output,
 )
 from maskimpute_benchmark.methods.observed import AdapterUnavailableError
 from maskimpute_benchmark.runner import (
@@ -271,29 +269,42 @@ def test_direct_repository_mapping_dispatches_all_ten_typed_configs(
     method_input = _method_input(cells=8, genes=6)
     received: dict[str, object] = {}
 
+    def forbidden_legacy_adapter(*_args, **_kwargs):
+        raise AssertionError("direct production mapping called a legacy adapter")
+
     for method_id in authority.method_order:
         spec = registry.by_id(method_id)
 
+        direct_name = f"run_{method_id}_direct"
+        direct_adapter = getattr(benchmark_methods, direct_name, None)
+        assert direct_adapter is not None, f"{direct_name} is absent"
+
         def spy(*_args, _method_id=method_id, **kwargs):
+            from maskimpute_benchmark.methods.direct import (
+                DirectAdapterExecution,
+                finalize_direct_method_output,
+            )
+
             received[_method_id] = kwargs["config"]
-            return AdapterExecution(
-                snapshot=snapshot_method_output(
+            return DirectAdapterExecution(
+                output=finalize_direct_method_output(
                     spec,
                     method_input,
                     method_input.counts,
-                    source_dataset_sha256=method_input.source_dataset_sha256,
                     output_scale=spec.output_scale,
                     obs_ids=method_input.obs_ids,
                     var_ids=method_input.var_ids,
                 ),
-                compatibility_log=(),
-                environment_receipt=(),
                 stdout=b"",
                 stderr=b"",
-                command=None,
             )
 
-        monkeypatch.setattr(benchmark_methods, f"run_{method_id}", spy)
+        monkeypatch.setattr(
+            benchmark_methods,
+            f"run_{method_id}",
+            forbidden_legacy_adapter,
+        )
+        monkeypatch.setattr(benchmark_methods, direct_name, spy)
         row = authority.configurations_for(method_id)[0]
         outcome = adapters[method_id](
             spec,
@@ -302,9 +313,168 @@ def test_direct_repository_mapping_dispatches_all_ten_typed_configs(
             config=row.decode(),
         )
         assert outcome.status == "completed"
+        assert outcome.execution is not None
+        assert tuple(field.name for field in fields(outcome.execution)) == (
+            "output",
+            "stdout",
+            "stderr",
+        )
         assert received[method_id] == row.decode()
 
     assert tuple(adapters) == authority.method_order
+
+
+def test_direct_finalizers_never_call_content_summary_helpers_and_are_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.methods import base as base_module
+
+    registry = _registry()
+    method_input = _method_input(cells=120, genes=120)
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("direct finalization called a content-summary helper")
+
+    monkeypatch.setattr(base_module, "_output_digest", forbidden)
+    monkeypatch.setattr(base_module, "snapshot_method_output", forbidden)
+    forbidden_tokens = ("hash", "digest", "checksum", "fingerprint", "sha")
+    for method_id in (
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+        "scziva",
+        "afmf",
+        "biaeimpute",
+        "sccr",
+        "scsdae",
+    ):
+        module = _adapter_module(method_id)
+        finalizer = getattr(module, f"finalize_{method_id}_direct_output", None)
+        assert finalizer is not None, f"direct {method_id} finalizer is absent"
+        monkeypatch.setattr(module, "snapshot_method_output", forbidden)
+        native = np.array(method_input.counts, dtype=np.float64, copy=True)
+        if method_id == "scvi":
+            native /= native.sum(axis=1, keepdims=True)
+        output = finalizer(registry.by_id(method_id), method_input, native)
+        names = tuple(field.name for field in fields(output))
+        assert not any(
+            token in name.casefold()
+            for name in names
+            for token in forbidden_tokens
+            if name != "shape"
+        )
+        assert output.matrix.shape == method_input.shape
+        assert np.isfinite(output.matrix).all()
+
+
+def test_direct_repository_mapping_reports_missing_executable_without_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    registry = _registry()
+    spec = registry.by_id("magic")
+    source = spec.source.cache_path
+    assert source is not None
+    (tmp_path / source).mkdir(parents=True)
+    environments = ExecutionEnvironmentRegistry.fixed(
+        tmp_path,
+        {"magic": tmp_path / "missing-python"},
+    )
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "revalidate_for",
+        lambda _self, _method_id: None,
+    )
+    attempted: list[bool] = []
+    direct_adapter = getattr(benchmark_methods, "run_magic_direct", None)
+    assert direct_adapter is not None, "run_magic_direct is absent"
+
+    def spy(*_args, **_kwargs):
+        attempted.append(True)
+        raise AssertionError("missing executable reached the adapter")
+
+    monkeypatch.setattr(benchmark_methods, "run_magic_direct", spy)
+    dispatcher = RepositoryAdapterDispatcher(tmp_path, environments)
+    from maskimpute_benchmark.comparator_tuning import (
+        load_comparator_tuning_authority,
+    )
+
+    row = load_comparator_tuning_authority(
+        Path.cwd(), registry=registry, require_clean=False
+    ).configurations_for("magic")[0]
+
+    outcome = dispatcher.direct_comparator_adapters()["magic"](
+        spec,
+        _method_input(),
+        seed=42,
+        config=row.decode(),
+    )
+
+    assert outcome.status == "unavailable"
+    assert outcome.reason == "environment_executable_unavailable_magic"
+    assert attempted == []
+
+
+def test_saver_direct_wrapper_bypasses_all_legacy_content_summaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _adapter_module("saver")
+    spec = _registry().by_id("saver")
+    method_input = _method_input()
+    source_dir = tmp_path / "source"
+    library_dir = tmp_path / "library"
+    source_dir.mkdir()
+    library_dir.mkdir()
+    for package in module._SAVER_PACKAGE_KEYS:
+        (library_dir / package).mkdir()
+    lock_manifest = tmp_path / "saver.lock.json"
+    build_receipt = tmp_path / "saver.build.json"
+    lock_manifest.write_text("{}", encoding="utf-8")
+    build_receipt.write_text("{}", encoding="utf-8")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("direct SAVER called a content-summary helper")
+
+    for helper in (
+        "_load_saver_environment_lock",
+        "_load_saver_build_receipt",
+        "_saver_library_sha256",
+        "_validate_saver_library",
+        "snapshot_method_output",
+    ):
+        monkeypatch.setattr(module, helper, forbidden)
+    executable = tmp_path / "Rscript"
+    monkeypatch.setattr(module, "require_executable", lambda _path: executable)
+    monkeypatch.setattr(
+        module,
+        "execute_pinned_command",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=b"out", stderr=b"err"),
+    )
+    monkeypatch.setattr(
+        module,
+        "read_raw_output",
+        lambda _path, _shape: np.array(method_input.counts, copy=True),
+    )
+
+    execution = module.run_saver_direct(
+        spec,
+        method_input,
+        source_dir=source_dir,
+        rscript=executable,
+        seed=42,
+        library_dir=library_dir,
+        lock_manifest=lock_manifest,
+        build_receipt=build_receipt,
+    )
+
+    assert tuple(field.name for field in fields(execution)) == (
+        "output",
+        "stdout",
+        "stderr",
+    )
 
 
 @pytest.mark.parametrize(

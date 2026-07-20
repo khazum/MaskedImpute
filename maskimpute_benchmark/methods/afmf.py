@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
+from .direct import DirectAdapterExecution, DirectMethodOutput, finalize_direct_method_output
 from .observed import (
     AdapterExecution,
     AdapterUnavailableError,
@@ -150,7 +151,30 @@ def finalize_afmf_output(
     )
 
 
-def run_afmf(
+def finalize_afmf_direct_output(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    normalized_output: object,
+) -> DirectMethodOutput:
+    """Validate afMF output without deriving a content identity."""
+
+    require_method_spec(
+        spec,
+        "afmf",
+        input_scale="raw_counts",
+        output_scale="method_native_normalized",
+    )
+    return finalize_direct_method_output(
+        spec,
+        method_input,
+        normalized_output,
+        output_scale=spec.output_scale,
+        obs_ids=method_input.obs_ids,
+        var_ids=method_input.var_ids,
+    )
+
+
+def _run_afmf_impl(
     spec: MethodSpec,
     method_input: MethodInput,
     *,
@@ -159,7 +183,8 @@ def run_afmf(
     seed: int,
     config: AFMFConfig = AFMFConfig(),
     work_root: Path | None = None,
-) -> AdapterExecution:
+    _direct: bool = False,
+) -> AdapterExecution | DirectAdapterExecution:
     """Run pristine pinned afMF with explicit orientation and seed binding."""
 
     require_method_spec(
@@ -273,6 +298,12 @@ def run_afmf(
                 }
             ),
         )
+        if _direct:
+            return DirectAdapterExecution(
+                output=finalize_afmf_direct_output(spec, method_input, output),
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
         snapshot = finalize_afmf_output(spec, method_input, output)
         return AdapterExecution(
             snapshot=snapshot,
@@ -284,9 +315,31 @@ def run_afmf(
         )
 
 
+def run_afmf(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    python_executable: Path, seed: int, config: AFMFConfig = AFMFConfig(),
+    work_root: Path | None = None,
+) -> AdapterExecution:
+    return _run_afmf_impl(spec, method_input, source_dir=source_dir,
+                          python_executable=python_executable, seed=seed,
+                          config=config, work_root=work_root)
+
+
+def run_afmf_direct(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    python_executable: Path, seed: int, config: AFMFConfig = AFMFConfig(),
+    work_root: Path | None = None,
+) -> DirectAdapterExecution:
+    return _run_afmf_impl(spec, method_input, source_dir=source_dir,
+                          python_executable=python_executable, seed=seed,
+                          config=config, work_root=work_root, _direct=True)
+
+
 __all__ = [
     "AFMFConfig",
+    "finalize_afmf_direct_output",
     "afmf_to_evaluator_counts",
     "finalize_afmf_output",
     "run_afmf",
+    "run_afmf_direct",
 ]

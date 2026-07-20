@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
+from .direct import DirectAdapterExecution, DirectMethodOutput, finalize_direct_method_output
 from .observed import (
     AdapterExecution,
     CompatibilityEvent,
@@ -127,7 +128,30 @@ def finalize_alra_output(
     )
 
 
-def run_alra(
+def finalize_alra_direct_output(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    normalized_output: object,
+) -> DirectMethodOutput:
+    """Validate ALRA output without deriving a content identity."""
+
+    require_method_spec(
+        spec,
+        "alra",
+        input_scale="log1p_cp10k",
+        output_scale="log1p_cp10k",
+    )
+    return finalize_direct_method_output(
+        spec,
+        method_input,
+        normalized_output,
+        output_scale=spec.output_scale,
+        obs_ids=method_input.obs_ids,
+        var_ids=method_input.var_ids,
+    )
+
+
+def _run_alra_impl(
     spec: MethodSpec,
     method_input: MethodInput,
     *,
@@ -136,7 +160,8 @@ def run_alra(
     seed: int,
     config: ALRAConfig = ALRAConfig(),
     work_root: Path | None = None,
-) -> AdapterExecution:
+    _direct: bool = False,
+) -> AdapterExecution | DirectAdapterExecution:
     """Run exact pinned ALRA source in a selected R environment."""
 
     require_method_spec(
@@ -242,6 +267,12 @@ def run_alra(
                 }
             ),
         )
+        if _direct:
+            return DirectAdapterExecution(
+                output=finalize_alra_direct_output(spec, method_input, output),
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
         snapshot = finalize_alra_output(spec, method_input, output)
         return AdapterExecution(
             snapshot=snapshot,
@@ -253,9 +284,29 @@ def run_alra(
         )
 
 
+def run_alra(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    rscript: Path, seed: int, config: ALRAConfig = ALRAConfig(),
+    work_root: Path | None = None,
+) -> AdapterExecution:
+    return _run_alra_impl(spec, method_input, source_dir=source_dir, rscript=rscript,
+                          seed=seed, config=config, work_root=work_root)
+
+
+def run_alra_direct(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    rscript: Path, seed: int, config: ALRAConfig = ALRAConfig(),
+    work_root: Path | None = None,
+) -> DirectAdapterExecution:
+    return _run_alra_impl(spec, method_input, source_dir=source_dir, rscript=rscript,
+                          seed=seed, config=config, work_root=work_root, _direct=True)
+
+
 __all__ = [
     "ALRAConfig",
     "alra_to_evaluator_counts",
+    "finalize_alra_direct_output",
     "finalize_alra_output",
     "run_alra",
+    "run_alra_direct",
 ]

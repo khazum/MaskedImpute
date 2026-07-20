@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from .trajectory_dataset import RegisteredTrajectoryBinding
 
 from .comparator_tuning import (
+    COMPARATOR_METHOD_IDS,
     ComparatorAdapterConfig,
     ComparatorAuthorityReference,
     ComparatorMethodBinding,
@@ -47,7 +48,7 @@ from .comparator_tuning import (
     encode_comparator_configuration,
     load_comparator_tuning_authority,
 )
-from .methods import AdapterExecution, MethodInput, MethodSpec
+from .methods import AdapterExecution, DirectAdapterExecution, MethodInput, MethodSpec
 from .methods.registry import MethodRegistry, load_method_registry
 from .prezero_evidence import (
     PreZeroEvidence,
@@ -692,6 +693,10 @@ class AuthorizedConfiguration:
         configuration_method_identity_sha256: str | None = None,
         nonexecution_identity_sha256: str | None = None,
     ) -> AuthorizedConfiguration:
+        if kind == "comparator_tuning":
+            raise RunnerContractError(
+                "legacy comparator configuration is disabled; use the direct fair-comparator path"
+            )
         if not isinstance(payload, Mapping):
             raise TypeError("configuration payload must be a mapping")
         payload_bytes = _canonical_bytes(dict(payload))
@@ -721,24 +726,8 @@ class AuthorizedConfiguration:
     def from_bound_comparator(
         cls, bound: BoundComparatorConfiguration
     ) -> AuthorizedConfiguration:
-        row = bound.configuration
-        return cls.create(
-            method_id=row.method_id,
-            configuration_id=row.configuration_id,
-            kind="comparator_tuning",
-            payload=dict(row.payload),
-            requires_count_score=False,
-            requires_calibration=False,
-            configuration_sha256=row.payload_sha256,
-            registry_method_sha256=bound.registry_method_sha256,
-            tuning_authority_file_sha256=bound.tuning_authority_file_sha256,
-            tuning_authority_payload_sha256=bound.tuning_authority_payload_sha256,
-            source_authority_sha256=bound.source_authority_sha256,
-            runtime_lock_sha256=bound.runtime_lock_sha256,
-            environment_registry_sha256=bound.environment_registry_sha256,
-            configuration_method_identity_sha256=(
-                bound.configuration_method_identity_sha256
-            ),
+        raise RunnerContractError(
+            "legacy comparator configuration is disabled; use the direct fair-comparator path"
         )
 
     @classmethod
@@ -759,6 +748,10 @@ class AuthorizedConfiguration:
         )
 
     def __post_init__(self) -> None:
+        if self.kind == "comparator_tuning":
+            raise RunnerContractError(
+                "legacy comparator configuration is disabled; use the direct fair-comparator path"
+            )
         if not isinstance(self.method_id, str) or not _SAFE_ID.fullmatch(
             self.method_id
         ):
@@ -811,35 +804,7 @@ class AuthorizedConfiguration:
             "runtime_lock_sha256",
             "environment_registry_sha256",
         )
-        if self.kind == "comparator_tuning":
-            for field_name in component_fields:
-                _require_sha256(
-                    getattr(self, field_name),
-                    f"comparator {field_name}",
-                )
-            _require_sha256(
-                self.configuration_method_identity_sha256,
-                "comparator configuration method identity",
-            )
-            if self.nonexecution_identity_sha256 is not None:
-                raise RunnerContractError(
-                    "comparator tuning forbids a nonexecution identity"
-                )
-            body = {
-                "schema": "maskimpute-comparator-configuration-method-identity-v1",
-                "registry_method_sha256": self.registry_method_sha256,
-                "configuration_payload_sha256": self.configuration_sha256,
-                "tuning_authority_file_sha256": self.tuning_authority_file_sha256,
-                "tuning_authority_payload_sha256": (
-                    self.tuning_authority_payload_sha256
-                ),
-                "source_authority_sha256": self.source_authority_sha256,
-                "runtime_lock_sha256": self.runtime_lock_sha256,
-                "environment_registry_sha256": self.environment_registry_sha256,
-            }
-            if self.configuration_method_identity_sha256 != canonical_sha256(body):
-                raise RunnerContractError("comparator configuration identity mismatch")
-        elif self.kind == "comparator_nonexecution":
+        if self.kind == "comparator_nonexecution":
             if (
                 any(
                     getattr(self, field_name) is not None
@@ -2541,29 +2506,6 @@ def _execution_request_binding(value: Mapping[str, object]) -> str:
     return canonical_sha256(dict(value))
 
 
-def _validate_comparator_method_spec_components(
-    method_spec: MethodSpec,
-    *,
-    registry_method_sha256: str | None,
-    source_authority_sha256: str | None,
-) -> None:
-    expected_registry_method_sha256 = canonical_sha256(asdict(method_spec))
-    expected_source_authority_sha256 = canonical_sha256(
-        {
-            "schema": "maskimpute-comparator-source-authority-v1",
-            "method_id": method_spec.id,
-            "source": asdict(method_spec.source),
-        }
-    )
-    if (
-        registry_method_sha256 != expected_registry_method_sha256
-        or source_authority_sha256 != expected_source_authority_sha256
-    ):
-        raise RunnerContractError(
-            "comparator registry or source identity differs from MethodSpec"
-        )
-
-
 @dataclass(frozen=True, slots=True)
 class ExecutionRequest:
     """Closed truth-free request with all configuration/artifact authority in-band."""
@@ -2627,14 +2569,12 @@ class ExecutionRequest:
             raise TypeError("method_input must be a MethodInput")
         if not isinstance(configuration, AuthorizedConfiguration):
             raise TypeError("configuration must be an AuthorizedConfiguration")
+        if configuration.kind == "comparator_tuning":
+            raise RunnerContractError(
+                "legacy comparator request is disabled; use the direct fair-comparator path"
+            )
         if configuration.method_id != method_spec.id:
             raise RunnerContractError("configuration method does not match MethodSpec")
-        if configuration.kind == "comparator_tuning":
-            _validate_comparator_method_spec_components(
-                method_spec,
-                registry_method_sha256=configuration.registry_method_sha256,
-                source_authority_sha256=configuration.source_authority_sha256,
-            )
         if configuration.kind == "comparator_nonexecution":
             raise RunnerContractError(
                 "comparator nonexecution configuration is never executable"
@@ -2813,6 +2753,10 @@ class ExecutionRequest:
         )
 
     def validate_integrity(self) -> None:
+        if self.configuration_kind == "comparator_tuning":
+            raise RunnerContractError(
+                "legacy comparator request is disabled; use the direct fair-comparator path"
+            )
         if self.configuration_kind == "comparator_nonexecution":
             raise RunnerContractError(
                 "comparator nonexecution configuration is never executable"
@@ -2821,7 +2765,6 @@ class ExecutionRequest:
             "registry",
             "candidate_search",
             "ablation",
-            "comparator_tuning",
         }:
             raise RunnerContractError("execution request configuration kind is invalid")
         _require_sha256(
@@ -2836,40 +2779,7 @@ class ExecutionRequest:
             "runtime_lock_sha256",
             "environment_registry_sha256",
         )
-        if self.configuration_kind == "comparator_tuning":
-            for field_name in component_fields:
-                _require_sha256(
-                    getattr(self, field_name),
-                    f"execution request comparator {field_name}",
-                )
-            _require_sha256(
-                self.configuration_method_identity_sha256,
-                "execution request comparator method identity",
-            )
-            if self.nonexecution_identity_sha256 is not None:
-                raise RunnerContractError(
-                    "comparator tuning request forbids nonexecution identity"
-                )
-            _validate_comparator_method_spec_components(
-                self.method_spec,
-                registry_method_sha256=self.registry_method_sha256,
-                source_authority_sha256=self.source_authority_sha256,
-            )
-            body = {
-                "schema": "maskimpute-comparator-configuration-method-identity-v1",
-                "registry_method_sha256": self.registry_method_sha256,
-                "configuration_payload_sha256": self.configuration_payload_sha256,
-                "tuning_authority_file_sha256": self.tuning_authority_file_sha256,
-                "tuning_authority_payload_sha256": (
-                    self.tuning_authority_payload_sha256
-                ),
-                "source_authority_sha256": self.source_authority_sha256,
-                "runtime_lock_sha256": self.runtime_lock_sha256,
-                "environment_registry_sha256": self.environment_registry_sha256,
-            }
-            if self.configuration_method_identity_sha256 != canonical_sha256(body):
-                raise RunnerContractError("comparator configuration identity mismatch")
-        elif (
+        if (
             any(
                 getattr(self, field_name) is not None for field_name in component_fields
             )
@@ -2976,7 +2886,7 @@ class AdapterOutcome:
     """Measured adapter result before evaluator-side conversion and metrics."""
 
     status: str
-    execution: AdapterExecution | None
+    execution: AdapterExecution | DirectAdapterExecution | None
     reason: str | None
     runtime_seconds: int | float
     peak_rss_bytes: int
@@ -3005,7 +2915,9 @@ class AdapterOutcome:
             raise RunnerContractError("calibration fold receipt is noncanonical")
         if self.status == "completed":
             if (
-                not isinstance(self.execution, AdapterExecution)
+                not isinstance(
+                    self.execution, (AdapterExecution, DirectAdapterExecution)
+                )
                 or self.reason is not None
             ):
                 raise RunnerContractError(
@@ -3023,7 +2935,7 @@ class AdapterOutcome:
     @classmethod
     def completed(
         cls,
-        execution: AdapterExecution,
+        execution: AdapterExecution | DirectAdapterExecution,
         *,
         runtime_seconds: int | float,
         peak_rss_bytes: int,
@@ -6791,18 +6703,7 @@ class RepositoryAdapterDispatcher:
     ) -> Mapping[str, Callable[..., AdapterOutcome]]:
         """Return the closed production mapping for direct comparator dispatch."""
 
-        method_ids = (
-            "alra",
-            "magic",
-            "dca",
-            "scvi",
-            "saver",
-            "scziva",
-            "afmf",
-            "biaeimpute",
-            "sccr",
-            "scsdae",
-        )
+        method_ids = COMPARATOR_METHOD_IDS
 
         def adapter_for(method_id: str) -> Callable[..., AdapterOutcome]:
             def execute(
@@ -6864,9 +6765,9 @@ class RepositoryAdapterDispatcher:
                     return AdapterOutcome.failed(f"stochastic_seed_missing_{method_id}")
                 source_dir = self.repository_root / source
                 if method_id == "alra":
-                    from .methods import run_alra
+                    from .methods import run_alra_direct
 
-                    execution = run_alra(
+                    execution = run_alra_direct(
                         spec,
                         method_input,
                         source_dir=source_dir,
@@ -6875,9 +6776,9 @@ class RepositoryAdapterDispatcher:
                         config=config,
                     )
                 elif method_id == "saver":
-                    from .methods import run_saver
+                    from .methods import run_saver_direct
 
-                    execution = run_saver(
+                    execution = run_saver_direct(
                         spec,
                         method_input,
                         source_dir=source_dir,
@@ -6897,25 +6798,25 @@ class RepositoryAdapterDispatcher:
                     )
                 else:
                     from .methods import (
-                        run_afmf,
-                        run_biaeimpute,
-                        run_dca,
-                        run_magic,
-                        run_sccr,
-                        run_scsdae,
-                        run_scvi,
-                        run_scziva,
+                        run_afmf_direct,
+                        run_biaeimpute_direct,
+                        run_dca_direct,
+                        run_magic_direct,
+                        run_sccr_direct,
+                        run_scsdae_direct,
+                        run_scvi_direct,
+                        run_scziva_direct,
                     )
 
                     function = {
-                        "afmf": run_afmf,
-                        "biaeimpute": run_biaeimpute,
-                        "dca": run_dca,
-                        "magic": run_magic,
-                        "sccr": run_sccr,
-                        "scsdae": run_scsdae,
-                        "scvi": run_scvi,
-                        "scziva": run_scziva,
+                        "afmf": run_afmf_direct,
+                        "biaeimpute": run_biaeimpute_direct,
+                        "dca": run_dca_direct,
+                        "magic": run_magic_direct,
+                        "sccr": run_sccr_direct,
+                        "scsdae": run_scsdae_direct,
+                        "scvi": run_scvi_direct,
+                        "scziva": run_scziva_direct,
                     }[method_id]
                     execution = function(
                         spec,
@@ -6945,51 +6846,9 @@ class RepositoryAdapterDispatcher:
                 monitor.close()
 
     def _comparator_config(self, request: ExecutionRequest) -> ComparatorAdapterConfig:
-        if request.configuration_kind != "comparator_tuning":
-            raise RunnerContractError("comparator request is not tuning-authorized")
-        payload = json.loads(
-            request.configuration_payload_json,
-            parse_constant=_reject_json_constant,
-            object_pairs_hook=_unique_json_object,
+        raise RunnerContractError(
+            "legacy comparator dispatcher is disabled; use the direct fair-comparator path"
         )
-        canonical_payload_bytes = _canonical_bytes(payload)
-        authority = self.comparator_tuning_authority
-        if authority is None:
-            registry = load_method_registry(self.repository_root / "study/methods.json")
-            authority = load_comparator_tuning_authority(
-                self.repository_root,
-                registry=registry,
-            )
-        matching_rows = tuple(
-            row
-            for row in authority.configurations
-            if row.method_id == request.method_spec.id
-            and row.configuration_id == request.configuration_id
-            and row.payload_json.encode("utf-8") == canonical_payload_bytes
-            and row.payload_sha256 == request.configuration_payload_sha256
-        )
-        if len(matching_rows) != 1:
-            raise RunnerContractError(
-                "comparator request does not resolve to one exact authority row"
-            )
-        if (
-            request.tuning_authority_file_sha256 != authority.file_sha256
-            or request.tuning_authority_payload_sha256 != authority.payload_sha256
-        ):
-            raise RunnerContractError(
-                "comparator request names a different tuning authority"
-            )
-        authoritative_row = matching_rows[0]
-        config = authoritative_row.decode()
-        encoded = encode_comparator_configuration(config)
-        if (
-            _canonical_bytes(encoded)
-            != request.configuration_payload_json.encode("utf-8")
-            or canonical_sha256(encoded) != authoritative_row.payload_sha256
-            or authoritative_row.payload_sha256 != request.configuration_payload_sha256
-        ):
-            raise RunnerContractError("decoded comparator payload checksum differs")
-        return config
 
     def _in_tree(self, request: ExecutionRequest) -> AdapterOutcome:
         if (
@@ -7338,6 +7197,28 @@ class RepositoryAdapterDispatcher:
             )
 
 
+@dataclass(frozen=True, slots=True)
+class DirectRepositoryComparatorExecutor:
+    """Picklable child executor accepting only the direct request type."""
+
+    dispatcher: RepositoryAdapterDispatcher
+    authority: ComparatorTuningAuthority
+
+    def __call__(self, request: DirectExecutionRequest) -> AdapterOutcome:
+        from .fair_comparator_execution import (
+            DirectExecutionRequest,
+            dispatch_direct_request,
+        )
+
+        if not isinstance(request, DirectExecutionRequest):
+            raise TypeError("request must be a DirectExecutionRequest")
+        return dispatch_direct_request(
+            request,
+            self.authority,
+            self.dispatcher.direct_comparator_adapters(),
+        )
+
+
 def execute_fair_comparator_request(
     request: DirectExecutionRequest,
     prepared: PreparedDataset,
@@ -7348,14 +7229,33 @@ def execute_fair_comparator_request(
 
     if not isinstance(dispatcher, RepositoryAdapterDispatcher):
         raise TypeError("dispatcher must be a RepositoryAdapterDispatcher")
-    from .fair_comparator_execution import execute_direct_request
-
-    return execute_direct_request(
-        request,
-        prepared,
-        authority,
-        dispatcher.direct_comparator_adapters(),
+    from .fair_comparator_execution import (
+        evaluate_direct_outcome,
+        validate_direct_request,
     )
+
+    validate_direct_request(request, prepared, authority)
+    child_dispatcher = replace(
+        dispatcher,
+        environments=replace(dispatcher.environments, runtime_snapshot=None),
+        monitor_runtime_changes=False,
+    )
+    snapshot = dispatcher.environments.runtime_snapshot
+    sampler = (
+        LinuxProcessTreeResourceSampler()
+        if snapshot is None
+        else LinuxProcessTreeResourceSampler(
+            None if snapshot.nvidia_smi_path is None else Path(snapshot.nvidia_smi_path)
+        )
+    )
+    outcome = execute_direct_adapter_in_spawned_process(
+        request,
+        DirectRepositoryComparatorExecutor(child_dispatcher, authority),
+        resource_sampler=sampler,
+        expected_spawn_executable=dispatcher.environments.benchmark_python,
+        spawn_search_path=dispatcher.environments.python_spawn_search_path,
+    )
+    return evaluate_direct_outcome(request, prepared, authority, outcome)
 
 
 @dataclass(frozen=True, slots=True)
@@ -7693,26 +7593,19 @@ def _adapter_process_target(
         connection.close()
 
 
-def execute_adapter_in_spawned_process(
-    request: ExecutionRequest,
-    executor: Callable[[ExecutionRequest], AdapterOutcome],
+def _execute_measured_spawn(
+    request: object,
+    executor: Callable[[object], AdapterOutcome],
     *,
     poll_interval_seconds: float = 0.05,
     resource_sampler: ResourceSampler | None = None,
     expected_spawn_executable: Path | None = None,
     spawn_search_path: tuple[str, ...] | None = None,
 ) -> AdapterOutcome:
-    """Execute from a fresh interpreter that never receives evaluator AnnData.
+    """Execute one already-validated request with parent-owned telemetry."""
 
-    This enforces a process-level data boundary, not a filesystem or hostile-code
-    sandbox.  Only ``ExecutionRequest`` is serialized into the child.
-    """
-
-    if not isinstance(request, ExecutionRequest):
-        raise TypeError("request must be an ExecutionRequest")
     if not callable(executor):
         raise TypeError("executor must be callable")
-    request.validate_integrity()
     from multiprocessing import spawn as multiprocessing_spawn
 
     raw_spawn_executable = multiprocessing_spawn.get_executable()
@@ -8012,6 +7905,33 @@ def execute_adapter_in_spawned_process(
             process.join(timeout=2)
 
 
+def execute_adapter_in_spawned_process(
+    request: ExecutionRequest,
+    executor: Callable[[ExecutionRequest], AdapterOutcome],
+    **options: object,
+) -> AdapterOutcome:
+    """Execute a legacy non-comparator request in a measured spawned process."""
+
+    if not isinstance(request, ExecutionRequest):
+        raise TypeError("request must be an ExecutionRequest")
+    request.validate_integrity()
+    return _execute_measured_spawn(request, executor, **options)
+
+
+def execute_direct_adapter_in_spawned_process(
+    request: DirectExecutionRequest,
+    executor: Callable[[DirectExecutionRequest], AdapterOutcome],
+    **options: object,
+) -> AdapterOutcome:
+    """Execute only a direct comparator request with parent-owned telemetry."""
+
+    from .fair_comparator_execution import DirectExecutionRequest
+
+    if not isinstance(request, DirectExecutionRequest):
+        raise TypeError("request must be a DirectExecutionRequest")
+    return _execute_measured_spawn(request, executor, **options)
+
+
 __all__ = [
     "AdapterExecutor",
     "AdapterOutcome",
@@ -8027,6 +7947,7 @@ __all__ = [
     "DatasetQCPolicy",
     "DatasetBinding",
     "DevelopmentBudget",
+    "DirectRepositoryComparatorExecutor",
     "EvaluatedAttempt",
     "ExecutionEnvironmentRegistry",
     "ExecutionRequest",
@@ -8047,6 +7968,7 @@ __all__ = [
     "derive_lock_only_environment_ids",
     "derive_authorized_configurations",
     "execute_adapter_in_spawned_process",
+    "execute_direct_adapter_in_spawned_process",
     "execute_competition_plan",
     "execute_fair_comparator_request",
     "evaluate_adapter_outcome",

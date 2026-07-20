@@ -28,17 +28,40 @@ from .base import (
 from .alra import (
     ALRAConfig,
     alra_to_evaluator_counts,
+    finalize_alra_direct_output,
     finalize_alra_output,
     run_alra,
+    run_alra_direct,
 )
-from .afmf import AFMFConfig, afmf_to_evaluator_counts, finalize_afmf_output, run_afmf
+from .afmf import (
+    AFMFConfig,
+    afmf_to_evaluator_counts,
+    finalize_afmf_direct_output,
+    finalize_afmf_output,
+    run_afmf,
+    run_afmf_direct,
+)
 from .biaeimpute import (
     BiAEImputeConfig,
     biaeimpute_to_evaluator_counts,
+    finalize_biaeimpute_direct_output,
     finalize_biaeimpute_output,
     run_biaeimpute,
+    run_biaeimpute_direct,
 )
-from .dca import DCAConfig, dca_to_evaluator_counts, finalize_dca_output, run_dca
+from .dca import (
+    DCAConfig,
+    dca_to_evaluator_counts,
+    finalize_dca_direct_output,
+    finalize_dca_output,
+    run_dca,
+    run_dca_direct,
+)
+from .direct import (
+    DirectAdapterExecution,
+    DirectMethodOutput,
+    finalize_direct_method_output,
+)
 from .d3impute import (
     D3ImputeConfig,
     MatchedBulkReference,
@@ -50,9 +73,11 @@ from .d3impute import (
 )
 from .magic import (
     MAGICConfig,
+    finalize_magic_direct_output,
     finalize_magic_output,
     magic_to_evaluator_counts,
     run_magic,
+    run_magic_direct,
 )
 from .observed import (
     AdapterExecution,
@@ -74,22 +99,28 @@ from .registry import (
 )
 from .saver import (
     SAVERConfig,
+    finalize_saver_direct_output,
     finalize_saver_output,
     run_saver,
+    run_saver_direct,
     saver_to_evaluator_counts,
 )
 from .sccr import (
     SCCRConfig,
+    finalize_sccr_direct_output,
     finalize_sccr_output,
     run_sccr,
+    run_sccr_direct,
     sccr_to_evaluator_counts,
 )
 from .scsdae import (
     SCSDaeAttemptReceipt,
     SCSDaeConfig,
     SCSDaeUnavailableError,
+    finalize_scsdae_direct_output,
     finalize_scsdae_output,
     run_scsdae,
+    run_scsdae_direct,
     scsdae_to_evaluator_counts,
 )
 from .sctsi import (
@@ -105,15 +136,19 @@ from .sctsi import (
 )
 from .scziva import (
     SCZivaConfig,
+    finalize_scziva_direct_output,
     finalize_scziva_output,
     run_scziva,
+    run_scziva_direct,
     scziva_to_evaluator_counts,
 )
 from .scvi import (
     SCVIConfig,
+    finalize_scvi_direct_output,
     finalize_scvi_output,
     frequencies_to_observed_library_counts,
     run_scvi,
+    run_scvi_direct,
     scvi_to_evaluator_counts,
 )
 
@@ -371,6 +406,8 @@ __all__ = [
     "BiAEImputeConfig",
     "DCAConfig",
     "D3ImputeConfig",
+    "DirectAdapterExecution",
+    "DirectMethodOutput",
     "EnvironmentSpec",
     "EXTERNAL_REFERENCE_EVALUATOR_COUNT_CONVERTERS",
     "EXTERNAL_REFERENCE_EVALUATOR_NATIVE_SCALES",
@@ -415,18 +452,29 @@ __all__ = [
     "dca_to_evaluator_counts",
     "alra_to_evaluator_counts",
     "finalize_alra_output",
+    "finalize_alra_direct_output",
     "finalize_afmf_output",
+    "finalize_afmf_direct_output",
     "finalize_biaeimpute_output",
+    "finalize_biaeimpute_direct_output",
     "finalize_d3impute_output",
     "finalize_dca_output",
+    "finalize_dca_direct_output",
+    "finalize_direct_method_output",
     "finalize_magic_output",
+    "finalize_magic_direct_output",
     "finalize_maskimpute_output",
     "finalize_saver_output",
+    "finalize_saver_direct_output",
     "finalize_sccr_output",
+    "finalize_sccr_direct_output",
     "finalize_scsdae_output",
+    "finalize_scsdae_direct_output",
     "finalize_sctsi_output",
     "finalize_scvi_output",
+    "finalize_scvi_direct_output",
     "finalize_scziva_output",
+    "finalize_scziva_direct_output",
     "frequencies_to_observed_library_counts",
     "external_reference_output_to_evaluator_counts",
     "external_reference_output_to_evaluator_log2_cp10k",
@@ -444,21 +492,31 @@ __all__ = [
     "recent_output_to_evaluator_log2_cp10k",
     "snapshot_method_output",
     "run_alra",
+    "run_alra_direct",
     "run_afmf",
+    "run_afmf_direct",
     "run_biaeimpute",
+    "run_biaeimpute_direct",
     "run_d3impute",
     "run_dca",
+    "run_dca_direct",
     "run_magic",
+    "run_magic_direct",
     "run_capacity_matched_ae",
     "run_frozen_final_in_tree",
     "run_maskimpute",
     "run_observed",
     "run_saver",
+    "run_saver_direct",
     "run_sccr",
+    "run_sccr_direct",
     "run_scsdae",
+    "run_scsdae_direct",
     "run_sctsi",
     "run_scvi",
+    "run_scvi_direct",
     "run_scziva",
+    "run_scziva_direct",
     "saver_to_evaluator_counts",
     "sccr_to_evaluator_counts",
     "scsdae_to_evaluator_counts",

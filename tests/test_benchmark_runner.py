@@ -722,38 +722,133 @@ def test_runner_direct_dispatch_route_uses_closed_comparator_mapping(
     dispatcher_fixture: RepositoryAdapterDispatcher,
 ) -> None:
     captured: dict[str, object] = {}
+    request = object()
+    prepared = object()
+    outcome = object()
     sentinel = object()
 
-    def fake_execute(request, prepared, authority, adapters):
+    def fake_validate(selected_request, selected_prepared, authority):
         captured.update(
-            request=request,
-            prepared=prepared,
+            request=selected_request,
+            prepared=selected_prepared,
             authority=authority,
-            adapter_ids=tuple(adapters),
         )
-        return sentinel
+        return object()
 
     monkeypatch.setattr(
-        "maskimpute_benchmark.fair_comparator_execution.execute_direct_request",
-        fake_execute,
+        "maskimpute_benchmark.fair_comparator_execution.validate_direct_request",
+        fake_validate,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "execute_direct_adapter_in_spawned_process",
+        lambda selected_request, executor, **options: (
+            captured.update(
+                spawned_request=selected_request,
+                adapter_ids=tuple(executor.dispatcher.direct_comparator_adapters()),
+                spawn_options=options,
+            )
+            or outcome
+        ),
+    )
+    monkeypatch.setattr(
+        "maskimpute_benchmark.fair_comparator_execution.evaluate_direct_outcome",
+        lambda selected_request, selected_prepared, authority, selected_outcome: (
+            captured.update(
+                evaluated=(
+                    selected_request,
+                    selected_prepared,
+                    authority,
+                    selected_outcome,
+                )
+            )
+            or sentinel
+        ),
     )
     authority = dispatcher_fixture.comparator_tuning_authority
     assert authority is not None
 
     result = execute_fair_comparator_request(
-        sentinel,
-        sentinel,
+        request,
+        prepared,
         authority,
         dispatcher_fixture,
     )
 
     assert result is sentinel
     assert captured == {
-        "request": sentinel,
-        "prepared": sentinel,
+        "request": request,
+        "prepared": prepared,
         "authority": authority,
+        "spawned_request": request,
         "adapter_ids": authority.method_order,
+        "spawn_options": {
+            "resource_sampler": captured["spawn_options"]["resource_sampler"],
+            "expected_spawn_executable": (
+                dispatcher_fixture.environments.benchmark_python
+            ),
+            "spawn_search_path": (
+                dispatcher_fixture.environments.python_spawn_search_path
+            ),
+        },
+        "evaluated": (request, prepared, authority, outcome),
     }
+
+
+def test_legacy_comparator_configuration_and_dispatch_entry_points_reject_directly(
+    dispatcher_fixture: RepositoryAdapterDispatcher,
+) -> None:
+    """Migration map: legacy bind/dispatch rejects; direct tests own all behavior.
+
+    Relabel, authority drift, post-attempt mutation, and typed-config coverage live
+    in test_fair_comparator_execution.py and test_priority_method_adapters.py.
+    """
+
+    registry = load_method_registry(METHODS_PATH)
+    authority = load_comparator_tuning_authority(
+        Path.cwd(), registry=registry, require_clean=False
+    )
+    spec = registry.by_id("magic")
+    row = authority.configurations_for("magic")[0]
+    bound = bind_comparator_configuration_identity(row, spec, authority)
+
+    with pytest.raises(RunnerContractError, match="direct fair-comparator"):
+        AuthorizedConfiguration.from_bound_comparator(bound)
+
+    components = {
+        "registry_method_sha256": "1" * 64,
+        "tuning_authority_file_sha256": "2" * 64,
+        "tuning_authority_payload_sha256": "3" * 64,
+        "source_authority_sha256": "4" * 64,
+        "runtime_lock_sha256": "5" * 64,
+        "environment_registry_sha256": "6" * 64,
+    }
+    method_identity = canonical_sha256(
+        {
+            "schema": "maskimpute-comparator-configuration-method-identity-v1",
+            "configuration_payload_sha256": canonical_sha256(dict(row.payload)),
+            **components,
+        }
+    )
+    with pytest.raises(RunnerContractError, match="direct fair-comparator"):
+        AuthorizedConfiguration.create(
+            method_id="magic",
+            configuration_id=row.configuration_id,
+            kind="comparator_tuning",
+            payload=dict(row.payload),
+            requires_count_score=False,
+            requires_calibration=False,
+            configuration_method_identity_sha256=method_identity,
+            **components,
+        )
+
+    stale_request = type(
+        "StaleComparatorRequest",
+        (),
+        {"configuration_kind": "comparator_tuning"},
+    )()
+    with pytest.raises(RunnerContractError, match="direct fair-comparator"):
+        dispatcher_fixture._comparator_config(stale_request)
 
 
 @pytest.mark.parametrize(

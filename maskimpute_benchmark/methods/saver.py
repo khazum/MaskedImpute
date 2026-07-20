@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
+from .direct import DirectAdapterExecution, DirectMethodOutput, finalize_direct_method_output
 from .observed import (
     AdapterExecution,
     AdapterUnavailableError,
@@ -108,6 +109,58 @@ receipt <- c(
   paste("survival_version", locked_version("survival"), sep="\t")
 )
 writeLines(receipt, receipt_file, useBytes=TRUE)
+"""
+
+
+_SAVER_DIRECT_DRIVER = r"""
+args <- commandArgs(trailingOnly=TRUE)
+if (length(args) != 9) stop("direct adapter expected nine arguments")
+input_file <- args[[1]]
+output_file <- args[[2]]
+library_dir <- normalizePath(args[[3]], mustWork=TRUE)
+n_obs <- as.integer(args[[4]])
+n_vars <- as.integer(args[[5]])
+ncores <- as.integer(args[[6]])
+do_fast <- identical(args[[7]], "TRUE")
+seed <- as.integer(args[[8]])
+source_dir <- normalizePath(args[[9]], mustWork=TRUE)
+required_packages <- c(
+  "Matrix", "Rcpp", "RcppEigen", "SAVER", "codetools", "doParallel",
+  "foreach", "glmnet", "iterators", "lattice", "shape", "survival"
+)
+.libPaths(c(library_dir, .Library))
+missing_packages <- required_packages[!vapply(required_packages, requireNamespace,
+                                               logical(1), quietly=TRUE)]
+if (length(missing_packages)) {
+  stop(paste("there is no package called", paste(missing_packages, collapse=",")))
+}
+package_paths <- vapply(
+  required_packages,
+  function(package) normalizePath(find.package(package, lib.loc=library_dir),
+                                   mustWork=TRUE),
+  character(1)
+)
+if (any(dirname(package_paths) != library_dir)) {
+  stop("SAVER dependency escaped selected library")
+}
+suppressPackageStartupMessages(library("SAVER", character.only=TRUE,
+                                       lib.loc=library_dir))
+input_connection <- file(input_file, open="rb")
+on.exit(close(input_connection), add=TRUE)
+values <- readBin(input_connection, what="double", n=n_obs*n_vars,
+                  size=8, endian="little")
+if (length(values) != n_obs*n_vars) stop("input byte count differs")
+cell_by_gene <- matrix(values, nrow=n_obs, ncol=n_vars, byrow=TRUE)
+if (any(!is.finite(cell_by_gene)) || any(cell_by_gene < 0)) stop("input is invalid")
+set.seed(seed)
+result <- SAVER::saver(t(cell_by_gene), do.fast=do_fast, ncores=ncores,
+                       size.factor=NULL, estimates.only=TRUE)
+output <- t(as.matrix(result))
+if (!identical(dim(output), c(n_obs, n_vars))) stop("output shape differs")
+if (any(!is.finite(output)) || any(output < 0)) stop("output is invalid")
+output_connection <- file(output_file, open="wb")
+writeBin(as.double(t(output)), output_connection, size=8, endian="little")
+close(output_connection)
 """
 
 
@@ -571,6 +624,29 @@ def finalize_saver_output(
     )
 
 
+def finalize_saver_direct_output(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    normalized_output: object,
+) -> DirectMethodOutput:
+    """Validate SAVER output without deriving a content identity."""
+
+    require_method_spec(
+        spec,
+        "saver",
+        input_scale="raw_counts",
+        output_scale="method_native_normalized",
+    )
+    return finalize_direct_method_output(
+        spec,
+        method_input,
+        normalized_output,
+        output_scale=spec.output_scale,
+        obs_ids=method_input.obs_ids,
+        var_ids=method_input.var_ids,
+    )
+
+
 def run_saver(
     spec: MethodSpec,
     method_input: MethodInput,
@@ -755,9 +831,109 @@ def run_saver(
         )
 
 
+def run_saver_direct(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    *,
+    source_dir: Path,
+    rscript: Path,
+    seed: int,
+    library_dir: Path,
+    lock_manifest: Path,
+    build_receipt: Path,
+    config: SAVERConfig = SAVERConfig(),
+    work_root: Path | None = None,
+) -> DirectAdapterExecution:
+    """Run SAVER without creating legacy content-identity receipts."""
+
+    require_method_spec(
+        spec,
+        "saver",
+        input_scale="raw_counts",
+        output_scale="method_native_normalized",
+    )
+    if not isinstance(method_input, MethodInput):
+        raise TypeError("method_input must be a MethodInput")
+    if not isinstance(config, SAVERConfig):
+        raise TypeError("config must be a SAVERConfig")
+    if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed < 2**31:
+        raise ValueError("seed must be an integer in [0, 2^31)")
+    executable = require_executable(rscript)
+    for path, label in (
+        (lock_manifest, "lock manifest"),
+        (build_receipt, "build receipt"),
+    ):
+        if not isinstance(path, Path):
+            raise TypeError(f"{label} must be a pathlib.Path")
+        if path.is_symlink() or not path.is_file():
+            raise AdapterUnavailableError(
+                "environment_lock_missing", f"SAVER {label} is missing: {path}"
+            )
+    if not isinstance(library_dir, Path):
+        raise TypeError("library_dir must be a pathlib.Path")
+    if library_dir.is_symlink() or not library_dir.is_dir():
+        raise AdapterUnavailableError(
+            "environment_library_missing",
+            f"SAVER library is missing: {library_dir}",
+        )
+    selected_library = library_dir.resolve(strict=True)
+    missing = sorted(
+        package
+        for package in _SAVER_PACKAGE_KEYS
+        if not (selected_library / package).is_dir()
+    )
+    if missing:
+        raise AdapterUnavailableError(
+            "environment_library_incomplete",
+            f"SAVER library is missing packages: {','.join(missing)}",
+        )
+    if work_root is not None:
+        work_root.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix="maskimpute-saver-", dir=work_root) as temporary:
+        work_dir = Path(temporary)
+        input_path = work_dir / "input.bin"
+        output_path = work_dir / "output.bin"
+        write_raw_matrix(input_path, method_input.counts)
+        command = (
+            str(executable),
+            "--vanilla",
+            "-e",
+            _SAVER_DIRECT_DRIVER,
+            str(input_path),
+            str(output_path),
+            str(selected_library),
+            str(method_input.shape[0]),
+            str(method_input.shape[1]),
+            str(config.ncores),
+            "TRUE" if config.do_fast else "FALSE",
+            str(seed),
+            str(source_dir.resolve()),
+        )
+        result = execute_pinned_command(
+            spec,
+            source_dir,
+            command,
+            cwd=work_dir,
+            timeout_seconds=spec.resources.timeout_seconds,
+            environment={
+                "R_LIBS": str(selected_library),
+                "R_LIBS_SITE": str(selected_library),
+                "R_LIBS_USER": str(selected_library),
+            },
+        )
+        output = read_raw_output(output_path, method_input.shape)
+        return DirectAdapterExecution(
+            output=finalize_saver_direct_output(spec, method_input, output),
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+
 __all__ = [
     "SAVERConfig",
+    "finalize_saver_direct_output",
     "finalize_saver_output",
     "run_saver",
+    "run_saver_direct",
     "saver_to_evaluator_counts",
 ]

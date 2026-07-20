@@ -14,6 +14,7 @@ import zlib
 import numpy as np
 
 from .comparator_tuning import (
+    COMPARATOR_METHOD_IDS,
     ComparatorConfiguration,
     ComparatorTuningAuthority,
     ComparatorTuningError,
@@ -28,7 +29,7 @@ from .fair_comparator_plan import (
     direct_run_id,
 )
 from .methods import (
-    AdapterExecution,
+    DirectAdapterExecution,
     CORE_EVALUATOR_COUNT_CONVERTERS,
     CORE_EVALUATOR_NATIVE_SCALES,
     LEGACY_EVALUATOR_COUNT_CONVERTERS,
@@ -42,18 +43,6 @@ from .methods import (
 from .runner import AdapterOutcome, PreparedDataset, RunnerContractError
 
 
-_COMPARATOR_METHODS = (
-    "alra",
-    "magic",
-    "dca",
-    "scvi",
-    "saver",
-    "scziva",
-    "afmf",
-    "biaeimpute",
-    "sccr",
-    "scsdae",
-)
 _RUN_STATUSES = frozenset(
     {
         "completed",
@@ -62,6 +51,8 @@ _RUN_STATUSES = frozenset(
         "timeout",
         "resource_exceeded",
         "infrastructure_error",
+        "blocked_authority",
+        "budget_exhausted",
     }
 )
 
@@ -428,6 +419,8 @@ class DirectPreZeroEvidence:
             ) from error
         if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
             raise RunnerContractError("direct p_pre_zero path must be a regular file")
+        if metadata.st_uid != os.getuid():
+            raise RunnerContractError("direct p_pre_zero file owner differs")
         if path.resolve(strict=True).parent != path.parent.resolve(strict=True):
             raise RunnerContractError("direct p_pre_zero path is not owned")
         try:
@@ -603,6 +596,7 @@ def create_direct_request(
         raise RunnerContractError("direct request run ID differs")
     if not _direct_equal(describe_prepared_input(prepared), descriptor):
         raise RunnerContractError("direct prepared input descriptor differs")
+    _validate_direct_identity(entry.identity, method_spec, authority_row)
     model_seed = entry.identity.model_seed
     if method_spec.stochastic:
         if (
@@ -617,7 +611,6 @@ def create_direct_request(
         raise RunnerContractError(
             "direct deterministic comparator model seed must be null"
         )
-    _validate_direct_identity(entry.identity, method_spec, authority_row)
     if not _request_matches_prepared(
         DirectExecutionRequest(
             identity=entry.identity,
@@ -696,6 +689,8 @@ def _outcome_with_status(
         "resource_exceeded": AdapterOutcome.resource_exceeded,
         "unavailable": AdapterOutcome.unavailable,
         "infrastructure_error": AdapterOutcome.infrastructure_error,
+        "blocked_authority": AdapterOutcome.blocked_authority,
+        "budget_exhausted": AdapterOutcome.budget_exhausted,
     }[status]
     return factory(reason, **values)
 
@@ -836,9 +831,11 @@ def _evaluator_targets(
 
 def _convert_output(
     request: DirectExecutionRequest,
-    execution: AdapterExecution,
+    execution: DirectAdapterExecution,
 ) -> tuple[np.ndarray, str, np.ndarray]:
-    snapshot = execution.snapshot
+    if not isinstance(execution, DirectAdapterExecution):
+        raise TypeError("direct evaluation requires a DirectAdapterExecution")
+    snapshot = execution.output
     identity = request.identity
     if (
         snapshot.method_id != identity.method.method_id
@@ -876,7 +873,7 @@ def _convert_output(
     }
     method_id = identity.method.method_id
     if (
-        method_id not in _COMPARATOR_METHODS
+        method_id not in COMPARATOR_METHOD_IDS
         or scales.get(method_id) != snapshot.output_scale
     ):
         raise ValueError("adapter output scale is invalid")
@@ -1006,13 +1003,12 @@ def _evaluate(
     )
 
 
-def execute_direct_request(
+def validate_direct_request(
     request: DirectExecutionRequest,
     prepared: PreparedDataset,
     authority: ComparatorTuningAuthority,
-    adapters: Mapping[str, DirectAdapter],
-) -> DirectEvaluatedAttempt:
-    """Resolve, dispatch, revalidate, and evaluate one direct comparator request."""
+) -> ComparatorConfiguration:
+    """Validate all parent-owned request, dataset, and authority bindings."""
 
     if not isinstance(request, DirectExecutionRequest):
         raise TypeError("request must be a DirectExecutionRequest")
@@ -1028,9 +1024,46 @@ def execute_direct_request(
         raise RunnerContractError("direct request resource limits differ")
     if not _request_matches_prepared(request, prepared):
         raise RunnerContractError("direct request differs from prepared input")
-    row = _resolve_row(request, authority)
-    outcome = _dispatch(request, row, adapters)
+    return _resolve_row(request, authority)
+
+
+def dispatch_direct_request(
+    request: DirectExecutionRequest,
+    authority: ComparatorTuningAuthority,
+    adapters: Mapping[str, DirectAdapter],
+) -> AdapterOutcome:
+    """Resolve and dispatch inside a child without legacy request construction."""
+
+    if not isinstance(request, DirectExecutionRequest):
+        raise TypeError("request must be a DirectExecutionRequest")
+    return _dispatch(request, _resolve_row(request, authority), adapters)
+
+
+def evaluate_direct_outcome(
+    request: DirectExecutionRequest,
+    prepared: PreparedDataset,
+    authority: ComparatorTuningAuthority,
+    outcome: AdapterOutcome,
+) -> DirectEvaluatedAttempt:
+    """Revalidate direct authority after an attempt, then compute metrics."""
+
+    validate_direct_request(request, prepared, authority)
+    if not isinstance(outcome, AdapterOutcome):
+        raise TypeError("outcome must be an AdapterOutcome")
     return _evaluate(request, prepared, outcome)
+
+
+def execute_direct_request(
+    request: DirectExecutionRequest,
+    prepared: PreparedDataset,
+    authority: ComparatorTuningAuthority,
+    adapters: Mapping[str, DirectAdapter],
+) -> DirectEvaluatedAttempt:
+    """Resolve, dispatch, revalidate, and evaluate one direct comparator request."""
+
+    validate_direct_request(request, prepared, authority)
+    outcome = dispatch_direct_request(request, authority, adapters)
+    return evaluate_direct_outcome(request, prepared, authority, outcome)
 
 
 __all__ = [
@@ -1041,5 +1074,8 @@ __all__ = [
     "DirectPreZeroEvidence",
     "DirectRunResult",
     "create_direct_request",
+    "dispatch_direct_request",
+    "evaluate_direct_outcome",
     "execute_direct_request",
+    "validate_direct_request",
 ]

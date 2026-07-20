@@ -9,6 +9,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
+from .direct import DirectAdapterExecution, DirectMethodOutput, finalize_direct_method_output
 from .observed import (
     AdapterExecution,
     CompatibilityEvent,
@@ -153,7 +154,30 @@ def finalize_magic_output(
     )
 
 
-def run_magic(
+def finalize_magic_direct_output(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    normalized_output: object,
+) -> DirectMethodOutput:
+    """Validate MAGIC output without deriving a content identity."""
+
+    require_method_spec(
+        spec,
+        "magic",
+        input_scale="log1p_cp10k",
+        output_scale="log1p_cp10k",
+    )
+    return finalize_direct_method_output(
+        spec,
+        method_input,
+        normalized_output,
+        output_scale=spec.output_scale,
+        obs_ids=method_input.obs_ids,
+        var_ids=method_input.var_ids,
+    )
+
+
+def _run_magic_impl(
     spec: MethodSpec,
     method_input: MethodInput,
     *,
@@ -162,7 +186,8 @@ def run_magic(
     seed: int,
     config: MAGICConfig = MAGICConfig(),
     work_root: Path | None = None,
-) -> AdapterExecution:
+    _direct: bool = False,
+) -> AdapterExecution | DirectAdapterExecution:
     """Run pinned MAGIC code with a separately selected dependency environment."""
 
     require_method_spec(
@@ -258,6 +283,12 @@ def run_magic(
                 }
             ),
         )
+        if _direct:
+            return DirectAdapterExecution(
+                output=finalize_magic_direct_output(spec, method_input, output),
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
         snapshot = finalize_magic_output(spec, method_input, output)
         return AdapterExecution(
             snapshot=snapshot,
@@ -269,9 +300,31 @@ def run_magic(
         )
 
 
+def run_magic(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    python_executable: Path, seed: int, config: MAGICConfig = MAGICConfig(),
+    work_root: Path | None = None,
+) -> AdapterExecution:
+    return _run_magic_impl(spec, method_input, source_dir=source_dir,
+                           python_executable=python_executable, seed=seed,
+                           config=config, work_root=work_root)
+
+
+def run_magic_direct(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    python_executable: Path, seed: int, config: MAGICConfig = MAGICConfig(),
+    work_root: Path | None = None,
+) -> DirectAdapterExecution:
+    return _run_magic_impl(spec, method_input, source_dir=source_dir,
+                           python_executable=python_executable, seed=seed,
+                           config=config, work_root=work_root, _direct=True)
+
+
 __all__ = [
     "MAGICConfig",
+    "finalize_magic_direct_output",
     "finalize_magic_output",
     "magic_to_evaluator_counts",
     "run_magic",
+    "run_magic_direct",
 ]

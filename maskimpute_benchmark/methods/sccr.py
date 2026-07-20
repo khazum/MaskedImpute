@@ -11,6 +11,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
+from .direct import DirectAdapterExecution, DirectMethodOutput, finalize_direct_method_output
 from .observed import (
     AdapterExecution,
     AdapterUnavailableError,
@@ -322,7 +323,30 @@ def finalize_sccr_output(
     )
 
 
-def run_sccr(
+def finalize_sccr_direct_output(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    normalized_output: object,
+) -> DirectMethodOutput:
+    """Validate scCR output without deriving a content identity."""
+
+    require_method_spec(
+        spec,
+        "sccr",
+        input_scale="log1p_cp10k",
+        output_scale="method_native_normalized",
+    )
+    return finalize_direct_method_output(
+        spec,
+        method_input,
+        normalized_output,
+        output_scale=spec.output_scale,
+        obs_ids=method_input.obs_ids,
+        var_ids=method_input.var_ids,
+    )
+
+
+def _run_sccr_impl(
     spec: MethodSpec,
     method_input: MethodInput,
     *,
@@ -331,7 +355,8 @@ def run_sccr(
     seed: int,
     config: SCCRConfig = SCCRConfig(),
     work_root: Path | None = None,
-) -> AdapterExecution:
+    _direct: bool = False,
+) -> AdapterExecution | DirectAdapterExecution:
     """Run the exact pinned trainer with a truth-free entrypoint and graph shim."""
 
     require_method_spec(
@@ -462,6 +487,12 @@ def run_sccr(
                 }
             ),
         )
+        if _direct:
+            return DirectAdapterExecution(
+                output=finalize_sccr_direct_output(spec, method_input, output),
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
         snapshot = finalize_sccr_output(spec, method_input, output)
         return AdapterExecution(
             snapshot=snapshot,
@@ -473,13 +504,35 @@ def run_sccr(
         )
 
 
+def run_sccr(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    python_executable: Path, seed: int, config: SCCRConfig = SCCRConfig(),
+    work_root: Path | None = None,
+) -> AdapterExecution:
+    return _run_sccr_impl(spec, method_input, source_dir=source_dir,
+                          python_executable=python_executable, seed=seed,
+                          config=config, work_root=work_root)
+
+
+def run_sccr_direct(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    python_executable: Path, seed: int, config: SCCRConfig = SCCRConfig(),
+    work_root: Path | None = None,
+) -> DirectAdapterExecution:
+    return _run_sccr_impl(spec, method_input, source_dir=source_dir,
+                          python_executable=python_executable, seed=seed,
+                          config=config, work_root=work_root, _direct=True)
+
+
 __all__ = [
     "SCCR_GRAPH_CONTRACT_REVISION",
     "SCCR_GRAPH_CONTRACT_SHA256",
     "SCCR_GRAPH_CONTRACT_URL",
     "SCCRConfig",
+    "finalize_sccr_direct_output",
     "finalize_sccr_output",
     "reconstructed_sccr_knn_dense",
     "run_sccr",
+    "run_sccr_direct",
     "sccr_to_evaluator_counts",
 ]

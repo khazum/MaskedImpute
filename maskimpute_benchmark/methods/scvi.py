@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
+from .direct import DirectAdapterExecution, DirectMethodOutput, finalize_direct_method_output
 from .observed import (
     AdapterExecution,
     AdapterUnavailableError,
@@ -218,7 +219,33 @@ def finalize_scvi_output(
     )
 
 
-def run_scvi(
+def finalize_scvi_direct_output(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    decoded_frequencies: object,
+) -> DirectMethodOutput:
+    """Validate scVI output without deriving a content identity."""
+
+    require_method_spec(
+        spec,
+        "scvi",
+        input_scale="raw_counts",
+        output_scale="raw_counts",
+    )
+    count_output = frequencies_to_observed_library_counts(
+        method_input, decoded_frequencies
+    )
+    return finalize_direct_method_output(
+        spec,
+        method_input,
+        count_output,
+        output_scale=spec.output_scale,
+        obs_ids=method_input.obs_ids,
+        var_ids=method_input.var_ids,
+    )
+
+
+def _run_scvi_impl(
     spec: MethodSpec,
     method_input: MethodInput,
     *,
@@ -227,7 +254,8 @@ def run_scvi(
     seed: int,
     config: SCVIConfig = SCVIConfig(),
     work_root: Path | None = None,
-) -> AdapterExecution:
+    _direct: bool = False,
+) -> AdapterExecution | DirectAdapterExecution:
     """Run exact pinned scVI source in an explicit dependency environment."""
 
     require_method_spec(
@@ -348,6 +376,12 @@ def run_scvi(
                 }
             ),
         )
+        if _direct:
+            return DirectAdapterExecution(
+                output=finalize_scvi_direct_output(spec, method_input, frequencies),
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
         snapshot = finalize_scvi_output(spec, method_input, frequencies)
         return AdapterExecution(
             snapshot=snapshot,
@@ -359,10 +393,32 @@ def run_scvi(
         )
 
 
+def run_scvi(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    python_executable: Path, seed: int, config: SCVIConfig = SCVIConfig(),
+    work_root: Path | None = None,
+) -> AdapterExecution:
+    return _run_scvi_impl(spec, method_input, source_dir=source_dir,
+                          python_executable=python_executable, seed=seed,
+                          config=config, work_root=work_root)
+
+
+def run_scvi_direct(
+    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
+    python_executable: Path, seed: int, config: SCVIConfig = SCVIConfig(),
+    work_root: Path | None = None,
+) -> DirectAdapterExecution:
+    return _run_scvi_impl(spec, method_input, source_dir=source_dir,
+                          python_executable=python_executable, seed=seed,
+                          config=config, work_root=work_root, _direct=True)
+
+
 __all__ = [
     "SCVIConfig",
+    "finalize_scvi_direct_output",
     "finalize_scvi_output",
     "frequencies_to_observed_library_counts",
     "run_scvi",
+    "run_scvi_direct",
     "scvi_to_evaluator_counts",
 ]
