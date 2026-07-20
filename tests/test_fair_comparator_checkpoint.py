@@ -791,6 +791,44 @@ def test_review_direct_budget_rejects_signed_negative_zero() -> None:
         )
 
 
+def test_direct_checkpoint_rejects_signed_negative_zero_metric(tmp_path: Path) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    record = _attempt(plan.entries[0], status="completed").to_dict()
+    record["metrics"][0]["value"] = -0.0
+
+    with pytest.raises(RunnerContractError, match="metric value"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
+def test_direct_checkpoint_accepts_nonzero_negative_metric(tmp_path: Path) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    record = _attempt(plan.entries[0], status="completed").to_dict()
+    record["metrics"] = [
+        DirectMetricRow(
+            identity=plan.entries[0].identity,
+            metric="signed_error",
+            value=-0.25,
+            n=1,
+            status="completed",
+            reason=None,
+        ).to_dict()
+    ]
+
+    report = DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        plan,
+        (record,),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+
+    assert report.records[0]["metrics"][0]["value"] == -0.25
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     (

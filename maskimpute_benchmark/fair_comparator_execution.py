@@ -278,6 +278,7 @@ class DirectMetricRow:
             isinstance(self.value, bool)
             or not isinstance(self.value, float)
             or not math.isfinite(self.value)
+            or (self.value == 0.0 and math.copysign(1.0, self.value) < 0.0)
         ):
             raise RunnerContractError("direct metric value is invalid")
         if self.status not in _RUN_STATUSES:

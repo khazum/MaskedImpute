@@ -858,9 +858,7 @@ def test_direct_spawned_executor_enforces_deadline_with_parent_telemetry() -> No
     assert outcome.rss_measurement == "synthetic_parent_rss"
 
 
-def test_direct_spawned_executor_fails_closed_without_required_gpu_telemetry() -> (
-    None
-):
+def test_direct_spawned_executor_fails_closed_without_required_gpu_telemetry() -> None:
     from maskimpute_benchmark import runner as runner_module
 
     request, _entry, _prepared_value, _descriptor, _spec, _row, _authority = (
@@ -976,4 +974,20 @@ def test_direct_metric_and_prezero_statuses_are_closed() -> None:
             encoding=None,
             path=None,
             compressed_byte_count=0,
+        )
+
+
+def test_direct_metric_rejects_signed_negative_zero() -> None:
+    request, _entry, _prepared_value, _descriptor, _spec, _row, _authority = (
+        _direct_case()
+    )
+
+    with pytest.raises(RunnerContractError, match="metric value"):
+        DirectMetricRow(
+            identity=request.identity,
+            metric="signed_error",
+            value=-0.0,
+            n=1,
+            status="completed",
+            reason=None,
         )

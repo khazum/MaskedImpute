@@ -526,7 +526,9 @@ def _validate_record(
             raise RunnerContractError("direct checkpoint metric is invalid")
         metric_value = metric.get("value")
         if metric_value is not None and (
-            type(metric_value) is not float or not math.isfinite(metric_value)
+            type(metric_value) is not float
+            or not math.isfinite(metric_value)
+            or (metric_value == 0.0 and math.copysign(1.0, metric_value) < 0.0)
         ):
             raise RunnerContractError("direct checkpoint metric value is invalid")
         metric_reason = metric.get("reason")
