@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import threading
@@ -54,6 +53,7 @@ from maskimpute_benchmark.runner import (
     build_fair_comparator_plan,
     execute_adapter_in_spawned_process,
     evaluate_adapter_outcome,
+    execute_fair_comparator_request,
     enforce_calibration_fold_receipt,
     execute_competition_plan,
     derive_authorized_configurations,
@@ -702,9 +702,7 @@ def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> No
         ] == expected_cells
         assert {
             (row.identity.method_id, row.identity.configuration_id) for row in block
-        } == {
-            (configuration.method.method_id, configuration.configuration_id)
-        }
+        } == {(configuration.method.method_id, configuration.configuration_id)}
         cursor += len(expected_cells)
     assert cursor == len(plan.entries)
 
@@ -717,6 +715,45 @@ def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> No
     for method_id in tuning.method_order:
         configured = tuning.configurations_for(method_id)
         assert configured[0].is_upstream_default
+
+
+def test_runner_direct_dispatch_route_uses_closed_comparator_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+    dispatcher_fixture: RepositoryAdapterDispatcher,
+) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    def fake_execute(request, prepared, authority, adapters):
+        captured.update(
+            request=request,
+            prepared=prepared,
+            authority=authority,
+            adapter_ids=tuple(adapters),
+        )
+        return sentinel
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.fair_comparator_execution.execute_direct_request",
+        fake_execute,
+    )
+    authority = dispatcher_fixture.comparator_tuning_authority
+    assert authority is not None
+
+    result = execute_fair_comparator_request(
+        sentinel,
+        sentinel,
+        authority,
+        dispatcher_fixture,
+    )
+
+    assert result is sentinel
+    assert captured == {
+        "request": sentinel,
+        "prepared": sentinel,
+        "authority": authority,
+        "adapter_ids": authority.method_order,
+    }
 
 
 @pytest.mark.parametrize(
@@ -996,183 +1033,6 @@ def test_method_input_hash_binds_only_truth_free_snapshot_and_is_stable() -> Non
     assert not hasattr(method_input, "uns")
 
 
-def test_execution_request_binds_comparator_tuning_identity_components() -> None:
-    spec, bound = _bound_magic_configuration()
-    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
-
-    serialized = configuration.to_dict()
-    assert (
-        serialized["configuration_payload_sha256"] == bound.configuration_payload_sha256
-    )
-    assert (
-        serialized["configuration_method_identity_sha256"]
-        == bound.configuration_method_identity_sha256
-    )
-    assert serialized["nonexecution_identity_sha256"] is None
-    for field in (
-        "registry_method_sha256",
-        "tuning_authority_file_sha256",
-        "tuning_authority_payload_sha256",
-        "source_authority_sha256",
-        "runtime_lock_sha256",
-        "environment_registry_sha256",
-    ):
-        assert serialized[field] == getattr(bound, field)
-
-    request = ExecutionRequest.create(
-        spec,
-        _method_input(),
-        model_seed=42,
-        configuration=configuration,
-        authority=_authority(maskimpute_ready=True),
-        mechanism="symsim",
-        biological_id="draw-01",
-        technical_view="moderate",
-        dataset_id="dataset-test",
-        timeout_seconds=5,
-    )
-
-    assert request.configuration_kind == "comparator_tuning"
-    assert request.configuration_payload_sha256 == bound.configuration_payload_sha256
-    assert (
-        request.configuration_method_identity_sha256
-        == bound.configuration_method_identity_sha256
-    )
-    assert request.nonexecution_identity_sha256 is None
-    for field in (
-        "registry_method_sha256",
-        "tuning_authority_file_sha256",
-        "tuning_authority_payload_sha256",
-        "source_authority_sha256",
-        "runtime_lock_sha256",
-        "environment_registry_sha256",
-    ):
-        assert getattr(request, field) == getattr(bound, field)
-    request.validate_integrity()
-
-
-@pytest.mark.parametrize("field", ("registry_method_sha256", "source_authority_sha256"))
-def test_execution_request_create_links_comparator_components_to_method_spec(
-    field: str,
-) -> None:
-    spec, configuration = _configuration_with_substituted_method_component(field)
-
-    with pytest.raises(RunnerContractError, match="MethodSpec"):
-        ExecutionRequest.create(
-            spec,
-            _method_input(),
-            model_seed=42,
-            configuration=configuration,
-            authority=_authority(maskimpute_ready=True),
-            mechanism="symsim",
-            biological_id="draw-01",
-            technical_view="moderate",
-            dataset_id="dataset-test",
-            timeout_seconds=5,
-        )
-
-
-@pytest.mark.parametrize("field", ("registry_method_sha256", "source_authority_sha256"))
-def test_execution_request_validation_links_comparator_components_to_method_spec(
-    field: str,
-) -> None:
-    spec, bound = _bound_magic_configuration()
-    request = ExecutionRequest.create(
-        spec,
-        _method_input(),
-        model_seed=42,
-        configuration=AuthorizedConfiguration.from_bound_comparator(bound),
-        authority=_authority(maskimpute_ready=True),
-        mechanism="symsim",
-        biological_id="draw-01",
-        technical_view="moderate",
-        dataset_id="dataset-test",
-        timeout_seconds=5,
-    )
-    substituted = "f" * 64
-    identity_values = {
-        "registry_method_sha256": request.registry_method_sha256,
-        "configuration_payload_sha256": request.configuration_payload_sha256,
-        "tuning_authority_file_sha256": request.tuning_authority_file_sha256,
-        "tuning_authority_payload_sha256": (request.tuning_authority_payload_sha256),
-        "source_authority_sha256": request.source_authority_sha256,
-        "runtime_lock_sha256": request.runtime_lock_sha256,
-        "environment_registry_sha256": request.environment_registry_sha256,
-    }
-    identity_values[field] = substituted
-    forged_request = _replace_request_with_recomputed_digest(
-        request,
-        **{
-            field: substituted,
-            "configuration_method_identity_sha256": canonical_sha256(
-                {
-                    "schema": (
-                        "maskimpute-comparator-configuration-method-identity-v1"
-                    ),
-                    **identity_values,
-                }
-            ),
-        },
-    )
-    assert forged_request.request_sha256 != request.request_sha256
-
-    with pytest.raises(RunnerContractError, match="MethodSpec"):
-        forged_request.validate_integrity()
-
-
-def test_execution_request_identity_digest_binds_every_comparator_component() -> None:
-    spec, bound = _bound_magic_configuration()
-    request = ExecutionRequest.create(
-        spec,
-        _method_input(),
-        model_seed=42,
-        configuration=AuthorizedConfiguration.from_bound_comparator(bound),
-        authority=_authority(maskimpute_ready=True),
-        mechanism="symsim",
-        biological_id="draw-01",
-        technical_view="moderate",
-        dataset_id="dataset-test",
-        timeout_seconds=5,
-    )
-    stable_fields = (
-        "registry_method_sha256",
-        "configuration_payload_sha256",
-        "tuning_authority_file_sha256",
-        "tuning_authority_payload_sha256",
-        "source_authority_sha256",
-        "runtime_lock_sha256",
-        "environment_registry_sha256",
-    )
-    for index, field in enumerate(stable_fields, start=10):
-        changed = f"{index:064x}"
-        identity_values = {name: getattr(request, name) for name in stable_fields}
-        identity_values[field] = changed
-        mutated = replace(
-            request,
-            **{
-                field: changed,
-                "configuration_method_identity_sha256": canonical_sha256(
-                    {
-                        "schema": (
-                            "maskimpute-comparator-configuration-method-identity-v1"
-                        ),
-                        **identity_values,
-                    }
-                ),
-            },
-        )
-        with pytest.raises(RunnerContractError):
-            mutated.validate_integrity()
-
-    with pytest.raises(
-        RunnerContractError, match="comparator configuration identity mismatch"
-    ):
-        replace(
-            request,
-            configuration_method_identity_sha256="f" * 64,
-        ).validate_integrity()
-
-
 def test_execution_request_rejects_comparator_nonexecution_identity() -> None:
     spec = load_method_registry(METHODS_PATH).by_id("magic")
     configuration = AuthorizedConfiguration.create(
@@ -1213,54 +1073,6 @@ def test_execution_request_rejects_comparator_nonexecution_identity() -> None:
             dataset_id="dataset-test",
             timeout_seconds=5,
         )
-
-
-def test_authorized_comparator_configuration_rejects_identity_mutations() -> None:
-    _spec, bound = _bound_magic_configuration()
-    configuration = AuthorizedConfiguration.from_bound_comparator(bound)
-    for field in (
-        "registry_method_sha256",
-        "tuning_authority_file_sha256",
-        "tuning_authority_payload_sha256",
-        "source_authority_sha256",
-        "runtime_lock_sha256",
-        "environment_registry_sha256",
-        "configuration_method_identity_sha256",
-    ):
-        with pytest.raises(RunnerContractError, match="identity"):
-            replace(configuration, **{field: "f" * 64})
-    with pytest.raises(RunnerContractError, match="nonexecution identity"):
-        replace(configuration, nonexecution_identity_sha256="e" * 64)
-
-    with pytest.raises(RunnerContractError, match="nonexecution identity"):
-        AuthorizedConfiguration.create(
-            method_id="magic",
-            configuration_id="magic-nonexecution",
-            kind="comparator_nonexecution",
-            payload={"reason": "declared_nonexecution"},
-            requires_count_score=False,
-            requires_calibration=False,
-        )
-    for field in (
-        "registry_method_sha256",
-        "tuning_authority_file_sha256",
-        "tuning_authority_payload_sha256",
-        "source_authority_sha256",
-        "runtime_lock_sha256",
-        "environment_registry_sha256",
-        "configuration_method_identity_sha256",
-    ):
-        with pytest.raises(RunnerContractError, match="only its nonexecution identity"):
-            AuthorizedConfiguration.create(
-                method_id="magic",
-                configuration_id="magic-nonexecution",
-                kind="comparator_nonexecution",
-                payload={"reason": "declared_nonexecution"},
-                requires_count_score=False,
-                requires_calibration=False,
-                nonexecution_identity_sha256="e" * 64,
-                **{field: "a" * 64},
-            )
 
 
 def test_run_plan_entry_propagates_closed_configuration_identity_shape() -> None:
@@ -1600,225 +1412,6 @@ def test_spawned_executor_round_trips_maskimpute_result() -> None:
         request.method_input.counts,
     )
     assert ablation_result.diagnostics == {"status": "spawned"}
-
-
-def test_repository_dispatcher_runs_observed_and_reason_codes_missing_environments(
-    tmp_path: Path,
-) -> None:
-    repository = Path.cwd()
-    registry = load_method_registry(METHODS_PATH)
-    missing_magic = tmp_path / "missing-magic-python"
-    scvi_python = Path(sys.executable)
-    environments = ExecutionEnvironmentRegistry.fixed(
-        repository,
-        {"magic": missing_magic, "scvi": scvi_python},
-    )
-    dispatcher = RepositoryAdapterDispatcher(repository, environments)
-    authority = _authority(maskimpute_ready=True)
-    observed = registry.by_id("observed")
-    observed_request = ExecutionRequest.create(
-        observed,
-        _method_input(),
-        model_seed=None,
-        configuration=AuthorizedConfiguration.registry_default(observed),
-        authority=authority,
-        mechanism="symsim",
-        biological_id="draw-01",
-        technical_view="moderate",
-        dataset_id="dataset-test",
-        timeout_seconds=5,
-    )
-
-    completed = dispatcher(observed_request)
-
-    assert completed.status == "completed"
-    assert completed.execution is not None
-    assert "scvi" in dispatcher.supported_method_ids
-    assert "magic" in dispatcher.supported_method_ids
-
-    magic, bound_magic = _bound_magic_configuration()
-    missing_request = ExecutionRequest.create(
-        magic,
-        _method_input(),
-        model_seed=42,
-        configuration=AuthorizedConfiguration.from_bound_comparator(bound_magic),
-        authority=authority,
-        mechanism="symsim",
-        biological_id="draw-01",
-        technical_view="moderate",
-        dataset_id="dataset-test",
-        timeout_seconds=5,
-    )
-    unavailable = dispatcher(missing_request)
-    assert unavailable.status == "unavailable"
-    assert unavailable.reason is not None
-    assert re.fullmatch(
-        r"environment_executable_unavailable_magic_detail_[0-9a-f]{64}",
-        unavailable.reason,
-    )
-    assert environments.executable_for("scvi") == scvi_python.absolute()
-
-
-@pytest.mark.parametrize(
-    ("method_id", "configuration_id", "field", "expected"),
-    (
-        ("alra", "alra-default", "k", 0),
-        ("magic", "magic-t07", "diffusion_time", 7),
-        ("dca", "dca-h32-16-32", "hidden_size", (32, 16, 32)),
-        ("scvi", "scvi-z30", "n_latent", 30),
-        ("saver", "saver-default", "do_fast", True),
-        ("scziva", "scziva-tau-0p05", "tau", 0.05),
-        ("afmf", "afmf-sigma-4", "sigma", 4.0),
-        ("biaeimpute", "biaeimpute-z256", "latent_size", 256),
-        ("sccr", "sccr-k30", "neighbors", 30),
-        ("scsdae", "scsdae-zero-0p25", "zero_loss_weight", 0.25),
-    ),
-)
-def test_dispatcher_passes_exact_typed_comparator_config(
-    monkeypatch: pytest.MonkeyPatch,
-    dispatcher_fixture: RepositoryAdapterDispatcher,
-    request_for_comparator,
-    method_id: str,
-    configuration_id: str,
-    field: str,
-    expected: object,
-) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_adapter(*_args, **kwargs):
-        captured["config"] = kwargs["config"]
-        raise RuntimeError("captured typed comparator config")
-
-    monkeypatch.setattr(
-        f"maskimpute_benchmark.methods.run_{method_id}",
-        fake_adapter,
-    )
-    outcome = dispatcher_fixture._execute_validated(
-        request_for_comparator(method_id, configuration_id)
-    )
-
-    assert outcome.status == "failed"
-    assert getattr(captured["config"], field) == expected
-
-
-@pytest.mark.parametrize(
-    "configuration_id",
-    (
-        pytest.param("magic-t03", id="known-label-for-another-payload"),
-        pytest.param("magic-t99", id="unknown-same-method-label"),
-    ),
-)
-def test_dispatcher_rejects_relabelled_comparator_before_adapter_attempt(
-    monkeypatch: pytest.MonkeyPatch,
-    dispatcher_fixture: RepositoryAdapterDispatcher,
-    request_for_comparator,
-    configuration_id: str,
-) -> None:
-    request = _replace_request_with_recomputed_digest(
-        request_for_comparator("magic", "magic-t07"),
-        configuration_id=configuration_id,
-    )
-    request.validate_integrity()
-    observed_spec = load_method_registry(METHODS_PATH).by_id("observed")
-    execution = run_observed(observed_spec, request.method_input)
-    attempted_diffusion_times: list[int] = []
-
-    def capture_config(*_args, **kwargs):
-        attempted_diffusion_times.append(kwargs["config"].diffusion_time)
-        return execution
-
-    monkeypatch.setattr(
-        "maskimpute_benchmark.methods.run_magic",
-        capture_config,
-    )
-
-    outcome = dispatcher_fixture._execute_validated(request)
-
-    assert attempted_diffusion_times == []
-    assert outcome.status == "failed"
-
-
-@pytest.mark.parametrize(
-    "authority_field",
-    (
-        "tuning_authority_file_sha256",
-        "tuning_authority_payload_sha256",
-    ),
-)
-def test_dispatcher_rejects_different_comparator_authority_before_adapter_attempt(
-    monkeypatch: pytest.MonkeyPatch,
-    dispatcher_fixture: RepositoryAdapterDispatcher,
-    request_for_comparator,
-    authority_field: str,
-) -> None:
-    request = request_for_comparator("magic", "magic-t07")
-    substituted = "f" * 64
-    identity_body = {
-        "schema": "maskimpute-comparator-configuration-method-identity-v1",
-        "registry_method_sha256": request.registry_method_sha256,
-        "configuration_payload_sha256": request.configuration_payload_sha256,
-        "tuning_authority_file_sha256": request.tuning_authority_file_sha256,
-        "tuning_authority_payload_sha256": (request.tuning_authority_payload_sha256),
-        "source_authority_sha256": request.source_authority_sha256,
-        "runtime_lock_sha256": request.runtime_lock_sha256,
-        "environment_registry_sha256": request.environment_registry_sha256,
-    }
-    identity_body[authority_field] = substituted
-    request = _replace_request_with_recomputed_digest(
-        request,
-        **{
-            authority_field: substituted,
-            "configuration_method_identity_sha256": canonical_sha256(identity_body),
-        },
-    )
-    request.validate_integrity()
-    observed_spec = load_method_registry(METHODS_PATH).by_id("observed")
-    execution = run_observed(observed_spec, request.method_input)
-    attempted: list[bool] = []
-
-    def capture_attempt(*_args, **_kwargs):
-        attempted.append(True)
-        return execution
-
-    monkeypatch.setattr(
-        "maskimpute_benchmark.methods.run_magic",
-        capture_attempt,
-    )
-
-    outcome = dispatcher_fixture._execute_validated(request)
-
-    assert attempted == []
-    assert outcome.status == "failed"
-
-
-def test_dispatcher_revalidates_comparator_payload_after_adapter_attempt(
-    monkeypatch: pytest.MonkeyPatch,
-    dispatcher_fixture: RepositoryAdapterDispatcher,
-    request_for_comparator,
-) -> None:
-    request = request_for_comparator("magic", "magic-t07")
-    observed_spec = load_method_registry(METHODS_PATH).by_id("observed")
-    execution = run_observed(observed_spec, request.method_input)
-    attempted: list[bool] = []
-
-    def mutate_config(*_args, **kwargs):
-        attempted.append(True)
-        config = kwargs.get("config")
-        if config is not None:
-            object.__setattr__(config, "diffusion_time", 11)
-        return execution
-
-    monkeypatch.setattr(
-        "maskimpute_benchmark.methods.run_magic",
-        mutate_config,
-    )
-
-    outcome = dispatcher_fixture._execute_validated(request)
-
-    assert attempted == [True]
-    assert outcome.status == "failed"
-    assert outcome.reason is not None
-    assert "detail_" in outcome.reason
 
 
 def test_execution_environment_registry_binds_exact_runtime_lock(

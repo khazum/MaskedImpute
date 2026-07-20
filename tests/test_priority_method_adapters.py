@@ -16,11 +16,17 @@ from scipy.stats import boxcox
 
 import maskimpute_benchmark.methods as benchmark_methods
 from maskimpute_benchmark.methods import (
+    AdapterExecution,
     SourceSpec,
     load_method_registry,
     prepare_method_input,
+    snapshot_method_output,
 )
 from maskimpute_benchmark.methods.observed import AdapterUnavailableError
+from maskimpute_benchmark.runner import (
+    ExecutionEnvironmentRegistry,
+    RepositoryAdapterDispatcher,
+)
 
 
 def _adapter_module(name: str):
@@ -231,6 +237,74 @@ def test_priority_configs_match_pinned_defaults_and_required_adapter_policy() ->
         gene_regularization=0.1,
         fixed_seed=42,
     )
+
+
+def test_direct_repository_mapping_dispatches_all_ten_typed_configs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    registry = _registry()
+    from maskimpute_benchmark.comparator_tuning import (
+        load_comparator_tuning_authority,
+    )
+
+    authority = load_comparator_tuning_authority(
+        Path.cwd(),
+        registry=registry,
+        require_clean=False,
+    )
+    for method_id in authority.method_order:
+        source = registry.by_id(method_id).source.cache_path
+        assert source is not None
+        (tmp_path / source).mkdir(parents=True, exist_ok=True)
+    environments = ExecutionEnvironmentRegistry.fixed(
+        tmp_path,
+        {method_id: Path(sys.executable) for method_id in authority.method_order},
+    )
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "revalidate_for",
+        lambda _self, _method_id: None,
+    )
+    dispatcher = RepositoryAdapterDispatcher(tmp_path, environments)
+    adapters = dispatcher.direct_comparator_adapters()
+    method_input = _method_input(cells=8, genes=6)
+    received: dict[str, object] = {}
+
+    for method_id in authority.method_order:
+        spec = registry.by_id(method_id)
+
+        def spy(*_args, _method_id=method_id, **kwargs):
+            received[_method_id] = kwargs["config"]
+            return AdapterExecution(
+                snapshot=snapshot_method_output(
+                    spec,
+                    method_input,
+                    method_input.counts,
+                    source_dataset_sha256=method_input.source_dataset_sha256,
+                    output_scale=spec.output_scale,
+                    obs_ids=method_input.obs_ids,
+                    var_ids=method_input.var_ids,
+                ),
+                compatibility_log=(),
+                environment_receipt=(),
+                stdout=b"",
+                stderr=b"",
+                command=None,
+            )
+
+        monkeypatch.setattr(benchmark_methods, f"run_{method_id}", spy)
+        row = authority.configurations_for(method_id)[0]
+        outcome = adapters[method_id](
+            spec,
+            method_input,
+            seed=42,
+            config=row.decode(),
+        )
+        assert outcome.status == "completed"
+        assert received[method_id] == row.decode()
+
+    assert tuple(adapters) == authority.method_order
 
 
 @pytest.mark.parametrize(

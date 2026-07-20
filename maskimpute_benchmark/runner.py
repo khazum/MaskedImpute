@@ -31,6 +31,10 @@ import numpy as np
 
 if TYPE_CHECKING:
     from .comparator_tuning import BoundComparatorConfiguration
+    from .fair_comparator_execution import (
+        DirectEvaluatedAttempt,
+        DirectExecutionRequest,
+    )
     from .fair_comparator_plan import DirectCompetitionPlan
     from .trajectory_dataset import RegisteredTrajectoryBinding
 
@@ -6782,6 +6786,164 @@ class RepositoryAdapterDispatcher:
             )
         object.__setattr__(self, "repository_root", repository)
 
+    def direct_comparator_adapters(
+        self,
+    ) -> Mapping[str, Callable[..., AdapterOutcome]]:
+        """Return the closed production mapping for direct comparator dispatch."""
+
+        method_ids = (
+            "alra",
+            "magic",
+            "dca",
+            "scvi",
+            "saver",
+            "scziva",
+            "afmf",
+            "biaeimpute",
+            "sccr",
+            "scsdae",
+        )
+
+        def adapter_for(method_id: str) -> Callable[..., AdapterOutcome]:
+            def execute(
+                spec: MethodSpec,
+                method_input: MethodInput,
+                *,
+                seed: int | None,
+                config: ComparatorAdapterConfig,
+            ) -> AdapterOutcome:
+                return self._execute_direct_comparator(
+                    method_id,
+                    spec,
+                    method_input,
+                    seed=seed,
+                    config=config,
+                )
+
+            return execute
+
+        return MappingProxyType(
+            {method_id: adapter_for(method_id) for method_id in method_ids}
+        )
+
+    def _execute_direct_comparator(
+        self,
+        method_id: str,
+        spec: MethodSpec,
+        method_input: MethodInput,
+        *,
+        seed: int | None,
+        config: ComparatorAdapterConfig,
+    ) -> AdapterOutcome:
+        """Invoke one repository adapter from the closed direct mapping."""
+
+        if spec.id != method_id:
+            raise RunnerContractError("direct repository adapter method differs")
+        monitor = (
+            self.environments.change_monitor() if self.monitor_runtime_changes else None
+        )
+        try:
+            if self.monitor_runtime_changes:
+                self.environments.revalidate_for(method_id)
+            else:
+                self.environments.revalidate_control_state_for(method_id)
+            if monitor is not None:
+                monitor.assert_unchanged()
+            try:
+                executable = self.environments.executable_for(method_id)
+                if executable is None:
+                    return AdapterOutcome.unavailable(
+                        f"environment_executable_unavailable_{method_id}"
+                    )
+                source = spec.source.cache_path
+                if source is None:
+                    return AdapterOutcome.unavailable(
+                        f"pinned_source_path_unavailable_{method_id}"
+                    )
+                if isinstance(seed, bool) or not isinstance(seed, int):
+                    return AdapterOutcome.failed(f"stochastic_seed_missing_{method_id}")
+                source_dir = self.repository_root / source
+                if method_id == "alra":
+                    from .methods import run_alra
+
+                    execution = run_alra(
+                        spec,
+                        method_input,
+                        source_dir=source_dir,
+                        rscript=executable,
+                        seed=seed,
+                        config=config,
+                    )
+                elif method_id == "saver":
+                    from .methods import run_saver
+
+                    execution = run_saver(
+                        spec,
+                        method_input,
+                        source_dir=source_dir,
+                        rscript=executable,
+                        seed=seed,
+                        library_dir=(
+                            self.repository_root / "artifacts/envs/saver-r/library"
+                        ),
+                        lock_manifest=(
+                            self.repository_root / "environments/saver-r.lock.json"
+                        ),
+                        build_receipt=(
+                            self.repository_root
+                            / "environments/saver-r.build-receipt.json"
+                        ),
+                        config=config,
+                    )
+                else:
+                    from .methods import (
+                        run_afmf,
+                        run_biaeimpute,
+                        run_dca,
+                        run_magic,
+                        run_sccr,
+                        run_scsdae,
+                        run_scvi,
+                        run_scziva,
+                    )
+
+                    function = {
+                        "afmf": run_afmf,
+                        "biaeimpute": run_biaeimpute,
+                        "dca": run_dca,
+                        "magic": run_magic,
+                        "sccr": run_sccr,
+                        "scsdae": run_scsdae,
+                        "scvi": run_scvi,
+                        "scziva": run_scziva,
+                    }[method_id]
+                    execution = function(
+                        spec,
+                        method_input,
+                        source_dir=source_dir,
+                        python_executable=executable,
+                        seed=seed,
+                        config=config,
+                    )
+                return AdapterOutcome.completed(
+                    execution,
+                    runtime_seconds=0,
+                    peak_rss_bytes=0,
+                    peak_gpu_bytes=0,
+                )
+            finally:
+                if monitor is not None:
+                    monitor.assert_unchanged()
+                if self.monitor_runtime_changes:
+                    self.environments.revalidate_for(method_id)
+                else:
+                    self.environments.revalidate_control_state_for(method_id)
+        except RuntimeEnvironmentError as error:
+            raise RunnerContractError(str(error)) from error
+        finally:
+            if monitor is not None:
+                monitor.close()
+
     def _comparator_config(self, request: ExecutionRequest) -> ComparatorAdapterConfig:
         if request.configuration_kind != "comparator_tuning":
             raise RunnerContractError("comparator request is not tuning-authorized")
@@ -7174,6 +7336,26 @@ class RepositoryAdapterDispatcher:
                 _adapter_failure_reason(error, method_id, unavailable=False),
                 stderr=str(error).encode("utf-8", errors="replace"),
             )
+
+
+def execute_fair_comparator_request(
+    request: DirectExecutionRequest,
+    prepared: PreparedDataset,
+    authority: ComparatorTuningAuthority,
+    dispatcher: RepositoryAdapterDispatcher,
+) -> DirectEvaluatedAttempt:
+    """Route one direct request through the closed repository adapter mapping."""
+
+    if not isinstance(dispatcher, RepositoryAdapterDispatcher):
+        raise TypeError("dispatcher must be a RepositoryAdapterDispatcher")
+    from .fair_comparator_execution import execute_direct_request
+
+    return execute_direct_request(
+        request,
+        prepared,
+        authority,
+        dispatcher.direct_comparator_adapters(),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -7866,6 +8048,7 @@ __all__ = [
     "derive_authorized_configurations",
     "execute_adapter_in_spawned_process",
     "execute_competition_plan",
+    "execute_fair_comparator_request",
     "evaluate_adapter_outcome",
     "enforce_calibration_fold_receipt",
     "method_input_sha256",
