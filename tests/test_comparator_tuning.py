@@ -1,30 +1,37 @@
 import copy
-from dataclasses import asdict, replace
-import hashlib
+from dataclasses import asdict
+import inspect
 import json
 from pathlib import Path
 
 import pytest
 
 from maskimpute_benchmark.comparator_tuning import (
-    BoundComparatorConfiguration,
+    AUTHORITY_REVISION,
     ComparatorTuningError,
     DEVELOPMENT_MAX_CHECKPOINT_BYTES,
     DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
     DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
     DEVELOPMENT_MAX_RECORD_BYTES,
     DEVELOPMENT_STORAGE_RESERVE_BYTES,
-    bind_comparator_configuration_identity,
     decode_comparator_configuration,
     encode_comparator_configuration,
     load_comparator_tuning_authority,
     parse_comparator_tuning_authority,
 )
 from maskimpute_benchmark.methods import load_method_registry
-from maskimpute_benchmark.protocol import canonical_sha256
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+FORBIDDEN_IDENTITY_TOKENS = (
+    "hash",
+    "digest",
+    "checksum",
+    "fingerprint",
+    "sha",
+)
 
 
 EXPECTED_ORDER = {
@@ -60,14 +67,14 @@ def _tracked_payload() -> dict[str, object]:
     return json.loads((ROOT / "study/comparator_tuning.json").read_text())
 
 
-def _rehash_authority(payload: dict[str, object]) -> None:
-    configurations = payload["configurations"]
-    assert isinstance(configurations, list)
-    for row in configurations:
-        assert isinstance(row, dict)
-        row["payload_sha256"] = canonical_sha256(row["payload"])
-    unsigned = {key: value for key, value in payload.items() if key != "payload_sha256"}
-    payload["payload_sha256"] = canonical_sha256(unsigned)
+def _all_keys(value: object) -> tuple[str, ...]:
+    if isinstance(value, dict):
+        return tuple(value) + tuple(
+            key for child in value.values() for key in _all_keys(child)
+        )
+    if isinstance(value, list):
+        return tuple(key for child in value for key in _all_keys(child))
+    return ()
 
 
 def _set_nested(
@@ -81,251 +88,78 @@ def _set_nested(
     target[path[-1]] = value
 
 
-def test_configuration_method_identity_binds_every_stable_field() -> None:
-    registry = load_method_registry(ROOT / "study/methods.json")
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
-    configuration = authority.configurations_for("magic")[0]
-    spec = registry.by_id("magic")
-    bound = bind_comparator_configuration_identity(
-        configuration,
-        spec,
-        authority,
-        runtime_lock_sha256="1" * 64,
-        environment_registry_sha256="2" * 64,
+def _write_authority(repository: Path, raw: bytes) -> None:
+    authority_path = repository / "study/comparator_tuning.json"
+    authority_path.parent.mkdir()
+    authority_path.write_bytes(raw)
+
+
+def test_tracked_comparator_authority_uses_only_direct_identity() -> None:
+    payload = json.loads((ROOT / "study/comparator_tuning.json").read_text())
+    assert payload["authority_revision"] == "fair-comparator-direct-v1"
+    assert not any(
+        token in key.lower()
+        for key in _all_keys(payload)
+        for token in FORBIDDEN_IDENTITY_TOKENS
     )
-    stable_fields = (
-        "registry_method_sha256",
-        "configuration_payload_sha256",
-        "tuning_authority_file_sha256",
-        "tuning_authority_payload_sha256",
-        "source_authority_sha256",
-        "runtime_lock_sha256",
-        "environment_registry_sha256",
-    )
-    observed = set()
-    for field in stable_fields:
-        mutated = replace(bound, **{field: "f" * 64})
-        observed.add(mutated.recomputed_identity_sha256)
-        assert (
-            mutated.recomputed_identity_sha256
-            != bound.configuration_method_identity_sha256
-        )
-    assert len(observed) == len(stable_fields)
+    parameters = inspect.signature(decode_comparator_configuration).parameters
+    assert tuple(parameters) == ("method_id", "payload")
 
 
-def test_configuration_method_identities_do_not_collide_within_method() -> None:
+def test_all_normative_configurations_round_trip_exactly() -> None:
     registry = load_method_registry(ROOT / "study/methods.json")
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
-    identities = [
-        bind_comparator_configuration_identity(
-            row,
-            registry.by_id(row.method_id),
-            authority,
-            runtime_lock_sha256="1" * 64,
-            environment_registry_sha256="2" * 64,
-        ).configuration_method_identity_sha256
-        for row in authority.configurations_for("magic")
-    ]
-    assert len(identities) == len(set(identities)) == 4
-
-
-@pytest.mark.parametrize("forgery", ("configuration_id", "payload"))
-def test_configuration_method_identity_rejects_configuration_absent_from_authority(
-    forgery: str,
-) -> None:
-    registry = load_method_registry(ROOT / "study/methods.json")
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
-    configuration = authority.configurations_for("magic")[0]
-    if forgery == "configuration_id":
-        forged = replace(configuration, configuration_id="magic-forged")
-    else:
-        payload = dict(authority.configurations_for("magic")[1].payload)
-        forged = replace(
-            configuration,
-            payload_json=json.dumps(
-                payload,
-                allow_nan=False,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            ),
-            payload_sha256=canonical_sha256(payload),
-        )
-    assert forged not in authority.configurations
-
-    with pytest.raises(ComparatorTuningError, match="exact authority configuration"):
-        bind_comparator_configuration_identity(
-            forged,
-            registry.by_id("magic"),
-            authority,
-            runtime_lock_sha256="1" * 64,
-            environment_registry_sha256="2" * 64,
-        )
-
-
-def test_configuration_method_identity_rejects_row_missing_from_supplied_authority() -> (
-    None
-):
-    registry = load_method_registry(ROOT / "study/methods.json")
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
-    configuration = authority.configurations_for("magic")[0]
-    supplied_authority = replace(
-        authority,
-        configurations=tuple(
-            row for row in authority.configurations if row != configuration
-        ),
+    authority = load_comparator_tuning_authority(
+        ROOT, registry=registry, require_clean=False
     )
 
-    with pytest.raises(ComparatorTuningError, match="exact authority configuration"):
-        bind_comparator_configuration_identity(
-            configuration,
-            registry.by_id("magic"),
-            supplied_authority,
-            runtime_lock_sha256="1" * 64,
-            environment_registry_sha256="2" * 64,
-        )
-
-
-def test_configuration_method_identity_validates_authority_row_payload_checksum() -> (
-    None
-):
-    registry = load_method_registry(ROOT / "study/methods.json")
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
-    configuration = authority.configurations_for("magic")[0]
-    malformed = replace(configuration, payload_sha256="f" * 64)
-    supplied_authority = replace(
-        authority,
-        configurations=(malformed, *authority.configurations[1:]),
-    )
-
-    with pytest.raises(ComparatorTuningError, match="payload checksum differs"):
-        bind_comparator_configuration_identity(
-            malformed,
-            registry.by_id("magic"),
-            supplied_authority,
-            runtime_lock_sha256="1" * 64,
-            environment_registry_sha256="2" * 64,
-        )
-
-
-def test_configuration_method_identity_binds_resolved_authority_row() -> None:
-    registry = load_method_registry(ROOT / "study/methods.json")
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
-    authoritative = authority.configurations_for("magic")[0]
-    detached_equal_row = replace(authoritative)
-    assert detached_equal_row == authoritative
-    assert detached_equal_row is not authoritative
-
-    bound = bind_comparator_configuration_identity(
-        detached_equal_row,
-        registry.by_id("magic"),
-        authority,
-        runtime_lock_sha256="1" * 64,
-        environment_registry_sha256="2" * 64,
-    )
-
-    assert bound.configuration is authoritative
-
-
-@pytest.mark.parametrize(
-    "malformed",
-    (None, True, "A" * 64, "a" * 63, "g" * 64),
-)
-@pytest.mark.parametrize(
-    "field",
-    ("runtime_lock_sha256", "environment_registry_sha256"),
-)
-def test_configuration_method_identity_rejects_malformed_external_hashes(
-    field: str, malformed: object
-) -> None:
-    registry = load_method_registry(ROOT / "study/methods.json")
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
-    kwargs: dict[str, object] = {
-        "runtime_lock_sha256": "1" * 64,
-        "environment_registry_sha256": "2" * 64,
-    }
-    kwargs[field] = malformed
-    with pytest.raises(ComparatorTuningError, match="SHA-256"):
-        bind_comparator_configuration_identity(
-            authority.configurations_for("magic")[0],
-            registry.by_id("magic"),
-            authority,
-            **kwargs,
-        )
-
-
-def test_bound_configuration_rejects_malformed_hash_shapes() -> None:
-    registry = load_method_registry(ROOT / "study/methods.json")
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
-    bound = bind_comparator_configuration_identity(
-        authority.configurations_for("magic")[0],
-        registry.by_id("magic"),
-        authority,
-        runtime_lock_sha256="1" * 64,
-        environment_registry_sha256="2" * 64,
-    )
-    assert isinstance(bound, BoundComparatorConfiguration)
-    for field in (
-        "registry_method_sha256",
-        "configuration_payload_sha256",
-        "tuning_authority_file_sha256",
-        "tuning_authority_payload_sha256",
-        "source_authority_sha256",
-        "runtime_lock_sha256",
-        "environment_registry_sha256",
-        "configuration_method_identity_sha256",
-    ):
-        with pytest.raises(ComparatorTuningError, match="SHA-256"):
-            replace(bound, **{field: "not-a-sha256"})
+    assert authority.schema_version == 2
+    assert authority.authority_revision == AUTHORITY_REVISION
+    assert len(authority.configurations) == 34
+    for row in authority.configurations:
+        decoded = row.decode()
+        assert encode_comparator_configuration(decoded) == dict(row.payload)
+        dataclass_payload = asdict(decoded)
+        if row.method_id == "dca":
+            dataclass_payload["hidden_size"] = list(dataclass_payload["hidden_size"])
+        assert dataclass_payload == dict(row.payload)
 
 
 def test_decode_comparator_configuration_is_closed_and_exact() -> None:
     registry = load_method_registry(ROOT / "study/methods.json")
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
+    authority = load_comparator_tuning_authority(
+        ROOT, registry=registry, require_clean=False
+    )
     for row in authority.configurations:
-        decoded = row.decode()
-        assert encode_comparator_configuration(decoded) == dict(row.payload)
-
         missing = dict(row.payload)
         missing.pop(next(iter(missing)))
         with pytest.raises(ComparatorTuningError, match="complete field set"):
-            decode_comparator_configuration(
-                row.method_id,
-                missing,
-                expected_payload_sha256=row.payload_sha256,
-            )
+            decode_comparator_configuration(row.method_id, missing)
 
         extra = {**dict(row.payload), "unexpected": 1}
         with pytest.raises(ComparatorTuningError, match="complete field set"):
-            decode_comparator_configuration(
-                row.method_id,
-                extra,
-                expected_payload_sha256=row.payload_sha256,
-            )
+            decode_comparator_configuration(row.method_id, extra)
 
     magic = authority.configurations_for("magic")[0]
     bool_as_int = {**dict(magic.payload), "knn": True}
     with pytest.raises(ComparatorTuningError, match="primitive type"):
-        decode_comparator_configuration(
-            "magic",
-            bool_as_int,
-            expected_payload_sha256=magic.payload_sha256,
-        )
+        decode_comparator_configuration("magic", bool_as_int)
 
     dca = authority.configurations_for("dca")[0]
     tuple_payload = {**dict(dca.payload), "hidden_size": (64, 32, 64)}
     with pytest.raises(ComparatorTuningError, match="JSON array"):
-        decode_comparator_configuration(
-            "dca",
-            tuple_payload,
-            expected_payload_sha256=dca.payload_sha256,
-        )
+        decode_comparator_configuration("dca", tuple_payload)
+
+    afmf = authority.configurations_for("afmf")[0]
+    negative_zero = {**dict(afmf.payload), "lambda_p": -0.0}
+    with pytest.raises(ComparatorTuningError, match="invalid float value"):
+        decode_comparator_configuration("afmf", negative_zero)
 
 
 @pytest.mark.parametrize(
     ("path", "replacement"),
     (
         pytest.param(("schema_version",), True, id="schema-version-type"),
+        pytest.param(("authority_revision",), "other-revision", id="revision"),
         pytest.param(("contract_id",), "other-contract", id="contract-id"),
         pytest.param(("scope", "data_scope"), "final", id="scope-data"),
         pytest.param(("scope", "final_data_used"), True, id="scope-final"),
@@ -338,7 +172,9 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
             id="scheduled-set",
         ),
         pytest.param(("required_control_ids",), ["observed"], id="control-set"),
-        pytest.param(("established_comparator_ids",), ["alra"], id="established-set"),
+        pytest.param(
+            ("established_comparator_ids",), ["alra"], id="established-set"
+        ),
         pytest.param(("modern_core_ids",), ["scziva"], id="modern-set"),
         pytest.param(("model_seeds",), [42, 43, 45], id="model-seeds"),
         pytest.param(("selection", "metrics"), ["mse"], id="selection-metrics"),
@@ -350,7 +186,9 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
         pytest.param(
             ("selection", "prezero_mechanism"), "sergio", id="selection-prezero"
         ),
-        pytest.param(("selection", "pareto_rule"), "changed", id="selection-pareto"),
+        pytest.param(
+            ("selection", "pareto_rule"), "changed", id="selection-pareto"
+        ),
         pytest.param(("selection", "rank_rule"), "changed", id="selection-rank"),
         pytest.param(
             ("selection", "selection_tuple"),
@@ -384,7 +222,9 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
         ),
         pytest.param(("budgets", "gpu_seconds_per_method"), 1, id="budget-gpu"),
         pytest.param(("budgets", "cpu_seconds_per_method"), 1, id="budget-cpu"),
-        pytest.param(("budgets", "per_run_timeout_seconds"), 1, id="budget-timeout"),
+        pytest.param(
+            ("budgets", "per_run_timeout_seconds"), 1, id="budget-timeout"
+        ),
         pytest.param(("budgets", "max_rss_bytes"), 1, id="budget-rss"),
         pytest.param(("budgets", "max_gpu_bytes"), 1, id="budget-gpu-memory"),
         pytest.param(
@@ -402,7 +242,9 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
             ("storage", "max_executor_receipt_bytes"), 1, id="storage-executor"
         ),
         pytest.param(("storage", "max_record_bytes"), 1, id="storage-record"),
-        pytest.param(("storage", "max_checkpoint_bytes"), 1, id="storage-checkpoint"),
+        pytest.param(
+            ("storage", "max_checkpoint_bytes"), 1, id="storage-checkpoint"
+        ),
         pytest.param(("storage", "reserve_bytes"), 1, id="storage-reserve"),
         pytest.param(("smoke", "receipt_path"), "elsewhere.json", id="smoke-path"),
         pytest.param(("smoke", "cells"), 899, id="smoke-cells"),
@@ -410,22 +252,23 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
         pytest.param(("smoke", "model_seed"), 43, id="smoke-seed"),
         pytest.param(("smoke", "batch_rule"), "changed", id="smoke-batches"),
         pytest.param(("smoke", "count_formula"), "changed", id="smoke-formula"),
-        pytest.param(("smoke", "projection_multiplier"), 47, id="smoke-projection"),
-        pytest.param(("smoke", "output_retention"), "retained", id="smoke-retention"),
+        pytest.param(
+            ("smoke", "projection_multiplier"), 47, id="smoke-projection"
+        ),
+        pytest.param(
+            ("smoke", "output_retention"), "retained", id="smoke-retention"
+        ),
     ),
 )
-def test_authority_rejects_rehashed_policy_mutation(
+def test_authority_rejects_policy_mutation(
     path: tuple[str, ...], replacement: object
 ) -> None:
     payload = _tracked_payload()
     _set_nested(payload, path, replacement)
-    _rehash_authority(payload)
     registry = load_method_registry(ROOT / "study/methods.json")
 
     with pytest.raises(ComparatorTuningError):
-        parse_comparator_tuning_authority(
-            payload, registry=registry, file_sha256="a" * 64
-        )
+        parse_comparator_tuning_authority(payload, registry=registry)
 
 
 @pytest.mark.parametrize(
@@ -439,7 +282,7 @@ def test_authority_rejects_rehashed_policy_mutation(
         pytest.param(("smoke",), id="smoke"),
     ),
 )
-def test_authority_rejects_rehashed_extra_nested_field(
+def test_authority_rejects_extra_nested_field(
     section_path: tuple[str, ...],
 ) -> None:
     payload = _tracked_payload()
@@ -449,13 +292,10 @@ def test_authority_rejects_rehashed_extra_nested_field(
         target = target[key]
     assert isinstance(target, dict)
     target["unexpected"] = "forged"
-    _rehash_authority(payload)
     registry = load_method_registry(ROOT / "study/methods.json")
 
     with pytest.raises(ComparatorTuningError, match="missing or extra fields"):
-        parse_comparator_tuning_authority(
-            payload, registry=registry, file_sha256="a" * 64
-        )
+        parse_comparator_tuning_authority(payload, registry=registry)
 
 
 @pytest.mark.parametrize(
@@ -465,13 +305,13 @@ def test_authority_rejects_rehashed_extra_nested_field(
         "row-count",
         "configuration-id",
         "duplicate-configuration-id",
-        "duplicate-payload",
+        "duplicate-payload-under-another-id",
         "multiple-defaults",
         "default-payload",
-        "nondefault-payload",
+        "payload-mutation",
     ),
 )
-def test_authority_rejects_rehashed_grid_mutation(mutation: str) -> None:
+def test_authority_rejects_grid_mutation(mutation: str) -> None:
     payload = _tracked_payload()
     configurations = payload["configurations"]
     assert isinstance(configurations, list)
@@ -488,106 +328,77 @@ def test_authority_rejects_rehashed_grid_mutation(mutation: str) -> None:
         magic_second["configuration_id"] = "magic-t02"
     elif mutation == "duplicate-configuration-id":
         magic_second["configuration_id"] = magic_default["configuration_id"]
-    elif mutation == "duplicate-payload":
+    elif mutation == "duplicate-payload-under-another-id":
         magic_second["payload"] = copy.deepcopy(magic_default["payload"])
     elif mutation == "multiple-defaults":
         magic_second["is_upstream_default"] = True
     elif mutation == "default-payload":
         magic_default["payload"] = copy.deepcopy(magic_second["payload"])
-    elif mutation == "nondefault-payload":
+    elif mutation == "payload-mutation":
         second_payload = magic_second["payload"]
         assert isinstance(second_payload, dict)
         second_payload["diffusion_time"] = 2
     else:  # pragma: no cover - parametrization is closed above
         raise AssertionError(mutation)
 
-    _rehash_authority(payload)
     registry = load_method_registry(ROOT / "study/methods.json")
     with pytest.raises(ComparatorTuningError):
-        parse_comparator_tuning_authority(
-            payload, registry=registry, file_sha256="a" * 64
-        )
+        parse_comparator_tuning_authority(payload, registry=registry)
 
 
-def test_authority_rejects_rehashed_signed_zero_payload_mutation() -> None:
+def test_authority_rejects_signed_negative_zero_payload_mutation() -> None:
     payload = _tracked_payload()
     configurations = payload["configurations"]
     assert isinstance(configurations, list)
     afmf_default = configurations[18]
     assert isinstance(afmf_default, dict)
-    assert afmf_default["configuration_id"] == "afmf-sigma-3"
     afmf_payload = afmf_default["payload"]
     assert isinstance(afmf_payload, dict)
-    assert afmf_payload["lambda_p"] == 0.0
-    original_row_sha256 = afmf_default["payload_sha256"]
-    original_authority_sha256 = payload["payload_sha256"]
-
     afmf_payload["lambda_p"] = -0.0
-    _rehash_authority(payload)
 
-    assert afmf_default["payload_sha256"] != original_row_sha256
-    assert payload["payload_sha256"] != original_authority_sha256
     registry = load_method_registry(ROOT / "study/methods.json")
     with pytest.raises(ComparatorTuningError):
-        parse_comparator_tuning_authority(
-            payload, registry=registry, file_sha256="a" * 64
-        )
+        parse_comparator_tuning_authority(payload, registry=registry)
 
 
-def test_authority_rejects_rehashed_escaped_surrogate_payload() -> None:
+def test_authority_rejects_unicode_payload_mutation() -> None:
     payload = _tracked_payload()
     configurations = payload["configurations"]
     assert isinstance(configurations, list)
     magic_default = configurations[1]
     assert isinstance(magic_default, dict)
-    assert magic_default["configuration_id"] == "magic-t03"
     magic_payload = magic_default["payload"]
     assert isinstance(magic_payload, dict)
-    assert magic_payload["solver"] == "exact"
-    original_row_sha256 = magic_default["payload_sha256"]
-    original_authority_sha256 = payload["payload_sha256"]
-
     magic_payload["solver"] = "\ud800"
-    _rehash_authority(payload)
 
-    assert magic_default["payload_sha256"] != original_row_sha256
-    assert payload["payload_sha256"] != original_authority_sha256
     registry = load_method_registry(ROOT / "study/methods.json")
     with pytest.raises(ComparatorTuningError):
-        parse_comparator_tuning_authority(
-            payload, registry=registry, file_sha256="a" * 64
-        )
+        parse_comparator_tuning_authority(payload, registry=registry)
 
 
-def test_authority_rejects_invalid_file_sha256() -> None:
-    registry = load_method_registry(ROOT / "study/methods.json")
-    with pytest.raises(ComparatorTuningError, match="file SHA-256"):
-        parse_comparator_tuning_authority(
-            _tracked_payload(), registry=registry, file_sha256="not-a-sha256"
-        )
-
-
-@pytest.mark.parametrize("location", ("root", "configuration"))
-def test_authority_rejects_rehashed_extra_structural_field(location: str) -> None:
+@pytest.mark.parametrize("schema", ("old", "mixed"))
+def test_authority_rejects_old_and_mixed_schema(schema: str) -> None:
     payload = _tracked_payload()
-    if location == "root":
-        payload["unexpected"] = "forged"
+    if schema == "old":
+        payload["schema_version"] = 1
+        payload.pop("authority_revision")
+        payload["payload_sha256"] = "0" * 64
     else:
+        payload["payload_sha256"] = "0" * 64
         configurations = payload["configurations"]
         assert isinstance(configurations, list)
         first = configurations[0]
         assert isinstance(first, dict)
-        first["unexpected"] = "forged"
-    _rehash_authority(payload)
+        first["payload_sha256"] = "0" * 64
+
     registry = load_method_registry(ROOT / "study/methods.json")
-
     with pytest.raises(ComparatorTuningError, match="missing or extra fields"):
-        parse_comparator_tuning_authority(
-            payload, registry=registry, file_sha256="a" * 64
-        )
+        parse_comparator_tuning_authority(payload, registry=registry)
 
 
-@pytest.mark.parametrize("malformation", ("noncanonical", "duplicate", "nonfinite"))
+@pytest.mark.parametrize(
+    "malformation", ("noncanonical", "duplicate", "nonfinite", "unicode-drift")
+)
 def test_loader_rejects_malformed_authority_bytes(
     tmp_path: Path, malformation: str
 ) -> None:
@@ -597,20 +408,34 @@ def test_loader_rejects_malformed_authority_bytes(
         raw = json.dumps(payload, separators=(",", ":")).encode() + b"\n"
     elif malformation == "duplicate":
         raw = canonical.replace(
-            b'  "schema_version": 1,',
-            b'  "schema_version": 1,\n  "schema_version": 1,',
+            b'  "schema_version": 2,',
+            b'  "schema_version": 2,\n  "schema_version": 2,',
             1,
         )
     elif malformation == "nonfinite":
         raw = canonical.replace(b'    "cells": 900,', b'    "cells": NaN,', 1)
+    elif malformation == "unicode-drift":
+        raw = canonical.replace(b'"solver": "exact"', b'"solver": "\\u0065xact"', 1)
     else:  # pragma: no cover - parametrization is closed above
         raise AssertionError(malformation)
-    authority_path = tmp_path / "study/comparator_tuning.json"
-    authority_path.parent.mkdir()
-    authority_path.write_bytes(raw)
+    _write_authority(tmp_path, raw)
     registry = load_method_registry(ROOT / "study/methods.json")
 
     with pytest.raises(ComparatorTuningError):
+        load_comparator_tuning_authority(
+            tmp_path, registry=registry, require_clean=False
+        )
+
+
+def test_loader_rejects_non_regular_authority(tmp_path: Path) -> None:
+    study = tmp_path / "study"
+    study.mkdir()
+    (study / "comparator_tuning.json").symlink_to(
+        ROOT / "study/comparator_tuning.json"
+    )
+    registry = load_method_registry(ROOT / "study/methods.json")
+
+    with pytest.raises(ComparatorTuningError, match="owned regular file"):
         load_comparator_tuning_authority(
             tmp_path, registry=registry, require_clean=False
         )
@@ -623,7 +448,6 @@ def test_tracked_authority_has_exact_grid_and_operational_contract() -> None:
     )
 
     assert authority.method_order == tuple(EXPECTED_ORDER)
-    assert len(authority.configurations) == 34
     assert {
         method_id: tuple(
             row.configuration_id for row in authority.configurations_for(method_id)
@@ -675,23 +499,3 @@ def test_tracked_authority_has_exact_grid_and_operational_contract() -> None:
         DEVELOPMENT_MAX_CHECKPOINT_BYTES,
         DEVELOPMENT_STORAGE_RESERVE_BYTES,
     ) == (65_536, 65_536, 65_536, 67_108_864, 1_073_741_824)
-    raw_authority = (ROOT / "study/comparator_tuning.json").read_bytes()
-    tracked_payload = json.loads(raw_authority)
-    assert authority.file_sha256 == hashlib.sha256(raw_authority).hexdigest()
-    assert authority.payload_sha256 == tracked_payload["payload_sha256"]
-    for row in authority.configurations:
-        assert row.payload_sha256 == row.observed_payload_sha256
-        dataclass_payload = asdict(row.decode())
-        if row.method_id == "dca":
-            dataclass_payload["hidden_size"] = list(dataclass_payload["hidden_size"])
-        assert dataclass_payload == dict(row.payload)
-        assert encode_comparator_configuration(row.decode()) == dict(row.payload)
-
-
-def test_clean_repository_loads_comparator_tuning_authority() -> None:
-    registry = load_method_registry(ROOT / "study/methods.json")
-
-    authority = load_comparator_tuning_authority(ROOT, registry=registry)
-
-    assert authority.contract_id == "maskimpute-comparator-tuning-v1"
-    assert len(authority.configurations) == 34

@@ -1,6 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "contract_id": "maskimpute-comparator-tuning-v1",
+  "authority_revision": "fair-comparator-direct-v1",
   "scope": {
     "data_scope": "development_only",
     "final_data_used": false
@@ -63,8 +64,7 @@
         "q": 10,
         "quantile_probability": 0.001,
         "use_mkl": false
-      },
-      "payload_sha256": "19610b1cad02cd7ce2c5e1ad0e6e3764b78056a52ce45e58d64fb089620676b6"
+      }
     },
     {
       "method_id": "magic",
@@ -79,8 +79,7 @@
         "solver": "exact",
         "distance": "euclidean",
         "n_jobs": 1
-      },
-      "payload_sha256": "a887711d7c3972023d80d368fc299b78827edf4ebb1d7aa34680d7bb62c36a1a"
+      }
     },
     {
       "method_id": "magic",
@@ -95,8 +94,7 @@
         "solver": "exact",
         "distance": "euclidean",
         "n_jobs": 1
-      },
-      "payload_sha256": "68a815706525462b1c7e0fa81ca405240121c3dbd78f9cb1c239ea97892f9ecf"
+      }
     },
     {
       "method_id": "magic",
@@ -111,8 +109,7 @@
         "solver": "exact",
         "distance": "euclidean",
         "n_jobs": 1
-      },
-      "payload_sha256": "803a2e42fda0686c6580b1263953dfd086d76c21bf863691e9e07d0a24f0203e"
+      }
     },
     {
       "method_id": "magic",
@@ -127,8 +124,7 @@
         "solver": "exact",
         "distance": "euclidean",
         "n_jobs": 1
-      },
-      "payload_sha256": "2ca13dad3342a2e596dda17cb3b2d989f09d1b21e04bdde7c5d72dbb2343b01c"
+      }
     },
     {
       "method_id": "dca",
@@ -153,8 +149,7 @@
         "early_stop": 15,
         "batch_size": 32,
         "optimizer": "RMSprop"
-      },
-      "payload_sha256": "0bec7e04f7a8dd7a962ff7a8aaf3e1a439414b4cf831e3e169b21856cf2b6dee"
+      }
     },
     {
       "method_id": "dca",
@@ -179,8 +174,7 @@
         "early_stop": 15,
         "batch_size": 32,
         "optimizer": "RMSprop"
-      },
-      "payload_sha256": "03a4787dafe21f5e941d6bfeba6139a9cba828295cb7d181b69796a03d0aa339"
+      }
     },
     {
       "method_id": "dca",
@@ -204,8 +198,7 @@
         "early_stop": 15,
         "batch_size": 32,
         "optimizer": "RMSprop"
-      },
-      "payload_sha256": "d5d178f2cc2f3eabe210b60c6c227b91fca4bc6d4e576f5a10349b153de3d28e"
+      }
     },
     {
       "method_id": "dca",
@@ -229,8 +222,7 @@
         "early_stop": 15,
         "batch_size": 32,
         "optimizer": "RMSprop"
-      },
-      "payload_sha256": "838530f73bd7a9e7e8cceac208570973791f713cbed791ff7dc576af3c91b396"
+      }
     },
     {
       "method_id": "scvi",
@@ -248,8 +240,7 @@
         "max_epochs": null,
         "batch_size": 128,
         "batch_key": "batch"
-      },
-      "payload_sha256": "53357dea2c15452bdc1116f8ac6c567a6e22846c630756b7518cf389ab4b6dc0"
+      }
     },
     {
       "method_id": "scvi",
@@ -267,8 +258,7 @@
         "max_epochs": null,
         "batch_size": 128,
         "batch_key": "batch"
-      },
-      "payload_sha256": "838419aae886e92c06be4f139ebe3899a0b23e0de2ccecadcac7256b64a77549"
+      }
     },
     {
       "method_id": "scvi",
@@ -286,8 +276,7 @@
         "max_epochs": null,
         "batch_size": 128,
         "batch_key": "batch"
-      },
-      "payload_sha256": "309a22e8553599ebbf4e10aca6796597374dcf655418ecf046378cb271847caa"
+      }
     },
     {
       "method_id": "scvi",
@@ -305,8 +294,7 @@
         "max_epochs": null,
         "batch_size": 128,
         "batch_key": "batch"
-      },
-      "payload_sha256": "9107209f7b74161deeb64f4dca4b877404c8d7a0c58e188022f93622a64bfb1e"
+      }
     },
     {
       "method_id": "saver",
@@ -317,8 +305,7 @@
         "ncores": 1,
         "size_factor": null,
         "estimates_only": true
-      },
-      "payload_sha256": "9bd72a724b3d8b4ab52bd7aa17b7d22d15cc90ca2b52fe5856a8b456377695fc"
+      }
     },
     {
       "method_id": "scziva",
@@ -336,8 +323,7 @@
         "auxiliary_regularization": 0.001,
         "reorder_genes": true,
         "device": null
-      },
-      "payload_sha256": "57e8b1a6de708b01c372df126c24c12dd8114cdc4d4295063207470632804c9c"
+      }
     },
     {
       "method_id": "scziva",
@@ -355,8 +341,7 @@
         "auxiliary_regularization": 0.001,
         "reorder_genes": true,
         "device": null
-      },
-      "payload_sha256": "2cc430a3b0265bd19a0acf18f3b020f6160570844b6adcb8c54807694aa9c2c6"
+      }
     },
     {
       "method_id": "scziva",
@@ -374,8 +359,7 @@
         "auxiliary_regularization": 0.001,
         "reorder_genes": true,
         "device": null
-      },
-      "payload_sha256": "a500507cac9282b76c8389bdbbf1bbea5459303742f0d03dd1183f73e9eec74c"
+      }
     },
     {
       "method_id": "scziva",
@@ -393,8 +377,7 @@
         "auxiliary_regularization": 0.001,
         "reorder_genes": true,
         "device": null
-      },
-      "payload_sha256": "accdefa2aa562cf9eb78706e7d5ace0903bad14ef132f76361e897326d0110bb"
+      }
     },
     {
       "method_id": "afmf",
@@ -406,8 +389,7 @@
         "lambda_p": 0.0,
         "lambda_q": 0.0,
         "sigma": 3.0
-      },
-      "payload_sha256": "4cb595af856d55eb043d9df1c7e930999fe9892f2d9ccaf7c63f280afdde0809"
+      }
     },
     {
       "method_id": "afmf",
@@ -419,8 +401,7 @@
         "lambda_p": 0.0,
         "lambda_q": 0.0,
         "sigma": 1.0
-      },
-      "payload_sha256": "c6ee030b9037603ed604471b99b635fabde93d63afe3a334cb3baab43d17aa46"
+      }
     },
     {
       "method_id": "afmf",
@@ -432,8 +413,7 @@
         "lambda_p": 0.0,
         "lambda_q": 0.0,
         "sigma": 2.0
-      },
-      "payload_sha256": "0a27ef3b006f454ad13b3d4fb453ad7d4e4741cbc95a09027db414ca014705de"
+      }
     },
     {
       "method_id": "afmf",
@@ -445,8 +425,7 @@
         "lambda_p": 0.0,
         "lambda_q": 0.0,
         "sigma": 4.0
-      },
-      "payload_sha256": "f5672f1b8718e2c792bc1137274bdf7972c229e3f0bb01240df5bf4a067710fb"
+      }
     },
     {
       "method_id": "biaeimpute",
@@ -462,8 +441,7 @@
         "column_batch_size": 200,
         "mask_ratio": 0.0,
         "device": null
-      },
-      "payload_sha256": "813d0d6713c790edc2586ed8ea32d79e04b7b4ce6e496c7ea86726b1a655d9b3"
+      }
     },
     {
       "method_id": "biaeimpute",
@@ -479,8 +457,7 @@
         "column_batch_size": 200,
         "mask_ratio": 0.0,
         "device": null
-      },
-      "payload_sha256": "d14fd645eb952f9f3ddfb88de626c9aacbc685a907d453c1b194193b8bec557b"
+      }
     },
     {
       "method_id": "biaeimpute",
@@ -496,8 +473,7 @@
         "column_batch_size": 200,
         "mask_ratio": 0.0,
         "device": null
-      },
-      "payload_sha256": "87bc0ecf181a8b887f595dbe1ebac6277067c297e6c91bdb4f06db888f1589ef"
+      }
     },
     {
       "method_id": "biaeimpute",
@@ -513,8 +489,7 @@
         "column_batch_size": 200,
         "mask_ratio": 0.0,
         "device": null
-      },
-      "payload_sha256": "0a7191a92c8591e2690b1b12855a13c8d314c05e7a993f48e81c41c85922c3c1"
+      }
     },
     {
       "method_id": "sccr",
@@ -529,8 +504,7 @@
         "soft_propagation_weight": 0.99,
         "final_blend_weight": 0.01,
         "device": null
-      },
-      "payload_sha256": "767f9c13feb0d7583af5b7253fed62e7ff83e538e99f441992ec2cfea7db7ee9"
+      }
     },
     {
       "method_id": "sccr",
@@ -545,8 +519,7 @@
         "soft_propagation_weight": 0.99,
         "final_blend_weight": 0.01,
         "device": null
-      },
-      "payload_sha256": "e06f30b5673c7fec19083a4e89df73157c2aa0ad5c8d6f6fec17aadb9104778a"
+      }
     },
     {
       "method_id": "sccr",
@@ -561,8 +534,7 @@
         "soft_propagation_weight": 0.99,
         "final_blend_weight": 0.01,
         "device": null
-      },
-      "payload_sha256": "65aca3a3c0f3388f44da8eae0bdbc537e2fc17e8d7e292692faab178b5fc8667"
+      }
     },
     {
       "method_id": "sccr",
@@ -577,8 +549,7 @@
         "soft_propagation_weight": 0.99,
         "final_blend_weight": 0.01,
         "device": null
-      },
-      "payload_sha256": "4cef1fb8d3e85e1ddbcc3924c0a2ad6c72dd66b1542716ee1e071080f5dfca42"
+      }
     },
     {
       "method_id": "scsdae",
@@ -595,8 +566,7 @@
         "l2_regularization": 0.0,
         "gene_scale": false,
         "gpu_index": 0
-      },
-      "payload_sha256": "414b77eead7f8f01c8379039e9b6df676388f1d921dfbdcd65eb804f79639ae0"
+      }
     },
     {
       "method_id": "scsdae",
@@ -613,8 +583,7 @@
         "l2_regularization": 0.0,
         "gene_scale": false,
         "gpu_index": 0
-      },
-      "payload_sha256": "09ee7b4cc3df0ecc8f90fb146e2c640fcf75f772d491a3c8f132847a2ae8eb5f"
+      }
     },
     {
       "method_id": "scsdae",
@@ -631,8 +600,7 @@
         "l2_regularization": 0.0,
         "gene_scale": false,
         "gpu_index": 0
-      },
-      "payload_sha256": "c0f3865e08c710700900a8cd6fb49b32f7f1e8cb3ec637b2f2a746c9e1392d0e"
+      }
     },
     {
       "method_id": "scsdae",
@@ -649,8 +617,7 @@
         "l2_regularization": 0.0,
         "gene_scale": false,
         "gpu_index": 0
-      },
-      "payload_sha256": "cfdd9ab34fd1d14f0251714d10aa9fdafdceeb0edf5a2820bb32c7cbcf2539c6"
+      }
     }
   ],
   "selection": {
@@ -724,6 +691,5 @@
     "count_formula": "(17*cell+31*gene+7*(cell^gene))%6",
     "projection_multiplier": 48,
     "output_retention": "discarded_without_evaluator_or_metrics"
-  },
-  "payload_sha256": "3508cf3df8d5899b435be8526cd0747541d944f096899191584b29799eae6fee"
+  }
 }

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import hashlib
 import json
 import math
 from pathlib import Path
 import re
+import stat
 from types import MappingProxyType
 from typing import Any, Mapping, TypeAlias
 
@@ -39,6 +39,7 @@ COMPARATOR_SELECTION_RELATIVE_PATH = (
 COMPARATOR_SMOKE_RELATIVE_PATH = (
     "artifacts/study/development/evaluation/comparator_smoke.json"
 )
+AUTHORITY_REVISION = "fair-comparator-direct-v1"
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -205,8 +206,6 @@ def encode_comparator_configuration(
 def decode_comparator_configuration(
     method_id: str,
     payload: Mapping[str, object],
-    *,
-    expected_payload_sha256: str,
 ) -> ComparatorAdapterConfig:
     """Decode one closed JSON payload into its exact adapter dataclass."""
 
@@ -219,7 +218,21 @@ def decode_comparator_configuration(
         raise ComparatorTuningError(
             "comparator payload differs from its complete field set"
         )
-    constructor = dict(observed)
+    constructor = _decode_closed_primitive_fields(method_id, observed, defaults)
+    decoded = config_type(**constructor)
+    if encode_comparator_configuration(decoded) != observed:
+        raise ComparatorTuningError(
+            "comparator payload changed during typed normalization"
+        )
+    return decoded
+
+
+def _decode_closed_primitive_fields(
+    method_id: str,
+    observed: Mapping[str, object],
+    defaults: Mapping[str, object],
+) -> dict[str, object]:
+    constructor: dict[str, object] = {}
     for name, default in defaults.items():
         value = observed[name]
         if method_id == "dca" and name == "hidden_size":
@@ -233,24 +246,19 @@ def decode_comparator_configuration(
                 )
             constructor[name] = tuple(value)
             continue
+        if type(value) is float and (
+            not math.isfinite(value)
+            or (value == 0.0 and math.copysign(1.0, value) < 0.0)
+        ):
+            raise ComparatorTuningError(
+                f"comparator field {name} has an invalid float value"
+            )
         if not _primitive_type_matches(value, default):
             raise ComparatorTuningError(
                 f"comparator field {name} has the wrong primitive type"
             )
-    if canonical_sha256(observed) != expected_payload_sha256:
-        raise ComparatorTuningError("comparator payload checksum differs")
-    try:
-        decoded = config_type(**constructor)
-    except (TypeError, ValueError) as error:
-        raise ComparatorTuningError(
-            "comparator payload violates its adapter contract"
-        ) from error
-    encoded = encode_comparator_configuration(decoded)
-    if encoded != observed or canonical_sha256(encoded) != expected_payload_sha256:
-        raise ComparatorTuningError(
-            "comparator payload changed during typed normalization"
-        )
-    return decoded
+        constructor[name] = value
+    return constructor
 
 
 _EXPECTED_CONFIGURATION_SPECS: tuple[
@@ -347,27 +355,14 @@ class ComparatorConfiguration:
     method_id: str
     configuration_id: str
     payload_json: str
-    payload_sha256: str
     is_upstream_default: bool
 
     @property
     def payload(self) -> Mapping[str, object]:
         return MappingProxyType(json.loads(self.payload_json))
 
-    @property
-    def observed_payload_sha256(self) -> str:
-        return canonical_sha256(dict(self.payload))
-
-    @property
-    def payload_for_json_comparison(self) -> dict[str, object]:
-        return _json_payload(self.decode())
-
     def decode(self) -> ComparatorAdapterConfig:
-        return decode_comparator_configuration(
-            self.method_id,
-            self.payload,
-            expected_payload_sha256=self.payload_sha256,
-        )
+        return decode_comparator_configuration(self.method_id, self.payload)
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +371,7 @@ class ComparatorTuningAuthority:
 
     schema_version: int
     contract_id: str
+    authority_revision: str
     method_order: tuple[str, ...]
     configurations: tuple[ComparatorConfiguration, ...]
     scheduled_same_input_ids: tuple[str, ...]
@@ -386,8 +382,6 @@ class ComparatorTuningAuthority:
     selection_metrics: tuple[str, ...]
     receipt_path: str
     smoke_receipt_path: str
-    file_sha256: str
-    payload_sha256: str
 
     def configurations_for(self, method_id: str) -> tuple[ComparatorConfiguration, ...]:
         return tuple(row for row in self.configurations if row.method_id == method_id)
@@ -561,19 +555,17 @@ def parse_comparator_tuning_authority(
     payload: object,
     *,
     registry: MethodRegistry,
-    file_sha256: str,
 ) -> ComparatorTuningAuthority:
-    """Parse the closed schema-1 comparator-tuning authority."""
+    """Parse the closed schema-2 comparator-tuning authority."""
 
     if not isinstance(registry, MethodRegistry):
         raise TypeError("registry must be a MethodRegistry")
-    if type(file_sha256) is not str or _SHA256.fullmatch(file_sha256) is None:
-        raise ComparatorTuningError("comparator tuning file SHA-256 is invalid")
     root = _require_exact_mapping(
         payload,
         {
             "schema_version",
             "contract_id",
+            "authority_revision",
             "scope",
             "method_order",
             "scheduled_same_input_ids",
@@ -586,31 +578,21 @@ def parse_comparator_tuning_authority(
             "budgets",
             "storage",
             "smoke",
-            "payload_sha256",
         },
         "comparator tuning authority",
     )
     if (
         type(root["schema_version"]) is not int
-        or root["schema_version"] != 1
+        or root["schema_version"] != 2
         or type(root["contract_id"]) is not str
         or root["contract_id"] != "maskimpute-comparator-tuning-v1"
     ):
         raise ComparatorTuningError("comparator tuning schema or contract differs")
-    if (
-        type(root["payload_sha256"]) is not str
-        or _SHA256.fullmatch(root["payload_sha256"]) is None
-    ):
-        raise ComparatorTuningError("comparator tuning payload SHA-256 is invalid")
-    unsigned = {key: value for key, value in root.items() if key != "payload_sha256"}
-    try:
-        observed_payload_sha256 = canonical_sha256(unsigned)
-    except (TypeError, ValueError) as error:
-        raise ComparatorTuningError(
-            "comparator tuning payload is not canonical JSON data"
-        ) from error
-    if root["payload_sha256"] != observed_payload_sha256:
-        raise ComparatorTuningError("comparator tuning payload checksum differs")
+    _require_exact_literal(
+        root["authority_revision"],
+        AUTHORITY_REVISION,
+        "comparator tuning authority revision",
+    )
 
     _require_exact_literal(root["scope"], EXPECTED_SCOPE, "comparator tuning scope")
     _require_exact_literal(
@@ -646,7 +628,7 @@ def parse_comparator_tuning_authority(
         )
     configurations: list[ComparatorConfiguration] = []
     seen_configuration_ids = {method_id: set() for method_id in _EXPECTED_METHOD_ORDER}
-    seen_payload_sha256 = {method_id: set() for method_id in _EXPECTED_METHOD_ORDER}
+    seen_payload_json = {method_id: set() for method_id in _EXPECTED_METHOD_ORDER}
     observed_order: list[tuple[str, str]] = []
     for index, (raw, expected_spec) in enumerate(
         zip(rows, _EXPECTED_CONFIGURATION_SPECS, strict=True)
@@ -658,7 +640,6 @@ def parse_comparator_tuning_authority(
                 "configuration_id",
                 "is_upstream_default",
                 "payload",
-                "payload_sha256",
             },
             f"comparator configuration {index}",
         )
@@ -683,23 +664,11 @@ def parse_comparator_tuning_authority(
             raise ComparatorTuningError(
                 "comparator upstream-default declaration differs"
             )
-        if (
-            type(row["payload_sha256"]) is not str
-            or _SHA256.fullmatch(row["payload_sha256"]) is None
-        ):
-            raise ComparatorTuningError(
-                "comparator configuration payload SHA-256 is invalid"
-            )
         if row["configuration_id"] in seen_configuration_ids[row["method_id"]]:
             raise ComparatorTuningError(
                 "duplicate comparator configuration ID within method"
             )
-        if row["payload_sha256"] in seen_payload_sha256[row["method_id"]]:
-            raise ComparatorTuningError(
-                "duplicate comparator configuration payload within method"
-            )
         seen_configuration_ids[row["method_id"]].add(row["configuration_id"])
-        seen_payload_sha256[row["method_id"]].add(row["payload_sha256"])
 
         expected_payload_json = _EXPECTED_CONFIGURATION_PAYLOADS[observed_identity]
         try:
@@ -708,6 +677,12 @@ def parse_comparator_tuning_authority(
             raise ComparatorTuningError(
                 "comparator configuration payload is not canonical JSON data"
             ) from error
+        payload_json = observed_payload_bytes.decode("utf-8")
+        if payload_json in seen_payload_json[row["method_id"]]:
+            raise ComparatorTuningError(
+                "duplicate comparator configuration payload within method"
+            )
+        seen_payload_json[row["method_id"]].add(payload_json)
         if observed_payload_bytes != expected_payload_json.encode("utf-8"):
             raise ComparatorTuningError(
                 "comparator configuration payload representation differs"
@@ -721,14 +696,12 @@ def parse_comparator_tuning_authority(
         decoded = decode_comparator_configuration(
             row["method_id"],
             row["payload"],
-            expected_payload_sha256=row["payload_sha256"],
         )
         configurations.append(
             ComparatorConfiguration(
                 method_id=row["method_id"],
                 configuration_id=row["configuration_id"],
                 payload_json=_canonical_bytes(_json_payload(decoded)).decode("utf-8"),
-                payload_sha256=row["payload_sha256"],
                 is_upstream_default=row["is_upstream_default"],
             )
         )
@@ -850,8 +823,9 @@ def parse_comparator_tuning_authority(
     _require_exact_literal(storage, _EXPECTED_STORAGE, "development storage policy")
 
     return ComparatorTuningAuthority(
-        schema_version=1,
+        schema_version=2,
         contract_id="maskimpute-comparator-tuning-v1",
+        authority_revision=AUTHORITY_REVISION,
         method_order=_EXPECTED_METHOD_ORDER,
         configurations=tuple(configurations),
         scheduled_same_input_ids=_EXPECTED_SCHEDULED_SAME_INPUT_IDS,
@@ -862,8 +836,6 @@ def parse_comparator_tuning_authority(
         selection_metrics=EXPECTED_METRICS,
         receipt_path=COMPARATOR_SELECTION_RELATIVE_PATH,
         smoke_receipt_path=COMPARATOR_SMOKE_RELATIVE_PATH,
-        file_sha256=file_sha256,
-        payload_sha256=root["payload_sha256"],
     )
 
 
@@ -892,8 +864,13 @@ def load_comparator_tuning_authority(
         raise TypeError("repository and registry have invalid types")
     root = repository.resolve(strict=True)
     path = root / "study/comparator_tuning.json"
-    raw = path.read_bytes()
     try:
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ComparatorTuningError(
+                "comparator tuning authority is not an owned regular file"
+            )
+        raw = path.read_bytes()
         payload = json.loads(
             raw.decode("utf-8"),
             parse_constant=_reject_constant,
@@ -936,5 +913,4 @@ def load_comparator_tuning_authority(
     return parse_comparator_tuning_authority(
         payload,
         registry=registry,
-        file_sha256=hashlib.sha256(raw).hexdigest(),
     )
