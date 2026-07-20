@@ -80,6 +80,21 @@ def _module_symbol_aliases(tree: ast.Module) -> dict[str, str]:
     return aliases
 
 
+def _scope_import_aliases(scope: ast.AST) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Import):
+            for imported in node.names:
+                local = imported.asname or imported.name.split(".")[0]
+                aliases[local] = imported.name
+        elif isinstance(node, ast.ImportFrom):
+            prefix = "" if node.module is None else f"{node.module}."
+            for imported in node.names:
+                local = imported.asname or imported.name
+                aliases[local] = f"{prefix}{imported.name}"
+    return aliases
+
+
 def _resolve_symbol(node: ast.AST, aliases: Mapping[str, str]) -> str | None:
     if isinstance(node, ast.Name):
         return aliases.get(node.id, node.id)
@@ -117,6 +132,7 @@ def _scope_aliases(
     module_aliases: Mapping[str, str],
 ) -> tuple[dict[str, str], dict[str, str]]:
     symbols = dict(module_aliases)
+    symbols.update(_scope_import_aliases(scope))
     strings: dict[str, str] = {}
     assignments = tuple(
         node
@@ -177,6 +193,10 @@ def _direct_source_audit_findings(
                 findings.add(f"forbidden import {local}={imported}")
     for scope in scopes:
         symbols, strings = _scope_aliases(scope, module_aliases)
+        for local, imported in _scope_import_aliases(scope).items():
+            leaf = imported.rsplit(".", 1)[-1]
+            if imported == "hashlib" or leaf in FORBIDDEN_DIRECT_HELPERS:
+                findings.add(f"forbidden import {local}={imported}")
         for call in (node for node in ast.walk(scope) if isinstance(node, ast.Call)):
             resolved = _resolve_symbol(call.func, symbols)
             if resolved is not None and (
@@ -487,6 +507,58 @@ def legacy_projection(value):
 def project_direct_payload(value):
     return {"payload": value}
 """
+    assert _direct_source_audit_findings(source, shared=True) == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        """
+def project_direct_payload(value):
+    import hashlib as local_hashlib
+
+    return local_hashlib.new("sha256", value)
+""",
+        """
+def project_direct_payload(value):
+    from provenance import canonical_sha256 as summarize
+
+    return summarize(value)
+""",
+    ),
+)
+def test_direct_source_audit_rejects_function_local_import_aliases(
+    source: str,
+) -> None:
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        """
+def legacy_projection(value):
+    import hashlib as local_hashlib
+
+    return local_hashlib.new("sha256", value)
+
+def project_direct_payload(value):
+    return {"payload": value}
+""",
+        """
+def legacy_projection(value):
+    from provenance import canonical_sha256 as summarize
+
+    return summarize(value)
+
+def project_direct_payload(value):
+    return {"payload": value}
+""",
+    ),
+)
+def test_direct_source_audit_ignores_function_local_imports_in_legacy_siblings(
+    source: str,
+) -> None:
     assert _direct_source_audit_findings(source, shared=True) == ()
 
 

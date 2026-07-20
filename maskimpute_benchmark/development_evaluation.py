@@ -143,7 +143,10 @@ def project_direct_comparator_evidence(
         for entry, record in zip(plan.entries, report.records, strict=True)
         if entry.identity.configuration_kind == "comparator_tuning"
         and isinstance(record.get("run"), Mapping)
-        and record["run"].get("status") in INTRINSIC_TERMINAL_STATUSES
+        and (
+            record["run"].get("status") == "completed"
+            or record["run"].get("status") in INTRINSIC_TERMINAL_STATUSES
+        )
     }
     if any(
         (row.method_id, row.configuration_id) not in terminal_comparator_keys

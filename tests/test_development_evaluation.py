@@ -327,6 +327,82 @@ def _all_direct_keys(value: object) -> tuple[str, ...]:
     return ()
 
 
+def _direct_projection_checkpoint_with_selected_statuses(
+    tmp_path: Path,
+    statuses: tuple[str, str],
+):
+    from maskimpute_benchmark.fair_comparator_checkpoint import (
+        replay_direct_development_budget,
+    )
+    from maskimpute_benchmark.fair_comparator_plan import direct_run_id
+
+    checkpoint_path, plan, registry, prepared, authority, _selected = (
+        _direct_projection_checkpoint(tmp_path)
+    )
+    first = plan.entries[0]
+    second_identity = replace(first.identity, ordinal=2, model_seed=43)
+    second = replace(
+        first,
+        run_id=direct_run_id(second_identity),
+        identity=second_identity,
+    )
+    third_identity = replace(plan.entries[2].identity, ordinal=3)
+    third = replace(
+        plan.entries[2],
+        run_id=direct_run_id(third_identity),
+        identity=third_identity,
+    )
+    changed_plan = replace(
+        plan,
+        configurations=(plan.configurations[0], plan.configurations[2]),
+        entries=(first, second, third),
+    )
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    encoded_entries = changed_plan.to_dict()["entries"]
+    assert isinstance(encoded_entries, list)
+    for record, entry, encoded, status in zip(
+        checkpoint["records"],
+        changed_plan.entries,
+        encoded_entries,
+        (*statuses, "unavailable"),
+        strict=True,
+    ):
+        reason = None if status == "completed" else "synthetic_unavailable"
+        record["run"].update(
+            run_id=entry.run_id,
+            identity=encoded["identity"],
+            status=status,
+            reason=reason,
+        )
+        record["run"]["stdout"]["terminal_reason"] = reason
+        record["run"]["stderr"]["terminal_reason"] = reason
+    checkpoint["plan_snapshot"] = changed_plan.to_dict()
+    checkpoint["budget"] = replay_direct_development_budget(
+        registry,
+        changed_plan.entries,
+        checkpoint["records"],
+    ).to_dict()
+    checkpoint_path.write_text(
+        json.dumps(
+            checkpoint,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return (
+        checkpoint_path,
+        changed_plan,
+        registry,
+        prepared,
+        authority,
+        authority.configurations_for("magic")[:1],
+    )
+
+
 def _contains_forbidden_identity_key(value: object) -> bool:
     forbidden = ("hash", "digest", "checksum", "fingerprint", "sha")
     return any(
@@ -379,6 +455,46 @@ def test_direct_checkpoint_projects_full_selected_comparator_payloads(
         for row in selected_rows
     }
     assert not _contains_forbidden_identity_key(projection)
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    (("completed", "completed"), ("completed", "unavailable")),
+    ids=("all-completed", "mixed-completed-intrinsic-terminal"),
+)
+def test_direct_projection_accepts_completed_selected_configuration(
+    tmp_path: Path,
+    statuses: tuple[str, str],
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        project_direct_comparator_evidence,
+    )
+
+    checkpoint_path, plan, registry, prepared, authority, selected = (
+        _direct_projection_checkpoint_with_selected_statuses(tmp_path, statuses)
+    )
+
+    projection = project_direct_comparator_evidence(
+        checkpoint_path,
+        plan,
+        registry=registry,
+        prepared_datasets=prepared,
+        comparator_reference=ComparatorAuthorityReference(
+            path="study/comparator_tuning.json",
+            schema_version=2,
+            authority_revision="fair-comparator-direct-v1",
+        ),
+        comparator_authority=authority,
+        selected_rows=selected,
+    )
+
+    assert projection["selected_comparators"] == {
+        selected[0].method_id: {
+            "configuration_id": selected[0].configuration_id,
+            "payload": dict(selected[0].payload),
+        }
+    }
 
 
 @pytest.mark.parametrize(

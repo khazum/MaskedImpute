@@ -730,6 +730,47 @@ def validate_direct_competition_plan(
             raise RunnerContractError(
                 "direct plan configuration blocks are absent, duplicated, or relabelled"
             )
+        spec = registry.by_id(key[0])
+        observed_cells = tuple(
+            (
+                plan.entries[position].identity.dataset_id,
+                plan.entries[position].identity.model_seed,
+            )
+            for position in block
+        )
+        if len(plan.inputs) == 16:
+            expected_seeds: tuple[int | None, ...] = (
+                DEVELOPMENT_MODEL_SEEDS if spec.stochastic else (None,)
+            )
+        elif spec.stochastic:
+            if any(
+                type(seed) is not int or seed not in DEVELOPMENT_MODEL_SEEDS
+                for _dataset_id, seed in observed_cells
+            ):
+                raise RunnerContractError(
+                    "direct plan configuration input-seed grid differs"
+                )
+            observed_cell_set = set(observed_cells)
+            expected_seeds = tuple(
+                seed
+                for seed in DEVELOPMENT_MODEL_SEEDS
+                if (input_ids[0], seed) in observed_cell_set
+            )
+        else:
+            expected_seeds = (None,)
+        expected_cells = tuple(
+            (dataset_id, model_seed)
+            for dataset_id in input_ids
+            for model_seed in expected_seeds
+        )
+        if (
+            not expected_seeds
+            or len(observed_cells) != len(set(observed_cells))
+            or observed_cells != expected_cells
+        ):
+            raise RunnerContractError(
+                "direct plan configuration input-seed grid differs"
+            )
         cursor += len(block)
     if cursor != len(plan.entries):
         raise RunnerContractError(

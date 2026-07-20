@@ -13,6 +13,8 @@ from maskimpute_benchmark.fair_comparator_plan import (
     DirectCompetitionPlan,
     build_direct_competition_plan,
     describe_prepared_input,
+    direct_run_id,
+    validate_direct_competition_plan,
 )
 from maskimpute_benchmark.methods import load_method_registry, prepare_method_input
 from maskimpute_benchmark.runner import (
@@ -123,7 +125,9 @@ def _prepared_dataset(
     )
 
 
-def _direct_fixture() -> tuple[DirectCompetitionPlan, object, tuple[object, ...], tuple[PreparedDataset, ...]]:
+def _direct_fixture() -> tuple[
+    DirectCompetitionPlan, object, tuple[object, ...], tuple[PreparedDataset, ...]
+]:
     registry = load_method_registry(METHODS_PATH)
     datasets = validate_development_manifest_payload(_manifest_payload())
     prepared = tuple(
@@ -139,14 +143,160 @@ def _direct_fixture() -> tuple[DirectCompetitionPlan, object, tuple[object, ...]
     return plan, registry, datasets, prepared
 
 
+def _renumber_direct_entries(entries: tuple[object, ...]) -> tuple[object, ...]:
+    result = []
+    for ordinal, entry in enumerate(entries, start=1):
+        identity = replace(entry.identity, ordinal=ordinal)
+        result.append(replace(entry, run_id=direct_run_id(identity), identity=identity))
+    return tuple(result)
+
+
+def _configuration_positions(plan, configuration) -> list[int]:
+    return [
+        position
+        for position, entry in enumerate(plan.entries)
+        if entry.identity.method.method_id == configuration.method.method_id
+        and entry.identity.configuration_id == configuration.configuration_id
+    ]
+
+
+def _replace_entry_cell(entry, source, *, model_seed: int | None = None):
+    source_identity = source.identity
+    identity = replace(
+        entry.identity,
+        dataset_id=source_identity.dataset_id,
+        mechanism=source_identity.mechanism,
+        biological_id=source_identity.biological_id,
+        technical_view=source_identity.technical_view,
+        mask_seed=source_identity.mask_seed,
+        model_seed=(source_identity.model_seed if model_seed is None else model_seed),
+        draw_index=source_identity.draw_index,
+    )
+    return replace(entry, identity=identity)
+
+
+@pytest.fixture(scope="module")
+def _direct_grid_cases():
+    base, registry, datasets, prepared = _direct_fixture()
+    prepared_map = {value.binding.dataset_id: value for value in prepared}
+    revision = build_direct_competition_plan(
+        registry,
+        datasets,
+        load_v28_revision_authority(),
+        prepared,
+    )
+    comparator = next(
+        value
+        for value in base.configurations
+        if value.configuration_kind == "comparator_tuning"
+    )
+    ablation = next(
+        value for value in base.configurations if value.configuration_kind == "ablation"
+    )
+    comparator_positions = _configuration_positions(base, comparator)
+    synthetic_entries = tuple(
+        base.entries[position] for position in comparator_positions[:6]
+    )
+    synthetic = replace(
+        base,
+        inputs=base.inputs[:2],
+        configurations=(comparator,),
+        entries=_renumber_direct_entries(synthetic_entries),
+    )
+    return {
+        "base": (base, comparator, prepared_map),
+        "revision": (revision, revision.configurations[0], prepared_map),
+        "ablation": (base, ablation, prepared_map),
+        "synthetic": (
+            synthetic,
+            comparator,
+            {
+                descriptor.dataset_id: prepared_map[descriptor.dataset_id]
+                for descriptor in synthetic.inputs
+            },
+        ),
+    }, registry
+
+
+def _mutate_configuration_cells(plan, configuration, mutation: str):
+    entries = list(plan.entries)
+    positions = _configuration_positions(plan, configuration)
+    block = [entries[position] for position in positions]
+    if mutation == "reordered":
+        block[0], block[1] = block[1], block[0]
+    elif mutation == "missing":
+        removed = block.pop(1)
+        if len(plan.inputs) == 16:
+            block.append(_replace_entry_cell(removed, removed, model_seed=999))
+    elif mutation == "duplicated":
+        block[1] = _replace_entry_cell(block[1], block[0])
+    else:
+        block[0] = _replace_entry_cell(block[0], block[0], model_seed=999)
+    entries[positions[0] : positions[-1] + 1] = block
+    return replace(plan, entries=_renumber_direct_entries(tuple(entries)))
+
+
+def test_direct_base_rejects_coherent_47_49_comparator_redistribution(
+    _direct_grid_cases,
+) -> None:
+    cases, registry = _direct_grid_cases
+    plan, first, prepared = cases["base"]
+    comparator_values = tuple(
+        value
+        for value in plan.configurations
+        if value.configuration_kind == "comparator_tuning"
+    )
+    second = comparator_values[1]
+    first_positions = _configuration_positions(plan, first)
+    second_positions = _configuration_positions(plan, second)
+    entries = list(plan.entries)
+    entries.pop(first_positions[-1])
+    shifted_second_end = second_positions[-1] - 1
+    extra = _replace_entry_cell(
+        entries[shifted_second_end],
+        entries[shifted_second_end],
+        model_seed=999,
+    )
+    entries.insert(shifted_second_end + 1, extra)
+    changed = replace(plan, entries=_renumber_direct_entries(tuple(entries)))
+
+    with pytest.raises(RunnerContractError, match="grid|seed|cell"):
+        validate_direct_competition_plan(
+            changed,
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
+@pytest.mark.parametrize("scope", ("base", "revision", "ablation", "synthetic"))
+@pytest.mark.parametrize(
+    "mutation",
+    ("reordered", "missing", "duplicated", "substituted"),
+)
+def test_direct_plan_rejects_noncanonical_configuration_cells(
+    _direct_grid_cases,
+    scope: str,
+    mutation: str,
+) -> None:
+    cases, registry = _direct_grid_cases
+    plan, configuration, prepared = cases[scope]
+    changed = _mutate_configuration_cells(plan, configuration, mutation)
+
+    with pytest.raises(RunnerContractError, match="grid|seed|cell"):
+        validate_direct_competition_plan(
+            changed,
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
 def _contains_forbidden_identity_key(value: object) -> bool:
     if isinstance(value, dict):
         return any(
             (
                 str(key).casefold() != "shape"
                 and any(
-                    token in str(key).casefold()
-                    for token in FORBIDDEN_IDENTITY_TOKENS
+                    token in str(key).casefold() for token in FORBIDDEN_IDENTITY_TOKENS
                 )
             )
             or _contains_forbidden_identity_key(nested)
@@ -164,12 +314,9 @@ def test_direct_plan_has_exact_denominator_and_no_summary_fields() -> None:
     assert len(plan.entries) == 2_896
     assert len(plan.configurations) == 61
     assert {
-        "observed": sum(
-            row.identity.method_id == "observed" for row in plan.entries
-        ),
+        "observed": sum(row.identity.method_id == "observed" for row in plan.entries),
         "capacity": sum(
-            row.identity.method_id == "capacity-matched-ae"
-            for row in plan.entries
+            row.identity.method_id == "capacity-matched-ae" for row in plan.entries
         ),
         "maskimpute": sum(
             row.identity.method_id == "maskimpute" for row in plan.entries
@@ -214,8 +361,7 @@ def test_direct_plan_carries_full_frozen_methods_payloads_and_prepared_inputs() 
     assert plan.inputs[1].batch_labels == ()
 
     assert all(
-        type(configuration.payload) is tuple
-        for configuration in plan.configurations
+        type(configuration.payload) is tuple for configuration in plan.configurations
     )
     assert all(
         configuration.method
@@ -262,25 +408,25 @@ def test_direct_plan_preserves_configuration_dataset_seed_order_and_blocks() -> 
     cursor = 0
     for configuration in plan.configurations:
         seeds = (
-            (None,)
-            if configuration.method.method_id == "observed"
-            else (42, 43, 44)
+            (None,) if configuration.method.method_id == "observed" else (42, 43, 44)
         )
-        expected = [(binding.dataset_id, seed) for binding in datasets for seed in seeds]
+        expected = [
+            (binding.dataset_id, seed) for binding in datasets for seed in seeds
+        ]
         block = plan.entries[cursor : cursor + len(expected)]
         assert [
             (row.identity.dataset_id, row.identity.model_seed) for row in block
         ] == expected
         assert {
             (row.identity.method_id, row.identity.configuration_id) for row in block
-        } == {
-            (configuration.method.method_id, configuration.configuration_id)
-        }
+        } == {(configuration.method.method_id, configuration.configuration_id)}
         cursor += len(expected)
     assert cursor == len(plan.entries)
 
     comparator_configurations = [
-        row for row in plan.configurations if row.configuration_kind == "comparator_tuning"
+        row
+        for row in plan.configurations
+        if row.configuration_kind == "comparator_tuning"
     ]
     assert len(comparator_configurations) == 34
     for configuration in comparator_configurations:
