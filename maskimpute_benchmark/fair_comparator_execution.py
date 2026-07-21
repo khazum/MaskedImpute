@@ -80,7 +80,7 @@ _DIRECT_TERMINAL_REASONS = frozenset(
         "environment_executable_missing",
         "environment_executable_unsafe",
         "environment_execution_failed",
-        "environment_library_digest_mismatch",
+        "environment_library_binding_mismatch",
         "environment_library_incomplete",
         "environment_library_malformed",
         "environment_library_missing",
@@ -146,6 +146,26 @@ _DIRECT_MEASUREMENT_CODES = frozenset(
         "rss_measurement_unavailable",
     }
 )
+_DIRECT_METRIC_REASON_FALLBACK = "noncanonical_metric_reason"
+_DIRECT_EVALUATOR_METRIC_REASONS = frozenset(
+    {
+        _DIRECT_METRIC_REASON_FALLBACK,
+        "constant_cell_profile",
+        "constant_gene_profile",
+        "fewer_than_two_cells",
+        "fewer_than_two_variable_cells",
+        "fewer_than_two_variable_genes",
+        "marker_genes_not_provided",
+        "no_entries",
+        "nonfinite_correlation",
+        "proxy_truth_not_exact",
+        "truth_unavailable",
+        "undefined_for_continuous_truth",
+    }
+)
+_DIRECT_METRIC_REASONS = (
+    _DIRECT_TERMINAL_REASONS | _DIRECT_EVALUATOR_METRIC_REASONS
+)
 
 
 def _canonical_terminal_reason(status: str, reason: str | None) -> str | None:
@@ -160,6 +180,14 @@ def _canonical_measurement_code(value: object) -> str:
     if value in _DIRECT_MEASUREMENT_CODES:
         return value
     return "executor_reported_unverified"
+
+
+def _canonical_metric_reason(status: str, reason: str | None) -> str | None:
+    if status == "completed":
+        return None
+    if reason in _DIRECT_METRIC_REASONS:
+        return reason
+    return _DIRECT_METRIC_REASON_FALLBACK
 
 
 DirectAdapter = Callable[..., AdapterOutcome]
@@ -394,7 +422,10 @@ class DirectMetricRow:
         if self.status not in _RUN_STATUSES:
             raise RunnerContractError("direct metric status is invalid")
         if self.value is None:
-            if not isinstance(self.reason, str) or not self.reason:
+            if (
+                not isinstance(self.reason, str)
+                or self.reason not in _DIRECT_METRIC_REASONS
+            ):
                 raise RunnerContractError("unavailable direct metric lacks a reason")
             if self.status == "completed":
                 raise RunnerContractError("unavailable direct metric status is invalid")
@@ -1167,8 +1198,13 @@ def _evaluate(
                     None if metrics[name].value is None else float(metrics[name].value)
                 ),
                 n=int(metrics[name].n),
-                status=("unavailable" if metrics[name].value is None else "completed"),
-                reason=metrics[name].reason,
+                status=(
+                    "unavailable" if metrics[name].value is None else "completed"
+                ),
+                reason=_canonical_metric_reason(
+                    "unavailable" if metrics[name].value is None else "completed",
+                    metrics[name].reason,
+                ),
             )
             for name in DIRECT_RECONSTRUCTION_METRICS
         )

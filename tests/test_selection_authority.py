@@ -58,11 +58,32 @@ def _direct_schema_keys(value: object) -> tuple[str, ...]:
     return ()
 
 
+def _direct_artifact_strings(value: object) -> tuple[str, ...]:
+    if isinstance(value, dict):
+        return tuple(
+            string
+            for nested in value.values()
+            for string in _direct_artifact_strings(nested)
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(
+            string
+            for nested in value
+            for string in _direct_artifact_strings(nested)
+        )
+    return (value,) if isinstance(value, str) else ()
+
+
 def _forbidden_direct_key(name: str) -> bool:
     lowered = name.casefold()
     return lowered != "shape" and any(
         token in lowered for token in FORBIDDEN_DIRECT_IDENTITY_TOKENS
     )
+
+
+def _forbidden_direct_value(value: str) -> bool:
+    lowered = value.casefold()
+    return any(token in lowered for token in FORBIDDEN_DIRECT_IDENTITY_TOKENS)
 
 
 def _module_symbol_aliases(tree: ast.Module) -> dict[str, str]:
@@ -632,6 +653,51 @@ def _direct_source_audit_findings(
                     and not (resolved_key == "PYTHONHASHSEED" and reviewed_environment)
                 ):
                     findings.add(f"forbidden generated key {resolved_key}")
+        emitted_strings = {
+            resolved
+            for dictionary in nodes
+            if isinstance(dictionary, ast.Dict)
+            for value in dictionary.values
+            if (resolved := _literal_string(value, strings)) is not None
+        } | {
+            resolved
+            for node in nodes
+            if isinstance(node, ast.Return)
+            and (resolved := _literal_string(node.value, strings)) is not None
+        }
+        reason_factories = {
+            "AdapterUnavailableError",
+            "blocked_authority",
+            "budget_exhausted",
+            "failed",
+            "infrastructure_error",
+            "resource_exceeded",
+            "timeout",
+            "unavailable",
+        }
+        for call in (node for node in nodes if isinstance(node, ast.Call)):
+            resolved_call = _resolve_symbol(call.func, symbols)
+            if (
+                call.args
+                and resolved_call is not None
+                and resolved_call.rsplit(".", 1)[-1] in reason_factories
+            ):
+                resolved = _literal_string(call.args[0], strings)
+                if resolved is not None:
+                    emitted_strings.add(resolved)
+            for keyword in call.keywords:
+                if keyword.arg in {
+                    "reason",
+                    "terminal_reason",
+                    "rss_measurement",
+                    "gpu_measurement",
+                }:
+                    resolved = _literal_string(keyword.value, strings)
+                    if resolved is not None:
+                        emitted_strings.add(resolved)
+        for emitted in emitted_strings:
+            if _forbidden_direct_value(emitted):
+                findings.add(f"forbidden emitted string {emitted}")
 
     if not shared:
         symbols, _strings = _scope_aliases(tree, module_aliases)
@@ -929,6 +995,14 @@ def test_direct_source_audit_rejects_alias_and_generated_key_evasions(
     shared: bool,
 ) -> None:
     assert _direct_source_audit_findings(source, shared=shared)
+
+
+def test_direct_source_audit_rejects_forbidden_emitted_string_value() -> None:
+    source = """
+def project_direct_artifact(value):
+    return {"reason": "environment_library_digest_mismatch", "value": value}
+"""
+    assert _direct_source_audit_findings(source, shared=True)
 
 
 def test_direct_source_audit_leaves_unrelated_legacy_functions_out_of_scope() -> None:
@@ -1401,6 +1475,27 @@ def test_scoped_direct_schema_audit_covers_every_synthetic_artifact() -> None:
         _forbidden_direct_key(key)
         for artifact in artifacts.values()
         for key in _direct_schema_keys(artifact)
+    )
+    assert not any(
+        _forbidden_direct_value(value)
+        for artifact in artifacts.values()
+        for value in _direct_artifact_strings(artifact)
+    )
+
+
+def test_direct_closed_metadata_vocabularies_are_forbidden_token_free() -> None:
+    import maskimpute_benchmark.fair_comparator_execution as direct_execution
+
+    vocabularies = (
+        direct_execution._DIRECT_TERMINAL_REASONS,
+        direct_execution._DIRECT_METRIC_REASONS,
+        direct_execution._DIRECT_MEASUREMENT_CODES,
+    )
+    assert all(vocabulary for vocabulary in vocabularies)
+    assert not any(
+        _forbidden_direct_value(value)
+        for vocabulary in vocabularies
+        for value in vocabulary
     )
 
 

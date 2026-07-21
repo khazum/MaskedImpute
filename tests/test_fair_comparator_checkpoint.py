@@ -44,7 +44,13 @@ from maskimpute_benchmark.fair_comparator_plan import (
     describe_prepared_input,
     direct_run_id,
 )
-from maskimpute_benchmark.methods import load_method_registry, prepare_method_input
+from maskimpute_benchmark.methods import (
+    DirectAdapterExecution,
+    finalize_direct_method_output,
+    load_method_registry,
+    prepare_method_input,
+)
+from maskimpute_benchmark.metrics import MetricValue
 from maskimpute_benchmark.runner import (
     AdapterOutcome,
     DatasetBinding,
@@ -453,6 +459,114 @@ def test_direct_attempt_intent_and_checkpoint_discard_private_metadata_paths(
     assert all(path.encode() not in checkpoint_bytes for path in private_paths)
 
 
+def _completed_checkpoint_attempt(
+    plan: DirectCompetitionPlan,
+    registry,
+    prepared_datasets: dict[str, PreparedDataset],
+) -> DirectEvaluatedAttempt:
+    prepared = prepared_datasets[plan.entries[0].identity.dataset_id]
+    authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    spec = registry.by_id("magic")
+    request = create_direct_request(
+        plan.entries[0],
+        prepared,
+        plan.inputs[0],
+        spec,
+        authority,
+        timeout_seconds=60,
+    )
+    output = finalize_direct_method_output(
+        spec,
+        prepared.method_input,
+        prepared.method_input.counts,
+        output_scale=spec.output_scale,
+        obs_ids=prepared.method_input.obs_ids,
+        var_ids=prepared.method_input.var_ids,
+    )
+    outcome = AdapterOutcome.completed(
+        DirectAdapterExecution(output=output, stdout=b"", stderr=b""),
+        runtime_seconds=1,
+        peak_rss_bytes=1,
+        peak_gpu_bytes=0,
+    )
+    return evaluate_direct_outcome(request, prepared, authority, outcome)
+
+
+def test_completed_direct_metric_reason_discards_private_path_before_storage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.metrics as metrics_module
+
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    private_path = "/tmp/private-completed-metric/token"
+    original = metrics_module.reconstruction_metrics
+
+    def with_private_reason(*args, **kwargs):
+        values = original(*args, **kwargs)
+        values["mse_dropout"] = MetricValue(None, 0, private_path)
+        return values
+
+    monkeypatch.setattr(metrics_module, "reconstruction_metrics", with_private_reason)
+    attempt = _completed_checkpoint_attempt(plan, registry, prepared)
+    attempt_bytes = json.dumps(attempt.to_dict(), sort_keys=True).encode("utf-8")
+    metric = next(value for value in attempt.metrics if value.metric == "mse_dropout")
+    assert attempt.run.status == "completed"
+    assert metric.status == "unavailable"
+    assert metric.reason == "noncanonical_metric_reason"
+    assert private_path.encode() not in attempt_bytes
+
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    store._publish_transaction_intent(plan, 0, plan.entries[0], attempt)
+    intent_bytes = store.intent_path.read_bytes()
+    store._write_structural(
+        plan,
+        (attempt.to_dict(),),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+    checkpoint_bytes = store.path.read_bytes()
+    assert private_path.encode() not in intent_bytes
+    assert private_path.encode() not in checkpoint_bytes
+
+
+def test_completed_direct_metric_rejects_noncanonical_stored_reason(
+    tmp_path: Path,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    attempt = _completed_checkpoint_attempt(plan, registry, prepared)
+    private_path = "/tmp/private-stored-completed-metric/token"
+    record = attempt.to_dict()
+    record["metrics"][0].update(
+        value=None,
+        n=0,
+        status="unavailable",
+        reason=private_path,
+    )
+
+    with pytest.raises(RunnerContractError, match="metric"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+    with pytest.raises(RunnerContractError, match="metric"):
+        DirectMetricRow(
+            identity=attempt.run.identity,
+            metric="mse",
+            value=None,
+            n=0,
+            status="unavailable",
+            reason=private_path,
+        )
+
+
 @pytest.mark.parametrize("field", ("reason", "rss_measurement", "gpu_measurement"))
 def test_direct_checkpoint_rejects_noncanonical_stored_metadata(
     tmp_path: Path,
@@ -690,9 +804,9 @@ def test_direct_attempt_rejects_run_metric_semantic_drift(mutation: str) -> None
             identity=replace(metrics[0].identity, ordinal=99),
         )
     elif mutation == "metric-status":
-        metrics[0] = replace(metrics[0], status="failed", reason="different_failure")
+        metrics[0] = replace(metrics[0], status="failed", reason="adapter_exception")
     else:
-        metrics[0] = replace(metrics[0], reason="different_failure")
+        metrics[0] = replace(metrics[0], reason="evaluator_conversion_invalid")
 
     with pytest.raises(RunnerContractError, match="metric|identity|status|reason"):
         replace(attempt, metrics=tuple(metrics))

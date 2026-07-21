@@ -390,7 +390,7 @@ def _direct_projection_checkpoint_with_selected_statuses(
                     value=None,
                     n=0,
                     status="unavailable",
-                    reason="synthetic_metric_unavailable",
+                    reason="no_entries",
                 )
             else:
                 metric.update(value=None, n=0, status=status, reason=reason)

@@ -861,6 +861,24 @@ def test_execute_direct_request_rejects_numeric_type_coercion_after_dispatch(
         ),
         (
             {
+                "magic": lambda *_args, **_kwargs: AdapterOutcome.unavailable(
+                    "environment_library_binding_mismatch"
+                )
+            },
+            "unavailable",
+            "environment_library_binding_mismatch",
+        ),
+        (
+            {
+                "magic": lambda *_args, **_kwargs: AdapterOutcome.unavailable(
+                    "environment_library_digest_mismatch"
+                )
+            },
+            "unavailable",
+            "noncanonical_adapter_reason",
+        ),
+        (
+            {
                 "magic": lambda *_args, **_kwargs: AdapterOutcome.infrastructure_error(
                     "worker_protocol_error"
                 )
