@@ -67,6 +67,39 @@ and bounded log receipts, reopens the compressed `p_pre_zero` matrix, and
 replays the same run IDs to prove create-only byte equality. No real scientific
 workload ran.
 
+## Production resource-envelope review fix
+
+The second independent review found that the real production revision adapter
+accepted an authorized deadline but executed its numerical fit in-process,
+did not enforce either method resource ceiling, and published zero runtime and
+resource peaks for successful fits. The correction now:
+
+- constructs a complete `DirectRevisionExecutionRequest` containing the exact
+  direct identity, prepared-input descriptor, authorized configuration,
+  `MethodSpec`, `MethodInput`, decision timeout, RSS ceiling, and GPU-memory
+  ceiling;
+- revalidates those complete values and exact byte ceilings both before spawn
+  and inside the child process;
+- reuses the accepted parent-owned spawned-process monitor to enforce the
+  deadline and process-tree RSS/GPU limits and to classify timeout, resource,
+  infrastructure, and executor failures into the existing direct statuses;
+- reconstructs immutable calibration evidence inside the child from its full
+  payload, avoiding an unpicklable object without introducing a content
+  summary or legacy runtime registry;
+- returns a successful child numerical result without placeholder resource
+  values, then replaces it at the parent boundary with measured nonzero elapsed
+  time, measured RSS, and measured GPU memory (or zero from telemetry when the
+  process uses no GPU); and
+- persists those measured values through all 48 public direct attempts so
+  `DirectDevelopmentBudget` consumes the actual elapsed time and restores the
+  same consumption from checkpoint replay.
+
+The production-adapter regressions keep only the numerical fit synthetic. They
+exercise the real `DirectRevisionMaskImputeAdapter`, real spawn boundary,
+parent sampling/enforcement, public plan executor, and real checkpoint store.
+No legacy request/evaluator/runtime-registry bridge or content-summary field
+was restored.
+
 ## TDD evidence
 
 Production changes were introduced from focused failing regressions. Observed
@@ -98,6 +131,15 @@ because `DirectMaskImputeExecution` did not exist. The scoped source audit also
 reproduced the review finding before implementation (`1 failed, 1 passed`).
 After the direct boundary was implemented, the completed, unavailable, budget,
 and production-composition cases all passed, and both scoped audits passed.
+
+For the production resource-envelope review fix, the initial focused run was
+RED with eight failures: the revision executor omitted both resource ceilings,
+the production adapter had no spawned measured entry point, and the 48-row
+regression still substituted the adapter above the production boundary. After
+the correction, focused regressions prove exact timeout/RSS/GPU forwarding,
+CPU and GPU parent-measured completion, timeout classification, both resource
+ceiling classifications, and measured budget replay through the real 48-row
+checkpoint.
 
 ## Verification evidence
 
@@ -138,6 +180,23 @@ ruff format: 1 file reformatted, 10 files unchanged
 ruff check: All checks passed!
 python -m compileall -q [touched production modules]: exit 0
 git diff --check: exit 0
+```
+
+Final production resource-envelope evidence, rerun after removing successful
+child placeholder measurements, is:
+
+```text
+focused production adapter and 48-row checkpoint replay:
+  11 passed, 134 deselected in 160.82s
+required revision/activation/base-comparator cross-stage suite:
+  53 passed, 113 deselected in 186.72s
+adjacent MaskImpute adapter/v28/v29 suites: 34 passed in 3.54s
+accepted direct spawned-executor adjacency: 3 passed, 49 deselected in 4.09s
+checkpoint budget adjacency: 8 passed, 85 deselected in 1.86s
+scoped direct source/schema audits: 2 passed in 2.86s
+ruff format --check: 2 files already formatted
+ruff check: All checks passed!
+python -m compileall -q [touched source and test]: exit 0
 ```
 
 Final independent-review-fix evidence, all under the required supported
@@ -181,8 +240,9 @@ no production behavior was relaxed.
 ## Concerns
 
 No blocking Task 13 concern remains. The broad benchmark-runner suite was not
-rerun in full; all five affected production-composition, completed,
-unavailable, and budget paths were rerun warning-strict after formatting, the
-required cross-stage acceptance command and both scoped audits are green, and
-the adjacent MaskImpute suites pass. No scientific production run was
-authorized or performed.
+rerun in full; the complete 11-test affected slice includes the real
+production adapter, all resource terminal paths, public 48-row execution, and
+checkpoint/budget replay. The required cross-stage acceptance command, both
+scoped audits, the accepted spawn adjacency, checkpoint budget adjacency, and
+the adjacent MaskImpute suites pass warning-strict. No scientific production
+run was authorized or performed.

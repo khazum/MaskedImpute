@@ -3339,15 +3339,47 @@ class BudgetDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class DirectRevisionExecutionRequest:
+    """Complete direct values and enforced limits for one revision attempt."""
+
+    identity: object
+    descriptor: object
+    configuration: object
+    method_spec: MethodSpec
+    method_input: MethodInput
+    timeout_seconds: float
+    max_rss_bytes: int
+    max_gpu_memory_bytes: int
+
+    def __post_init__(self) -> None:
+        _validate_direct_revision_adapter_values(
+            self.identity,
+            self.descriptor,
+            self.configuration,
+            self.method_spec,
+            self.method_input,
+            self.timeout_seconds,
+            self.max_rss_bytes,
+            self.max_gpu_memory_bytes,
+        )
+
+    @property
+    def max_gpu_bytes(self) -> int:
+        """Expose the accepted monitor's generic GPU-ceiling interface."""
+
+        return self.max_gpu_memory_bytes
+
+
+@dataclass(frozen=True, slots=True)
 class DirectRevisionMaskImputeOutcome:
     """One direct MaskImpute adapter outcome before evaluator-only metrics."""
 
     status: str
     execution: object | None
     reason: str | None
-    runtime_seconds: int | float
-    peak_rss_bytes: int
-    peak_gpu_bytes: int
+    runtime_seconds: int | float | None
+    peak_rss_bytes: int | None
+    peak_gpu_bytes: int | None
     stdout: bytes
     stderr: bytes
     rss_measurement: str = "executor_reported_unverified"
@@ -3358,12 +3390,28 @@ class DirectRevisionMaskImputeOutcome:
 
         if self.status not in _OUTCOME_STATUSES:
             raise RunnerContractError("direct revision outcome status is invalid")
-        _require_nonnegative_number(self.runtime_seconds, "direct revision runtime")
-        if any(
-            type(value) is not int or value < 0
-            for value in (self.peak_rss_bytes, self.peak_gpu_bytes)
-        ):
-            raise RunnerContractError("direct revision resource value is invalid")
+        measurements = (
+            self.runtime_seconds,
+            self.peak_rss_bytes,
+            self.peak_gpu_bytes,
+        )
+        if all(value is None for value in measurements):
+            if self.status != "completed":
+                raise RunnerContractError(
+                    "terminal direct revision outcome lacks measurements"
+                )
+        elif any(value is None for value in measurements):
+            raise RunnerContractError("direct revision measurements are incomplete")
+        else:
+            _require_nonnegative_number(
+                self.runtime_seconds,
+                "direct revision runtime",
+            )
+            if any(
+                type(value) is not int or value < 0
+                for value in (self.peak_rss_bytes, self.peak_gpu_bytes)
+            ):
+                raise RunnerContractError("direct revision resource value is invalid")
         if type(self.stdout) is not bytes or type(self.stderr) is not bytes:
             raise RunnerContractError("direct revision streams must be exact bytes")
         if not self.rss_measurement or not self.gpu_measurement:
@@ -3390,9 +3438,9 @@ class DirectRevisionMaskImputeOutcome:
         cls,
         execution: object,
         *,
-        runtime_seconds: int | float,
-        peak_rss_bytes: int,
-        peak_gpu_bytes: int,
+        runtime_seconds: int | float | None = None,
+        peak_rss_bytes: int | None = None,
+        peak_gpu_bytes: int | None = None,
         rss_measurement: str = "executor_reported_unverified",
         gpu_measurement: str = "executor_reported_unverified",
     ) -> DirectRevisionMaskImputeOutcome:
@@ -3442,6 +3490,36 @@ class DirectRevisionMaskImputeOutcome:
             gpu_measurement=gpu_measurement,
         )
 
+    @classmethod
+    def unavailable(
+        cls, reason: str, **measurements: object
+    ) -> DirectRevisionMaskImputeOutcome:
+        return cls.terminal("unavailable", reason, **measurements)
+
+    @classmethod
+    def failed(
+        cls, reason: str, **measurements: object
+    ) -> DirectRevisionMaskImputeOutcome:
+        return cls.terminal("failed", reason, **measurements)
+
+    @classmethod
+    def timeout(
+        cls, reason: str = "timeout", **measurements: object
+    ) -> DirectRevisionMaskImputeOutcome:
+        return cls.terminal("timeout", reason, **measurements)
+
+    @classmethod
+    def resource_exceeded(
+        cls, reason: str, **measurements: object
+    ) -> DirectRevisionMaskImputeOutcome:
+        return cls.terminal("resource_exceeded", reason, **measurements)
+
+    @classmethod
+    def infrastructure_error(
+        cls, reason: str, **measurements: object
+    ) -> DirectRevisionMaskImputeOutcome:
+        return cls.terminal("infrastructure_error", reason, **measurements)
+
 
 def _validate_direct_revision_adapter_values(
     identity: object,
@@ -3450,6 +3528,8 @@ def _validate_direct_revision_adapter_values(
     spec: MethodSpec,
     method_input: MethodInput,
     timeout_seconds: int | float,
+    max_rss_bytes: int,
+    max_gpu_memory_bytes: int,
 ) -> dict[str, object]:
     """Revalidate complete direct revision values and return the plain payload."""
 
@@ -3503,6 +3583,17 @@ def _validate_direct_revision_adapter_values(
     if timeout <= 0 or timeout > spec.resources.timeout_seconds:
         raise RunnerContractError(
             "direct revision timeout differs from method authority"
+        )
+    expected_rss = int(spec.resources.max_rss_gib * 1024**3)
+    expected_gpu = int(spec.resources.max_gpu_gib * 1024**3)
+    if (
+        type(max_rss_bytes) is not int
+        or max_rss_bytes != expected_rss
+        or type(max_gpu_memory_bytes) is not int
+        or max_gpu_memory_bytes != expected_gpu
+    ):
+        raise RunnerContractError(
+            "direct revision resource ceilings differ from method authority"
         )
     return payload
 
@@ -3565,53 +3656,64 @@ def _direct_revision_components(
 
 
 @dataclass(frozen=True, slots=True)
-class DirectRevisionMaskImputeAdapter:
-    """Invoke the existing MaskImpute fit through only complete direct values."""
+class DirectRevisionMaskImputeChildExecutor:
+    """Run only the numerical fit inside the measured direct child process."""
 
-    calibration_artifact: object
+    calibration_payload: object
     count_model_config: object
     device: str = "cuda"
+    numerical_adapter: Callable[..., object] | None = None
 
     def __post_init__(self) -> None:
         from maskimpute import PreZeroCountModelConfig
         from maskimpute.calibration import CalibrationArtifact
 
-        if type(self.calibration_artifact) is not CalibrationArtifact:
-            raise TypeError("calibration_artifact must be a CalibrationArtifact")
+        try:
+            CalibrationArtifact(self.calibration_payload)
+        except (TypeError, ValueError) as error:
+            raise TypeError("calibration_payload must define a calibration") from error
         if type(self.count_model_config) is not PreZeroCountModelConfig:
             raise TypeError("count_model_config must be a PreZeroCountModelConfig")
         if not isinstance(self.device, str) or not self.device:
             raise TypeError("device must be a nonempty string")
+        if self.numerical_adapter is not None and not callable(self.numerical_adapter):
+            raise TypeError("numerical_adapter must be callable or None")
 
     def __call__(
-        self,
-        identity: object,
-        descriptor: object,
-        configuration: object,
-        spec: MethodSpec,
-        method_input: MethodInput,
-        timeout_seconds: int | float,
+        self, request: DirectRevisionExecutionRequest
     ) -> DirectRevisionMaskImputeOutcome:
         from .methods import AdapterUnavailableError, run_revision_maskimpute_direct
 
+        if not isinstance(request, DirectRevisionExecutionRequest):
+            raise TypeError("request must be a DirectRevisionExecutionRequest")
         payload = _validate_direct_revision_adapter_values(
-            identity,
-            descriptor,
-            configuration,
-            spec,
-            method_input,
-            timeout_seconds,
+            request.identity,
+            request.descriptor,
+            request.configuration,
+            request.method_spec,
+            request.method_input,
+            request.timeout_seconds,
+            request.max_rss_bytes,
+            request.max_gpu_memory_bytes,
         )
+        identity = request.identity
         assert isinstance(identity.model_seed, int)
         config, decoder, structure = _direct_revision_components(
             payload,
             identity.model_seed,
         )
+        numerical_adapter = (
+            run_revision_maskimpute_direct
+            if self.numerical_adapter is None
+            else self.numerical_adapter
+        )
         try:
-            execution = run_revision_maskimpute_direct(
-                spec,
-                method_input,
-                calibration_artifact=self.calibration_artifact,
+            from maskimpute.calibration import CalibrationArtifact
+
+            execution = numerical_adapter(
+                request.method_spec,
+                request.method_input,
+                calibration_artifact=CalibrationArtifact(self.calibration_payload),
                 seed=identity.model_seed,
                 config=config,
                 count_model_config=self.count_model_config,
@@ -3642,9 +3744,76 @@ class DirectRevisionMaskImputeAdapter:
             )
         return DirectRevisionMaskImputeOutcome.completed(
             execution,
-            runtime_seconds=0.0,
-            peak_rss_bytes=0,
-            peak_gpu_bytes=0,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DirectRevisionMaskImputeAdapter:
+    """Apply direct identity, deadline, and resource limits around MaskImpute."""
+
+    calibration_artifact: object
+    count_model_config: object
+    device: str = "cuda"
+    numerical_adapter: Callable[..., object] | None = None
+    resource_sampler: object = dataclass_field(
+        default_factory=LinuxProcessTreeResourceSampler
+    )
+    poll_interval_seconds: float = 0.05
+
+    def __post_init__(self) -> None:
+        from maskimpute import PreZeroCountModelConfig
+        from maskimpute.calibration import CalibrationArtifact
+
+        if type(self.calibration_artifact) is not CalibrationArtifact:
+            raise TypeError("calibration_artifact must be a CalibrationArtifact")
+        if type(self.count_model_config) is not PreZeroCountModelConfig:
+            raise TypeError("count_model_config must be a PreZeroCountModelConfig")
+        if not isinstance(self.device, str) or not self.device:
+            raise TypeError("device must be a nonempty string")
+        if self.numerical_adapter is not None and not callable(self.numerical_adapter):
+            raise TypeError("numerical_adapter must be callable or None")
+        if not hasattr(self.resource_sampler, "sample"):
+            raise TypeError("resource_sampler must implement sample")
+        if (
+            isinstance(self.poll_interval_seconds, bool)
+            or not isinstance(self.poll_interval_seconds, (int, float))
+            or not math.isfinite(self.poll_interval_seconds)
+            or self.poll_interval_seconds <= 0
+        ):
+            raise ValueError("poll_interval_seconds must be positive and finite")
+
+    def __call__(
+        self,
+        identity: object,
+        descriptor: object,
+        configuration: object,
+        spec: MethodSpec,
+        method_input: MethodInput,
+        timeout_seconds: int | float,
+        max_rss_bytes: int,
+        max_gpu_memory_bytes: int,
+    ) -> DirectRevisionMaskImputeOutcome:
+        request = DirectRevisionExecutionRequest(
+            identity=identity,
+            descriptor=descriptor,
+            configuration=configuration,
+            method_spec=spec,
+            method_input=method_input,
+            timeout_seconds=float(timeout_seconds),
+            max_rss_bytes=max_rss_bytes,
+            max_gpu_memory_bytes=max_gpu_memory_bytes,
+        )
+        child_executor = DirectRevisionMaskImputeChildExecutor(
+            calibration_payload=self.calibration_artifact.to_dict(),
+            count_model_config=self.count_model_config,
+            device=self.device,
+            numerical_adapter=self.numerical_adapter,
+        )
+        return execute_direct_revision_adapter_in_spawned_process(
+            request,
+            child_executor,
+            poll_interval_seconds=self.poll_interval_seconds,
+            resource_sampler=self.resource_sampler,
         )
 
 
@@ -3941,6 +4110,8 @@ class RevisionMaskImputeExecutor:
         ):
             raise RunnerContractError("revision prepared descriptor differs")
         spec = self.registry.by_id("maskimpute")
+        max_rss_bytes = int(spec.resources.max_rss_gib * 1024**3)
+        max_gpu_memory_bytes = int(spec.resources.max_gpu_gib * 1024**3)
         _validate_direct_revision_adapter_values(
             entry.identity,
             descriptor,
@@ -3948,6 +4119,8 @@ class RevisionMaskImputeExecutor:
             spec,
             prepared.method_input,
             max(decision.timeout_seconds, 1.0),
+            max_rss_bytes,
+            max_gpu_memory_bytes,
         )
         if entry.preflight_status == "blocked_authority":
             outcome = DirectRevisionMaskImputeOutcome.terminal(
@@ -3967,6 +4140,8 @@ class RevisionMaskImputeExecutor:
                 spec,
                 prepared.method_input,
                 decision.timeout_seconds,
+                max_rss_bytes,
+                max_gpu_memory_bytes,
             )
             if not isinstance(outcome, DirectRevisionMaskImputeOutcome):
                 raise RunnerContractError(
@@ -3979,6 +4154,8 @@ class RevisionMaskImputeExecutor:
                 spec,
                 prepared.method_input,
                 decision.timeout_seconds,
+                max_rss_bytes,
+                max_gpu_memory_bytes,
             )
         return _evaluate_direct_revision_outcome(
             entry,
@@ -8935,13 +9112,14 @@ def _run_competition_with_authority(
 
 def _adapter_process_target(
     connection: Any,
-    request: ExecutionRequest,
-    executor: Callable[[ExecutionRequest], AdapterOutcome],
+    request: object,
+    executor: Callable[[object], object],
+    outcome_type: type,
 ) -> None:
     try:
         os.chdir(publication_runtime_working_directory())
         outcome = executor(request)
-        if not isinstance(outcome, AdapterOutcome):
+        if not isinstance(outcome, outcome_type):
             raise TypeError("adapter executor returned a noncanonical outcome")
         connection.send(("outcome", outcome))
     except BaseException as error:
@@ -8958,17 +9136,20 @@ def _adapter_process_target(
 
 def _execute_measured_spawn(
     request: object,
-    executor: Callable[[object], AdapterOutcome],
+    executor: Callable[[object], object],
     *,
     poll_interval_seconds: float = 0.05,
     resource_sampler: ResourceSampler | None = None,
     expected_spawn_executable: Path | None = None,
     spawn_search_path: tuple[str, ...] | None = None,
-) -> AdapterOutcome:
+    outcome_type: type = AdapterOutcome,
+) -> object:
     """Execute one already-validated request with parent-owned telemetry."""
 
     if not callable(executor):
         raise TypeError("executor must be callable")
+    if outcome_type not in {AdapterOutcome, DirectRevisionMaskImputeOutcome}:
+        raise TypeError("outcome_type is not supported by the measured executor")
     from multiprocessing import spawn as multiprocessing_spawn
 
     raw_spawn_executable = multiprocessing_spawn.get_executable()
@@ -9051,7 +9232,7 @@ def _execute_measured_spawn(
     parent_connection, child_connection = context.Pipe(duplex=False)
     process = context.Process(
         target=_adapter_process_target,
-        args=(child_connection, request, executor),
+        args=(child_connection, request, executor, outcome_type),
         daemon=False,
     )
     started = time.monotonic()
@@ -9134,7 +9315,7 @@ def _execute_measured_spawn(
             if peak_rss is None or (
                 request.method_spec.resources.gpu_required and peak_gpu is None
             ):
-                return AdapterOutcome.infrastructure_error(
+                return outcome_type.infrastructure_error(
                     "resource_telemetry_unavailable",
                     runtime_seconds=elapsed,
                     peak_rss_bytes=peak_rss or 0,
@@ -9143,7 +9324,7 @@ def _execute_measured_spawn(
                     gpu_measurement=gpu_provenance,
                 )
             assert peak_gpu is not None
-            return AdapterOutcome.resource_exceeded(
+            return outcome_type.resource_exceeded(
                 live_resource_reason,
                 runtime_seconds=elapsed,
                 peak_rss_bytes=peak_rss,
@@ -9163,7 +9344,7 @@ def _execute_measured_spawn(
             if peak_rss is None or (
                 request.method_spec.resources.gpu_required and peak_gpu is None
             ):
-                return AdapterOutcome.infrastructure_error(
+                return outcome_type.infrastructure_error(
                     "resource_telemetry_unavailable",
                     runtime_seconds=elapsed,
                     peak_rss_bytes=peak_rss or 0,
@@ -9171,7 +9352,7 @@ def _execute_measured_spawn(
                     rss_measurement=rss_provenance,
                     gpu_measurement=gpu_provenance,
                 )
-            return AdapterOutcome.timeout(
+            return outcome_type.timeout(
                 runtime_seconds=elapsed,
                 peak_rss_bytes=peak_rss,
                 peak_gpu_bytes=peak_gpu,
@@ -9183,7 +9364,7 @@ def _execute_measured_spawn(
         if peak_rss is None or (
             request.method_spec.resources.gpu_required and peak_gpu is None
         ):
-            return AdapterOutcome.infrastructure_error(
+            return outcome_type.infrastructure_error(
                 "resource_telemetry_unavailable",
                 runtime_seconds=elapsed,
                 peak_rss_bytes=peak_rss or 0,
@@ -9193,7 +9374,7 @@ def _execute_measured_spawn(
             )
         assert peak_gpu is not None
         if message is None:
-            return AdapterOutcome.infrastructure_error(
+            return outcome_type.infrastructure_error(
                 f"adapter_process_exit_{process.exitcode}",
                 runtime_seconds=elapsed,
                 peak_rss_bytes=peak_rss,
@@ -9202,7 +9383,7 @@ def _execute_measured_spawn(
                 gpu_measurement=gpu_provenance,
             )
         if message[0] == "error":
-            return AdapterOutcome.failed(
+            return outcome_type.failed(
                 f"executor_exception:{message[1]}",
                 stderr=str(message[2]).encode("utf-8", errors="replace"),
                 runtime_seconds=elapsed,
@@ -9212,7 +9393,7 @@ def _execute_measured_spawn(
                 gpu_measurement=gpu_provenance,
             )
         if message[0] != "outcome" or len(message) != 2:
-            return AdapterOutcome.infrastructure_error(
+            return outcome_type.infrastructure_error(
                 "malformed_adapter_process_message",
                 runtime_seconds=elapsed,
                 peak_rss_bytes=peak_rss,
@@ -9221,8 +9402,8 @@ def _execute_measured_spawn(
                 gpu_measurement=gpu_provenance,
             )
         outcome = message[1]
-        if not isinstance(outcome, AdapterOutcome):
-            return AdapterOutcome.infrastructure_error(
+        if not isinstance(outcome, outcome_type):
+            return outcome_type.infrastructure_error(
                 "noncanonical_adapter_process_outcome",
                 runtime_seconds=elapsed,
                 peak_rss_bytes=peak_rss,
@@ -9239,7 +9420,7 @@ def _execute_measured_spawn(
             gpu_measurement=gpu_provenance,
         )
         if outcome.peak_rss_bytes > request.max_rss_bytes:
-            return AdapterOutcome.resource_exceeded(
+            return outcome_type.resource_exceeded(
                 "peak_rss_exceeded",
                 stdout=outcome.stdout,
                 stderr=outcome.stderr,
@@ -9250,7 +9431,7 @@ def _execute_measured_spawn(
                 gpu_measurement=outcome.gpu_measurement,
             )
         if outcome.peak_gpu_bytes > request.max_gpu_bytes:
-            return AdapterOutcome.resource_exceeded(
+            return outcome_type.resource_exceeded(
                 "peak_gpu_exceeded",
                 stdout=outcome.stdout,
                 stderr=outcome.stderr,
@@ -9278,7 +9459,10 @@ def execute_adapter_in_spawned_process(
     if not isinstance(request, ExecutionRequest):
         raise TypeError("request must be an ExecutionRequest")
     request.validate_integrity()
-    return _execute_measured_spawn(request, executor, **options)
+    outcome = _execute_measured_spawn(request, executor, **options)
+    if not isinstance(outcome, AdapterOutcome):  # pragma: no cover - fixed type
+        raise AssertionError("legacy measured executor returned the wrong type")
+    return outcome
 
 
 def execute_direct_adapter_in_spawned_process(
@@ -9292,7 +9476,35 @@ def execute_direct_adapter_in_spawned_process(
 
     if not isinstance(request, DirectExecutionRequest):
         raise TypeError("request must be a DirectExecutionRequest")
-    return _execute_measured_spawn(request, executor, **options)
+    outcome = _execute_measured_spawn(request, executor, **options)
+    if not isinstance(outcome, AdapterOutcome):  # pragma: no cover - fixed type
+        raise AssertionError("direct measured executor returned the wrong type")
+    return outcome
+
+
+def execute_direct_revision_adapter_in_spawned_process(
+    request: DirectRevisionExecutionRequest,
+    executor: Callable[
+        [DirectRevisionExecutionRequest], DirectRevisionMaskImputeOutcome
+    ],
+    **options: object,
+) -> DirectRevisionMaskImputeOutcome:
+    """Execute one revision request with direct parent-owned telemetry."""
+
+    if not isinstance(request, DirectRevisionExecutionRequest):
+        raise TypeError("request must be a DirectRevisionExecutionRequest")
+    outcome = _execute_measured_spawn(
+        request,
+        executor,
+        outcome_type=DirectRevisionMaskImputeOutcome,
+        **options,
+    )
+    if not isinstance(
+        outcome,
+        DirectRevisionMaskImputeOutcome,
+    ):  # pragma: no cover - fixed type
+        raise AssertionError("revision measured executor returned the wrong type")
+    return outcome
 
 
 __all__ = [
@@ -9312,6 +9524,9 @@ __all__ = [
     "DevelopmentBudget",
     "DevelopmentStoragePreflight",
     "DirectRepositoryComparatorExecutor",
+    "DirectRevisionExecutionRequest",
+    "DirectRevisionMaskImputeAdapter",
+    "DirectRevisionMaskImputeOutcome",
     "EvaluatedAttempt",
     "ExecutionEnvironmentRegistry",
     "ExecutionRequest",
@@ -9334,6 +9549,7 @@ __all__ = [
     "development_storage_preflight",
     "execute_adapter_in_spawned_process",
     "execute_direct_adapter_in_spawned_process",
+    "execute_direct_revision_adapter_in_spawned_process",
     "execute_competition_plan",
     "execute_fair_comparator_plan",
     "execute_fair_comparator_request",

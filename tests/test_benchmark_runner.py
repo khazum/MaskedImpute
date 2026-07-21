@@ -656,6 +656,40 @@ class _FixedResourceSampler:
         )
 
 
+def _synthetic_revision_numerical_fit(
+    spec,
+    method_input,
+    **_kwargs,
+):
+    from maskimpute_benchmark.methods import (
+        DirectMaskImputeExecution,
+        finalize_direct_method_output,
+    )
+
+    probability = np.asarray(
+        [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+        dtype=np.float64,
+    )
+    return DirectMaskImputeExecution(
+        output=finalize_direct_method_output(
+            spec,
+            method_input,
+            method_input.counts,
+            output_scale="raw_counts",
+            obs_ids=method_input.obs_ids,
+            var_ids=method_input.var_ids,
+        ),
+        p_pre_zero=probability,
+        stdout=b"direct-out\n",
+        stderr=b"direct-err\n",
+    )
+
+
+def _slow_synthetic_revision_numerical_fit(spec, method_input, **kwargs):
+    time.sleep(0.4)
+    return _synthetic_revision_numerical_fit(spec, method_input, **kwargs)
+
+
 def test_development_manifest_requires_exact_canonical_sixteen_dataset_panel() -> None:
     bindings = validate_development_manifest_payload(_manifest_payload())
 
@@ -3814,6 +3848,8 @@ def test_revision_maskimpute_executor_dispatches_authorized_candidate_to_direct_
         spec,
         method_input,
         timeout_seconds,
+        max_rss_bytes,
+        max_gpu_memory_bytes,
     ):
         captured.update(
             identity=identity,
@@ -3822,6 +3858,8 @@ def test_revision_maskimpute_executor_dispatches_authorized_candidate_to_direct_
             spec=spec,
             method_input=method_input,
             timeout_seconds=timeout_seconds,
+            max_rss_bytes=max_rss_bytes,
+            max_gpu_memory_bytes=max_gpu_memory_bytes,
         )
         return runner_module.DirectRevisionMaskImputeOutcome.terminal(
             "unavailable",
@@ -3852,6 +3890,12 @@ def test_revision_maskimpute_executor_dispatches_authorized_candidate_to_direct_
     assert captured["spec"].id == "maskimpute"
     assert captured["method_input"] is prepared.method_input
     assert captured["timeout_seconds"] == 100.0
+    assert captured["max_rss_bytes"] == int(
+        captured["spec"].resources.max_rss_gib * 1024**3
+    )
+    assert captured["max_gpu_memory_bytes"] == int(
+        captured["spec"].resources.max_gpu_gib * 1024**3
+    )
     assert attempt.run.identity == entry.identity
     assert attempt.run.status == "unavailable"
     assert attempt.run.reason == "runtime_environment_invalid"
@@ -3861,18 +3905,251 @@ def test_revision_maskimpute_executor_dispatches_authorized_candidate_to_direct_
     assert all(metric.value is None for metric in attempt.metrics)
 
 
+def _direct_revision_resource_case(monkeypatch: pytest.MonkeyPatch):
+    bindings = validate_development_manifest_payload(_manifest_payload())
+    prepared_values = _prepared_plan_inputs(bindings)
+    authority = replace(
+        runner_module.load_v28_revision_authority(),
+        count_score_manifest_status="ready",
+        count_score_manifest_sha256="8" * 64,
+        retained_calibration_status="ready",
+        retained_calibration_sha256="9" * 64,
+        base_comparator_selection={
+            "path": (
+                "artifacts/study/development/evaluation/comparator_selection.json"
+            ),
+            "receipt": {"schema_version": 2},
+            "selected_by_method": {},
+            "nonexecution_identity_by_method": {},
+            "ready_comparison_population_ids": ["observed"],
+        },
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v28_revision_authority",
+        lambda: authority,
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v29_revision_authority",
+        lambda: authority,
+    )
+    registry = load_method_registry(METHODS_PATH)
+    plan = _build_structural_direct_competition_plan(
+        registry,
+        bindings,
+        authority,
+        prepared_values,
+    )
+    return authority, plan, registry, prepared_values[0]
+
+
+def _production_revision_adapter(
+    authority,
+    *,
+    numerical_adapter,
+    resource_sampler,
+    device: str = "cpu",
+):
+    from maskimpute import PreZeroCountModelConfig
+    from maskimpute_benchmark.direct_values import direct_json_value
+
+    payload = direct_json_value(authority.count_model_config, payload=True)
+    assert type(payload) is dict
+    return runner_module.DirectRevisionMaskImputeAdapter(
+        calibration_artifact=_identity_calibration_artifact(),
+        count_model_config=PreZeroCountModelConfig(**payload),
+        device=device,
+        numerical_adapter=numerical_adapter,
+        resource_sampler=resource_sampler,
+        poll_interval_seconds=0.01,
+    )
+
+
+def test_production_revision_adapter_forwards_exact_direct_resource_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.runner import DirectRevisionMaskImputeOutcome
+
+    authority, plan, registry, prepared = _direct_revision_resource_case(monkeypatch)
+    entry = plan.entries[0]
+    descriptor = plan.inputs[0]
+    configuration = plan.configurations[0]
+    spec = registry.by_id("maskimpute")
+    captured: dict[str, object] = {}
+
+    def execute(request, child_executor, **options):
+        captured.update(
+            request=request,
+            child_executor=child_executor,
+            options=options,
+        )
+        execution = _synthetic_revision_numerical_fit(spec, prepared.method_input)
+        return DirectRevisionMaskImputeOutcome.completed(
+            execution,
+            runtime_seconds=0.25,
+            peak_rss_bytes=4096,
+            peak_gpu_bytes=2048,
+            rss_measurement="mock_process_tree_rss",
+            gpu_measurement="mock_process_tree_gpu",
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "execute_direct_revision_adapter_in_spawned_process",
+        execute,
+    )
+    adapter = _production_revision_adapter(
+        authority,
+        numerical_adapter=_synthetic_revision_numerical_fit,
+        resource_sampler=_FixedResourceSampler(rss=4096, gpu=2048),
+    )
+    max_rss_bytes = int(spec.resources.max_rss_gib * 1024**3)
+    max_gpu_memory_bytes = int(spec.resources.max_gpu_gib * 1024**3)
+
+    outcome = adapter(
+        entry.identity,
+        descriptor,
+        configuration,
+        spec,
+        prepared.method_input,
+        7.5,
+        max_rss_bytes,
+        max_gpu_memory_bytes,
+    )
+
+    request = captured["request"]
+    assert request.identity == entry.identity
+    assert request.descriptor == descriptor
+    assert request.configuration == configuration
+    assert request.method_spec == spec
+    assert request.method_input == prepared.method_input
+    assert request.timeout_seconds == 7.5
+    assert request.max_rss_bytes == max_rss_bytes
+    assert request.max_gpu_memory_bytes == max_gpu_memory_bytes
+    assert captured["options"] == {
+        "poll_interval_seconds": 0.01,
+        "resource_sampler": adapter.resource_sampler,
+    }
+    assert outcome.status == "completed"
+
+
+@pytest.mark.parametrize(
+    ("device", "gpu_peak"),
+    (("cpu", 0), ("cuda", 8192)),
+)
+def test_production_revision_adapter_records_parent_measured_completion(
+    device: str,
+    gpu_peak: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority, plan, registry, prepared = _direct_revision_resource_case(monkeypatch)
+    spec = registry.by_id("maskimpute")
+    adapter = _production_revision_adapter(
+        authority,
+        numerical_adapter=_synthetic_revision_numerical_fit,
+        resource_sampler=_FixedResourceSampler(rss=16384, gpu=gpu_peak),
+        device=device,
+    )
+
+    outcome = adapter(
+        plan.entries[0].identity,
+        plan.inputs[0],
+        plan.configurations[0],
+        spec,
+        prepared.method_input,
+        5.0,
+        int(spec.resources.max_rss_gib * 1024**3),
+        int(spec.resources.max_gpu_gib * 1024**3),
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.runtime_seconds > 0.0
+    assert outcome.peak_rss_bytes == 16384
+    assert outcome.peak_gpu_bytes == gpu_peak
+    assert outcome.rss_measurement == "mock_process_tree_rss"
+    assert outcome.gpu_measurement == "mock_process_tree_gpu"
+
+
+def test_production_revision_adapter_enforces_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority, plan, registry, prepared = _direct_revision_resource_case(monkeypatch)
+    spec = registry.by_id("maskimpute")
+    adapter = _production_revision_adapter(
+        authority,
+        numerical_adapter=_slow_synthetic_revision_numerical_fit,
+        resource_sampler=_FixedResourceSampler(rss=16384, gpu=0),
+    )
+
+    outcome = adapter(
+        plan.entries[0].identity,
+        plan.inputs[0],
+        plan.configurations[0],
+        spec,
+        prepared.method_input,
+        0.05,
+        int(spec.resources.max_rss_gib * 1024**3),
+        int(spec.resources.max_gpu_gib * 1024**3),
+    )
+
+    assert outcome.status == "timeout"
+    assert outcome.reason == "timeout"
+    assert outcome.runtime_seconds > 0.0
+    assert outcome.peak_rss_bytes == 16384
+
+
+@pytest.mark.parametrize(
+    ("rss_delta", "gpu_delta", "reason"),
+    (
+        (1, 0, "peak_rss_exceeded"),
+        (0, 1, "peak_gpu_exceeded"),
+    ),
+)
+def test_production_revision_adapter_enforces_resource_ceilings(
+    rss_delta: int,
+    gpu_delta: int,
+    reason: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority, plan, registry, prepared = _direct_revision_resource_case(monkeypatch)
+    spec = registry.by_id("maskimpute")
+    max_rss_bytes = int(spec.resources.max_rss_gib * 1024**3)
+    max_gpu_memory_bytes = int(spec.resources.max_gpu_gib * 1024**3)
+    adapter = _production_revision_adapter(
+        authority,
+        numerical_adapter=_slow_synthetic_revision_numerical_fit,
+        resource_sampler=_FixedResourceSampler(
+            rss=max_rss_bytes + rss_delta,
+            gpu=max_gpu_memory_bytes + gpu_delta,
+        ),
+    )
+
+    outcome = adapter(
+        plan.entries[0].identity,
+        plan.inputs[0],
+        plan.configurations[0],
+        spec,
+        prepared.method_input,
+        5.0,
+        max_rss_bytes,
+        max_gpu_memory_bytes,
+    )
+
+    assert outcome.status == "resource_exceeded"
+    assert outcome.reason == reason
+    assert outcome.runtime_seconds > 0.0
+
+
 def test_completed_revision_direct_executor_round_trips_public_checkpoint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from maskimpute_benchmark.direct_values import direct_equal
-    from maskimpute_benchmark.methods import (
-        DirectMaskImputeExecution,
-        finalize_direct_method_output,
-    )
+    from maskimpute import PreZeroCountModelConfig
+    from maskimpute_benchmark.direct_values import direct_json_value
     from maskimpute_benchmark.runner import (
         BudgetDecision,
-        DirectRevisionMaskImputeOutcome,
+        DirectRevisionMaskImputeAdapter,
         RevisionMaskImputeExecutor,
         execute_fair_comparator_plan,
     )
@@ -3929,34 +4206,19 @@ def test_completed_revision_direct_executor_round_trips_public_checkpoint(
         dtype=np.float64,
     )
     attempts: list[DirectEvaluatedAttempt] = []
-
-    def adapter(identity, descriptor, configuration, spec, method_input, timeout):
-        assert direct_equal(identity, plan.entries[identity.ordinal - 1].identity)
-        assert direct_equal(descriptor, plan.inputs[(identity.ordinal - 1) // 3])
-        assert direct_equal(configuration, plan.configurations[0])
-        assert spec.id == "maskimpute"
-        assert 0.0 < timeout <= float(spec.resources.timeout_seconds)
-        output = finalize_direct_method_output(
-            spec,
-            method_input,
-            method_input.counts,
-            output_scale="raw_counts",
-            obs_ids=method_input.obs_ids,
-            var_ids=method_input.var_ids,
-        )
-        return DirectRevisionMaskImputeOutcome.completed(
-            DirectMaskImputeExecution(
-                output=output,
-                p_pre_zero=probability,
-                stdout=b"direct-out\n",
-                stderr=b"direct-err\n",
-            ),
-            runtime_seconds=1.25,
-            peak_rss_bytes=2048,
-            peak_gpu_bytes=1024,
-            rss_measurement="linux_proc_process_tree_rss",
-            gpu_measurement="nvidia_smi_process_memory",
-        )
+    count_model_payload = direct_json_value(
+        authority.count_model_config,
+        payload=True,
+    )
+    assert type(count_model_payload) is dict
+    adapter = DirectRevisionMaskImputeAdapter(
+        calibration_artifact=_identity_calibration_artifact(),
+        count_model_config=PreZeroCountModelConfig(**count_model_payload),
+        device="cpu",
+        numerical_adapter=_synthetic_revision_numerical_fit,
+        resource_sampler=_FixedResourceSampler(rss=2048, gpu=0),
+        poll_interval_seconds=0.01,
+    )
 
     executor = RevisionMaskImputeExecutor(
         authority=authority,
@@ -3988,6 +4250,9 @@ def test_completed_revision_direct_executor_round_trips_public_checkpoint(
     assert len(attempts) == 48
     first = attempts[0]
     assert first.run.status == "completed"
+    assert first.run.runtime_seconds > 0.0
+    assert first.run.peak_rss_bytes == 2048
+    assert first.run.peak_gpu_bytes == 0
     assert first.run.stdout.original_byte_count == len(b"direct-out\n")
     assert first.run.stderr.original_byte_count == len(b"direct-err\n")
     assert first.run.stdout.capture_policy == "discard_content"
@@ -4040,6 +4305,20 @@ def test_completed_revision_direct_executor_round_trips_public_checkpoint(
     assert evidence.path is not None
     evidence_path = tmp_path / evidence.path
     original_bytes = evidence_path.read_bytes()
+    consumed_seconds = sum(float(attempt.run.runtime_seconds) for attempt in attempts)
+    assert consumed_seconds > 0.0
+    assert report.budget["maskimpute:candidate_search"] == {
+        "configuration_ids": ["v28-c01-nb-parent-c03"],
+        "consumed_seconds": consumed_seconds,
+    }
+    replayed = DirectCheckpointStore(tmp_path / "checkpoint.json").load(
+        plan,
+        registry=registry,
+        prepared_datasets=prepared_by_id,
+        authority=authority,
+        datasets=bindings,
+    )
+    assert replayed.budget == report.budget
     repeated = executor(
         plan.entries[0],
         prepared_values[0],
