@@ -269,6 +269,283 @@ def _ablation_registry() -> dict[str, object]:
     return {"schema_version": 1, "reference": reference, "variants": [capacity]}
 
 
+@lru_cache(maxsize=1)
+def _task11_test_module():
+    path = Path(__file__).with_name("test_comparator_tuning.py")
+    spec = importlib.util.spec_from_file_location("_freeze_task11_factory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@lru_cache(maxsize=1)
+def _complete_comparator_evidence():
+    """Reuse Task 11's exact synthetic direct checkpoint and receipt."""
+
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+    )
+
+    module = _task11_test_module()
+    registry = module.smoke_registry.__wrapped__()
+    authority = module.smoke_authority.__wrapped__(registry)
+    bound = module.smoke_bound_rows.__wrapped__(registry, authority)
+    outcomes = module.complete_smoke_outcomes.__wrapped__(bound)
+    fixture = module.complete_selection_fixture.__wrapped__(
+        registry,
+        authority,
+        bound,
+        outcomes,
+    )
+    receipt = build_comparator_selection_receipt(**fixture)
+    projection = comparator_selection_projection(receipt)
+    assert len(fixture["checkpoint"]["records"]) == 2_896
+    return fixture, receipt, projection
+
+
+@lru_cache(maxsize=None)
+def _intrinsic_unavailable_comparator_evidence(method_id: str):
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+    )
+
+    fixture, _receipt, _projection = _complete_comparator_evidence()
+    changed = _task11_test_module().selection_fixture_with_intrinsic_unavailable(
+        fixture,
+        method_id,
+    )
+    receipt = build_comparator_selection_receipt(**changed)
+    return changed, receipt, comparator_selection_projection(receipt)
+
+
+def _direct_method_registry() -> dict[str, object]:
+    registry = json.loads(Path("study/methods.json").read_text(encoding="utf-8"))
+    for row in registry["methods"]:
+        if row["id"] not in {"observed", "capacity-matched-ae", "maskimpute"}:
+            continue
+        row["license"] = {"status": "declared", "spdx": "MIT", "notice": None}
+        row["citation"] = {"status": "pending", "doi": None, "url": None}
+    return registry
+
+
+def _direct_runtime_summary(registry: dict[str, object]) -> dict[str, object]:
+    rows = registry["methods"]
+    lock_sha256 = rows[0]["environment"]["lock_sha256"]
+    environment_ids = {
+        "benchmark",
+        *(
+            row["environment"]["id"]
+            for row in rows
+            if row["execution_scope"]
+            in {"same_input_required", "external_reference_only"}
+            and row["id"] not in {"observed", "capacity-matched-ae", "maskimpute"}
+            and row["environment"]["status"] == "ready"
+        ),
+    }
+    return _runtime_summary(
+        lock_sha256,
+        tuple(sorted(environment_ids)),
+    )
+
+
+def _direct_payload() -> dict[str, object]:
+    return _direct_build()
+
+
+def _direct_build(
+    *,
+    selection_report: dict[str, object] | None = None,
+    candidate_configuration: dict[str, object] | None = None,
+    method_registry: dict[str, object] | None = None,
+    comparator_fixture: dict[str, object] | None = None,
+    comparator_selection_receipt: dict[str, object] | None = None,
+    method_execution_evidence: dict[str, dict[str, object]] | None = None,
+    selected_calibrator_summary: dict[str, object] | None = None,
+    development_stage_receipt: dict[str, object] | None = None,
+) -> dict[str, object]:
+    fixture, receipt, _projection = _complete_comparator_evidence()
+    if comparator_fixture is not None:
+        fixture = comparator_fixture
+    if comparator_selection_receipt is not None:
+        receipt = comparator_selection_receipt
+    registry = _direct_method_registry() if method_registry is None else method_registry
+    runtime_summary = _direct_runtime_summary(registry)
+    runtime_lock_sha256 = runtime_summary["lock_file_sha256"]
+    bindings = _minimum_artifact_bindings(include_external=True)
+    bindings["runtime_lock"]["sha256"] = runtime_lock_sha256
+    return build_frozen_method_payload(
+        preparation_commit="f" * 40,
+        selection_report=(
+            _selection_report() if selection_report is None else selection_report
+        ),
+        candidate_configuration=(
+            _configuration()
+            if candidate_configuration is None
+            else candidate_configuration
+        ),
+        method_registry=registry,
+        comparator_tuning_authority=fixture["authority"],
+        comparator_selection_receipt=receipt,
+        method_execution_evidence=(
+            _execution_evidence(("maskimpute", "d3impute", "sctsi"))
+            if method_execution_evidence is None
+            else method_execution_evidence
+        ),
+        selected_calibrator_summary=(
+            _calibrator_summary()
+            if selected_calibrator_summary is None
+            else selected_calibrator_summary
+        ),
+        ablation_registry=_ablation_registry(),
+        runtime_lock_sha256=runtime_lock_sha256,
+        runtime_environment_summary=runtime_summary,
+        artifact_bindings=bindings,
+        development_stage_receipt=(
+            _minimum_stage_receipt()
+            if development_stage_receipt is None
+            else development_stage_receipt
+        ),
+    )
+
+
+def test_frozen_payload_binds_selected_comparator_payloads_and_status_denominator() -> (
+    None
+):
+    from maskimpute_benchmark.comparator_tuning import (
+        comparator_selection_projection_value,
+    )
+
+    payload = _direct_payload()
+    _fixture, _receipt, projection = _complete_comparator_evidence()
+
+    assert payload["scheduled_same_input_ids"] == [
+        "observed",
+        "capacity-matched-ae",
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+        "scziva",
+        "afmf",
+        "biaeimpute",
+        "sccr",
+        "scsdae",
+    ]
+    assert payload["required_control_ids"] == ["observed", "capacity-matched-ae"]
+    assert payload["established_comparator_ids"] == [
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+    ]
+    assert payload["modern_core_ids"] == ["scziva", "afmf", "biaeimpute", "sccr"]
+    selected = payload["selected_comparator_configurations"]
+    assert selected["magic"]["configuration"]["configuration_id"] != (
+        "registry-default"
+    )
+    assert selected["magic"]["configuration"]["payload"]
+    assert selected["magic"]["method"]["method_id"] == "magic"
+    assert tuple(
+        row["method_id"] for row in payload["scheduled_same_input_statuses"]
+    ) == tuple(payload["scheduled_same_input_ids"])
+    assert len(payload["scheduled_same_input_statuses"]) == 12
+    assert payload["comparator_selection"] == comparator_selection_projection_value(
+        projection
+    )
+
+
+def _replace_nested(
+    value: dict[str, object], path: tuple[object, ...], new: object
+) -> None:
+    cursor: object = value
+    for key in path[:-1]:
+        cursor = cursor[key]
+    cursor[path[-1]] = new
+
+
+@pytest.mark.parametrize(
+    ("path", "new"),
+    (
+        (("authority_reference", "authority_revision"), "tampered-authority"),
+        (
+            (
+                "methods",
+                "magic",
+                "selected_configuration",
+                "method",
+                "source_revision",
+            ),
+            "0" * 40,
+        ),
+        (
+            (
+                "methods",
+                "magic",
+                "selected_configuration",
+                "configuration",
+                "configuration_id",
+            ),
+            "magic-other",
+        ),
+        (
+            (
+                "methods",
+                "magic",
+                "selected_configuration",
+                "configuration",
+                "is_upstream_default",
+            ),
+            False,
+        ),
+        (
+            (
+                "methods",
+                "magic",
+                "selected_configuration",
+                "configuration",
+                "payload_json",
+            ),
+            "{}",
+        ),
+        (("scheduled_tuning_records", 0, "run", "reason"), "tampered_reason"),
+        (("readiness", "status"), "blocked"),
+    ),
+)
+def test_frozen_payload_rejects_complete_comparator_receipt_typed_field_tamper(
+    path: tuple[object, ...], new: object
+) -> None:
+    fixture, receipt, _projection = _complete_comparator_evidence()
+    changed = deepcopy(receipt)
+    _replace_nested(changed, path, new)
+
+    with pytest.raises(PublicationFreezeError, match="comparator selection receipt"):
+        _direct_build(
+            comparator_fixture=fixture,
+            comparator_selection_receipt=changed,
+        )
+
+
+def test_frozen_payload_rejects_unavailable_nonexecution_identity_tamper() -> None:
+    fixture, receipt, _projection = _intrinsic_unavailable_comparator_evidence(
+        "biaeimpute"
+    )
+    changed = deepcopy(receipt)
+    changed["methods"]["biaeimpute"]["nonexecution_identity"]["method"][
+        "source_revision"
+    ] = "0" * 40
+
+    with pytest.raises(PublicationFreezeError, match="comparator selection receipt"):
+        _direct_build(
+            comparator_fixture=fixture,
+            comparator_selection_receipt=changed,
+        )
+
+
 def _minimum_artifact_bindings(
     *, include_external: bool = False
 ) -> dict[str, dict[str, str]]:
@@ -390,44 +667,10 @@ def _payload(
     method_execution_evidence: dict[str, dict[str, object]] | None = None,
     development_stage_receipt: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    return build_frozen_method_payload(
-        preparation_commit="f" * 40,
-        selection_report=_selection_report(),
-        candidate_configuration=_configuration(),
-        method_registry={
-            "schema_version": 1,
-            "methods": [
-                _method("observed", role="control", integration_reason=None),
-                _method("maskimpute", role="candidate", integration_reason=None),
-                _method("magic"),
-            ],
-        },
-        required_comparator_ids=("observed", "magic"),
-        method_execution_evidence=(
-            _execution_evidence()
-            if method_execution_evidence is None
-            else method_execution_evidence
-        ),
-        selected_calibrator_summary=(
-            _calibrator_summary()
-            if selected_calibrator_summary is None
-            else selected_calibrator_summary
-        ),
-        ablation_registry=_ablation_registry(),
-        runtime_lock_sha256="4" * 64,
-        runtime_environment_summary=_runtime_summary(),
-        artifact_bindings={
-            **_minimum_artifact_bindings(),
-            "runtime_lock": {
-                "path": "environments/development-runtime.lock.json",
-                "sha256": "4" * 64,
-            },
-        },
-        development_stage_receipt=(
-            _minimum_stage_receipt()
-            if development_stage_receipt is None
-            else development_stage_receipt
-        ),
+    return _direct_build(
+        method_execution_evidence=method_execution_evidence,
+        selected_calibrator_summary=selected_calibrator_summary,
+        development_stage_receipt=development_stage_receipt,
     )
 
 
@@ -438,11 +681,10 @@ def test_frozen_method_retains_exact_selection_and_competitor_authority() -> Non
     assert payload["selected_version"] == "v28"
     assert payload["selected_configuration"] == _configuration()["configuration"]
     assert payload["selection_gate_table"] == _selection_report()["assessments"]
-    assert payload["required_comparator_ids"] == ["observed", "magic"]
+    assert "required_comparator_ids" not in payload
+    assert payload["required_control_ids"] == ["observed", "capacity-matched-ae"]
     assert [row["id"] for row in payload["method_denominator"]] == [
-        "observed",
-        "maskimpute",
-        "magic",
+        row["id"] for row in _direct_method_registry()["methods"]
     ]
     assert payload["correlation_gene_panel_rule"] == {
         "id": "all-retained-genes-v1",
@@ -450,7 +692,10 @@ def test_frozen_method_retains_exact_selection_and_competitor_authority() -> Non
         "gene_filtering": "forbidden",
         "shared_across_methods": True,
     }
-    assert payload["runtime_lock_sha256"] == "4" * 64
+    assert (
+        payload["runtime_lock_sha256"]
+        == _direct_runtime_summary(_direct_method_registry())["lock_file_sha256"]
+    )
     assert payload["selected_calibrator"] == _calibrator_summary()
     assert payload["selected_ablation_control"]["capacity_matched_control_id"] == (
         "capacity-matched-ae"
@@ -474,89 +719,46 @@ def test_frozen_method_embeds_an_executable_complete_calibration_artifact() -> N
 
 
 def test_in_tree_pending_citation_is_recorded_as_self_citation() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-        _method("magic"),
-    ]
-    for row in methods[:2]:
+    registry = _direct_method_registry()
+    for row in registry["methods"]:
+        if row["id"] not in {"observed", "capacity-matched-ae", "maskimpute"}:
+            continue
         row["citation"] = {"status": "pending", "doi": None, "url": None}
 
-    payload = build_frozen_method_payload(
-        preparation_commit="f" * 40,
-        selection_report=_selection_report(),
-        candidate_configuration=_configuration(),
-        method_registry={"schema_version": 1, "methods": methods},
-        required_comparator_ids=("observed", "magic"),
-        method_execution_evidence=_execution_evidence(),
-        selected_calibrator_summary=_calibrator_summary(),
-        ablation_registry=_ablation_registry(),
-        runtime_lock_sha256="4" * 64,
-        runtime_environment_summary=_runtime_summary(),
-        artifact_bindings=_minimum_artifact_bindings(),
-        development_stage_receipt=_minimum_stage_receipt(),
-    )
+    payload = _direct_build(method_registry=registry)
 
-    assert [row["citation_disposition"] for row in payload["method_denominator"]] == [
-        "in_tree_self_citation_no_external_doi",
-        "in_tree_self_citation_no_external_doi",
-        "verified_external_citation",
-    ]
+    dispositions = {
+        row["id"]: row["citation_disposition"] for row in payload["method_denominator"]
+    }
+    assert dispositions["observed"] == "in_tree_self_citation_no_external_doi"
+    assert dispositions["capacity-matched-ae"] == (
+        "in_tree_self_citation_no_external_doi"
+    )
+    assert dispositions["maskimpute"] == "in_tree_self_citation_no_external_doi"
+    assert dispositions["magic"] == "verified_external_citation"
 
 
 def test_in_tree_pending_project_license_remains_a_submission_blocker() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-        _method("magic"),
-    ]
-    methods[1]["license"] = {
+    registry = _direct_method_registry()
+    maskimpute = next(row for row in registry["methods"] if row["id"] == "maskimpute")
+    maskimpute["license"] = {
         "status": "pending",
         "spdx": None,
         "notice": "project license requires human approval",
     }
-    methods[1]["citation"] = {"status": "pending", "doi": None, "url": None}
+    maskimpute["citation"] = {"status": "pending", "doi": None, "url": None}
 
     with pytest.raises(PublicationFreezeError, match="maskimpute.*project license"):
-        build_frozen_method_payload(
-            preparation_commit="f" * 40,
-            selection_report=_selection_report(),
-            candidate_configuration=_configuration(),
-            method_registry={"schema_version": 1, "methods": methods},
-            required_comparator_ids=("observed", "magic"),
-            method_execution_evidence=_execution_evidence(),
-            selected_calibrator_summary=_calibrator_summary(),
-            ablation_registry=_ablation_registry(),
-            runtime_lock_sha256="4" * 64,
-            runtime_environment_summary=_runtime_summary(),
-            artifact_bindings=_minimum_artifact_bindings(),
-            development_stage_receipt=_minimum_stage_receipt(),
-        )
+        _direct_build(method_registry=registry)
 
 
 def test_external_method_pending_citation_remains_a_freeze_blocker() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-        _method("magic"),
-    ]
-    methods[2]["citation"] = {"status": "pending", "doi": None, "url": None}
+    registry = _direct_method_registry()
+    magic = next(row for row in registry["methods"] if row["id"] == "magic")
+    magic["citation"] = {"status": "pending", "doi": None, "url": None}
 
     with pytest.raises(PublicationFreezeError, match="magic.*external citation"):
-        build_frozen_method_payload(
-            preparation_commit="f" * 40,
-            selection_report=_selection_report(),
-            candidate_configuration=_configuration(),
-            method_registry={"schema_version": 1, "methods": methods},
-            required_comparator_ids=("observed", "magic"),
-            method_execution_evidence=_execution_evidence(),
-            selected_calibrator_summary=_calibrator_summary(),
-            ablation_registry=_ablation_registry(),
-            runtime_lock_sha256="4" * 64,
-            runtime_environment_summary=_runtime_summary(),
-            artifact_bindings=_minimum_artifact_bindings(),
-            development_stage_receipt=_minimum_stage_receipt(),
-        )
+        _direct_build(method_registry=registry)
 
 
 def test_frozen_method_rejects_partial_calibration_artifact_even_if_definition_runs() -> (
@@ -574,53 +776,16 @@ def test_frozen_method_rejects_partial_calibration_artifact_even_if_definition_r
 def test_frozen_method_materializes_complete_ordered_applicability_denominator() -> (
     None
 ):
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-        _method("magic"),
-        _method("biaeimpute"),
-        _method(
-            "d3impute",
-            track="external_reference",
-            execution_scope="external_reference_only",
-        ),
-        _method(
-            "wedge",
-            execution_scope="historical_not_run",
-            integration_status="historical",
-            integration_reason="historical_adapter_not_run",
-        ),
-        _method(
-            "scgacl",
-            execution_scope="not_applicable",
-            applicability_reason="no_truth_free_configuration",
-            integration_status="unavailable",
-            integration_reason="upstream_no_truth_free_configuration",
-        ),
-    ]
-    method_ids = tuple(row["id"] for row in methods[:5])
-
-    payload = build_frozen_method_payload(
-        preparation_commit="f" * 40,
-        selection_report=_selection_report(),
-        candidate_configuration=_configuration(),
-        method_registry={"schema_version": 1, "methods": methods},
-        required_comparator_ids=("observed", "magic"),
-        method_execution_evidence=_execution_evidence(method_ids),
-        selected_calibrator_summary=_calibrator_summary(),
-        ablation_registry=_ablation_registry(),
-        runtime_lock_sha256="4" * 64,
-        runtime_environment_summary=_runtime_summary(
-            environment_ids=("benchmark", "biaeimpute", "d3impute", "magic")
-        ),
-        artifact_bindings=_minimum_artifact_bindings(include_external=True),
-        development_stage_receipt=_minimum_stage_receipt(),
-    )
+    registry = _direct_method_registry()
+    payload = _direct_build(method_registry=registry)
 
     denominator = payload["method_denominator"]
-    assert [row["id"] for row in denominator] == [row["id"] for row in methods]
-    assert denominator[3]["claim_required"] is False
-    assert denominator[4]["final_applicability"] == {
+    assert [row["id"] for row in denominator] == [
+        row["id"] for row in registry["methods"]
+    ]
+    by_id = {row["id"]: row for row in denominator}
+    assert by_id["biaeimpute"]["claim_required"] is True
+    assert by_id["d3impute"]["final_applicability"] == {
         "rule": "matched_bulk_reference_present",
         "non_run_reason": "matched_bulk_reference_absent",
         "required_reference": {
@@ -629,386 +794,149 @@ def test_frozen_method_materializes_complete_ordered_applicability_denominator()
             "evaluator_truth_as_reference": "forbidden",
         },
     }
-    assert denominator[5]["disposition"] == "historical_not_run"
-    assert denominator[6]["disposition"] == "not_applicable"
+    assert by_id["wedge"]["disposition"] == "historical_not_run"
+    assert by_id["scgacl"]["disposition"] == "not_applicable"
 
 
 def test_frozen_method_rejects_pending_historical_disposition() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-        _method("magic"),
-        _method(
-            "wedge",
-            execution_scope="historical_not_run",
-            integration_status="pending",
-            integration_reason="historical_adapter_not_run",
-        ),
-    ]
+    registry = _direct_method_registry()
+    wedge = next(row for row in registry["methods"] if row["id"] == "wedge")
+    wedge["integration_status"] = "pending"
 
     with pytest.raises(PublicationFreezeError, match="wedge.*historical disposition"):
-        build_frozen_method_payload(
-            preparation_commit="f" * 40,
-            selection_report=_selection_report(),
-            candidate_configuration=_configuration(),
-            method_registry={"schema_version": 1, "methods": methods},
-            required_comparator_ids=("observed", "magic"),
-            method_execution_evidence=_execution_evidence(),
-            selected_calibrator_summary=_calibrator_summary(),
-            ablation_registry=_ablation_registry(),
-            runtime_lock_sha256="4" * 64,
-            runtime_environment_summary=_runtime_summary(),
-            artifact_bindings=_minimum_artifact_bindings(),
-            development_stage_receipt=_minimum_stage_receipt(),
-        )
+        _direct_build(method_registry=registry)
 
 
-def test_checkpoint_terminalizes_pending_registry_without_mutating_plan_authority() -> (
-    None
-):
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-    ]
-    methods.append(
-        _method(
-            "magic",
-            integration_status="pending",
-            integration_reason="environment_lock_pending",
-        )
-    )
+def test_selected_comparator_rejects_registry_disposition_drift() -> None:
+    registry = _direct_method_registry()
+    magic_authority = next(row for row in registry["methods"] if row["id"] == "magic")
+    magic_authority["integration_status"] = "pending"
+    magic_authority["integration_reason"] = "environment_lock_pending"
 
-    registry = {"schema_version": 1, "methods": methods}
-    payload = build_frozen_method_payload(
-        preparation_commit="f" * 40,
-        selection_report=_selection_report(),
-        candidate_configuration=_configuration(),
-        method_registry=registry,
-        required_comparator_ids=("observed", "magic"),
-        method_execution_evidence=_execution_evidence(),
-        selected_calibrator_summary=_calibrator_summary(),
-        ablation_registry=_ablation_registry(),
-        runtime_lock_sha256="4" * 64,
-        runtime_environment_summary=_runtime_summary(),
-        artifact_bindings=_minimum_artifact_bindings(),
-        development_stage_receipt=_minimum_stage_receipt(),
-    )
-
-    magic = payload["method_denominator"][2]
-    assert payload["method_registry_sha256"] == canonical_sha256(registry)
-    assert magic["registry_integration_status"] == "pending"
-    assert magic["registry_integration_reason"] == "environment_lock_pending"
-    assert magic["integration_status"] == "implemented"
-    assert magic["integration_reason"] == "development_execution_completed"
+    with pytest.raises(PublicationFreezeError, match="magic.*identity differs"):
+        _direct_build(method_registry=registry)
 
 
 def test_frozen_method_accepts_explicit_reason_coded_unavailable_comparator() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-    ]
-    evidence = _execution_evidence(unavailable=("magic",))
-    unavailable = _method(
-        "magic",
-        integration_status="unavailable",
-        integration_reason=(
-            "technical_unavailable_development_attempts_"
-            f"{evidence['magic']['failure_reasons_sha256'][:16]}"
-        ),
+    fixture, receipt, _projection = _intrinsic_unavailable_comparator_evidence(
+        "biaeimpute"
     )
-    unavailable["environment"] = {
-        "id": "magic-environment",
-        "status": "failed",
-        "lock_sha256": None,
-    }
-    methods.append(unavailable)
-
-    payload = build_frozen_method_payload(
-        preparation_commit="f" * 40,
-        selection_report=_selection_report(),
-        candidate_configuration=_configuration(),
-        method_registry={"schema_version": 1, "methods": methods},
-        required_comparator_ids=("observed", "magic"),
-        method_execution_evidence=evidence,
-        selected_calibrator_summary=_calibrator_summary(),
-        ablation_registry=_ablation_registry(),
-        runtime_lock_sha256="4" * 64,
-        runtime_environment_summary=_runtime_summary(),
-        artifact_bindings=_minimum_artifact_bindings(),
-        development_stage_receipt=_minimum_stage_receipt(),
+    payload = _direct_build(
+        comparator_fixture=fixture,
+        comparator_selection_receipt=receipt,
+    )
+    method = next(
+        row for row in payload["method_denominator"] if row["id"] == "biaeimpute"
     )
 
-    assert payload["method_denominator"][2]["disposition"] == (
-        "explicit_reason_coded_unavailable"
+    assert method["disposition"] == "explicit_reason_coded_unavailable"
+    assert method["selected_comparator_configuration"] is None
+    assert (
+        method["nonexecution_identity"]
+        == payload["unavailable_comparator_nonexecution_identities"]["biaeimpute"]
     )
-    assert payload["method_denominator"][2]["final_applicability"] == {
+    assert method["final_applicability"] == {
         "rule": "never",
-        "non_run_reason": unavailable["integration_reason"],
+        "non_run_reason": "technical_unavailable_development_attempts",
         "required_reference": None,
     }
 
 
 def test_frozen_method_rejects_unavailable_disposition_with_any_completed_run() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-    ]
-    evidence = _execution_evidence()
-    unavailable = _method(
-        "magic",
-        integration_status="unavailable",
-        integration_reason=(
-            "technical_unavailable_development_attempts_"
-            f"{evidence['magic']['failure_reasons_sha256'][:16]}"
-        ),
-    )
-    unavailable["environment"] = {
-        "id": "magic-environment",
+    registry = _direct_method_registry()
+    magic = next(row for row in registry["methods"] if row["id"] == "magic")
+    magic["environment"] = {
+        "id": magic["environment"]["id"],
         "status": "failed",
         "lock_sha256": None,
     }
-    methods.append(unavailable)
 
-    with pytest.raises(PublicationFreezeError, match="magic.*ready runtime"):
-        build_frozen_method_payload(
-            preparation_commit="f" * 40,
-            selection_report=_selection_report(),
-            candidate_configuration=_configuration(),
-            method_registry={"schema_version": 1, "methods": methods},
-            required_comparator_ids=("observed", "magic"),
-            method_execution_evidence=evidence,
-            selected_calibrator_summary=_calibrator_summary(),
-            ablation_registry=_ablation_registry(),
-            runtime_lock_sha256="4" * 64,
-            runtime_environment_summary=_runtime_summary(),
-            artifact_bindings=_minimum_artifact_bindings(),
-            development_stage_receipt=_minimum_stage_receipt(),
+    with pytest.raises(PublicationFreezeError, match="magic.*identity differs|ready"):
+        _direct_build(method_registry=registry)
+
+
+def test_frozen_method_rejects_scheduled_comparator_execution_summary() -> None:
+    evidence = _execution_evidence(("maskimpute", "magic", "d3impute", "sctsi"))
+
+    with pytest.raises(PublicationFreezeError, match="magic.*receipt evidence"):
+        _direct_build(method_execution_evidence=evidence)
+
+
+def test_unavailable_comparator_rejects_registry_method_binding_drift() -> None:
+    registry = _direct_method_registry()
+    biaeimpute = next(row for row in registry["methods"] if row["id"] == "biaeimpute")
+    biaeimpute["integration_status"] = "pending"
+    biaeimpute["integration_reason"] = "environment_lock_pending"
+    fixture, receipt, _projection = _intrinsic_unavailable_comparator_evidence(
+        "biaeimpute"
+    )
+
+    with pytest.raises(PublicationFreezeError, match="biaeimpute.*identity differs"):
+        _direct_build(
+            method_registry=registry,
+            comparator_fixture=fixture,
+            comparator_selection_receipt=receipt,
         )
 
 
-def test_frozen_method_rejects_implemented_method_without_dataset_coverage() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-        _method("magic"),
-    ]
-    evidence = _execution_evidence()
-    evidence["magic"]["attempted_dataset_ids_sha256"] = canonical_sha256(
-        ["dataset-other"]
-    )
-
-    with pytest.raises(PublicationFreezeError, match="magic.*eligibility"):
-        build_frozen_method_payload(
-            preparation_commit="f" * 40,
-            selection_report=_selection_report(),
-            candidate_configuration=_configuration(),
-            method_registry={"schema_version": 1, "methods": methods},
-            required_comparator_ids=("observed", "magic"),
-            method_execution_evidence=evidence,
-            selected_calibrator_summary=_calibrator_summary(),
-            ablation_registry=_ablation_registry(),
-            runtime_lock_sha256="4" * 64,
-            runtime_environment_summary=_runtime_summary(),
-            artifact_bindings=_minimum_artifact_bindings(),
-            development_stage_receipt=_minimum_stage_receipt(),
-        )
-
-
-def test_failed_checkpoint_terminalizes_pending_registry_reason() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-    ]
-    unavailable = _method(
-        "magic",
-        integration_status="unavailable",
-        integration_reason="environment_lock_pending",
-    )
-    unavailable["environment"] = {
-        "id": "magic-environment",
-        "status": "failed",
-        "lock_sha256": None,
+def test_frozen_method_rejects_blocking_comparator_terminal_evidence() -> None:
+    fixture, receipt, _projection = _complete_comparator_evidence()
+    changed = deepcopy(receipt)
+    changed["methods"]["biaeimpute"]["terminal_status_counts"] = {
+        "infrastructure_error": 192
     }
-    methods.append(unavailable)
 
-    evidence = _execution_evidence(unavailable=("magic",))
-    payload = build_frozen_method_payload(
-        preparation_commit="f" * 40,
-        selection_report=_selection_report(),
-        candidate_configuration=_configuration(),
-        method_registry={"schema_version": 1, "methods": methods},
-        required_comparator_ids=("observed", "magic"),
-        method_execution_evidence=evidence,
-        selected_calibrator_summary=_calibrator_summary(),
-        ablation_registry=_ablation_registry(),
-        runtime_lock_sha256="4" * 64,
-        runtime_environment_summary=_runtime_summary(),
-        artifact_bindings=_minimum_artifact_bindings(),
-        development_stage_receipt=_minimum_stage_receipt(),
-    )
-
-    magic = payload["method_denominator"][2]
-    assert magic["registry_integration_reason"] == "environment_lock_pending"
-    assert magic["integration_reason"] == (
-        "technical_unavailable_development_attempts_"
-        f"{evidence['magic']['failure_reasons_sha256'][:16]}"
-    )
-
-
-def test_frozen_method_rejects_pending_reason_inside_failed_attempt_evidence() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-    ]
-    evidence = _execution_evidence(unavailable=("magic",))
-    pending_reasons = ["environment_lock_pending"]
-    evidence["magic"]["failure_reason_codes"] = pending_reasons
-    evidence["magic"]["failure_reasons_sha256"] = canonical_sha256(pending_reasons)
-    unavailable = _method(
-        "magic",
-        integration_status="unavailable",
-        integration_reason=(
-            "technical_unavailable_development_attempts_"
-            f"{evidence['magic']['failure_reasons_sha256'][:16]}"
-        ),
-    )
-    unavailable["environment"] = {
-        "id": "magic-environment",
-        "status": "failed",
-        "lock_sha256": None,
-    }
-    methods.append(unavailable)
-
-    with pytest.raises(PublicationFreezeError, match="magic.*execution evidence"):
-        build_frozen_method_payload(
-            preparation_commit="f" * 40,
-            selection_report=_selection_report(),
-            candidate_configuration=_configuration(),
-            method_registry={"schema_version": 1, "methods": methods},
-            required_comparator_ids=("observed", "magic"),
-            method_execution_evidence=evidence,
-            selected_calibrator_summary=_calibrator_summary(),
-            ablation_registry=_ablation_registry(),
-            runtime_lock_sha256="4" * 64,
-            runtime_environment_summary=_runtime_summary(),
-            artifact_bindings=_minimum_artifact_bindings(),
-            development_stage_receipt=_minimum_stage_receipt(),
+    with pytest.raises(PublicationFreezeError, match="selection receipt is invalid"):
+        _direct_build(
+            comparator_fixture=fixture,
+            comparator_selection_receipt=changed,
         )
 
 
 def test_failed_checkpoint_overrides_unbound_registry_availability_claim() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-    ]
-    unavailable = _method(
-        "magic",
-        integration_status="unavailable",
-        integration_reason="technical_unavailable_arbitrary_unrelated_claim",
+    registry = _direct_method_registry()
+    biaeimpute = next(row for row in registry["methods"] if row["id"] == "biaeimpute")
+    biaeimpute["integration_reason"] = "technical_unavailable_arbitrary_unrelated_claim"
+    fixture, receipt, _projection = _intrinsic_unavailable_comparator_evidence(
+        "biaeimpute"
     )
-    unavailable["environment"] = {
-        "id": "magic-environment",
-        "status": "failed",
-        "lock_sha256": None,
-    }
-    methods.append(unavailable)
-
-    evidence = _execution_evidence(unavailable=("magic",))
-    payload = build_frozen_method_payload(
-        preparation_commit="f" * 40,
-        selection_report=_selection_report(),
-        candidate_configuration=_configuration(),
-        method_registry={"schema_version": 1, "methods": methods},
-        required_comparator_ids=("observed", "magic"),
-        method_execution_evidence=evidence,
-        selected_calibrator_summary=_calibrator_summary(),
-        ablation_registry=_ablation_registry(),
-        runtime_lock_sha256="4" * 64,
-        runtime_environment_summary=_runtime_summary(),
-        artifact_bindings=_minimum_artifact_bindings(),
-        development_stage_receipt=_minimum_stage_receipt(),
+    payload = _direct_build(
+        method_registry=registry,
+        comparator_fixture=fixture,
+        comparator_selection_receipt=receipt,
+    )
+    method = next(
+        row for row in payload["method_denominator"] if row["id"] == "biaeimpute"
     )
 
-    magic = payload["method_denominator"][2]
-    assert magic["registry_integration_reason"] == (
+    assert method["registry_integration_reason"] == (
         "technical_unavailable_arbitrary_unrelated_claim"
     )
-    assert magic["integration_reason"] != magic["registry_integration_reason"]
+    assert method["integration_reason"] != method["registry_integration_reason"]
 
 
 def test_checkpoint_replaces_pre_execution_smoke_disposition() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-    ]
-    methods.append(
-        _method(
-            "magic",
-            integration_status="implemented",
-            integration_reason="real_pinned_smoke_passed_environment_lock_pending",
-        )
+    registry = _direct_method_registry()
+    magic_authority = next(row for row in registry["methods"] if row["id"] == "magic")
+    magic_authority["integration_reason"] = (
+        "real_pinned_smoke_passed_environment_lock_pending"
     )
 
-    payload = build_frozen_method_payload(
-        preparation_commit="f" * 40,
-        selection_report=_selection_report(),
-        candidate_configuration=_configuration(),
-        method_registry={"schema_version": 1, "methods": methods},
-        required_comparator_ids=("observed", "magic"),
-        method_execution_evidence=_execution_evidence(),
-        selected_calibrator_summary=_calibrator_summary(),
-        ablation_registry=_ablation_registry(),
-        runtime_lock_sha256="4" * 64,
-        runtime_environment_summary=_runtime_summary(),
-        artifact_bindings=_minimum_artifact_bindings(),
-        development_stage_receipt=_minimum_stage_receipt(),
-    )
+    payload = _direct_build(method_registry=registry)
+    magic = next(row for row in payload["method_denominator"] if row["id"] == "magic")
 
-    magic = payload["method_denominator"][2]
     assert magic["registry_integration_reason"].endswith("lock_pending")
-    assert magic["integration_reason"] == "development_execution_completed"
+    assert magic["integration_reason"] == "development_selection_receipt_selected"
 
 
-def test_frozen_method_requires_completed_execution_for_in_tree_comparator() -> None:
-    methods = [
-        _method("observed", role="control", integration_reason=None),
-        _method("maskimpute", role="candidate", integration_reason=None),
-    ]
-    capacity_matched = _method(
-        "capacity-matched-ae",
-        integration_status="implemented",
-        integration_reason=None,
-    )
-    capacity_matched["source"] = {
-        "kind": "in_tree",
-        "url": None,
-        "revision": None,
-        "tree": None,
-        "cache_path": None,
-        "freeze_binding": "study_freeze_commit",
-    }
-    capacity_matched["source_policy"] = "study_freeze_bound_in_tree"
-    methods.append(capacity_matched)
+def test_frozen_method_controls_are_receipt_authoritative() -> None:
+    payload = _direct_payload()
+    rows = {row["method_id"]: row for row in payload["scheduled_same_input_statuses"]}
 
-    with pytest.raises(
-        PublicationFreezeError, match="capacity-matched-ae.*execution evidence"
-    ):
-        build_frozen_method_payload(
-            preparation_commit="f" * 40,
-            selection_report=_selection_report(),
-            candidate_configuration=_configuration(),
-            method_registry={"schema_version": 1, "methods": methods},
-            required_comparator_ids=("observed", "capacity-matched-ae"),
-            method_execution_evidence=_execution_evidence(("observed", "maskimpute")),
-            selected_calibrator_summary=_calibrator_summary(),
-            ablation_registry=_ablation_registry(),
-            runtime_lock_sha256="4" * 64,
-            runtime_environment_summary=_runtime_summary(
-                environment_ids=("benchmark",)
-            ),
-            artifact_bindings=_minimum_artifact_bindings(),
-            development_stage_receipt=_minimum_stage_receipt(),
-        )
+    assert rows["observed"]["aggregate_status"] == "completed"
+    assert rows["capacity-matched-ae"]["aggregate_status"] == "completed"
+    assert rows["observed"]["selected_comparator_configuration"] is None
+    assert rows["capacity-matched-ae"]["nonexecution_identity"] is None
 
 
 @pytest.mark.parametrize(
@@ -1037,26 +965,9 @@ def test_frozen_method_rejects_nonfreezable_or_mismatched_selection(
     mutate(report, configuration)
 
     with pytest.raises(PublicationFreezeError, match=message):
-        build_frozen_method_payload(
-            preparation_commit="f" * 40,
+        _direct_build(
             selection_report=report,
             candidate_configuration=configuration,
-            method_registry={
-                "schema_version": 1,
-                "methods": [
-                    _method("observed", role="control", integration_reason=None),
-                    _method("maskimpute", role="candidate", integration_reason=None),
-                    _method("magic"),
-                ],
-            },
-            required_comparator_ids=("observed", "magic"),
-            method_execution_evidence=_execution_evidence(),
-            selected_calibrator_summary=_calibrator_summary(),
-            ablation_registry=_ablation_registry(),
-            runtime_lock_sha256="4" * 64,
-            runtime_environment_summary=_runtime_summary(),
-            artifact_bindings=_minimum_artifact_bindings(),
-            development_stage_receipt=_minimum_stage_receipt(),
         )
 
 
@@ -1151,6 +1062,22 @@ def _dataset_status_payload() -> dict[str, object]:
     return {**body, "manifest_sha256": canonical_sha256(body)}
 
 
+def _direct_dataset_status_payload(checkpoint: dict[str, object]) -> dict[str, object]:
+    descriptors = checkpoint["input_descriptors"]
+    body: dict[str, object] = {
+        "schema_version": 1,
+        "namespace": "dev",
+        "status": "completed",
+        "completed_count": len(descriptors),
+        "failed_count": 0,
+        "rows": [
+            {"dataset_id": descriptor["dataset_id"], "status": "completed"}
+            for descriptor in descriptors
+        ],
+    }
+    return {**body, "manifest_sha256": canonical_sha256(body)}
+
+
 def _retained_calibration_payload() -> dict[str, object]:
     return deepcopy(_valid_calibration_payload())
 
@@ -1209,6 +1136,9 @@ def _repository_fixture(
     include_external: bool = False,
 ) -> tuple[Path, dict[str, object]]:
     import maskimpute_benchmark.publication_freeze as freeze_module
+    from maskimpute_benchmark.comparator_tuning import (
+        comparator_selection_projection_value,
+    )
 
     monkeypatch.setattr(
         freeze_module,
@@ -1221,6 +1151,11 @@ def _repository_fixture(
     )
     repository = tmp_path / "repository"
     repository.mkdir()
+    direct_fixture, comparator_receipt, comparator_projection = (
+        _complete_comparator_evidence()
+    )
+    direct_checkpoint = deepcopy(direct_fixture["checkpoint"])
+    comparator_selection = comparator_selection_projection_value(comparator_projection)
     _materialize_publication_stage_footprint(repository, "base")
     source_core: dict[str, object] = {
         "schema_version": 2,
@@ -1230,6 +1165,7 @@ def _repository_fixture(
         "count_score_manifest_sha256": "8" * 64,
         "retained_calibration_artifact_sha256": "9" * 64,
         "evaluation_manifest_sha256": "a" * 64,
+        "comparator_selection": deepcopy(comparator_selection),
     }
     source_input = {
         **source_core,
@@ -1287,26 +1223,28 @@ def _repository_fixture(
     report["authority_bindings"]["development_result_sha256"] = selection_input[
         "result_sha256"
     ]
-    methods = {
-        "schema_version": 1,
-        "methods": [
-            _method("observed", role="control", integration_reason=None),
-            _method("maskimpute", role="candidate", integration_reason=None),
-            _method("magic"),
-        ],
-    }
-    if include_external:
-        methods["methods"].append(
-            _method(
-                "d3impute",
-                track="external_reference",
-                execution_scope="external_reference_only",
-            )
+    methods = _direct_method_registry()
+    methods["methods"] = [
+        row
+        for row in methods["methods"]
+        if row["execution_scope"] != "external_reference_only"
+        or (include_external and row["id"] == "d3impute")
+    ]
+    runtime_ids = tuple(
+        sorted(
+            {
+                "benchmark",
+                *(
+                    row["id"]
+                    for row in methods["methods"]
+                    if row["execution_scope"]
+                    in {"same_input_required", "external_reference_only"}
+                    and row["id"]
+                    not in {"observed", "capacity-matched-ae", "maskimpute"}
+                    and row["environment"]["status"] == "ready"
+                ),
+            }
         )
-    runtime_ids = (
-        ("benchmark", "d3impute", "magic")
-        if include_external
-        else ("benchmark", "magic")
     )
     runtime_lock = _runtime_lock_payload(runtime_ids)
     runtime_raw = (
@@ -1315,11 +1253,11 @@ def _repository_fixture(
     ).encode()
     runtime_sha256 = hashlib.sha256(runtime_raw).hexdigest()
     for method in methods["methods"]:
-        method["environment"]["lock_sha256"] = runtime_sha256
-    selection_contract = {
-        "schema_version": 1,
-        "required_comparator_ids": ["observed", "magic"],
-    }
+        if method["environment"]["status"] == "ready":
+            method["environment"]["lock_sha256"] = runtime_sha256
+    selection_contract = json.loads(
+        Path("study/selection_contract.json").read_text(encoding="utf-8")
+    )
     paths = freeze_module._publication_artifact_paths(
         freeze_module._publication_layout_for_active_stage("base"),
         include_external_reference=include_external,
@@ -1338,12 +1276,19 @@ def _repository_fixture(
             payload = selection_contract
         elif name == "development_search":
             payload = development_search
+        elif name == "comparator_tuning":
+            destination = repository / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(Path(relative), destination)
+            continue
+        elif name == "comparator_selection":
+            payload = comparator_receipt
         elif name == "runtime_lock":
             payload = runtime_lock
         elif name == "base_reconstruction_checkpoint":
-            payload = _checkpoint_payload()
+            payload = direct_checkpoint
         elif name == "dataset_status":
-            payload = _dataset_status_payload()
+            payload = _direct_dataset_status_payload(direct_checkpoint)
         elif name == "retained_calibration":
             payload = _retained_calibration_payload()
         elif name == "ablation_registry":
@@ -1442,6 +1387,41 @@ def test_prepare_and_validate_frozen_method_recompute_fixed_evidence(
             (repository / "environments/development-runtime.lock.json").read_bytes()
         ).hexdigest()
     )
+
+
+def test_frozen_payload_rejects_comparator_receipt_and_selected_payload_tamper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+
+    repository, report = _repository_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        freeze_module,
+        "_recompute_selection_report",
+        lambda *_args: deepcopy(report),
+    )
+    prepare_frozen_method(repository)
+
+    receipt_path = (
+        repository / "artifacts/study/development/evaluation/comparator_selection.json"
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["methods"]["magic"]["selected_configuration"]["configuration"][
+        "payload_json"
+    ] = "{}"
+    _write_json(receipt_path, receipt)
+
+    frozen_path = repository / "study/frozen_method.json"
+    frozen = json.loads(frozen_path.read_text(encoding="utf-8"))
+    frozen["selected_comparator_configurations"]["magic"]["configuration"]["payload"][
+        "diffusion_time"
+    ] = 99
+    unsigned = {key: value for key, value in frozen.items() if key != "payload_sha256"}
+    frozen["payload_sha256"] = canonical_sha256(unsigned)
+    _write_json(frozen_path, frozen)
+
+    with pytest.raises(PublicationFreezeError, match="comparator selection"):
+        validate_frozen_method(repository)
 
 
 def test_publication_freeze_consumes_only_base_selection_complete_input() -> None:
@@ -1649,10 +1629,6 @@ def test_prepare_rejects_incomplete_development_checkpoint(
     )
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
     checkpoint["status"] = "running"
-    checkpoint_body = {
-        key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
-    }
-    checkpoint["checkpoint_sha256"] = canonical_sha256(checkpoint_body)
     _write_json(checkpoint_path, checkpoint)
     monkeypatch.setattr(
         freeze_module,
@@ -1695,19 +1671,8 @@ def test_prepare_rejects_runtime_lock_with_extra_environment(
     runtime_path = repository / "environments/development-runtime.lock.json"
     runtime = _runtime_lock_payload(("benchmark", "extra", "magic"))
     _write_json(runtime_path, runtime)
-    runtime_sha256 = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
-    methods_path = repository / "study/methods.json"
-    methods = json.loads(methods_path.read_text(encoding="utf-8"))
-    for method in methods["methods"]:
-        method["environment"]["lock_sha256"] = runtime_sha256
-    _write_json(methods_path, methods)
     subprocess.run(
-        [
-            "git",
-            "add",
-            "environments/development-runtime.lock.json",
-            "study/methods.json",
-        ],
+        ["git", "add", "environments/development-runtime.lock.json"],
         cwd=repository,
         check=True,
     )
@@ -1722,7 +1687,7 @@ def test_prepare_rejects_runtime_lock_with_extra_environment(
         lambda *_args: deepcopy(report),
     )
 
-    with pytest.raises(PublicationFreezeError, match="runtime lock IDs"):
+    with pytest.raises(PublicationFreezeError, match="runtime lock"):
         prepare_frozen_method(repository)
 
 
@@ -1975,7 +1940,7 @@ def test_validate_frozen_method_does_not_reopen_validated_config_path(
     assert validate_frozen_method(repository) == expected
 
 
-def test_clean_phase_validation_does_not_require_ignored_development_evidence(
+def test_clean_phase_validation_requires_direct_comparator_development_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import maskimpute_benchmark.publication_freeze as freeze_module
@@ -1986,10 +1951,11 @@ def test_clean_phase_validation_does_not_require_ignored_development_evidence(
         "_recompute_selection_report",
         lambda *_args: deepcopy(report),
     )
-    expected = prepare_frozen_method(repository)
+    prepare_frozen_method(repository)
     shutil.rmtree(repository / "artifacts")
 
-    assert validate_frozen_method(repository) == expected
+    with pytest.raises(PublicationFreezeError, match="comparator selection receipt"):
+        validate_frozen_method(repository)
 
 
 def test_freeze_requires_raw_development_evidence_after_preparation_commit(
@@ -2014,7 +1980,10 @@ def test_freeze_requires_raw_development_evidence_after_preparation_commit(
     shutil.rmtree(repository / "artifacts")
     round_dir = repository / "artifacts/study/round-001"
 
-    with pytest.raises(PublicationFreezeError, match="development evidence"):
+    with pytest.raises(
+        PublicationFreezeError,
+        match="development evidence|comparator selection receipt",
+    ):
         freeze_publication_round(repository, round_dir)
 
 
@@ -2458,6 +2427,9 @@ def _schema_four_stage_chain(
     *,
     repository: Path | None = None,
 ) -> tuple[Path, dict[str, dict[str, object]]]:
+    from maskimpute_benchmark.comparator_tuning import (
+        comparator_selection_projection_value,
+    )
     from maskimpute_benchmark.revisions import development_selection_stage_paths
 
     order = {
@@ -2468,21 +2440,8 @@ def _schema_four_stage_chain(
     repository = tmp_path / "repository" if repository is None else repository
     repository.mkdir(exist_ok=True)
     reports: dict[str, dict[str, object]] = {}
-    comparator_selection = {
-        "path": ("artifacts/study/development/evaluation/comparator_selection.json"),
-        "receipt": {
-            "schema_version": 1,
-            "authority_revision": "fair-comparator-direct-v1",
-            "methods": [],
-        },
-        "selected_by_method": {},
-        "nonexecution_identity_by_method": {},
-        "ready_comparison_population_ids": [
-            "observed",
-            "capacity-matched-ae",
-            "maskimpute",
-        ],
-    }
+    _fixture, _receipt, projection = _complete_comparator_evidence()
+    comparator_selection = comparator_selection_projection_value(projection)
     for index, stage in enumerate(order):
         _materialize_publication_stage_footprint(repository, stage)
         versions = [] if stage == "base" else list(order[1 : index + 1])
@@ -2897,6 +2856,8 @@ def test_dynamic_artifact_paths_are_exact_and_stage_qualified(
         "method_registry",
         "selection_contract",
         "development_search",
+        "comparator_tuning",
+        "comparator_selection",
         "v28_revision",
         "v29_revision",
         "ablation_registry",
@@ -3424,6 +3385,66 @@ def _selected_stage_checkpoint(
     return {**body, "checkpoint_sha256": canonical_sha256(body)}
 
 
+def _direct_selected_stage_checkpoint(
+    selected_configuration: dict[str, object],
+) -> dict[str, object]:
+    fixture, _receipt, _projection = _complete_comparator_evidence()
+    base = fixture["checkpoint"]
+    candidate_rows = [
+        deepcopy(record)
+        for record in base["records"]
+        if record["run"]["identity"]["method"]["method_id"] == "maskimpute"
+        and record["run"]["identity"]["configuration_kind"] == "candidate_search"
+    ]
+    original_id = candidate_rows[0]["run"]["identity"]["configuration_id"]
+    records = [
+        record
+        for record in candidate_rows
+        if record["run"]["identity"]["configuration_id"] == original_id
+    ]
+    assert len(records) == 48
+    for record in records:
+        identity = record["run"]["identity"]
+        identity["configuration_id"] = selected_configuration["configuration_id"]
+        identity["configuration_payload"] = deepcopy(
+            selected_configuration["configuration"]
+        )
+    return {
+        "schema_version": 1,
+        "identity_mode": "direct-v1",
+        "authority_revision": base["authority_revision"],
+        "plan_snapshot": base["plan_snapshot"],
+        "input_descriptors": base["input_descriptors"],
+        "planned_run_count": 48,
+        "status": "completed",
+        "records": records,
+    }
+
+
+def test_direct_selected_stage_execution_reads_nested_candidate_identity() -> None:
+    from maskimpute_benchmark.publication_freeze import _active_execution_evidence
+
+    fixture, _receipt, _projection = _complete_comparator_evidence()
+    selected_configuration = _configuration()
+    revision = _direct_selected_stage_checkpoint(selected_configuration)
+
+    evidence = _active_execution_evidence(
+        fixture["checkpoint"],
+        active_stage="v28",
+        selected_stage_checkpoint=revision,
+        selected_configuration=selected_configuration,
+        eligible_dataset_ids=tuple(
+            sorted(
+                row["dataset_id"] for row in fixture["checkpoint"]["input_descriptors"]
+            )
+        ),
+    )
+
+    assert set(evidence) == {"maskimpute"}
+    assert evidence["maskimpute"]["artifact"] == "v28_reconstruction_checkpoint"
+    assert evidence["maskimpute"]["attempted_run_count"] == 48
+
+
 def test_selected_stage_execution_swaps_only_maskimpute_evidence() -> None:
     from maskimpute_benchmark.publication_freeze import _active_execution_evidence
 
@@ -3555,7 +3576,7 @@ def test_stage_receipt_payload_is_retained_by_outer_payload_checksum() -> None:
 
 
 def test_stage_receipt_rejects_maskimpute_evidence_from_another_stage() -> None:
-    evidence = _execution_evidence()
+    evidence = _execution_evidence(("maskimpute", "d3impute", "sctsi"))
     evidence["maskimpute"]["artifact"] = "base_reconstruction_checkpoint"
 
     with pytest.raises(PublicationFreezeError, match="selected stage"):
@@ -3574,10 +3595,11 @@ def test_revision_prepare_and_clean_validate_exact_active_stage(
         active_stage,
         repository=repository,
     )
+    direct_fixture, _receipt, _projection = _complete_comparator_evidence()
     _write_json(
         repository
         / "artifacts/study/development/competition-reconstruction/checkpoint.json",
-        _checkpoint_payload(),
+        direct_fixture["checkpoint"],
     )
     versions = ("v28",) if active_stage == "v28" else ("v28", "v29")
     for version in versions:
@@ -3587,14 +3609,13 @@ def test_revision_prepare_and_clean_validate_exact_active_stage(
         _write_json(
             repository
             / f"artifacts/study/development/competition-{version}-revision/checkpoint.json",
-            _selected_stage_checkpoint(
-                [
-                    (
-                        "maskimpute",
-                        revision["configuration_id"],
-                        revision["configuration_sha256"],
-                    )
-                ]
+            _direct_selected_stage_checkpoint(
+                {
+                    "configuration_id": revision["configuration_id"],
+                    "version": version,
+                    "configuration": revision["configuration"],
+                    "configuration_sha256": revision["configuration_sha256"],
+                }
             ),
         )
     _patch_schema_four_stage_replay(monkeypatch, repository, reports)
@@ -3609,9 +3630,10 @@ def test_revision_prepare_and_clean_validate_exact_active_stage(
         denominator["maskimpute"]["development_execution_evidence"]["artifact"]
         == f"{active_stage}_reconstruction_checkpoint"
     )
+    assert denominator["observed"]["development_execution_evidence"] is None
     assert (
-        denominator["observed"]["development_execution_evidence"]["artifact"]
-        == "base_reconstruction_checkpoint"
+        denominator["observed"]["scheduled_same_input_status"]["aggregate_status"]
+        == "completed"
     )
     assert validate_frozen_method(repository) == prepared
 
@@ -3685,10 +3707,11 @@ def test_stage_race_cannot_publish_stale_v28_receipt(
         "v28",
         repository=repository,
     )
+    direct_fixture, _receipt, _projection = _complete_comparator_evidence()
     _write_json(
         repository
         / "artifacts/study/development/competition-reconstruction/checkpoint.json",
-        _checkpoint_payload(),
+        direct_fixture["checkpoint"],
     )
     revision = json.loads(
         (repository / "study/v28_revision.json").read_text(encoding="utf-8")
@@ -3696,14 +3719,13 @@ def test_stage_race_cannot_publish_stale_v28_receipt(
     _write_json(
         repository
         / "artifacts/study/development/competition-v28-revision/checkpoint.json",
-        _selected_stage_checkpoint(
-            [
-                (
-                    "maskimpute",
-                    revision["configuration_id"],
-                    revision["configuration_sha256"],
-                )
-            ]
+        _direct_selected_stage_checkpoint(
+            {
+                "configuration_id": revision["configuration_id"],
+                "version": "v28",
+                "configuration": revision["configuration"],
+                "configuration_sha256": revision["configuration_sha256"],
+            }
         ),
     )
     _patch_schema_four_stage_replay(monkeypatch, repository, reports)

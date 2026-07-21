@@ -15,6 +15,19 @@ import stat
 from types import MappingProxyType
 from typing import Any
 
+from .comparator_tuning import (
+    COMPARATOR_SELECTION_RELATIVE_PATH,
+    ComparatorSelectionProjection,
+    ComparatorTuningAuthority,
+    ComparatorTuningError,
+    comparator_method_binding,
+    comparator_selection_projection,
+    comparator_selection_projection_value,
+    load_comparator_selection_receipt,
+    load_comparator_tuning_authority,
+    validate_comparator_tuning_authority,
+)
+from .direct_values import direct_equal, direct_json_value
 from .external_reference_development import (
     ExternalReferenceDevelopmentError,
     load_external_reference_evidence,
@@ -80,6 +93,7 @@ _COMMON_TRACKED_PATHS = {
     "method_registry": "study/methods.json",
     "selection_contract": "study/selection_contract.json",
     "development_search": "study/development_search.json",
+    "comparator_tuning": "study/comparator_tuning.json",
     "v28_revision": "study/v28_revision.json",
     "v29_revision": "study/v29_revision.json",
     "ablation_registry": "study/ablations.json",
@@ -96,6 +110,7 @@ _COMMON_DEVELOPMENT_PATHS = {
     "retained_calibration": (
         "artifacts/study/development/calibration/retained_calibration.json"
     ),
+    "comparator_selection": COMPARATOR_SELECTION_RELATIVE_PATH,
 }
 
 _FROZEN_METHOD_PATH = "study/frozen_method.json"
@@ -2132,7 +2147,12 @@ def _development_execution_evidence(
         )
     ):
         raise PublicationFreezeError("development eligible dataset panel is invalid")
-    checkpoint_sha256 = checkpoint.get("checkpoint_sha256")
+    direct_mode = checkpoint.get("identity_mode") == "direct-v1"
+    checkpoint_sha256 = (
+        canonical_sha256(checkpoint)
+        if direct_mode
+        else checkpoint.get("checkpoint_sha256")
+    )
     checkpoint_body = {
         key: value for key, value in checkpoint.items() if key != "checkpoint_sha256"
     }
@@ -2145,20 +2165,39 @@ def _development_execution_evidence(
         or type(planned_run_count) is not int
         or planned_run_count < 1
         or planned_run_count != len(records)
-        or checkpoint_sha256 != canonical_sha256(checkpoint_body)
+        or (
+            direct_mode
+            and (
+                execution_track != "same_input"
+                or not isinstance(checkpoint.get("plan_snapshot"), Mapping)
+                or type(checkpoint.get("input_descriptors")) is not list
+            )
+        )
+        or (not direct_mode and checkpoint_sha256 != canonical_sha256(checkpoint_body))
     ):
         raise PublicationFreezeError(
             "development reconstruction checkpoint is not complete and canonical"
         )
-    grouped: dict[str, list[Mapping[str, object]]] = {}
+    grouped: dict[
+        str,
+        list[tuple[Mapping[str, object], str, str, str | None]],
+    ] = {}
     for record in records:
         if not isinstance(record, Mapping) or not isinstance(
             record.get("run"), Mapping
         ):
             raise PublicationFreezeError("development execution record is invalid")
         run = record["run"]
-        method_id = run.get("method_id")
-        dataset_id = run.get("dataset_id")
+        if direct_mode:
+            identity = run.get("identity")
+            method = identity.get("method") if isinstance(identity, Mapping) else None
+            method_id = method.get("method_id") if isinstance(method, Mapping) else None
+            dataset_id = (
+                identity.get("dataset_id") if isinstance(identity, Mapping) else None
+            )
+        else:
+            method_id = run.get("method_id")
+            dataset_id = run.get("dataset_id")
         status = run.get("status")
         if (
             not isinstance(method_id, str)
@@ -2178,28 +2217,25 @@ def _development_execution_evidence(
                 raise PublicationFreezeError(
                     "failed development execution lacks a terminal reason code"
                 )
-        grouped.setdefault(method_id, []).append(record)
+        if direct_mode and method_id != "maskimpute":
+            continue
+        grouped.setdefault(method_id, []).append(
+            (record, dataset_id, status, run.get("reason"))
+        )
     result: dict[str, dict[str, object]] = {}
     for method_id in sorted(grouped):
-        records = grouped[method_id]
-        statuses = [record["run"]["status"] for record in records]
-        attempted_dataset_ids = sorted(
-            {str(record["run"]["dataset_id"]) for record in records}
-        )
+        rows = grouped[method_id]
+        source_records = [value[0] for value in rows]
+        statuses = [value[2] for value in rows]
+        attempted_dataset_ids = sorted({value[1] for value in rows})
         completed_dataset_ids = sorted(
-            {
-                str(record["run"]["dataset_id"])
-                for record in records
-                if record["run"]["status"] == "completed"
-            }
+            {value[1] for value in rows if value[2] == "completed"}
         )
         reasons = sorted(
             {
-                reason
-                for record in records
-                if record["run"]["status"] != "completed"
-                and isinstance((reason := record["run"].get("reason")), str)
-                and reason
+                value[3]
+                for value in rows
+                if value[2] != "completed" and isinstance(value[3], str) and value[3]
             }
         )
         status_counts = {
@@ -2213,12 +2249,12 @@ def _development_execution_evidence(
             "artifact": artifact,
             "execution_track": execution_track,
             "checkpoint_payload_sha256": checkpoint_sha256,
-            "records_sha256": canonical_sha256(records),
+            "records_sha256": canonical_sha256(source_records),
             "eligible_dataset_count": len(eligible_ids),
             "eligible_dataset_ids_sha256": canonical_sha256(eligible_ids),
-            "attempted_run_count": len(records),
+            "attempted_run_count": len(rows),
             "completed_run_count": statuses.count("completed"),
-            "failed_run_count": len(records) - statuses.count("completed"),
+            "failed_run_count": len(rows) - statuses.count("completed"),
             "status_counts": status_counts,
             "attempted_dataset_count": len(attempted_dataset_ids),
             "completed_dataset_count": len(completed_dataset_ids),
@@ -2280,17 +2316,55 @@ def _active_execution_evidence(
         raise PublicationFreezeError(
             "selected-stage execution lacks a unique selected configuration"
         )
+    direct_revision = selected_stage_checkpoint.get("identity_mode") == "direct-v1"
+    if direct_revision and len(records) != 48:
+        raise PublicationFreezeError(
+            "selected-stage direct execution must contain exactly 48 candidate rows"
+        )
     identities: set[tuple[object, object]] = set()
     for record in records:
         run = record.get("run") if isinstance(record, Mapping) else None
         if not isinstance(run, Mapping):
             raise PublicationFreezeError("selected-stage execution record is invalid")
+        if direct_revision:
+            identity = run.get("identity")
+            method = identity.get("method") if isinstance(identity, Mapping) else None
+            method_id = method.get("method_id") if isinstance(method, Mapping) else None
+            configuration_id = (
+                identity.get("configuration_id")
+                if isinstance(identity, Mapping)
+                else None
+            )
+            configuration_kind = (
+                identity.get("configuration_kind")
+                if isinstance(identity, Mapping)
+                else None
+            )
+            configuration_payload = (
+                identity.get("configuration_payload")
+                if isinstance(identity, Mapping)
+                else None
+            )
+            if (
+                method_id != "maskimpute"
+                or configuration_kind != "candidate_search"
+                or configuration_id != selected_id
+                or not direct_equal(
+                    configuration_payload,
+                    selected_configuration.get("configuration"),
+                )
+            ):
+                raise PublicationFreezeError(
+                    "selected-stage direct execution differs from the selected "
+                    "MaskImpute candidate identity"
+                )
+            continue
         if run.get("method_id") != "maskimpute":
             raise PublicationFreezeError(
                 "selected-stage execution may contain only MaskImpute rows"
             )
         identities.add((run.get("configuration_id"), run.get("configuration_sha256")))
-    if identities != {(selected_id, selected_sha256)}:
+    if not direct_revision and identities != {(selected_id, selected_sha256)}:
         raise PublicationFreezeError(
             "selected-stage execution does not contain one unique selected configuration"
         )
@@ -2620,14 +2694,200 @@ def _final_applicability(
     raise PublicationFreezeError(f"method {row.get('id')} execution scope is invalid")
 
 
+def _validated_comparator_freeze_projection(
+    authority: ComparatorTuningAuthority,
+    receipt: Mapping[str, object],
+) -> ComparatorSelectionProjection:
+    """Recompute the complete direct receipt and close it to its authority."""
+
+    try:
+        validate_comparator_tuning_authority(authority)
+        projection = comparator_selection_projection(receipt)
+    except (ComparatorTuningError, TypeError, ValueError) as error:
+        raise PublicationFreezeError(
+            f"comparator selection receipt is invalid: {error}"
+        ) from error
+    expected_reference = {
+        "path": "study/comparator_tuning.json",
+        "schema_version": authority.schema_version,
+        "authority_revision": authority.authority_revision,
+    }
+    projected_receipt = direct_json_value(projection.receipt, payload=True)
+    if not isinstance(projected_receipt, Mapping):  # pragma: no cover
+        raise AssertionError("comparator selection receipt must be an object")
+    if (
+        not direct_equal(
+            projected_receipt.get("authority_reference"),
+            expected_reference,
+        )
+        or tuple(projected_receipt.get("scheduled_same_input_ids", ()))
+        != authority.scheduled_same_input_ids
+        or tuple(projected_receipt.get("required_control_ids", ()))
+        != authority.required_control_ids
+        or tuple(projected_receipt.get("established_comparator_ids", ()))
+        != authority.established_comparator_ids
+        or tuple(projected_receipt.get("modern_core_ids", ()))
+        != authority.modern_core_ids
+        or tuple(projection.scheduled_same_input_ids)
+        != authority.scheduled_same_input_ids
+    ):
+        raise PublicationFreezeError(
+            "comparator selection receipt differs from its tuning authority"
+        )
+    unavailable = set(projection.nonexecution_identity_by_method)
+    allowed_unavailable = set(authority.modern_core_ids) | {"scsdae"}
+    if unavailable - allowed_unavailable or unavailable & set(
+        authority.established_comparator_ids
+    ):
+        raise PublicationFreezeError("established comparator selection is unavailable")
+    expected_selected = set(authority.method_order) - unavailable
+    if set(projection.selected_by_method) != expected_selected:
+        raise PublicationFreezeError(
+            "comparator selected and nonexecution maps are incomplete"
+        )
+    expected_population = tuple(
+        method_id
+        for method_id in authority.scheduled_same_input_ids
+        if method_id in set(authority.required_control_ids) | expected_selected
+    )
+    if projection.ready_comparison_population_ids != expected_population:
+        raise PublicationFreezeError("comparator ready comparison population differs")
+    return projection
+
+
+def _publication_bound_comparator_value(value: object) -> dict[str, object]:
+    """Encode one full bound configuration with its readable typed payload."""
+
+    configuration = getattr(value, "configuration", None)
+    authority_reference = getattr(value, "authority_reference", None)
+    method = getattr(value, "method", None)
+    payload = getattr(configuration, "payload", None)
+    if not isinstance(payload, Mapping):
+        raise PublicationFreezeError(
+            "selected comparator configuration payload is invalid"
+        )
+    return {
+        "configuration": {
+            "method_id": configuration.method_id,
+            "configuration_id": configuration.configuration_id,
+            "is_upstream_default": configuration.is_upstream_default,
+            "payload": direct_json_value(payload, payload=True),
+        },
+        "authority_reference": direct_json_value(authority_reference),
+        "method": direct_json_value(method),
+    }
+
+
+def _scheduled_same_input_statuses(
+    authority: ComparatorTuningAuthority,
+    projection: ComparatorSelectionProjection,
+) -> list[dict[str, object]]:
+    """Retain the complete receipt-authoritative scheduled denominator."""
+
+    receipt = direct_json_value(projection.receipt, payload=True)
+    if not isinstance(receipt, Mapping):  # pragma: no cover
+        raise AssertionError("comparator selection receipt must be an object")
+    controls = receipt.get("controls")
+    methods = receipt.get("methods")
+    if not isinstance(controls, Mapping) or not isinstance(methods, Mapping):
+        raise PublicationFreezeError(
+            "comparator selection status denominator is invalid"
+        )
+    result: list[dict[str, object]] = []
+    for method_id in authority.scheduled_same_input_ids:
+        if method_id in authority.required_control_ids:
+            value = controls.get(method_id)
+            if not isinstance(value, Mapping) or value.get("status") != "completed":
+                raise PublicationFreezeError(
+                    f"required control {method_id} is incomplete"
+                )
+            selected = None
+            nonexecution = None
+            aggregate_status = value.get("status")
+        else:
+            value = methods.get(method_id)
+            if not isinstance(value, Mapping):
+                raise PublicationFreezeError(
+                    f"comparator {method_id} status evidence is absent"
+                )
+            selected_value = projection.selected_by_method.get(method_id)
+            nonexecution_value = projection.nonexecution_identity_by_method.get(
+                method_id
+            )
+            selected = (
+                None
+                if selected_value is None
+                else _publication_bound_comparator_value(selected_value.configuration)
+            )
+            nonexecution = (
+                None
+                if nonexecution_value is None
+                else direct_json_value(nonexecution_value, payload=True)
+            )
+            receipt_selected = (
+                None
+                if selected_value is None
+                else direct_json_value(selected_value.configuration)
+            )
+            if not direct_equal(
+                value.get("selected_configuration"), receipt_selected
+            ) or not (direct_equal(value.get("nonexecution_identity"), nonexecution)):
+                raise PublicationFreezeError(
+                    f"comparator {method_id} selected or nonexecution identity differs"
+                )
+            aggregate_status = value.get("selection_status")
+        terminal_counts = value.get("terminal_status_counts")
+        reasons = value.get("reason_histogram")
+        if (
+            not isinstance(aggregate_status, str)
+            or type(terminal_counts) is not dict
+            or type(reasons) is not dict
+            or any(
+                status not in _RUN_STATUSES or type(count) is not int or count < 0
+                for status, count in terminal_counts.items()
+            )
+            or any(
+                not isinstance(reason, str) or type(count) is not int or count < 0
+                for reason, count in reasons.items()
+            )
+        ):
+            raise PublicationFreezeError(
+                f"scheduled method {method_id} status evidence is invalid"
+            )
+        if any(
+            status in terminal_counts
+            for status in {
+                "budget_exhausted",
+                "blocked_authority",
+                "infrastructure_error",
+            }
+        ):
+            raise PublicationFreezeError(
+                f"scheduled method {method_id} has blocking terminal evidence"
+            )
+        result.append(
+            {
+                "method_id": method_id,
+                "aggregate_status": aggregate_status,
+                "terminal_status_counts": direct_json_value(terminal_counts),
+                "reason_histogram": direct_json_value(reasons),
+                "selected_comparator_configuration": selected,
+                "nonexecution_identity": nonexecution,
+            }
+        )
+    return result
+
+
 def _method_panel(
     method_registry: Mapping[str, object],
-    required_ids: tuple[str, ...],
+    authority: ComparatorTuningAuthority,
+    projection: ComparatorSelectionProjection,
+    scheduled_statuses: Sequence[Mapping[str, object]],
     execution_evidence: Mapping[str, object],
     runtime_lock_sha256: str,
 ) -> list[dict[str, object]]:
     try:
-        parse_method_registry(method_registry)
+        registry = parse_method_registry(method_registry)
     except MethodContractError as error:
         raise PublicationFreezeError(f"method registry is invalid: {error}") from error
     if (
@@ -2657,11 +2917,21 @@ def _method_panel(
             "method registry must contain exactly the MaskImpute candidate"
         )
 
-    for method_id in required_ids:
+    for method_id in authority.scheduled_same_input_ids:
         if method_id not in by_id:
             raise PublicationFreezeError(
-                f"required comparator {method_id} is absent from the registry"
+                f"scheduled method {method_id} is absent from the registry"
             )
+
+    if (
+        len(scheduled_statuses) != len(authority.scheduled_same_input_ids)
+        or tuple(row.get("method_id") for row in scheduled_statuses)
+        != authority.scheduled_same_input_ids
+    ):
+        raise PublicationFreezeError(
+            "scheduled same-input status denominator is incomplete or reordered"
+        )
+    status_by_id = {str(row["method_id"]): row for row in scheduled_statuses}
 
     if not isinstance(execution_evidence, Mapping):
         raise PublicationFreezeError("development execution evidence must be a mapping")
@@ -2674,14 +2944,15 @@ def _method_panel(
         method_id = raw["id"]
         assert isinstance(method_id, str)
         row = raw
-        is_required = method_id in required_ids
-        if is_required and (
+        is_required = method_id in projection.ready_comparison_population_ids
+        is_scheduled = method_id in authority.scheduled_same_input_ids
+        if is_scheduled and (
             row.get("track") != "same_input"
             or row.get("execution_scope") != "same_input_required"
             or row.get("role") == "candidate"
         ):
             raise PublicationFreezeError(
-                f"required comparator {method_id} is not a same-input comparator"
+                f"scheduled method {method_id} is not a same-input comparator"
             )
         environment = row.get("environment")
         source = row.get("source")
@@ -2733,8 +3004,15 @@ def _method_panel(
                 str(source.get("tree", "")),
                 f"method {method_id} source tree",
             )
-        evidence = _validated_execution_evidence(
-            execution_evidence.get(method_id), method_id
+        scheduled_status = status_by_id.get(method_id)
+        selected_comparator_configuration = None
+        nonexecution_identity = None
+        evidence = (
+            None
+            if is_scheduled
+            else _validated_execution_evidence(
+                execution_evidence.get(method_id), method_id
+            )
         )
         executable_scope = execution_scope in {
             "same_input_required",
@@ -2758,6 +3036,10 @@ def _method_panel(
                 else {"base_reconstruction_checkpoint"}
             )
         )
+        if is_scheduled and execution_evidence.get(method_id) is not None:
+            raise PublicationFreezeError(
+                f"scheduled method {method_id} must use receipt evidence"
+            )
         if evidence is not None and (
             evidence["execution_track"] != expected_execution_track
             or evidence["artifact"] not in allowed_execution_artifacts
@@ -2767,7 +3049,104 @@ def _method_panel(
             )
         terminal_integration_status = integration_status
         terminal_integration_reason = integration_reason
-        if executable_scope:
+        if is_scheduled:
+            assert scheduled_status is not None
+            if (
+                environment.get("status") != "ready"
+                or environment.get("lock_sha256") != runtime_digest
+            ) and method_id not in projection.nonexecution_identity_by_method:
+                raise PublicationFreezeError(
+                    f"selected scheduled method {method_id} is not bound to a ready "
+                    "runtime environment"
+                )
+            if method_id in authority.required_control_ids:
+                if (
+                    scheduled_status.get("aggregate_status") != "completed"
+                    or scheduled_status.get("selected_comparator_configuration")
+                    is not None
+                    or scheduled_status.get("nonexecution_identity") is not None
+                ):
+                    raise PublicationFreezeError(
+                        f"required control {method_id} status evidence differs"
+                    )
+                terminal_integration_status = "implemented"
+                terminal_integration_reason = (
+                    None
+                    if method_id == "observed"
+                    else "development_execution_completed"
+                )
+                disposition = "verified_runnable"
+            elif method_id in projection.selected_by_method:
+                selected = projection.selected_by_method[method_id].configuration
+                try:
+                    expected_method = comparator_method_binding(
+                        registry.by_id(method_id)
+                    )
+                except KeyError as error:  # pragma: no cover - by_id checked above
+                    raise PublicationFreezeError(
+                        f"selected comparator {method_id} is absent"
+                    ) from error
+                if (
+                    not direct_equal(selected.method, expected_method)
+                    or selected.configuration.method_id != method_id
+                    or not direct_equal(
+                        scheduled_status.get("selected_comparator_configuration"),
+                        _publication_bound_comparator_value(selected),
+                    )
+                    or scheduled_status.get("nonexecution_identity") is not None
+                    or scheduled_status.get("aggregate_status") != "selected"
+                ):
+                    raise PublicationFreezeError(
+                        f"selected comparator {method_id} identity differs"
+                    )
+                selected_comparator_configuration = _publication_bound_comparator_value(
+                    selected
+                )
+                terminal_integration_status = "implemented"
+                terminal_integration_reason = "development_selection_receipt_selected"
+                disposition = "verified_runnable"
+            else:
+                nonexecution = projection.nonexecution_identity_by_method.get(method_id)
+                try:
+                    expected_method = comparator_method_binding(
+                        registry.by_id(method_id)
+                    )
+                except KeyError as error:  # pragma: no cover - by_id checked above
+                    raise PublicationFreezeError(
+                        f"unavailable comparator {method_id} is absent"
+                    ) from error
+                direct_nonexecution = direct_json_value(nonexecution, payload=True)
+                terminal_counts = scheduled_status.get("terminal_status_counts")
+                if (
+                    not isinstance(nonexecution, Mapping)
+                    or not direct_equal(
+                        direct_nonexecution.get("method"),
+                        direct_json_value(expected_method),
+                    )
+                    or not isinstance(terminal_counts, Mapping)
+                    or not terminal_counts
+                    or not set(terminal_counts).issubset(_DISPOSITION_FAILURE_STATUSES)
+                    or scheduled_status.get("aggregate_status")
+                    != "intrinsic_terminal_no_eligible_configuration"
+                    or scheduled_status.get("selected_comparator_configuration")
+                    is not None
+                    or not direct_equal(
+                        scheduled_status.get("nonexecution_identity"),
+                        direct_nonexecution,
+                    )
+                ):
+                    raise PublicationFreezeError(
+                        f"comparator {method_id} nonexecution identity differs"
+                    )
+                nonexecution_identity = direct_json_value(
+                    direct_nonexecution,
+                )
+                terminal_integration_status = "unavailable"
+                terminal_integration_reason = (
+                    "technical_unavailable_development_attempts"
+                )
+                disposition = "explicit_reason_coded_unavailable"
+        elif executable_scope:
             if evidence is None:
                 raise PublicationFreezeError(
                     f"method {method_id} lacks development execution evidence"
@@ -2896,6 +3275,18 @@ def _method_panel(
                 "disposition": disposition,
                 "final_applicability": _final_applicability(terminal_row, disposition),
                 "development_execution_evidence": evidence,
+                "scheduled_same_input_status": (
+                    None
+                    if scheduled_status is None
+                    else _json_copy(
+                        scheduled_status,
+                        f"{method_id} scheduled same-input status",
+                    )
+                ),
+                "selected_comparator_configuration": (
+                    selected_comparator_configuration
+                ),
+                "nonexecution_identity": nonexecution_identity,
             }
         )
     return panel
@@ -2907,7 +3298,8 @@ def build_frozen_method_payload(
     selection_report: Mapping[str, object],
     candidate_configuration: Mapping[str, object],
     method_registry: Mapping[str, object],
-    required_comparator_ids: Sequence[str],
+    comparator_tuning_authority: ComparatorTuningAuthority,
+    comparator_selection_receipt: Mapping[str, object],
     method_execution_evidence: Mapping[str, object],
     selected_calibrator_summary: Mapping[str, object],
     ablation_registry: Mapping[str, object],
@@ -2981,16 +3373,30 @@ def build_frozen_method_payload(
         if name.endswith("_sha256"):
             _sha256(digest, f"development authority binding {name}")
 
-    required_ids = tuple(required_comparator_ids)
-    if (
-        not required_ids
-        or len(required_ids) != len(set(required_ids))
-        or any(
-            not isinstance(item, str) or _SAFE_ID.fullmatch(item) is None
-            for item in required_ids
-        )
+    projection = _validated_comparator_freeze_projection(
+        comparator_tuning_authority,
+        comparator_selection_receipt,
+    )
+    scheduled_statuses = _scheduled_same_input_statuses(
+        comparator_tuning_authority,
+        projection,
+    )
+    selected_comparators = {
+        method_id: _publication_bound_comparator_value(selected.configuration)
+        for method_id, selected in projection.selected_by_method.items()
+    }
+    unavailable_comparators = {
+        method_id: direct_json_value(value, payload=True)
+        for method_id, value in projection.nonexecution_identity_by_method.items()
+    }
+    comparator_selection = comparator_selection_projection_value(projection)
+    if not direct_equal(
+        comparator_selection.get("nonexecution_identity_by_method"),
+        unavailable_comparators,
     ):
-        raise PublicationFreezeError("required comparator IDs are invalid")
+        raise PublicationFreezeError(
+            "comparator selection projection differs from its receipt"
+        )
     runtime_digest = _sha256(runtime_lock_sha256, "runtime lock checksum")
     runtime_summary = _json_copy(
         runtime_environment_summary, "runtime environment summary"
@@ -3095,10 +3501,27 @@ def build_frozen_method_payload(
             bindings, "development authority bindings"
         ),
         "development_stage_receipt": stage_receipt,
-        "required_comparator_ids": list(required_ids),
+        "comparator_tuning_authority": direct_json_value(comparator_tuning_authority),
+        "scheduled_same_input_ids": list(
+            comparator_tuning_authority.scheduled_same_input_ids
+        ),
+        "required_control_ids": list(comparator_tuning_authority.required_control_ids),
+        "established_comparator_ids": list(
+            comparator_tuning_authority.established_comparator_ids
+        ),
+        "modern_core_ids": list(comparator_tuning_authority.modern_core_ids),
+        "ready_comparison_population_ids": list(
+            projection.ready_comparison_population_ids
+        ),
+        "selected_comparator_configurations": selected_comparators,
+        "unavailable_comparator_nonexecution_identities": unavailable_comparators,
+        "scheduled_same_input_statuses": scheduled_statuses,
+        "comparator_selection": comparator_selection,
         "method_denominator": _method_panel(
             method_registry,
-            required_ids,
+            comparator_tuning_authority,
+            projection,
+            scheduled_statuses,
             method_execution_evidence,
             runtime_digest,
         ),
@@ -3213,6 +3636,65 @@ def _candidate_configuration(
     return candidates[0]
 
 
+def _load_comparator_freeze_evidence(
+    repository: Path,
+    *,
+    expected_checkpoint: object,
+    expected_authority_payload: object,
+    expected_receipt_payload: object,
+) -> tuple[ComparatorTuningAuthority, dict[str, object], ComparatorSelectionProjection]:
+    """Fixed-load and directly revalidate the complete comparator handoff."""
+
+    if not isinstance(expected_authority_payload, Mapping):
+        raise PublicationFreezeError("comparator tuning authority is absent")
+    if not isinstance(expected_receipt_payload, Mapping):
+        raise PublicationFreezeError("comparator selection receipt is absent")
+    try:
+        registry_payload, _registry_file_sha256 = _secure_json(
+            repository / _COMMON_TRACKED_PATHS["method_registry"],
+            "method registry",
+        )
+        registry = parse_method_registry(registry_payload)
+        authority = load_comparator_tuning_authority(
+            repository,
+            registry=registry,
+            require_clean=True,
+        )
+        receipt = load_comparator_selection_receipt(
+            repository,
+            expected_checkpoint=expected_checkpoint,
+        )
+        projection = _validated_comparator_freeze_projection(authority, receipt)
+    except (
+        ComparatorTuningError,
+        MethodContractError,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as error:
+        raise PublicationFreezeError(
+            f"comparator selection evidence is invalid: {error}"
+        ) from error
+    authority_payload, _authority_file_sha256 = _secure_json(
+        repository / _COMMON_TRACKED_PATHS["comparator_tuning"],
+        "comparator tuning authority",
+    )
+    receipt_payload, _receipt_file_sha256 = _secure_json(
+        repository / _COMMON_DEVELOPMENT_PATHS["comparator_selection"],
+        "comparator selection receipt",
+    )
+    if (
+        not direct_equal(authority_payload, expected_authority_payload)
+        or not direct_equal(receipt_payload, expected_receipt_payload)
+        or not direct_equal(receipt_payload, receipt)
+        or receipt_payload != json.loads(projection.receipt_bytes)
+    ):
+        raise PublicationFreezeError(
+            "comparator authority or selection receipt changed during validation"
+        )
+    return authority, receipt, projection
+
+
 def _expected_frozen_method(
     repository: Path, preparation_commit: str
 ) -> dict[str, object]:
@@ -3230,6 +3712,31 @@ def _expected_frozen_method(
         repository,
         layout,
     )
+    base_checkpoint_path = (
+        repository / _publication_stage_paths("base").reconstruction_checkpoint
+    )
+    comparator_authority, comparator_receipt, comparator_projection = (
+        _load_comparator_freeze_evidence(
+            repository,
+            expected_checkpoint=base_checkpoint_path,
+            expected_authority_payload=payloads["comparator_tuning"],
+            expected_receipt_payload=payloads["comparator_selection"],
+        )
+    )
+    expected_comparator_selection = comparator_selection_projection_value(
+        comparator_projection
+    )
+    for retained in stage_evidence.stages:
+        if not direct_equal(
+            _thaw_receipt_json(retained.source_input).get("comparator_selection"),
+            expected_comparator_selection,
+        ) or not direct_equal(
+            _thaw_receipt_json(retained.complete_input).get("comparator_selection"),
+            expected_comparator_selection,
+        ):
+            raise PublicationFreezeError(
+                f"{retained.stage} comparator selection differs from fixed receipt"
+            )
     method_rows = payloads["method_registry"].get("methods")
     if type(method_rows) is not list:
         raise PublicationFreezeError("method registry is invalid")
@@ -3331,9 +3838,6 @@ def _expected_frozen_method(
         payloads["development_search"],
         layout.revision_versions,
     )
-    required = payloads["selection_contract"].get("required_comparator_ids")
-    if type(required) is not list:
-        raise PublicationFreezeError("selection contract comparators are invalid")
     runtime_summary = _runtime_environment_summary(
         repository / _COMMON_TRACKED_PATHS["runtime_lock"],
         artifact_bindings["runtime_lock"]["sha256"],
@@ -3387,7 +3891,8 @@ def _expected_frozen_method(
         selection_report=recomputed,
         candidate_configuration=configuration,
         method_registry=payloads["method_registry"],
-        required_comparator_ids=required,
+        comparator_tuning_authority=comparator_authority,
+        comparator_selection_receipt=comparator_receipt,
         method_execution_evidence=execution_evidence,
         selected_calibrator_summary=selected_calibrator,
         ablation_registry=payloads["ablation_registry"],
@@ -3451,6 +3956,20 @@ def _expected_frozen_method(
     ):
         raise PublicationFreezeError(
             "publication stage inventory changed during freeze preparation"
+        )
+    authority_after, receipt_after, projection_after = _load_comparator_freeze_evidence(
+        repository,
+        expected_checkpoint=base_checkpoint_path,
+        expected_authority_payload=payloads["comparator_tuning"],
+        expected_receipt_payload=payloads["comparator_selection"],
+    )
+    if (
+        not direct_equal(authority_after, comparator_authority)
+        or not direct_equal(receipt_after, comparator_receipt)
+        or projection_after.receipt_bytes != comparator_projection.receipt_bytes
+    ):
+        raise PublicationFreezeError(
+            "comparator selection evidence changed during freeze preparation"
         )
     return result
 
@@ -3549,6 +4068,32 @@ def _validate_clean_frozen_method(
             )
         tracked_payloads[name] = payload
     _validate_saver_package_authority(tracked_payloads, artifacts)
+    comparator_receipt_payload, comparator_receipt_file_sha256 = _secure_json(
+        repository / _COMMON_DEVELOPMENT_PATHS["comparator_selection"],
+        "comparator selection receipt",
+    )
+    if comparator_receipt_file_sha256 != artifacts["comparator_selection"]["sha256"]:
+        raise PublicationFreezeError(
+            "comparator selection receipt differs from frozen outer inventory"
+        )
+    base_checkpoint_path = (
+        repository / _publication_stage_paths("base").reconstruction_checkpoint
+    )
+    comparator_authority, comparator_receipt, comparator_projection = (
+        _load_comparator_freeze_evidence(
+            repository,
+            expected_checkpoint=base_checkpoint_path,
+            expected_authority_payload=tracked_payloads["comparator_tuning"],
+            expected_receipt_payload=comparator_receipt_payload,
+        )
+    )
+    if not direct_equal(
+        observed.get("comparator_selection"),
+        comparator_selection_projection_value(comparator_projection),
+    ):
+        raise PublicationFreezeError(
+            "frozen comparator selection differs from fixed receipt"
+        )
 
     selected = observed.get("selected_configuration_id")
     if not isinstance(selected, str):
@@ -3559,9 +4104,6 @@ def _validate_clean_frozen_method(
         tracked_payloads["development_search"],
         layout.revision_versions,
     )
-    required = tracked_payloads["selection_contract"].get("required_comparator_ids")
-    if type(required) is not list:
-        raise PublicationFreezeError("selection contract comparators are invalid")
     method_rows = tracked_payloads["method_registry"].get("methods")
     if type(method_rows) is not list:
         raise PublicationFreezeError("method registry is invalid")
@@ -3604,7 +4146,8 @@ def _validate_clean_frozen_method(
         selection_report=selection_report,
         candidate_configuration=configuration,
         method_registry=tracked_payloads["method_registry"],
-        required_comparator_ids=required,
+        comparator_tuning_authority=comparator_authority,
+        comparator_selection_receipt=comparator_receipt,
         method_execution_evidence=execution_evidence,
         selected_calibrator_summary=observed.get("selected_calibrator"),
         ablation_registry=tracked_payloads["ablation_registry"],
@@ -3616,6 +4159,20 @@ def _validate_clean_frozen_method(
     if observed != rebuilt:
         raise PublicationFreezeError(
             "frozen method differs from its commit-bound tracked authorities"
+        )
+    authority_after, receipt_after, projection_after = _load_comparator_freeze_evidence(
+        repository,
+        expected_checkpoint=base_checkpoint_path,
+        expected_authority_payload=tracked_payloads["comparator_tuning"],
+        expected_receipt_payload=comparator_receipt_payload,
+    )
+    if (
+        not direct_equal(authority_after, comparator_authority)
+        or not direct_equal(receipt_after, comparator_receipt)
+        or projection_after.receipt_bytes != comparator_projection.receipt_bytes
+    ):
+        raise PublicationFreezeError(
+            "comparator selection evidence changed during frozen validation"
         )
     for name, relative in _COMMON_TRACKED_PATHS.items():
         payload, file_digest = _secure_json(
@@ -3636,7 +4193,7 @@ def _validate_clean_frozen_method(
 
 
 def validate_frozen_method(repository: Path) -> dict[str, object]:
-    """Validate one committed receipt without reopening ignored development files."""
+    """Validate one committed receipt and its fixed direct comparator evidence."""
 
     if not isinstance(repository, Path):
         raise TypeError("repository must be a pathlib.Path")
