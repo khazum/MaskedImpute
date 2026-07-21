@@ -184,26 +184,73 @@ def _indexed_module_functions(
 ) -> tuple[
     dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
     dict[str, str],
+    dict[str, str],
 ]:
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
-    owners: dict[str, str] = {}
+    class_owners: dict[str, str] = {}
+    lexical_parents: dict[str, str] = {}
+
+    def index_function(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        qualified: str,
+        *,
+        class_owner: str | None,
+        lexical_parent: str | None,
+    ) -> None:
+        functions[qualified] = node
+        if class_owner is not None:
+            class_owners[qualified] = class_owner
+        if lexical_parent is not None:
+            lexical_parents[qualified] = lexical_parent
+
+        def index_nested(container: ast.AST) -> None:
+            for child in ast.iter_child_nodes(container):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    index_function(
+                        child,
+                        f"{qualified}.{child.name}",
+                        class_owner=class_owner,
+                        lexical_parent=qualified,
+                    )
+                elif not isinstance(child, (ast.ClassDef, ast.Lambda)):
+                    index_nested(child)
+
+        for statement in node.body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                index_function(
+                    statement,
+                    f"{qualified}.{statement.name}",
+                    class_owner=class_owner,
+                    lexical_parent=qualified,
+                )
+            elif not isinstance(statement, (ast.ClassDef, ast.Lambda)):
+                index_nested(statement)
 
     def index_class(node: ast.ClassDef, prefix: str) -> None:
         owner = f"{prefix}.{node.name}" if prefix else node.name
         for child in node.body:
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 qualified = f"{owner}.{child.name}"
-                functions[qualified] = child
-                owners[qualified] = owner
+                index_function(
+                    child,
+                    qualified,
+                    class_owner=owner,
+                    lexical_parent=None,
+                )
             elif isinstance(child, ast.ClassDef):
                 index_class(child, owner)
 
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            functions[node.name] = node
+            index_function(
+                node,
+                node.name,
+                class_owner=None,
+                lexical_parent=None,
+            )
         elif isinstance(node, ast.ClassDef):
             index_class(node, "")
-    return functions, owners
+    return functions, class_owners, lexical_parents
 
 
 def _boolean_value(
@@ -342,14 +389,22 @@ def _called_scope(
     resolved: str | None,
     current_name: str,
     functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef],
-    owners: Mapping[str, str],
+    class_owners: Mapping[str, str],
+    lexical_parents: Mapping[str, str],
 ) -> tuple[str, bool] | None:
     if resolved is None:
         return None
+    if "." not in resolved:
+        lexical_scope: str | None = current_name
+        while lexical_scope is not None:
+            qualified = f"{lexical_scope}.{resolved}"
+            if qualified in functions:
+                return qualified, False
+            lexical_scope = lexical_parents.get(lexical_scope)
     if resolved in functions:
         return resolved, False
     receiver, separator, member = resolved.partition(".")
-    owner = owners.get(current_name)
+    owner = class_owners.get(current_name)
     if separator and receiver in {"self", "cls"} and owner is not None:
         qualified = f"{owner}.{member}"
         if qualified in functions:
@@ -359,7 +414,8 @@ def _called_scope(
 
 def _reachable_direct_scopes(
     functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef],
-    owners: Mapping[str, str],
+    class_owners: Mapping[str, str],
+    lexical_parents: Mapping[str, str],
     roots: set[str],
     module_aliases: Mapping[str, str],
 ) -> tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, Mapping[str, bool]], ...]:
@@ -380,9 +436,17 @@ def _reachable_direct_scopes(
         reachable.append((scope, bindings))
         nodes = _path_nodes(scope, bindings)
         symbols, _strings = _scope_aliases_from_nodes(nodes, module_aliases)
+        call_function_nodes: set[int] = set()
         for call in (node for node in nodes if isinstance(node, ast.Call)):
+            call_function_nodes.add(id(call.func))
             resolved = _resolve_symbol(call.func, symbols)
-            target = _called_scope(resolved, name, functions, owners)
+            target = _called_scope(
+                resolved,
+                name,
+                functions,
+                class_owners,
+                lexical_parents,
+            )
             if target is not None:
                 called_name, bound_method = target
                 called = functions[called_name]
@@ -397,6 +461,23 @@ def _reachable_direct_scopes(
                         ),
                     )
                 )
+        for reference in (
+            node
+            for node in nodes
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and id(node) not in call_function_nodes
+        ):
+            target = _called_scope(
+                _resolve_symbol(reference, symbols),
+                name,
+                functions,
+                class_owners,
+                lexical_parents,
+            )
+            if target is not None:
+                referenced_name, _bound_method = target
+                pending.append((referenced_name, {}))
     return tuple(reachable)
 
 
@@ -416,36 +497,44 @@ def _reviewed_pythonhashseed_environment(
         "PYTHONHASHSEED",
     }:
         return False
-    assigned = any(
-        (
-            isinstance(node, ast.Assign)
-            and node.value is dictionary
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id == "environment"
-        )
-        or (
-            isinstance(node, ast.AnnAssign)
-            and node.value is dictionary
-            and isinstance(node.target, ast.Name)
-            and node.target.id == "environment"
-        )
+    assigned_names = {
+        node.targets[0].id
         for node in nodes
-    )
-    if not assigned:
+        if isinstance(node, ast.Assign)
+        and node.value is dictionary
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    } | {
+        node.target.id
+        for node in nodes
+        if isinstance(node, ast.AnnAssign)
+        and node.value is dictionary
+        and isinstance(node.target, ast.Name)
+    }
+    if len(assigned_names) != 1:
         return False
-    return any(
-        (resolved := _resolve_symbol(call.func, symbols)) is not None
-        and resolved.rsplit(".", 1)[-1] == "execute_pinned_command"
-        and any(
-            keyword.arg == "environment"
-            and isinstance(keyword.value, ast.Name)
-            and keyword.value.id == "environment"
-            for keyword in call.keywords
-        )
+    environment_name = next(iter(assigned_names))
+    allowed_uses = {
+        id(keyword.value)
         for call in nodes
         if isinstance(call, ast.Call)
-    )
+        and (resolved := _resolve_symbol(call.func, symbols)) is not None
+        and resolved.rsplit(".", 1)[-1] == "execute_pinned_command"
+        for keyword in call.keywords
+        if keyword.arg == "environment"
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == environment_name
+    }
+    if not allowed_uses:
+        return False
+    loaded_uses = {
+        id(node)
+        for node in nodes
+        if isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Load)
+        and node.id == environment_name
+    }
+    return loaded_uses == allowed_uses
 
 
 def _direct_source_audit_findings(
@@ -456,15 +545,16 @@ def _direct_source_audit_findings(
     tree = ast.parse(source)
     module_aliases = _module_symbol_aliases(tree)
     if shared:
-        functions, owners = _indexed_module_functions(tree)
+        functions, class_owners, lexical_parents = _indexed_module_functions(tree)
         direct_roots = {
             name
             for name, node in functions.items()
-            if _audited_direct_scope(name, node)
+            if name not in lexical_parents and _audited_direct_scope(name, node)
         }
         scopes = _reachable_direct_scopes(
             functions,
-            owners,
+            class_owners,
+            lexical_parents,
             direct_roots,
             module_aliases,
         )
@@ -941,6 +1031,54 @@ class RepositoryDispatcher:
     assert _direct_source_audit_findings(source, shared=True)
 
 
+def test_direct_source_audit_reaches_called_nested_function() -> None:
+    source = """
+from provenance import canonical_sha256
+
+class RepositoryDispatcher:
+    def execute_direct(self, value):
+        def invoke(value):
+            return canonical_sha256(value)
+
+        return invoke(value)
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_prefers_called_nested_function_over_global() -> None:
+    source = """
+from provenance import canonical_sha256
+
+def invoke(value):
+    return value
+
+class RepositoryDispatcher:
+    def execute_direct(self, value):
+        def invoke(value):
+            return canonical_sha256(value)
+
+        return invoke(value)
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_reaches_nested_adapter_factory_callable() -> None:
+    source = """
+class RepositoryAdapterDispatcher:
+    def direct_comparator_adapters(self):
+        method_ids = ("magic",)
+
+        def adapter_for(method_id):
+            def execute(value):
+                return {"plan_sha256": value}
+
+            return execute
+
+        return {method_id: adapter_for(method_id) for method_id in method_ids}
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
 @pytest.mark.parametrize(
     ("receiver", "decorator", "mutation"),
     (
@@ -1014,6 +1152,47 @@ def run_scsdae_direct(spec, source_dir, command, work_dir, seed):
         timeout_seconds=30,
         environment=environment,
     )
+"""
+    assert _direct_source_audit_findings(source, shared=True) == ()
+
+
+def test_direct_source_audit_rejects_reused_pythonhashseed_environment_artifact() -> (
+    None
+):
+    source = """
+def project_direct_artifact(spec, source_dir, command, work_dir, seed):
+    environment = {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "PYTHONHASHSEED": str(seed),
+    }
+    execute_pinned_command(
+        spec,
+        source_dir,
+        command,
+        cwd=work_dir,
+        timeout_seconds=30,
+        environment=environment,
+    )
+    return {"direct_artifact": environment}
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_ignores_legacy_only_nested_function() -> None:
+    source = """
+from provenance import canonical_sha256
+
+class RepositoryDispatcher:
+    def execute_direct(self, value):
+        return value
+
+    def execute_legacy(self, value):
+        def serialize(value):
+            return canonical_sha256(value)
+
+        return serialize(value)
 """
     assert _direct_source_audit_findings(source, shared=True) == ()
 
