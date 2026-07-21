@@ -567,6 +567,37 @@ def test_completed_direct_metric_rejects_noncanonical_stored_reason(
         )
 
 
+@pytest.mark.parametrize("boundary", ("attempt", "checkpoint"))
+def test_completed_direct_metric_rejects_terminal_only_reason(
+    tmp_path: Path,
+    boundary: str,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    attempt = _completed_checkpoint_attempt(plan, registry, prepared)
+    metric = replace(
+        attempt.metrics[0],
+        value=None,
+        n=0,
+        status="unavailable",
+        reason="adapter_exception",
+    )
+
+    if boundary == "attempt":
+        with pytest.raises(RunnerContractError, match="metric"):
+            replace(attempt, metrics=(metric, *attempt.metrics[1:]))
+        return
+
+    record = attempt.to_dict()
+    record["metrics"][0] = metric.to_dict()
+    with pytest.raises(RunnerContractError, match="metric"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
 @pytest.mark.parametrize("field", ("reason", "rss_measurement", "gpu_measurement"))
 def test_direct_checkpoint_rejects_noncanonical_stored_metadata(
     tmp_path: Path,

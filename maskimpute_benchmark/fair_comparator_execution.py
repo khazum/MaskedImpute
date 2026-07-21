@@ -688,6 +688,12 @@ def validate_direct_evidence_semantics(
     if run.status == "completed":
         if any(metric.status not in {"completed", "unavailable"} for metric in metrics):
             raise RunnerContractError("completed direct attempt metric status differs")
+        if any(
+            metric.status == "unavailable"
+            and metric.reason not in _DIRECT_EVALUATOR_METRIC_REASONS
+            for metric in metrics
+        ):
+            raise RunnerContractError("completed direct attempt metric reason differs")
     elif any(
         metric.value is not None
         or metric.n != 0
