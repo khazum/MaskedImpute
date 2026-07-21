@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 import hashlib
 import importlib.util
 import json
@@ -146,7 +147,7 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
         )
 
 
-def test_development_production_wrapper_routes_direct_base_without_legacy_planner(
+def test_development_production_wrapper_routes_direct_base_through_real_handoff(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -157,6 +158,75 @@ def test_development_production_wrapper_routes_direct_base_without_legacy_planne
 
     root = Path(downstream.__file__).absolute().parents[1]
     source = tmp_path / "direct-development"
+
+    @dataclass(frozen=True)
+    class DirectMethod:
+        method_id: str
+
+    magic = DirectMethod("magic")
+    observed = DirectMethod("observed")
+    selected_configuration = SimpleNamespace(
+        method=magic,
+        configuration_id="magic-t01-default",
+        configuration_kind="comparator_tuning",
+        payload=(("solver", "exact"),),
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+    nonselected_configuration = SimpleNamespace(
+        method=magic,
+        configuration_id="magic-t02-nonselected",
+        configuration_kind="comparator_tuning",
+        payload=(("solver", "approximate"),),
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+    control_configuration = SimpleNamespace(
+        method=observed,
+        configuration_id="registry-default",
+        configuration_kind="registry",
+        payload=(),
+        requires_count_score=False,
+        requires_calibration=False,
+    )
+
+    def record(
+        run_id: str,
+        method_id: str,
+        configuration_id: str,
+        configuration_kind: str,
+    ) -> dict[str, object]:
+        return {
+            "run": {
+                "run_id": run_id,
+                "identity": {
+                    "method": {"method_id": method_id},
+                    "configuration_id": configuration_id,
+                    "configuration_kind": configuration_kind,
+                    "dataset_id": "dataset-synthetic",
+                    "mechanism": "symsim",
+                    "biological_id": "synthetic-draw-001",
+                    "technical_view": "moderate",
+                    "model_seed": None,
+                },
+                "status": "completed",
+                "reason": None,
+            }
+        }
+
+    direct_plan = SimpleNamespace(
+        identity_mode="direct-v1",
+        configurations=(
+            selected_configuration,
+            nonselected_configuration,
+            control_configuration,
+        ),
+        entries=(
+            SimpleNamespace(run_id="run-magic-selected"),
+            SimpleNamespace(run_id="run-magic-nonselected"),
+            SimpleNamespace(run_id="run-observed-control"),
+        ),
+    )
     checkpoint = {
         "schema_version": 1,
         "identity_mode": "direct-v1",
@@ -166,9 +236,28 @@ def test_development_production_wrapper_routes_direct_base_without_legacy_planne
             "comparator_smoke_receipt_bytes": [123, 125],
         },
         "input_descriptors": [],
-        "planned_run_count": 0,
+        "planned_run_count": 3,
         "status": "completed",
-        "records": [],
+        "records": [
+            record(
+                "run-magic-selected",
+                "magic",
+                "magic-t01-default",
+                "comparator_tuning",
+            ),
+            record(
+                "run-magic-nonselected",
+                "magic",
+                "magic-t02-nonselected",
+                "comparator_tuning",
+            ),
+            record(
+                "run-observed-control",
+                "observed",
+                "registry-default",
+                "registry",
+            ),
+        ],
     }
     checkpoint_file_sha256 = _write_canonical(source / "checkpoint.json", checkpoint)
     assert "input_hashes" not in checkpoint
@@ -196,7 +285,27 @@ def test_development_production_wrapper_routes_direct_base_without_legacy_planne
     registry = SimpleNamespace(methods=())
     runner_bindings = (object(),)
     prepared = {"dataset-synthetic": object()}
-    datasets = (object(),)
+    datasets = (
+        downstream.DatasetEvidenceBinding(
+            dataset_id="dataset-synthetic",
+            path=str((tmp_path / "evaluator.h5ad").absolute()),
+            file_sha256="1" * 64,
+            dataset_sha256="2" * 64,
+            mechanism="symsim",
+            biological_id="synthetic-draw-001",
+            technical_view="moderate",
+            method_input_sha256="3" * 64,
+            dataset_qc_policy_sha256="4" * 64,
+            excluded_cell_count=0,
+            excluded_cell_ids_sha256="5" * 64,
+            retained_cell_count=1,
+            retained_cell_ids_sha256="6" * 64,
+            retained_gene_count=1,
+            observed_zero_count=1,
+            retained_cell_ids=("cell-001",),
+            gene_ids=("gene-001",),
+        ),
+    )
     reference = SimpleNamespace(
         path="study/comparator_tuning.json",
         schema_version=2,
@@ -207,7 +316,6 @@ def test_development_production_wrapper_routes_direct_base_without_legacy_planne
         comparator_tuning_reference=reference,
         comparator_tuning=object(),
     )
-    direct_plan = SimpleNamespace(identity_mode="direct-v1")
     comparator_selection = {
         "path": "artifacts/study/development/comparator-selection.json",
         "receipt": {"selection_complete": True},
@@ -238,7 +346,6 @@ def test_development_production_wrapper_routes_direct_base_without_legacy_planne
         },
     }
     calls: list[tuple[str, object]] = []
-    result = object()
 
     monkeypatch.setattr(methods, "load_method_registry", lambda _path: registry)
     monkeypatch.setattr(runner, "load_runner_authority", lambda: authority)
@@ -286,26 +393,55 @@ def test_development_production_wrapper_routes_direct_base_without_legacy_planne
         assert kwargs["comparator_selection"] is comparator_selection
         return expected_handoff
 
-    def handoff(*args: object, **kwargs: object) -> object:
-        calls.append(("handoff", (args, kwargs)))
-        assert kwargs["comparator_projection"] == expected_handoff
-        return result
-
     monkeypatch.setattr(downstream, "validate_direct_comparator_projection", validate)
-    monkeypatch.setattr(
-        downstream,
-        "_build_downstream_plan_from_selected_handoff",
-        handoff,
-        raising=False,
-    )
 
     actual = downstream.build_development_downstream_evidence_plan(
         root,
         checkpoint_directory=source,
     )
 
-    assert actual is result
-    assert [name for name, _payload in calls] == ["adapter", "handoff"]
+    assert [name for name, _payload in calls] == ["adapter"]
+    assert [(entry.method_id, entry.configuration_id) for entry in actual.entries] == [
+        ("magic", "magic-t01-default"),
+        ("observed", "registry-default"),
+    ]
+    assert [
+        (configuration.method_id, configuration.kind)
+        for configuration in actual.configurations
+    ] == [
+        ("magic", "selected_comparator"),
+        ("observed", "direct_control"),
+    ]
+    assert all(
+        isinstance(configuration, downstream.ProjectedDownstreamConfiguration)
+        for configuration in actual.configurations
+    )
+    assert all(
+        entry.status == "unavailable"
+        and entry.reason == "direct_evaluator_output_not_retained"
+        and entry.evaluator_output_sha256 is None
+        and entry.evaluator_output_path is None
+        and entry.evaluator_output_file_sha256 is None
+        and entry.evaluator_output_shape is None
+        and entry.evaluator_output_encoding is None
+        and entry.evaluator_output_uncompressed_nbytes is None
+        and entry.evaluator_output_uncompressed_sha256 is None
+        for entry in actual.entries
+    )
+    assert "magic-t02-nonselected" not in {
+        configuration.configuration_id for configuration in actual.configurations
+    }
+
+    destination = tmp_path / "persisted-downstream"
+    running = downstream.run_downstream_evidence(
+        actual,
+        destination,
+        max_denominators=0,
+    )
+    assert running["status"] == "running"
+    assert running["recorded_denominator_count"] == 0
+    reloaded = downstream.load_downstream_evidence_plan(destination)
+    assert reloaded.to_dict() == actual.to_dict()
 
 
 def _canonical_bytes(value: object) -> bytes:

@@ -36,6 +36,7 @@ from .schema import benchmark_dataset_sha256, validate_benchmark_dataset
 
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_CONFIGURATION_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
 _FINAL_OUTPUT_ENCODING = "zlib_raw_f64_v1"
 _TRAJECTORY_ENDPOINT_NAMES = ("trajectory_pseudotime_rank_loss",)
 _ENDPOINT_VALUE_RANGES = MappingProxyType(
@@ -1548,6 +1549,119 @@ _DEVELOPMENT_SOURCE_BINDING_FIELDS = frozenset(
 
 
 @dataclass(frozen=True, slots=True)
+class ProjectedDownstreamConfiguration:
+    """Closed post-boundary authority for selected comparators and controls."""
+
+    method_id: str
+    configuration_id: str
+    kind: str
+    configuration_sha256: str
+    payload_json: str
+    requires_count_score: bool
+    requires_calibration: bool
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        method_id: str,
+        configuration_id: str,
+        kind: str,
+        payload: Mapping[str, object],
+        requires_count_score: bool,
+        requires_calibration: bool,
+        configuration_sha256: str | None = None,
+    ) -> ProjectedDownstreamConfiguration:
+        if not isinstance(payload, Mapping):
+            raise TypeError("projected configuration payload must be a mapping")
+        payload_bytes = _canonical_bytes(dict(payload))
+        parsed = json.loads(payload_bytes.decode("utf-8"))
+        return cls(
+            method_id=method_id,
+            configuration_id=configuration_id,
+            kind=kind,
+            configuration_sha256=(
+                canonical_sha256(parsed)
+                if configuration_sha256 is None
+                else configuration_sha256
+            ),
+            payload_json=payload_bytes.decode("utf-8"),
+            requires_count_score=requires_count_score,
+            requires_calibration=requires_calibration,
+        )
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.method_id, str)
+            or _CONFIGURATION_ID.fullmatch(self.method_id) is None
+            or not isinstance(self.configuration_id, str)
+            or _CONFIGURATION_ID.fullmatch(self.configuration_id) is None
+        ):
+            raise DownstreamEvidenceError(
+                "projected downstream configuration ID is invalid"
+            )
+        if self.kind not in {"selected_comparator", "direct_control"}:
+            raise DownstreamEvidenceError(
+                "projected downstream configuration kind is invalid"
+            )
+        _digest(
+            self.configuration_sha256,
+            "projected downstream configuration checksum",
+        )
+        try:
+            payload = json.loads(
+                self.payload_json,
+                parse_constant=_reject_constant,
+                object_pairs_hook=_unique_object,
+            )
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            raise DownstreamEvidenceError(
+                "projected downstream configuration payload is invalid"
+            ) from error
+        if (
+            not isinstance(payload, dict)
+            or self.payload_json.encode("utf-8") != _canonical_bytes(payload)
+            or canonical_sha256(payload) != self.configuration_sha256
+            or self.requires_count_score is not False
+            or self.requires_calibration is not False
+        ):
+            raise DownstreamEvidenceError(
+                "projected downstream configuration authority differs"
+            )
+        if self.kind == "direct_control":
+            method = payload.get("method")
+            if (
+                self.method_id != "observed"
+                or self.configuration_id != "registry-default"
+                or set(payload) != {"schema", "method"}
+                or payload.get("schema") != "maskimpute-direct-control-configuration-v1"
+                or not isinstance(method, Mapping)
+                or method.get("method_id") != self.method_id
+            ):
+                raise DownstreamEvidenceError(
+                    "projected downstream control authority differs"
+                )
+
+    @property
+    def payload(self) -> Mapping[str, object]:
+        return MappingProxyType(json.loads(self.payload_json))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "method_id": self.method_id,
+            "configuration_id": self.configuration_id,
+            "kind": self.kind,
+            "configuration_sha256": self.configuration_sha256,
+            "payload": dict(self.payload),
+            "requires_count_score": self.requires_count_score,
+            "requires_calibration": self.requires_calibration,
+        }
+
+
+DownstreamConfiguration = AuthorizedConfiguration | ProjectedDownstreamConfiguration
+
+
+@dataclass(frozen=True, slots=True)
 class DownstreamEvidencePlan:
     source_root: str
     source_kind: str
@@ -1564,7 +1678,7 @@ class DownstreamEvidencePlan:
     development_revision_versions: tuple[str, ...]
     development_sources: tuple[DevelopmentSourceBinding, ...]
     datasets: tuple[DatasetEvidenceBinding, ...]
-    configurations: tuple[AuthorizedConfiguration, ...]
+    configurations: tuple[DownstreamConfiguration, ...]
     entries: tuple[DownstreamPlanEntry, ...]
     plan_sha256: str
 
@@ -1680,21 +1794,26 @@ _CONFIGURATION_FIELDS = frozenset(
 
 
 def _legacy_configuration_payload(
-    configuration: AuthorizedConfiguration,
+    configuration: DownstreamConfiguration,
 ) -> dict[str, object]:
-    """Preserve the established non-comparator downstream configuration schema."""
+    """Preserve the established downstream configuration envelope."""
 
-    if not isinstance(configuration, AuthorizedConfiguration):
-        raise TypeError("configuration must be an AuthorizedConfiguration")
+    if not isinstance(
+        configuration,
+        (AuthorizedConfiguration, ProjectedDownstreamConfiguration),
+    ):
+        raise TypeError("configuration must be a downstream configuration")
     encoded = configuration.to_dict()
     return {name: encoded[name] for name in _CONFIGURATION_FIELDS}
 
 
-def _method_artifact_sha256(configuration: AuthorizedConfiguration) -> str:
+def _method_artifact_sha256(configuration: DownstreamConfiguration) -> str:
     """Derive the selection-authority artifact from one sealed configuration."""
 
+    if isinstance(configuration, ProjectedDownstreamConfiguration):
+        return configuration.configuration_sha256
     if not isinstance(configuration, AuthorizedConfiguration):
-        raise TypeError("configuration must be an AuthorizedConfiguration")
+        raise TypeError("configuration must be a downstream configuration")
     payload = dict(configuration.payload)
     if configuration.kind != "registry":
         return configuration.configuration_sha256
@@ -2931,14 +3050,19 @@ def _evaluated_round_binding_from_payload(
     return binding
 
 
-def _configuration_from_payload(value: object) -> AuthorizedConfiguration:
+def _configuration_from_payload(value: object) -> DownstreamConfiguration:
     if not isinstance(value, Mapping) or set(value) != _CONFIGURATION_FIELDS:
         raise DownstreamEvidenceError("persisted configuration schema differs")
     payload = value.get("payload")
     if not isinstance(payload, Mapping):
         raise DownstreamEvidenceError("persisted configuration payload is invalid")
     try:
-        configuration = AuthorizedConfiguration.create(
+        factory = (
+            ProjectedDownstreamConfiguration.create
+            if value.get("kind") in {"selected_comparator", "direct_control"}
+            else AuthorizedConfiguration.create
+        )
+        configuration = factory(
             method_id=value.get("method_id"),
             configuration_id=value.get("configuration_id"),
             kind=value.get("kind"),
@@ -2947,7 +3071,7 @@ def _configuration_from_payload(value: object) -> AuthorizedConfiguration:
             requires_calibration=value.get("requires_calibration"),
             configuration_sha256=value.get("configuration_sha256"),
         )
-    except (TypeError, ValueError) as error:
+    except (RuntimeError, TypeError, ValueError) as error:
         raise DownstreamEvidenceError(
             "persisted configuration authority is invalid"
         ) from error
@@ -3556,7 +3680,7 @@ def _validated_plan_entry(
     source_kind: str,
     source_root: Path,
     datasets: Mapping[str, DatasetEvidenceBinding],
-    configurations: Mapping[tuple[str, str, str, str], AuthorizedConfiguration],
+    configurations: Mapping[tuple[str, str, str, str], DownstreamConfiguration],
 ) -> DownstreamPlanEntry:
     run = source.payload.get("run")
     if not isinstance(run, Mapping):
@@ -3754,7 +3878,7 @@ def _build_downstream_evidence_plan(
     source_kind: str,
     evidence_scope: str = "all",
     datasets: Sequence[DatasetEvidenceBinding],
-    configurations: Sequence[AuthorizedConfiguration],
+    configurations: Sequence[DownstreamConfiguration],
     evaluated_round_binding: EvaluatedRoundBinding | None = None,
     source_plan: object | None = None,
     _source_plan_authority: str | None = None,
@@ -3829,9 +3953,13 @@ def _build_downstream_evidence_plan(
         _read_bound_dataset(value)
     configuration_values = tuple(configurations)
     if not configuration_values or any(
-        not isinstance(value, AuthorizedConfiguration) for value in configuration_values
+        not isinstance(
+            value,
+            (AuthorizedConfiguration, ProjectedDownstreamConfiguration),
+        )
+        for value in configuration_values
     ):
-        raise TypeError("configurations must contain AuthorizedConfiguration values")
+        raise TypeError("configurations must contain downstream configuration values")
     configuration_lookup = {
         (
             value.method_id,
@@ -4095,7 +4223,7 @@ def build_downstream_evidence_plan(
     source_kind: str,
     evidence_scope: str = "all",
     datasets: Sequence[DatasetEvidenceBinding],
-    configurations: Sequence[AuthorizedConfiguration],
+    configurations: Sequence[DownstreamConfiguration],
     evaluated_round_binding: EvaluatedRoundBinding | None = None,
     source_plan: object | None = None,
     _source_plan_authority: str | None = None,
@@ -4348,7 +4476,7 @@ def combine_development_downstream_evidence_plans(
     evaluator_sha = source_values[0].plan.evaluator_source_sha256
     entries: list[DownstreamPlanEntry] = []
     bindings: list[DevelopmentSourceBinding] = []
-    configurations: dict[tuple[str, str, str, str], AuthorizedConfiguration] = {}
+    configurations: dict[tuple[str, str, str, str], DownstreamConfiguration] = {}
     for source in source_values:
         component = source.plan
         if (
@@ -4556,7 +4684,7 @@ def _build_downstream_plan_from_selected_handoff(
     if len(dataset_lookup) != len(dataset_values):
         raise DownstreamEvidenceError("direct downstream datasets are duplicated")
 
-    adapted: dict[tuple[str, str, str], AuthorizedConfiguration] = {}
+    adapted: dict[tuple[str, str, str], DownstreamConfiguration] = {}
     for value in configurations:
         method = getattr(value, "method", None)
         method_id = getattr(method, "method_id", None)
@@ -4599,7 +4727,12 @@ def _build_downstream_plan_from_selected_handoff(
         ):
             continue
         try:
-            legacy = AuthorizedConfiguration.create(
+            factory = (
+                ProjectedDownstreamConfiguration.create
+                if retained_kind in {"selected_comparator", "direct_control"}
+                else AuthorizedConfiguration.create
+            )
+            configuration_authority = factory(
                 method_id=method_id,
                 configuration_id=configuration_id,
                 kind=retained_kind,
@@ -4611,7 +4744,9 @@ def _build_downstream_plan_from_selected_handoff(
             raise DownstreamEvidenceError(
                 "direct downstream configuration cannot cross the publication boundary"
             ) from error
-        adapted[(method_id, configuration_id, configuration_kind)] = legacy
+        adapted[(method_id, configuration_id, configuration_kind)] = (
+            configuration_authority
+        )
 
     entries: list[DownstreamPlanEntry] = []
     for source_ordinal, (record, planned) in enumerate(

@@ -301,3 +301,74 @@ No real comparator, smoke, tuning, evaluator, competition, final, scaling, or
 other scientific workload ran. All verification evidence was synthetic. The
 progress ledger was not edited. The exact post-commit review package path is
 `.superpowers/sdd/review-fcfdb30..task12-second-fix.diff`.
+
+## Final re-review executable-handoff fix
+
+The last Critical is closed without changing the runner-owned configuration
+contract. The production regression no longer mocks
+`_build_downstream_plan_from_selected_handoff`: it supplies one selected
+comparator, one nonselected comparator, one observed control, matching direct
+plan entries/checkpoint records, and a real downstream dataset binding through
+`build_development_downstream_evidence_plan`.
+
+The post-boundary adapter now uses a closed
+`ProjectedDownstreamConfiguration` type for only `selected_comparator` and
+`direct_control`. It uses the established seven-field downstream configuration
+envelope and existing outer downstream provenance. Candidate, ablation, and
+capacity-control configurations remain the existing runner-owned
+`AuthorizedConfiguration` values; the closed runner kinds and its prohibition
+on legacy comparator tuning were not weakened.
+
+The real selected-map handoff retains the selected comparator and observed
+control, excludes the nonselected comparator, and maps completed direct runs
+to `status="unavailable"` with reason
+`direct_evaluator_output_not_retained` and every evaluator output binding null.
+The focused regression writes the resulting plan with zero evaluated
+denominators and reloads it through the public persisted-plan validator,
+requiring byte-equivalent plan values after full production-source replay.
+
+### Final-fix TDD evidence
+
+The unmocked production-entry RED reached the exact reviewed failure:
+
+```text
+FAILED tests/test_downstream_evidence.py::test_development_production_wrapper_routes_direct_base_through_real_handoff
+maskimpute_benchmark.runner.RunnerContractError: configuration kind is invalid
+1 failed in 2.58s
+```
+
+After introducing the closed downstream-owned type, the final focused GREEN
+was:
+
+```text
+1 passed in 1.89s
+```
+
+### Final-fix verification
+
+```text
+Complete downstream-evidence module:
+90 passed in 18.93s
+
+Complete downstream-evidence module plus both scoped direct audits:
+92 passed in 20.46s
+
+Adjacent complete synthetic direct checkpoint/receipt validation:
+1 passed in 80.31s (0:01:20)
+
+ruff check maskimpute_benchmark/downstream_evidence.py tests/test_downstream_evidence.py:
+All checks passed!
+
+ruff format --check maskimpute_benchmark/downstream_evidence.py tests/test_downstream_evidence.py:
+2 files already formatted
+
+python -m compileall -q maskimpute_benchmark scripts tests: exit 0
+git diff --check: exit 0
+```
+
+No real comparator, smoke, tuning, evaluator, competition, final, scaling, or
+other scientific workload ran. All evidence was synthetic. No direct identity
+summary field/helper was added, the scoped audits pass, and the progress ledger
+was not edited. The full accepted-base review package remains
+`.superpowers/sdd/review-fcfdb30..task12-second-fix.diff` and is regenerated
+from `fcfdb30c68b6ef5b15a6733ca461fb638457646c` after the final commit.
