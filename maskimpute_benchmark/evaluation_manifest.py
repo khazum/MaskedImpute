@@ -289,6 +289,18 @@ def _validate_reconstruction_evidence(
     raw_null_de_audits: object,
     comparator_projection: object,
 ) -> Mapping[str, str]:
+    if (
+        isinstance(raw_reconstruction, Mapping)
+        and raw_reconstruction.get("identity_mode") == "direct-v1"
+    ):
+        return _validate_direct_reconstruction_evidence(
+            repository,
+            raw_reconstruction,
+            authority,
+            data,
+            raw_null_de_audits,
+            comparator_projection,
+        )
     try:
         reconstruction = _exact_authority_mapping(
             raw_reconstruction,
@@ -309,6 +321,7 @@ def _validate_reconstruction_evidence(
     expected_path = (
         "artifacts/study/development/competition-reconstruction/checkpoint.json"
     )
+
     if reconstruction["checkpoint_path"] != expected_path:
         raise SelectionAuthorityError(
             "evaluation reconstruction checkpoint path is not fixed"
@@ -444,7 +457,7 @@ def _validate_reconstruction_evidence(
         )
     return MappingProxyType(
         {
-            "reconstruction_checkpoint_path": evidence.checkpoint_path,
+            "reconstruction_checkpoint_path": expected_path,
             "reconstruction_checkpoint_file_sha256": (evidence.checkpoint_file_sha256),
             "reconstruction_checkpoint_payload_sha256": (evidence.checkpoint_sha256),
             "reconstruction_plan_sha256": evidence.plan_sha256,
@@ -454,6 +467,196 @@ def _validate_reconstruction_evidence(
             "reconstruction_raw_artifacts_sha256": _canonical_sha256(
                 expected_raw_artifacts
             ),
+            "reconstructed_selection_records_sha256": _canonical_sha256(
+                rebuilt_records
+            ),
+            "reconstructed_null_de_audits_sha256": _canonical_sha256(rebuilt_audits),
+        }
+    )
+
+
+def _rebuild_direct_reconstruction_plan(
+    repository: Path,
+    reconstruction: Mapping[str, object],
+):
+    """Rebuild the accepted base direct-v1 plan from current typed authority."""
+
+    from .methods import load_method_registry
+    from .runner import (
+        build_fair_comparator_plan,
+        load_prepared_development_panel,
+        load_runner_authority,
+    )
+
+    module_root = Path(__file__).resolve().parents[1]
+    if repository.resolve(strict=True) != module_root:
+        raise SelectionAuthorityError(
+            "direct reconstruction datasets must use the active repository"
+        )
+    runner_authority = load_runner_authority()
+    datasets, prepared = load_prepared_development_panel(runner_authority)
+    registry = load_method_registry(repository / "study/methods.json")
+    snapshot = reconstruction.get("plan_snapshot")
+    if not isinstance(snapshot, Mapping):
+        raise SelectionAuthorityError("direct reconstruction plan snapshot is invalid")
+    smoke_receipt = snapshot.get("comparator_smoke_receipt")
+    smoke_bytes_value = snapshot.get("comparator_smoke_receipt_bytes")
+    if not isinstance(smoke_receipt, Mapping) or not isinstance(
+        smoke_bytes_value,
+        list,
+    ):
+        raise SelectionAuthorityError(
+            "direct reconstruction smoke receipt evidence is incomplete"
+        )
+    try:
+        smoke_bytes = bytes(smoke_bytes_value)
+    except (TypeError, ValueError) as error:
+        raise SelectionAuthorityError(
+            "direct reconstruction smoke receipt bytes are invalid"
+        ) from error
+    plan = build_fair_comparator_plan(
+        registry,
+        datasets,
+        runner_authority,
+        tuple(prepared.values()),
+        _comparator_smoke_receipt=smoke_receipt,
+        _comparator_smoke_receipt_bytes=smoke_bytes,
+    )
+    if not direct_equal(plan.to_dict(), snapshot):
+        raise SelectionAuthorityError(
+            "direct reconstruction plan differs from current authority"
+        )
+    return plan, registry, datasets, prepared, runner_authority
+
+
+def _validate_direct_reconstruction_evidence(
+    repository: Path,
+    raw_reconstruction: Mapping[str, object],
+    authority: SelectionAuthority,
+    data: Mapping[str, Any],
+    raw_null_de_audits: object,
+    comparator_projection: object,
+) -> Mapping[str, str]:
+    """Rebuild schema-2 rows from the exact direct plan and checkpoint."""
+
+    from .comparator_tuning import (
+        ComparatorSelectionProjection,
+        comparator_selection_projection_value,
+    )
+    from .development_evaluation import (
+        build_reconstruction_selection_records,
+        project_direct_comparator_evidence,
+    )
+
+    reconstruction = _exact_authority_mapping(
+        raw_reconstruction,
+        {
+            "checkpoint_path",
+            "checkpoint_file_sha256",
+            "checkpoint_sha256",
+            "identity_mode",
+            "authority_revision",
+            "plan_snapshot",
+            "input_descriptors",
+        },
+        "direct evaluation reconstruction checkpoint binding",
+    )
+    expected_path = (
+        "artifacts/study/development/competition-reconstruction/checkpoint.json"
+    )
+    if reconstruction["checkpoint_path"] != expected_path:
+        raise SelectionAuthorityError(
+            "direct evaluation reconstruction checkpoint path is not fixed"
+        )
+    file_binding = _authority_sha(
+        reconstruction["checkpoint_file_sha256"],
+        "direct reconstruction checkpoint file checksum",
+    )
+    if reconstruction["checkpoint_sha256"] != file_binding:
+        raise SelectionAuthorityError(
+            "direct reconstruction outer checkpoint binding differs"
+        )
+    _checkpoint, observed_file_binding = _read_canonical_bound_json(
+        repository / expected_path,
+        "direct reconstruction checkpoint",
+        file_binding,
+    )
+    if observed_file_binding != file_binding:
+        raise SelectionAuthorityError(
+            "direct reconstruction checkpoint file binding differs"
+        )
+    if not isinstance(comparator_projection, ComparatorSelectionProjection):
+        raise SelectionAuthorityError(
+            "direct comparator projection failed complete validation"
+        )
+    try:
+        plan, registry, datasets, prepared, runner_authority = (
+            _rebuild_direct_reconstruction_plan(repository, reconstruction)
+        )
+        evidence = project_direct_comparator_evidence(
+            repository / expected_path,
+            plan,
+            repository=repository,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=runner_authority.comparator_tuning_reference,
+            comparator_authority=runner_authority.comparator_tuning,
+            comparator_selection=comparator_selection_projection_value(
+                comparator_projection
+            ),
+            runner_authority=runner_authority,
+            datasets=datasets,
+        )
+    except Exception as error:
+        raise SelectionAuthorityError(
+            f"direct reconstruction checkpoint failed typed revalidation: {error}"
+        ) from error
+    if (
+        reconstruction["identity_mode"] != evidence.identity_mode
+        or reconstruction["authority_revision"] != evidence.authority_revision
+        or not direct_equal(reconstruction["plan_snapshot"], evidence.plan_snapshot)
+        or not direct_equal(
+            reconstruction["input_descriptors"],
+            direct_json_value(evidence.input_descriptors),
+        )
+    ):
+        raise SelectionAuthorityError(
+            "direct reconstruction manifest differs from validated checkpoint"
+        )
+    try:
+        rebuilt = build_reconstruction_selection_records(
+            evidence,
+            checkpoint_directory=(repository / expected_path).parent,
+            prepared_datasets=prepared,
+            declarations=authority.declarations,
+            method_bindings=authority.method_bindings,
+            comparator_projection=comparator_projection,
+        )
+        rebuilt_records = [direct_json_value(dict(value)) for value in rebuilt.records]
+        rebuilt_audits = [dict(value) for value in rebuilt.null_de_audits]
+    except Exception as error:
+        raise SelectionAuthorityError(
+            "direct reconstruction rows could not be independently rebuilt"
+        ) from error
+    if type(data.get("records")) is not list or not direct_equal(
+        data["records"],
+        rebuilt_records,
+    ):
+        raise SelectionAuthorityError(
+            "reconstructed selection records differ from validated direct evidence"
+        )
+    if type(raw_null_de_audits) is not list or not direct_equal(
+        raw_null_de_audits,
+        rebuilt_audits,
+    ):
+        raise SelectionAuthorityError(
+            "null-DE audits differ from validated direct evidence"
+        )
+    return MappingProxyType(
+        {
+            "reconstruction_checkpoint_path": expected_path,
+            "reconstruction_checkpoint_file_sha256": file_binding,
+            "reconstruction_checkpoint_payload_sha256": file_binding,
             "reconstructed_selection_records_sha256": _canonical_sha256(
                 rebuilt_records
             ),
@@ -867,6 +1070,46 @@ def _validate_evaluator_audits(
     }
     candidate_ids = {value.configuration_id for value in authority.attempts}
     declaration_ids = {value.id for value in authority.declarations}
+
+    def audit_method(run: Mapping[str, Any]) -> str | None:
+        nested = run.get("identity")
+        identity = nested if isinstance(nested, Mapping) else run
+        configuration_id = identity.get("configuration_id")
+        if (
+            identity.get("configuration_kind") == "candidate_search"
+            and isinstance(configuration_id, str)
+            and configuration_id in candidate_ids
+        ):
+            return configuration_id
+        method_value = identity.get("method")
+        method_id = (
+            method_value.get("method_id")
+            if isinstance(method_value, Mapping)
+            else identity.get("method_id")
+        )
+        if not isinstance(method_id, str) or method_id not in declaration_ids:
+            return None
+        selected = getattr(authority, "selected_comparators", {}).get(method_id)
+        if selected is None:
+            return (
+                method_id if method_id in {"observed", "capacity-matched-ae"} else None
+            )
+        selected_value = direct_json_value(selected)
+        if not isinstance(selected_value, Mapping):
+            return None
+        configuration = selected_value.get("configuration")
+        return (
+            method_id
+            if isinstance(configuration, Mapping)
+            and configuration_id == configuration.get("configuration_id")
+            and direct_equal(
+                identity.get("configuration_payload"),
+                configuration.get("payload"),
+            )
+            and direct_equal(method_value, selected_value.get("method"))
+            else None
+        )
+
     seen_audit_runs: set[str] = set()
     for index, raw_audit in enumerate(null_audits):
         audit = _exact_authority_mapping(
@@ -879,35 +1122,32 @@ def _validate_evaluator_audits(
                 "null-DE audit run binding is absent or duplicated"
             )
         seen_audit_runs.add(run_id)
-        method = (
-            run.get("configuration_id")
-            if run.get("configuration_kind") == "candidate_search"
-            and run.get("configuration_id") in candidate_ids
-            else run.get("method_id")
-        )
+        method = audit_method(run)
         if method not in declaration_ids:
             raise SelectionAuthorityError("null-DE audit method is outside authority")
+        nested = run.get("identity")
+        run_identity = nested if isinstance(nested, Mapping) else run
         identity = (
-            run.get("mechanism"),
-            run.get("biological_id"),
-            run.get("technical_view"),
-            run.get("dataset_id"),
+            run_identity.get("mechanism"),
+            run_identity.get("biological_id"),
+            run_identity.get("technical_view"),
+            run_identity.get("dataset_id"),
             method,
-            run.get("model_seed"),
+            run_identity.get("model_seed"),
         )
         record = null_record_lookup.get(identity)
         digest = hashlib.sha256()
         digest.update(b"maskimpute-null-de-post-execution-entropy-v1\0")
         digest.update(reconstruction["checkpoint_sha256"].encode("ascii"))
         digest.update(b"\0")
-        digest.update(str(run.get("mechanism")).encode("utf-8"))
+        digest.update(str(run_identity.get("mechanism")).encode("utf-8"))
         digest.update(b"\0")
-        digest.update(str(run.get("biological_id")).encode("utf-8"))
+        digest.update(str(run_identity.get("biological_id")).encode("utf-8"))
         if (
             record is None
-            or audit["dataset_id"] != run.get("dataset_id")
+            or audit["dataset_id"] != run_identity.get("dataset_id")
             or audit["method"] != method
-            or audit["model_seed"] != run.get("model_seed")
+            or audit["model_seed"] != run_identity.get("model_seed")
             or audit["status"] != record["status"]
             or audit["value"] != record["value"]
             or audit["nominal_alpha"] != 0.05
@@ -1008,21 +1248,39 @@ def _validate_comparator_selection_evidence(
 ) -> object:
     from .comparator_tuning import (
         ComparatorTuningError,
-        comparator_selection_projection,
-        comparator_selection_projection_value,
-        load_comparator_selection_receipt,
+        validate_comparator_selection_object,
     )
 
     try:
-        receipt = load_comparator_selection_receipt(repository)
-        projection = comparator_selection_projection(receipt)
+        checkpoint_path = (
+            repository
+            / "artifacts/study/development/competition-reconstruction/checkpoint.json"
+        )
+        expected_checkpoint: object = None
+        if checkpoint_path.is_file():
+            checkpoint_raw, _checkpoint_binding = _stable_file_bytes(
+                checkpoint_path,
+                "base reconstruction checkpoint mode",
+            )
+            checkpoint_value = json.loads(
+                checkpoint_raw.decode("utf-8"),
+                parse_constant=_reject_json_constant,
+                object_pairs_hook=_unique_json_object,
+            )
+            if (
+                isinstance(checkpoint_value, Mapping)
+                and checkpoint_value.get("identity_mode") == "direct-v1"
+            ):
+                expected_checkpoint = checkpoint_path
+        return validate_comparator_selection_object(
+            repository,
+            value,
+            expected_checkpoint=expected_checkpoint,
+        )
     except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
         raise EvaluationManifestError(
             "comparator selection evidence failed validation"
         ) from error
-    if not direct_equal(value, comparator_selection_projection_value(projection)):
-        raise EvaluationManifestError("comparator selection evidence differs")
-    return projection
 
 
 def validate_selection_evaluation_manifest(

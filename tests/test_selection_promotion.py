@@ -5,9 +5,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from types import SimpleNamespace
+from functools import lru_cache
 
 import pytest
 
@@ -32,6 +34,38 @@ def _write_canonical(path: Path, value: object) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+@lru_cache(maxsize=1)
+def _valid_comparator_selection() -> dict[str, object]:
+    """Reuse Task 11's complete synthetic receipt at promotion boundaries."""
+
+    path = Path(__file__).with_name("test_comparator_tuning.py")
+    spec = importlib.util.spec_from_file_location("_promotion_task11_factory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registry = module.smoke_registry.__wrapped__()
+    authority = module.smoke_authority.__wrapped__(registry)
+    bound = module.smoke_bound_rows.__wrapped__(registry, authority)
+    outcomes = module.complete_smoke_outcomes.__wrapped__(bound)
+    fixture = module.complete_selection_fixture.__wrapped__(
+        registry,
+        authority,
+        bound,
+        outcomes,
+    )
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+        comparator_selection_projection_value,
+    )
+
+    receipt = build_comparator_selection_receipt(**fixture)
+    projection = comparator_selection_projection(receipt)
+    value = comparator_selection_projection_value(projection)
+    assert value["receipt"] == receipt
+    return value
+
+
 def _source_payload(through_version: str | None) -> dict[str, object]:
     from maskimpute_benchmark.protocol import canonical_sha256
 
@@ -41,18 +75,7 @@ def _source_payload(through_version: str | None) -> dict[str, object]:
         "count_score_manifest_sha256": "2" * 64,
         "retained_calibration_artifact_sha256": "3" * 64,
         "evaluation_manifest_sha256": "4" * 64,
-        "comparator_selection": {
-            "path": (
-                "artifacts/study/development/evaluation/comparator_selection.json"
-            ),
-            "receipt": {
-                "schema_version": 1,
-                "artifact_type": "synthetic-comparator-selection-receipt",
-            },
-            "selected_by_method": {},
-            "nonexecution_identity_by_method": {},
-            "ready_comparison_population_ids": ["observed", "capacity-matched-ae"],
-        },
+        "comparator_selection": json.loads(json.dumps(_valid_comparator_selection())),
         "records": [],
         "orthogonal_intervals": [],
     }
@@ -70,6 +93,10 @@ def _prepare_fake_stage(
     from maskimpute_benchmark.revisions import development_selection_stage_paths
 
     paths = development_selection_stage_paths(through_version)
+    for relative in ("study/methods.json", "study/comparator_tuning.json"):
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(relative), destination)
     source = _source_payload(through_version)
     comparator = source["comparator_selection"]
     assert isinstance(comparator, dict)
@@ -87,6 +114,61 @@ def _prepare_fake_stage(
         manifest,
     )
     return source, paths, source_file_sha, manifest_file_sha
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "selected_by_method",
+        "nonexecution_identity_by_method",
+        "ready_comparison_population_ids",
+    ),
+)
+def test_promotion_rejects_comparator_projection_tamper_with_unchanged_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+) -> None:
+    import maskimpute_benchmark.selection_promotion as promotion
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    source, paths, _source_file_sha, manifest_file_sha = _prepare_fake_stage(
+        repository,
+        None,
+    )
+    selection = source["comparator_selection"]
+    assert isinstance(selection, dict)
+    if field == "selected_by_method":
+        selection[field] = {"magic": {"forged": True}}
+    elif field == "nonexecution_identity_by_method":
+        selection[field] = {"magic": {"forged": True}}
+    else:
+        selection[field] = ["observed"]
+    unsigned = {key: value for key, value in source.items() if key != "result_sha256"}
+    source["result_sha256"] = canonical_sha256(unsigned)
+    source_file_sha = _write_canonical(
+        repository / paths.source_selection_input,
+        source,
+    )
+    monkeypatch.setattr(
+        promotion,
+        "attach_downstream_evidence_to_selection_result",
+        _fake_attachment(
+            repository,
+            source,
+            paths,
+            source_file_sha,
+            manifest_file_sha,
+        ),
+    )
+
+    with pytest.raises(
+        promotion.SelectionPromotionError,
+        match="comparator selection",
+    ):
+        promotion.promote_development_selection_input(repository, None)
 
 
 def _fake_attachment(
@@ -457,6 +539,10 @@ def test_latest_stage_missing_downstream_never_falls_back(
 
     repository = tmp_path / "repository"
     repository.mkdir()
+    for relative in ("study/methods.json", "study/comparator_tuning.json"):
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(relative), destination)
     base = development_selection_stage_paths(None)
     v28 = development_selection_stage_paths("v28")
     source = _source_payload("v28")

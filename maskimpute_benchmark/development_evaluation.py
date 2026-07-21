@@ -48,28 +48,44 @@ class DevelopmentEvaluationError(RuntimeError):
     """Raised when selection evidence is incomplete, inconsistent, or altered."""
 
 
+@dataclass(frozen=True, slots=True)
+class DirectReconstructionEvidence:
+    """Validated direct-v1 checkpoint plus its plain selected-map handoff."""
+
+    checkpoint_path: str
+    identity_mode: str
+    authority_revision: str
+    plan_snapshot: Mapping[str, object]
+    input_descriptors: tuple[object, ...]
+    records: tuple[Mapping[str, object], ...]
+    selected_by_method: Mapping[str, object]
+    comparator_receipt_bytes: bytes
+
+
 def project_direct_comparator_evidence(
     checkpoint_path: Path,
     plan: object,
     *,
+    repository: Path,
     registry: object,
     prepared_datasets: Mapping[str, PreparedDataset],
     comparator_reference: object,
     comparator_authority: object,
-    selected_rows: Sequence[object],
+    comparator_selection: object,
     runner_authority: object,
     datasets: Sequence[object],
-) -> dict[str, object]:
-    """Validate the production denominator and require a later selection receipt."""
+) -> DirectReconstructionEvidence:
+    """Validate direct-v1 evidence and cross its one selected-map boundary."""
 
     from .comparator_tuning import (
         AUTHORITY_REVISION,
         ComparatorAuthorityReference,
-        ComparatorConfiguration,
         ComparatorTuningError,
         ComparatorTuningAuthority,
+        validate_comparator_selection_object,
         validate_comparator_tuning_authority,
     )
+    from .direct_values import direct_equal, direct_json_value
     from .fair_comparator_checkpoint import DirectCheckpointStore
     from .fair_comparator_plan import (
         DirectCompetitionPlan,
@@ -85,6 +101,8 @@ def project_direct_comparator_evidence(
 
     if not isinstance(checkpoint_path, Path):
         raise TypeError("checkpoint_path must be a pathlib.Path")
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
     if not isinstance(plan, DirectCompetitionPlan):
         raise TypeError("plan must be a DirectCompetitionPlan")
     if not isinstance(registry, MethodRegistry):
@@ -102,9 +120,6 @@ def project_direct_comparator_evidence(
     dataset_values = tuple(datasets)
     if not all(isinstance(value, DatasetBinding) for value in dataset_values):
         raise TypeError("datasets must contain DatasetBinding values")
-    rows = tuple(selected_rows)
-    if not all(isinstance(row, ComparatorConfiguration) for row in rows):
-        raise TypeError("selected_rows must contain ComparatorConfiguration values")
     if plan.identity_mode != "direct-v1":
         raise DevelopmentEvaluationError("direct comparator identity mode differs")
     if (
@@ -159,12 +174,48 @@ def project_direct_comparator_evidence(
         raise DevelopmentEvaluationError(
             f"direct comparator checkpoint validation failed: {error}"
         ) from error
-    if report.comparator_selection_status != "complete_terminal_denominator":
+    if (
+        report.status != "completed"
+        or len(report.records) != report.planned_run_count
+        or report.comparator_selection_status != "complete_terminal_denominator"
+    ):
         raise DevelopmentEvaluationError(
             "direct comparator denominator is not terminal"
         )
-    raise DevelopmentEvaluationError(
-        "validated later comparator selection receipt is required for direct handoff"
+    try:
+        comparator_projection = validate_comparator_selection_object(
+            repository,
+            comparator_selection,
+            expected_checkpoint=checkpoint_path,
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise DevelopmentEvaluationError(
+            "direct comparator selection receipt differs"
+        ) from error
+    selection_value = comparator_selection
+    assert isinstance(selection_value, dict)
+    selection_receipt = selection_value["receipt"]
+    assert isinstance(selection_receipt, dict)
+    receipt_plan = selection_receipt.get("plan_snapshot")
+    receipt_inputs = selection_receipt.get("input_descriptors")
+    if not direct_equal(receipt_plan, report.plan_snapshot) or not direct_equal(
+        receipt_inputs,
+        direct_json_value(report.input_descriptors),
+    ):
+        raise DevelopmentEvaluationError(
+            "direct comparator receipt differs from the validated checkpoint"
+        )
+    selected = selection_value["selected_by_method"]
+    assert isinstance(selected, dict)
+    return DirectReconstructionEvidence(
+        checkpoint_path=checkpoint_path.name,
+        identity_mode=report.identity_mode,
+        authority_revision=report.authority_revision,
+        plan_snapshot=report.plan_snapshot,
+        input_descriptors=report.input_descriptors,
+        records=report.records,
+        selected_by_method=MappingProxyType(dict(selected)),
+        comparator_receipt_bytes=comparator_projection.receipt_bytes,
     )
 
 
@@ -1782,7 +1833,7 @@ def write_development_selection_artifacts(
     dataset_manifest_sha256: str,
     count_score_manifest_sha256: str,
     retained_calibration_artifact_sha256: str,
-    reconstruction: ReconstructionEvidence,
+    reconstruction: ReconstructionEvidence | DirectReconstructionEvidence,
     reconstruction_relative_directory: str,
     orthogonal: OrthogonalOutputEvidence,
     orthogonal_relative_directory: str,
@@ -1798,22 +1849,39 @@ def write_development_selection_artifacts(
     from .protocol import canonical_sha256
     from .comparator_tuning import (
         ComparatorSelectionProjection,
+        ComparatorTuningError,
         comparator_selection_projection_value,
+        validate_comparator_selection_object,
     )
     from .direct_values import direct_json_value
 
     if not isinstance(repository, Path):
         raise TypeError("repository must be a pathlib.Path")
     root = repository.absolute()
-    if not isinstance(reconstruction, ReconstructionEvidence):
-        raise TypeError("reconstruction must be ReconstructionEvidence")
+    if not isinstance(comparator_projection, ComparatorSelectionProjection):
+        raise TypeError("comparator_projection must be a ComparatorSelectionProjection")
+    try:
+        comparator_selection = comparator_selection_projection_value(
+            comparator_projection
+        )
+        canonical_comparator_projection = validate_comparator_selection_object(
+            root,
+            comparator_selection,
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise DevelopmentEvaluationError(
+            "comparator selection object failed complete validation"
+        ) from error
+    comparator_receipt_bytes = canonical_comparator_projection.receipt_bytes
+    if not isinstance(
+        reconstruction,
+        (ReconstructionEvidence, DirectReconstructionEvidence),
+    ):
+        raise TypeError("reconstruction evidence has an unsupported schema")
     if not isinstance(orthogonal, OrthogonalOutputEvidence):
         raise TypeError("orthogonal must be OrthogonalOutputEvidence")
     if not isinstance(sources, RealSourceEvidence):
         raise TypeError("sources must be RealSourceEvidence")
-    if not isinstance(comparator_projection, ComparatorSelectionProjection):
-        raise TypeError("comparator_projection must be a ComparatorSelectionProjection")
-    comparator_selection = comparator_selection_projection_value(comparator_projection)
     for name, value in (
         ("dataset_manifest_sha256", dataset_manifest_sha256),
         ("count_score_manifest_sha256", count_score_manifest_sha256),
@@ -1843,17 +1911,55 @@ def write_development_selection_artifacts(
         PurePosixPath(reconstruction_relative_directory)
         / reconstruction.checkpoint_path
     )
-    _verify_bound_repository_file(
-        root,
-        checkpoint_relative,
-        reconstruction.checkpoint_file_sha256,
-        "reconstruction checkpoint",
-    )
-    for binding in reconstruction.raw_artifacts:
-        relative = str(PurePosixPath(reconstruction_relative_directory) / binding.path)
+    if isinstance(reconstruction, ReconstructionEvidence):
         _verify_bound_repository_file(
-            root, relative, binding.file_sha256, f"reconstruction {binding.kind}"
+            root,
+            checkpoint_relative,
+            reconstruction.checkpoint_file_sha256,
+            "reconstruction checkpoint",
         )
+        for binding in reconstruction.raw_artifacts:
+            relative = str(
+                PurePosixPath(reconstruction_relative_directory) / binding.path
+            )
+            _verify_bound_repository_file(
+                root, relative, binding.file_sha256, f"reconstruction {binding.kind}"
+            )
+        reconstruction_manifest = {
+            "checkpoint_path": checkpoint_relative,
+            "checkpoint_file_sha256": reconstruction.checkpoint_file_sha256,
+            "checkpoint_sha256": reconstruction.checkpoint_sha256,
+            "plan_sha256": reconstruction.plan_sha256,
+            "input_hashes": dict(reconstruction.input_hashes),
+            "raw_artifacts": [
+                {
+                    **asdict(value),
+                    "path": str(
+                        PurePosixPath(reconstruction_relative_directory) / value.path
+                    ),
+                }
+                for value in reconstruction.raw_artifacts
+            ],
+        }
+    else:
+        checkpoint_file = _repository_file(
+            root,
+            checkpoint_relative,
+            "direct reconstruction checkpoint",
+        )
+        _checkpoint_raw, checkpoint_file_sha256 = _read_stable_bytes(
+            checkpoint_file,
+            "direct reconstruction checkpoint",
+        )
+        reconstruction_manifest = {
+            "checkpoint_path": checkpoint_relative,
+            "checkpoint_file_sha256": checkpoint_file_sha256,
+            "checkpoint_sha256": checkpoint_file_sha256,
+            "identity_mode": reconstruction.identity_mode,
+            "authority_revision": reconstruction.authority_revision,
+            "plan_snapshot": direct_json_value(reconstruction.plan_snapshot),
+            "input_descriptors": direct_json_value(reconstruction.input_descriptors),
+        }
     orthogonal_manifest_relative = str(
         PurePosixPath(orthogonal_relative_directory) / orthogonal.manifest_path.name
     )
@@ -1936,22 +2042,7 @@ def write_development_selection_artifacts(
             "file_sha256": retained_calibration_artifact_sha256,
         },
         "comparator_selection": comparator_selection,
-        "reconstruction": {
-            "checkpoint_path": checkpoint_relative,
-            "checkpoint_file_sha256": reconstruction.checkpoint_file_sha256,
-            "checkpoint_sha256": reconstruction.checkpoint_sha256,
-            "plan_sha256": reconstruction.plan_sha256,
-            "input_hashes": dict(reconstruction.input_hashes),
-            "raw_artifacts": [
-                {
-                    **asdict(value),
-                    "path": str(
-                        PurePosixPath(reconstruction_relative_directory) / value.path
-                    ),
-                }
-                for value in reconstruction.raw_artifacts
-            ],
-        },
+        "reconstruction": reconstruction_manifest,
         "orthogonal": {
             "manifest_path": orthogonal_manifest_relative,
             "manifest_file_sha256": orthogonal.manifest_file_sha256,
@@ -1980,6 +2071,19 @@ def write_development_selection_artifacts(
     evaluation_file_sha = _publish_bound_file(
         evaluation_path, _canonical_json_bytes(evaluation_payload) + b"\n"
     )
+    try:
+        after_evaluation = validate_comparator_selection_object(
+            root,
+            comparator_selection,
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise DevelopmentEvaluationError(
+            "comparator selection changed during evaluation publication"
+        ) from error
+    if after_evaluation.receipt_bytes != comparator_receipt_bytes:
+        raise DevelopmentEvaluationError(
+            "comparator selection receipt changed during evaluation publication"
+        )
     result_core = {
         **evidence_core,
         "evaluation_manifest_sha256": evaluation_file_sha,
@@ -1991,16 +2095,16 @@ def write_development_selection_artifacts(
         "development selection input",
     )
     _publish_bound_file(result_path, _canonical_json_bytes(result_payload) + b"\n")
-    receipt_path = _repository_file(
-        root,
-        str(comparator_selection["path"]),
-        "comparator selection receipt",
-    )
-    receipt_raw, _receipt_binding = _read_stable_bytes(
-        receipt_path,
-        "comparator selection receipt",
-    )
-    if receipt_raw != comparator_projection.receipt_bytes:
+    try:
+        after_result = validate_comparator_selection_object(
+            root,
+            comparator_selection,
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise DevelopmentEvaluationError(
+            "comparator selection changed during selection input publication"
+        ) from error
+    if after_result.receipt_bytes != comparator_receipt_bytes:
         raise DevelopmentEvaluationError(
             "comparator selection receipt changed during selection input publication"
         )
@@ -2616,21 +2720,17 @@ def build_development_selection_input(
     from .methods import load_method_registry
     from .comparator_tuning import (
         comparator_selection_projection,
+        comparator_selection_projection_value,
         load_comparator_selection_receipt,
     )
     from .runner import (
-        build_competition_plan,
+        build_fair_comparator_plan,
         load_prepared_development_panel,
         load_runner_authority,
     )
     from .selection import load_publication_execution_authority
 
     root = repository.resolve(strict=True)
-    module_root = Path(__file__).resolve().parents[1]
-    if root != module_root:
-        raise DevelopmentEvaluationError(
-            "publication selection input must be built in the active repository"
-        )
     selection = load_publication_execution_authority()
     runner_authority = load_runner_authority()
     bindings, prepared = load_prepared_development_panel(runner_authority)
@@ -2642,28 +2742,52 @@ def build_development_selection_input(
         expected_checkpoint=checkpoint_directory / "checkpoint.json",
     )
     comparator_projection = comparator_selection_projection(comparator_receipt)
+    comparator_selection = comparator_selection_projection_value(comparator_projection)
     checkpoint_payload, _ = _strict_json(
         checkpoint_directory / "checkpoint.json", "reconstruction checkpoint"
     )
-    checkpoint_inputs = checkpoint_payload.get("input_hashes")
-    if not isinstance(checkpoint_inputs, dict):
-        raise DevelopmentEvaluationError("checkpoint input hashes are invalid")
-    environment_sha = checkpoint_inputs.get("execution_environment_sha256")
-    if not isinstance(environment_sha, str):
+    if checkpoint_payload.get("identity_mode") != "direct-v1":
         raise DevelopmentEvaluationError(
-            "checkpoint execution environment binding is absent"
+            "base reconstruction checkpoint is not direct-v1"
         )
+    snapshot = checkpoint_payload.get("plan_snapshot")
+    if not isinstance(snapshot, Mapping):
+        raise DevelopmentEvaluationError("direct checkpoint plan snapshot is invalid")
+    smoke_receipt = snapshot.get("comparator_smoke_receipt")
+    smoke_bytes_value = snapshot.get("comparator_smoke_receipt_bytes")
+    if not isinstance(smoke_receipt, Mapping) or not isinstance(
+        smoke_bytes_value,
+        list,
+    ):
+        raise DevelopmentEvaluationError(
+            "direct checkpoint smoke receipt evidence is incomplete"
+        )
+    try:
+        smoke_bytes = bytes(smoke_bytes_value)
+    except (TypeError, ValueError) as error:
+        raise DevelopmentEvaluationError(
+            "direct checkpoint smoke receipt bytes are invalid"
+        ) from error
     registry = load_method_registry(root / "study/methods.json")
-    plan = build_competition_plan(
+    plan = build_fair_comparator_plan(
         registry,
         bindings,
         runner_authority,
-        execution_environment_sha256=environment_sha,
+        tuple(prepared.values()),
+        _comparator_smoke_receipt=smoke_receipt,
+        _comparator_smoke_receipt_bytes=smoke_bytes,
     )
-    reconstruction = load_completed_reconstruction_checkpoint(
-        checkpoint_directory,
+    reconstruction = project_direct_comparator_evidence(
+        checkpoint_directory / "checkpoint.json",
         plan,
+        repository=root,
+        registry=registry,
         prepared_datasets=prepared,
+        comparator_reference=runner_authority.comparator_tuning_reference,
+        comparator_authority=runner_authority.comparator_tuning,
+        comparator_selection=comparator_selection,
+        runner_authority=runner_authority,
+        datasets=bindings,
     )
     reconstruction_bundle = build_reconstruction_selection_records(
         reconstruction,
@@ -2722,11 +2846,14 @@ def build_development_selection_input(
         real_panel.tung,
         configuration_ids,
     )
+    manifest_values = {binding.manifest_sha256 for binding in bindings}
+    if len(manifest_values) != 1:
+        raise DevelopmentEvaluationError(
+            "development dataset manifest authority is inconsistent"
+        )
     return write_development_selection_artifacts(
         root,
-        dataset_manifest_sha256=str(
-            reconstruction.input_hashes["dataset_manifest_sha256"]
-        ),
+        dataset_manifest_sha256=next(iter(manifest_values)),
         count_score_manifest_sha256=count_score_sha,
         retained_calibration_artifact_sha256=calibration_sha,
         reconstruction=reconstruction,
@@ -2974,14 +3101,16 @@ _SELECTION_FAILED_STATUS = {
 def reconstruction_selection_method(
     run: Mapping[str, object],
     declared: set[str],
-    comparator_projection: object,
+    comparator_projection: object | None = None,
 ) -> str | None:
     """Return the exact selection identity for one reconstruction source run."""
 
     from .comparator_tuning import ComparatorSelectionProjection
     from .direct_values import direct_equal, direct_json_value
 
-    if not isinstance(comparator_projection, ComparatorSelectionProjection):
+    if comparator_projection is not None and not isinstance(
+        comparator_projection, ComparatorSelectionProjection
+    ):
         raise TypeError("comparator_projection must be a ComparatorSelectionProjection")
     identity = run.get("identity")
     if not isinstance(identity, Mapping):
@@ -2993,8 +3122,11 @@ def reconstruction_selection_method(
             and configuration_id in declared
         ):
             return configuration_id
-        comparator_ids = set(comparator_projection.selected_by_method) | set(
-            comparator_projection.nonexecution_identity_by_method
+        comparator_ids = (
+            set()
+            if comparator_projection is None
+            else set(comparator_projection.selected_by_method)
+            | set(comparator_projection.nonexecution_identity_by_method)
         )
         return (
             method_id
@@ -3014,6 +3146,8 @@ def reconstruction_selection_method(
     method_id = method.get("method_id") if isinstance(method, Mapping) else None
     if not isinstance(method_id, str) or method_id not in declared:
         return None
+    if comparator_projection is None:
+        return method_id
     selected = comparator_projection.selected_by_method.get(method_id)
     if selected is None:
         return method_id if method_id in {"observed", "capacity-matched-ae"} else None
@@ -3074,8 +3208,10 @@ def _read_evaluator_output(
 
 
 def _null_de_entropy_sha256(
-    evidence: ReconstructionEvidence,
+    evidence: ReconstructionEvidence | DirectReconstructionEvidence,
     run: Mapping[str, object],
+    checkpoint_directory: Path,
+    direct_checkpoint_binding: str | None = None,
 ) -> str:
     """Derive assignment entropy only after the complete checkpoint is sealed."""
 
@@ -3087,7 +3223,15 @@ def _null_de_entropy_sha256(
         raise DevelopmentEvaluationError("null-DE run identity is incomplete")
     digest = hashlib.sha256()
     digest.update(b"maskimpute-null-de-post-execution-entropy-v1\0")
-    digest.update(evidence.checkpoint_sha256.encode("ascii"))
+    if isinstance(evidence, ReconstructionEvidence):
+        checkpoint_binding = evidence.checkpoint_sha256
+    else:
+        if direct_checkpoint_binding is None:
+            raise DevelopmentEvaluationError(
+                "direct reconstruction publication binding is absent"
+            )
+        checkpoint_binding = direct_checkpoint_binding
+    digest.update(checkpoint_binding.encode("ascii"))
     digest.update(b"\0")
     digest.update(mechanism.encode("utf-8"))
     digest.update(b"\0")
@@ -3113,7 +3257,7 @@ def _null_de_unavailable_reason(error: ValueError) -> str:
 
 
 def build_reconstruction_selection_records(
-    evidence: ReconstructionEvidence,
+    evidence: ReconstructionEvidence | DirectReconstructionEvidence,
     *,
     checkpoint_directory: Path,
     prepared_datasets: Mapping[str, object],
@@ -3127,9 +3271,13 @@ def build_reconstruction_selection_records(
     from .runner import PreparedDataset, method_input_sha256
     from .selection import MethodDeclaration
     from .comparator_tuning import ComparatorSelectionProjection
+    from .direct_values import direct_equal, direct_json_value
 
-    if not isinstance(evidence, ReconstructionEvidence):
-        raise TypeError("evidence must be ReconstructionEvidence")
+    if not isinstance(
+        evidence,
+        (ReconstructionEvidence, DirectReconstructionEvidence),
+    ):
+        raise TypeError("reconstruction evidence has an unsupported schema")
     if not isinstance(checkpoint_directory, Path):
         raise TypeError("checkpoint_directory must be a pathlib.Path")
     if not isinstance(comparator_projection, ComparatorSelectionProjection):
@@ -3142,6 +3290,21 @@ def build_reconstruction_selection_records(
         set(method_bindings) | set(comparator_projection.selected_by_method)
     ):
         raise DevelopmentEvaluationError("selection method bindings are incomplete")
+    if isinstance(evidence, DirectReconstructionEvidence):
+        expected_selected = {
+            method_id: direct_json_value(selected.configuration)
+            for method_id, selected in comparator_projection.selected_by_method.items()
+        }
+        if not direct_equal(evidence.selected_by_method, expected_selected):
+            raise DevelopmentEvaluationError(
+                "direct-to-legacy selected comparator handoff differs"
+            )
+        _checkpoint_raw, direct_checkpoint_binding = _read_stable_bytes(
+            checkpoint_directory / evidence.checkpoint_path,
+            "direct reconstruction checkpoint",
+        )
+    else:
+        direct_checkpoint_binding = None
     records: list[dict[str, object]] = []
     audits: list[dict[str, object]] = []
     null_designs: dict[str, tuple[str, np.ndarray | None, str, str, str | None]] = {}
@@ -3232,7 +3395,12 @@ def build_reconstruction_selection_records(
             records.append({**common, "metric": name, "value": value, "status": status})
 
         run_status = _selection_status(run.get("status"))
-        entropy_sha256 = _null_de_entropy_sha256(evidence, run)
+        entropy_sha256 = _null_de_entropy_sha256(
+            evidence,
+            run,
+            checkpoint_directory,
+            direct_checkpoint_binding,
+        )
         design = null_designs.get(dataset_id)
         if design is None:
             evaluator = prepared.evaluator_dataset
@@ -3313,18 +3481,29 @@ def build_reconstruction_selection_records(
                 reason=design_reason or "null_de_design_unavailable",
             )
         else:
-            output = _read_evaluator_output(checkpoint_directory, run)
-            if output.shape != prepared.method_input.shape:
-                raise DevelopmentEvaluationError(
-                    f"evaluator output shape mismatches {dataset_id}"
+            if isinstance(evidence, DirectReconstructionEvidence):
+                null_result = NullDEResult(
+                    status="unavailable",
+                    fpr=None,
+                    nominal_alpha=NULL_DE_ALPHA,
+                    n_tested_genes=int(fixed_mask.sum()),
+                    split_sha256=split_sha256,
+                    gene_mask_sha256=gene_mask_sha256,
+                    reason="direct_evaluator_output_not_retained",
                 )
-            null_result = evaluate_null_de_fpr(
-                output,
-                prepared.method_input.obs_ids,
-                tuple(prepared.evaluator_dataset.obs["group"].astype(str)),
-                fixed_gene_mask=fixed_mask,
-                entropy_sha256=entropy_sha256,
-            )
+            else:
+                output = _read_evaluator_output(checkpoint_directory, run)
+                if output.shape != prepared.method_input.shape:
+                    raise DevelopmentEvaluationError(
+                        f"evaluator output shape mismatches {dataset_id}"
+                    )
+                null_result = evaluate_null_de_fpr(
+                    output,
+                    prepared.method_input.obs_ids,
+                    tuple(prepared.evaluator_dataset.obs["group"].astype(str)),
+                    fixed_gene_mask=fixed_mask,
+                    entropy_sha256=entropy_sha256,
+                )
         records.append(
             {
                 **common,

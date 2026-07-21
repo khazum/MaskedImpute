@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -27,14 +30,93 @@ def _record(method: str, metric: str = "mse", *, value: float = 1.0):
     }
 
 
+@lru_cache(maxsize=1)
 def _comparator_selection() -> dict[str, object]:
-    return {
-        "path": "artifacts/study/development/evaluation/comparator_selection.json",
-        "receipt": {"schema_version": 1, "artifact_type": "synthetic"},
-        "selected_by_method": {},
-        "nonexecution_identity_by_method": {},
-        "ready_comparison_population_ids": ["observed", "capacity-matched-ae"],
-    }
+    path = Path(__file__).with_name("test_comparator_tuning.py")
+    spec = importlib.util.spec_from_file_location("_revision_task11_factory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registry = module.smoke_registry.__wrapped__()
+    authority = module.smoke_authority.__wrapped__(registry)
+    bound = module.smoke_bound_rows.__wrapped__(registry, authority)
+    outcomes = module.complete_smoke_outcomes.__wrapped__(bound)
+    fixture = module.complete_selection_fixture.__wrapped__(
+        registry,
+        authority,
+        bound,
+        outcomes,
+    )
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+        comparator_selection_projection_value,
+    )
+
+    receipt = build_comparator_selection_receipt(**fixture)
+    return comparator_selection_projection_value(
+        comparator_selection_projection(receipt)
+    )
+
+
+def _write_comparator_selection_authority(repository: Path) -> None:
+    for relative in ("study/methods.json", "study/comparator_tuning.json"):
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(relative), destination)
+    selection = _comparator_selection()
+    receipt_path = repository / str(selection["path"])
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(
+        json.dumps(selection["receipt"], sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "selected_by_method",
+        "nonexecution_identity_by_method",
+        "ready_comparison_population_ids",
+    ),
+)
+def test_schema3_writer_rejects_comparator_projection_tamper_with_unchanged_receipt(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    from maskimpute_benchmark.revision_evaluation import (
+        RevisionEvaluationError,
+        write_revision_selection_artifacts,
+    )
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_comparator_selection_authority(repository)
+    tampered = json.loads(json.dumps(_comparator_selection()))
+    if field == "selected_by_method":
+        tampered[field] = {"magic": {"forged": True}}
+    elif field == "nonexecution_identity_by_method":
+        tampered[field] = {"magic": {"forged": True}}
+    else:
+        tampered[field] = ["observed"]
+
+    with pytest.raises(RevisionEvaluationError, match="comparator selection"):
+        write_revision_selection_artifacts(
+            repository,
+            through_version="v28",
+            dataset_manifest_sha256="1" * 64,
+            count_score_manifest_sha256="2" * 64,
+            retained_calibration_artifact_sha256="3" * 64,
+            base_records=(),
+            base_intervals=(),
+            base_evaluation_manifest_path=(
+                "artifacts/study/development/evaluation/evaluation_manifest.json"
+            ),
+            base_evaluation_manifest_sha256="4" * 64,
+            comparator_selection=tampered,
+            stages=(),
+        )
 
 
 def _interval(configuration: str, endpoint: str = "rna_protein_concordance"):
@@ -116,9 +198,10 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
 
     repository = tmp_path / "repo"
     repository.mkdir()
+    _write_comparator_selection_authority(repository)
     paths = revision_stage_paths("v28")
     revision_path = repository / paths.revision_authority
-    revision_path.parent.mkdir(parents=True)
+    revision_path.parent.mkdir(parents=True, exist_ok=True)
     revision_path.write_bytes(Path(paths.revision_authority).read_bytes())
     count_score_path = (
         repository / "artifacts/study/development/count_scores/manifest.json"

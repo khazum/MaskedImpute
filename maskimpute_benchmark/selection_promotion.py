@@ -331,38 +331,26 @@ def _read_source(
     return source, file_sha256
 
 
-def _read_embedded_comparator_receipt(
+def _validate_complete_comparator_selection(
     repository: Path,
     source: dict[str, Any],
-) -> bytes:
-    """Reread and byte-compare the complete embedded direct receipt."""
+) -> object:
+    """Reload and recompute the complete Task 11 selection handoff."""
 
-    selection = source.get("comparator_selection")
-    if not isinstance(selection, dict):
-        raise SelectionPromotionError("source comparator selection is invalid")
-    path_value = selection.get("path")
-    receipt = selection.get("receipt")
-    if not isinstance(path_value, str) or type(receipt) is not dict:
-        raise SelectionPromotionError("source comparator selection is invalid")
-    path = _fixed_repository_path(
-        repository,
-        path_value,
-        "comparator selection receipt",
+    from .comparator_tuning import (
+        ComparatorTuningError,
+        validate_comparator_selection_object,
     )
+
     try:
-        with _pinned_parent(path, "comparator selection receipt") as parent:
-            raw = _read_unique_regular_at(
-                parent,
-                path.name,
-                "comparator selection receipt",
-            )
-    except SelectionPromotionError as error:
+        return validate_comparator_selection_object(
+            repository,
+            source.get("comparator_selection"),
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
         raise SelectionPromotionError(
-            "comparator selection receipt is invalid"
+            "source comparator selection failed complete validation"
         ) from error
-    if raw != _canonical_json_bytes(receipt):
-        raise SelectionPromotionError("comparator selection receipt differs")
-    return raw
 
 
 def _validate_promoted_payload(
@@ -440,7 +428,8 @@ def promote_development_selection_input(
         )
     paths = development_selection_stage_paths(through_version)
     source, source_file_sha = _read_source(root, through_version)
-    comparator_receipt_bytes = _read_embedded_comparator_receipt(root, source)
+    comparator_projection = _validate_complete_comparator_selection(root, source)
+    comparator_receipt_bytes = comparator_projection.receipt_bytes
     try:
         attached = attach_downstream_evidence_to_selection_result(
             source,
@@ -476,10 +465,10 @@ def promote_development_selection_input(
         raise SelectionPromotionError(
             "published selection-complete input differs after publication"
         )
+    published_projection = _validate_complete_comparator_selection(root, published)
     if (
         published.get("comparator_selection") != source["comparator_selection"]
-        or _read_embedded_comparator_receipt(root, published)
-        != comparator_receipt_bytes
+        or published_projection.receipt_bytes != comparator_receipt_bytes
     ):
         raise SelectionPromotionError(
             "published comparator selection differs after publication"

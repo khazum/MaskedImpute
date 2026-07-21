@@ -3063,6 +3063,36 @@ def comparator_selection_projection_value(
     }
 
 
+def validate_comparator_selection_object(
+    repository: Path,
+    value: object,
+    *,
+    expected_checkpoint: object = None,
+) -> ComparatorSelectionProjection:
+    """Reload Task 11 authority and compare the complete five-field handoff."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    if type(value) is not dict or set(value) != {
+        "path",
+        "receipt",
+        "selected_by_method",
+        "nonexecution_identity_by_method",
+        "ready_comparison_population_ids",
+    }:
+        raise ComparatorTuningError("complete comparator selection object is invalid")
+    receipt = load_comparator_selection_receipt(
+        repository,
+        expected_checkpoint=expected_checkpoint,
+    )
+    projection = comparator_selection_projection(receipt)
+    if not direct_equal(value, comparator_selection_projection_value(projection)):
+        raise ComparatorTuningError(
+            "complete comparator selection object differs from its receipt"
+        )
+    return projection
+
+
 @dataclass(frozen=True, slots=True)
 class ComparatorSmokeInputDescriptor:
     """Complete readable description of the fixed truth-free smoke fixture."""

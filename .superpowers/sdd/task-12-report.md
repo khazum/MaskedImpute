@@ -129,3 +129,91 @@ Compilation and whitespace checks exited zero without output.
 No blocking Task 12 concern remains. The production scientific build path was
 not executed, as expressly prohibited; its fixed comparator receipt is loaded
 with the exact checkpoint before reconstruction evidence is accepted.
+
+## Controller review fixes
+
+### Findings resolved
+
+The independent review's Critical production-route finding is fixed. The
+schema-2 builder now loads the fixed Task 11 receipt against the exact base
+checkpoint, reconstructs the complete `direct-v1` fair-comparator plan from its
+embedded smoke receipt, validates all 2,896 terminal rows through
+`DirectCheckpointStore`, and performs one explicit selected-map handoff into
+legacy publication records. It no longer reads direct `input_hashes`, invokes
+legacy `build_competition_plan`, or loads the base through legacy
+`CheckpointStore`. Independent evaluation-manifest replay follows the same
+typed direct route and compares the full `plan_snapshot` and
+`input_descriptors`; revision assembly revalidates that direct base before its
+separate legacy candidate-only stages.
+
+The Important publication-boundary finding is also fixed. One shared
+`validate_comparator_selection_object` boundary now fixed-loads the canonical
+Task 11 receipt, semantically recomputes its projection, and directly compares
+the exact five-field selection object. Schema-2, schema-3/revision, promotion,
+evaluation-manifest, and final selection consumers use this validator.
+Schema-2 and schema-3 writers revalidate it after each artifact write;
+promotion revalidates the published object; every boundary requires unchanged
+full canonical receipt bytes.
+
+The adjacent downstream direct adapter was migrated from the obsolete
+`selected_rows` call shape to the complete receipt-backed selection object.
+Because direct checkpoints intentionally do not retain evaluator matrices, a
+valid grouped null-DE design now emits an explicit fail-closed `unavailable`
+row/audit with reason `direct_evaluator_output_not_retained` instead of
+aborting schema-2 publication or fabricating a numeric value. Scientific
+selection gates therefore remain blocked when that numerical evidence is not
+retained.
+
+### Controller-fix TDD evidence
+
+- Promotion tampering of the selected map, nonexecution map, and ready
+  population initially produced three `DID NOT RAISE` failures; all three pass
+  after the shared validator was installed.
+- The same three unchanged-receipt mutations at schema-3 initially reached the
+  unrelated stage-denominator error; all three now fail at complete comparator
+  validation and the focused slice passes.
+- The schema-2 mutations initially reached the orthogonal boundary and failed
+  with a `TypeError`; all three now fail before publication and the focused
+  slice passes.
+- The complete direct checkpoint/receipt handoff was RED on the absent direct
+  reconstruction type and then GREEN. The real public schema-2 builder was RED
+  on its obsolete active-repository restriction and then GREEN through the
+  direct plan/store route.
+- Forcing the direct manifest dispatcher off produced the expected legacy
+  closed-schema failure; restoring direct dispatch passed independent replay.
+- The downstream receipt-backed adapter test was RED on the obsolete function
+  signature and then passed together with the required-boundary signature
+  check (`2 passed in 2.08s`).
+- The grouped direct null-DE regression was RED on the former hard exception
+  (`1 failed in 98.13s`) and GREEN with explicit unavailable evidence
+  (`1 passed in 98.00s`).
+- The direct manifest fixed-path assertion was RED with `checkpoint.json` and
+  GREEN with the fixed repository-relative binding (`1 passed in 134.34s`).
+
+### Final controller-fix verification
+
+```text
+Required development/authority/candidate/promotion suite:
+175 passed in 889.69s (0:14:49)
+
+Direct comparator/plan/checkpoint suites:
+243 passed in 273.27s (0:04:33)
+
+Complete downstream-evidence suite:
+89 passed in 19.53s
+
+Revision-evaluation suite:
+7 passed in 78.64s (0:01:18)
+
+Scoped direct audits plus downstream direct boundary:
+4 passed in 3.38s
+
+Ruff check: All checks passed!
+Ruff format --check: 12 files already formatted
+python -m compileall -q maskimpute_benchmark scripts tests: exit 0
+git diff --check: exit 0
+```
+
+No comparator, smoke, tuning, evaluator, competition, final, or other real
+scientific workload ran. All new evidence and all verification fixtures were
+synthetic. The progress ledger was not edited.

@@ -8,6 +8,7 @@ import io
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -467,378 +468,473 @@ def _direct_production_arguments(prepared: dict[str, object]) -> dict[str, objec
     }
 
 
-def test_direct_checkpoint_projects_full_selected_comparator_payloads(
+def _write_complete_direct_selection_repository(
     tmp_path: Path,
-) -> None:
-    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
-    from maskimpute_benchmark.development_evaluation import (
-        DevelopmentEvaluationError,
-        project_direct_comparator_evidence,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+        comparator_selection_projection_value,
+    )
+    from maskimpute_benchmark.fair_comparator_checkpoint import DirectCheckpointStore
+    from maskimpute_benchmark.runner import (
+        load_runner_authority,
+        validate_development_manifest_payload,
     )
 
-    (
+    task11, fixture = _task11_complete_selection_fixture()
+    registry = fixture["registry"]
+    authority = fixture["authority"]
+    bound = task11.smoke_bound_rows.__wrapped__(registry, authority)
+    outcomes = task11.complete_smoke_outcomes.__wrapped__(bound)
+    plan = task11._complete_selection_plan(registry, authority, outcomes, bound)
+    datasets = validate_development_manifest_payload(
+        task11._selection_manifest_payload()
+    )
+    prepared = {
+        binding.dataset_id: task11._selection_prepared_dataset(binding, ordinal)
+        for ordinal, binding in enumerate(datasets, start=1)
+    }
+    runner_authority = replace(
+        load_runner_authority(),
+        count_score_manifest_status="ready",
+        count_score_manifest_sha256="8" * 64,
+        retained_calibration_status="ready",
+        retained_calibration_sha256="9" * 64,
+    )
+    import maskimpute_benchmark.fair_comparator_plan as direct_plan
+
+    monkeypatch.setattr(
+        direct_plan,
+        "load_runner_authority",
+        lambda: runner_authority,
+    )
+    records = json.loads(json.dumps(fixture["checkpoint"]["records"]))
+    for record in records:
+        run = record["run"]
+        identity = run["identity"]
+        current = prepared[identity["dataset_id"]]
+        run.update(
+            excluded_cell_count=current.audit.excluded_cell_count,
+            excluded_cell_ids=list(current.audit.excluded_cell_ids),
+            retained_cell_count=current.audit.retained_cell_count,
+            retained_cell_ids=list(current.audit.retained_cell_ids),
+            retained_gene_count=current.method_input.shape[1],
+            observed_zero_count=int((current.method_input.counts == 0).sum()),
+        )
+        if identity["method"]["method_id"] != "maskimpute":
+            continue
+        reason = "adapter_not_registered"
+        run.update(status="unavailable", reason=reason)
+        run["stdout"]["terminal_reason"] = reason
+        run["stderr"]["terminal_reason"] = reason
+        for metric in record["metrics"]:
+            metric.update(
+                value=None,
+                n=0,
+                status="unavailable",
+                reason=reason,
+            )
+        record["p_pre_zero_evidence"] = {
+            "applicable": True,
+            "status": "unavailable",
+            "reason": reason,
+            "shape": None,
+            "dtype": None,
+            "encoding": None,
+            "path": None,
+            "compressed_byte_count": 0,
+        }
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    for relative in ("study/methods.json", "study/comparator_tuning.json"):
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(relative), destination)
+    checkpoint_path = (
+        repository
+        / "artifacts/study/development/competition-reconstruction/checkpoint.json"
+    )
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    report = DirectCheckpointStore(
+        checkpoint_path,
+        repository_root=checkpoint_path.parent,
+    ).write(
+        plan,
+        records,
+        registry=registry,
+        prepared_datasets=prepared,
+        authority=runner_authority,
+        datasets=datasets,
+    )
+    receipt = build_comparator_selection_receipt(
+        report.to_dict(),
+        authority=authority,
+        registry=registry,
+    )
+    projection = comparator_selection_projection(receipt)
+    receipt_path = (
+        repository / "artifacts/study/development/evaluation/comparator_selection.json"
+    )
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_bytes(projection.receipt_bytes)
+    return (
+        repository,
         checkpoint_path,
         plan,
         registry,
         prepared,
         authority,
-        selected_rows,
-    ) = _direct_projection_checkpoint(tmp_path)
-    with pytest.raises(DevelopmentEvaluationError, match="production"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            plan,
-            registry=registry,
-            prepared_datasets=prepared,
-            comparator_reference=ComparatorAuthorityReference(
-                path="study/comparator_tuning.json",
-                schema_version=authority.schema_version,
-                authority_revision=authority.authority_revision,
-            ),
-            comparator_authority=authority,
-            selected_rows=selected_rows,
-            **_direct_production_arguments(prepared),
-        )
+        runner_authority,
+        datasets,
+        comparator_selection_projection_value(projection),
+    )
 
 
-@pytest.mark.parametrize("selection", ("empty", "subset", "arbitrary-terminal"))
-def test_public_direct_handoff_requires_later_validated_selection_receipt(
+def test_direct_checkpoint_and_receipt_complete_selected_map_handoff(
     tmp_path: Path,
-    selection: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
     from maskimpute_benchmark.development_evaluation import (
-        DevelopmentEvaluationError,
+        DirectReconstructionEvidence,
         project_direct_comparator_evidence,
     )
 
-    checkpoint_path, plan, registry, prepared, authority, selected = (
-        _direct_projection_checkpoint(tmp_path)
-    )
-    if selection == "empty":
-        rows = ()
-    elif selection == "subset":
-        rows = selected
-    else:
-        rows = authority.configurations_for("magic")[1:2]
-
-    with pytest.raises(DevelopmentEvaluationError, match="production"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            plan,
-            registry=registry,
-            prepared_datasets=prepared,
-            comparator_reference=ComparatorAuthorityReference(
-                path="study/comparator_tuning.json",
-                schema_version=2,
-                authority_revision="fair-comparator-direct-v1",
-            ),
-            comparator_authority=authority,
-            selected_rows=rows,
-            **_direct_production_arguments(prepared),
-        )
-
-
-@pytest.mark.parametrize(
-    "statuses",
-    (("completed", "completed"), ("completed", "unavailable")),
-    ids=("all-completed", "mixed-completed-intrinsic-terminal"),
-)
-def test_direct_projection_accepts_completed_selected_configuration(
-    tmp_path: Path,
-    statuses: tuple[str, str],
-) -> None:
-    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
-    from maskimpute_benchmark.development_evaluation import (
-        DevelopmentEvaluationError,
-        project_direct_comparator_evidence,
-    )
-
-    checkpoint_path, plan, registry, prepared, authority, selected = (
-        _direct_projection_checkpoint_with_selected_statuses(tmp_path, statuses)
-    )
-
-    with pytest.raises(DevelopmentEvaluationError, match="production"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            plan,
-            registry=registry,
-            prepared_datasets=prepared,
-            comparator_reference=ComparatorAuthorityReference(
-                path="study/comparator_tuning.json",
-                schema_version=2,
-                authority_revision="fair-comparator-direct-v1",
-            ),
-            comparator_authority=authority,
-            selected_rows=selected,
-            **_direct_production_arguments(prepared),
-        )
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
     (
-        ("plan_sha256", "0" * 64),
-        ("selection_complete", True),
-        ("selection_receipt", {"selection_complete": True}),
-    ),
-)
-def test_direct_projection_rejects_mixed_or_caller_selection_claims(
-    tmp_path: Path,
-    field: str,
-    value: object,
-) -> None:
-    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
-    from maskimpute_benchmark.development_evaluation import (
-        DevelopmentEvaluationError,
-        project_direct_comparator_evidence,
-    )
-
-    checkpoint_path, plan, registry, prepared, authority, selected = (
-        _direct_projection_checkpoint(tmp_path)
-    )
-    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    payload[field] = value
-    checkpoint_path.write_text(
-        json.dumps(
-            payload,
-            allow_nan=False,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    reference = ComparatorAuthorityReference(
-        path="study/comparator_tuning.json",
-        schema_version=authority.schema_version,
-        authority_revision=authority.authority_revision,
-    )
-    with pytest.raises(DevelopmentEvaluationError, match="production"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            plan,
-            registry=registry,
-            prepared_datasets=prepared,
-            comparator_reference=reference,
-            comparator_authority=authority,
-            selected_rows=selected,
-            **_direct_production_arguments(prepared),
-        )
-
-
-def test_direct_projection_rejects_incomplete_comparator_denominator(
-    tmp_path: Path,
-) -> None:
-    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
-    from maskimpute_benchmark.development_evaluation import (
-        DevelopmentEvaluationError,
-        project_direct_comparator_evidence,
-    )
-    from maskimpute_benchmark.fair_comparator_checkpoint import DirectCheckpointStore
-
-    checkpoint_path, plan, registry, prepared, authority, selected = (
-        _direct_projection_checkpoint(tmp_path)
-    )
-    DirectCheckpointStore(checkpoint_path)._write_structural(
+        repository,
+        checkpoint_path,
         plan,
-        (),
+        registry,
+        prepared,
+        authority,
+        runner_authority,
+        datasets,
+        comparator_selection,
+    ) = _write_complete_direct_selection_repository(tmp_path, monkeypatch)
+    evidence = project_direct_comparator_evidence(
+        checkpoint_path,
+        plan,
+        repository=repository,
         registry=registry,
         prepared_datasets=prepared,
+        comparator_reference=runner_authority.comparator_tuning_reference,
+        comparator_authority=authority,
+        comparator_selection=comparator_selection,
+        runner_authority=runner_authority,
+        datasets=datasets,
     )
-    with pytest.raises(DevelopmentEvaluationError, match="production"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            plan,
-            registry=registry,
-            prepared_datasets=prepared,
-            comparator_reference=ComparatorAuthorityReference(
-                path="study/comparator_tuning.json",
-                schema_version=authority.schema_version,
-                authority_revision=authority.authority_revision,
-            ),
-            comparator_authority=authority,
-            selected_rows=selected,
-            **_direct_production_arguments(prepared),
-        )
+
+    assert isinstance(evidence, DirectReconstructionEvidence)
+    assert evidence.identity_mode == "direct-v1"
+    assert len(evidence.plan_snapshot["entries"]) == 2_896
+    assert len(evidence.records) == 2_896
+    assert evidence.selected_by_method == comparator_selection["selected_by_method"]
+    assert (
+        evidence.comparator_receipt_bytes
+        == (repository / str(comparator_selection["path"])).read_bytes()
+    )
 
 
-def test_direct_projection_requires_selected_row_in_terminal_comparator_entries(
+def test_direct_reconstruction_marks_unretained_null_de_output_unavailable(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
-    from maskimpute_benchmark.development_evaluation import (
-        DevelopmentEvaluationError,
-        project_direct_comparator_evidence,
-    )
-    from maskimpute_benchmark.fair_comparator_checkpoint import (
-        replay_direct_development_budget,
-    )
-
-    checkpoint_path, plan, registry, prepared, authority, _selected = (
-        _direct_projection_checkpoint(tmp_path)
-    )
-    selected = authority.configurations_for("magic")[2:3]
-    changed_plan = replace(plan, entries=plan.entries[:-1])
-    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    checkpoint["plan_snapshot"] = changed_plan.to_dict()
-    checkpoint["planned_run_count"] = len(changed_plan.entries)
-    checkpoint["records"] = checkpoint["records"][:-1]
-    checkpoint["status"] = "completed"
-    checkpoint["comparator_selection_status"] = "complete_terminal_denominator"
-    checkpoint["budget"] = replay_direct_development_budget(
-        registry,
-        changed_plan.entries,
-        checkpoint["records"],
-    ).to_dict()
-    checkpoint_path.write_text(
-        json.dumps(
-            checkpoint,
-            allow_nan=False,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(DevelopmentEvaluationError, match="production"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            changed_plan,
-            registry=registry,
-            prepared_datasets=prepared,
-            comparator_reference=ComparatorAuthorityReference(
-                path="study/comparator_tuning.json",
-                schema_version=2,
-                authority_revision="fair-comparator-direct-v1",
-            ),
-            comparator_authority=authority,
-            selected_rows=selected,
-            **_direct_production_arguments(prepared),
-        )
-
-
-def test_direct_projection_rejects_payload_plan_record_and_authority_drift(
-    tmp_path: Path,
-) -> None:
-    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
-    from maskimpute_benchmark.development_evaluation import (
-        DevelopmentEvaluationError,
-        project_direct_comparator_evidence,
-    )
-
-    checkpoint_path, plan, registry, prepared, authority, selected = (
-        _direct_projection_checkpoint(tmp_path)
-    )
-    reference = ComparatorAuthorityReference(
-        path="study/comparator_tuning.json",
-        schema_version=authority.schema_version,
-        authority_revision=authority.authority_revision,
-    )
-    configuration = plan.configurations[0]
-    changed_payload = tuple(
-        (name, 7 if name == "knn" else value) for name, value in configuration.payload
-    )
-    changed_configuration = replace(configuration, payload=changed_payload)
-    changed_identity = replace(
-        plan.entries[0].identity,
-        configuration_payload=changed_payload,
-    )
-    changed_entry = replace(plan.entries[0], identity=changed_identity)
-    changed_plan = replace(
-        plan,
-        configurations=(changed_configuration, *plan.configurations[1:]),
-        entries=(changed_entry, *plan.entries[1:]),
-    )
-    with pytest.raises(DevelopmentEvaluationError, match="production"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            changed_plan,
-            registry=registry,
-            prepared_datasets=prepared,
-            comparator_reference=reference,
-            comparator_authority=authority,
-            selected_rows=selected,
-            **_direct_production_arguments(prepared),
-        )
-
-    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-    checkpoint["records"][0]["run"]["identity"]["configuration_id"] = "drifted"
-    checkpoint_path.write_text(
-        json.dumps(
-            checkpoint,
-            allow_nan=False,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(DevelopmentEvaluationError, match="production"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            plan,
-            registry=registry,
-            prepared_datasets=prepared,
-            comparator_reference=reference,
-            comparator_authority=authority,
-            selected_rows=selected,
-            **_direct_production_arguments(prepared),
-        )
-
-    mismatched_reference = replace(
-        reference,
-        authority_revision="fair-comparator-direct-v2",
-    )
-    with pytest.raises(DevelopmentEvaluationError, match="authority differs"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            plan,
-            registry=registry,
-            prepared_datasets=prepared,
-            comparator_reference=mismatched_reference,
-            comparator_authority=authority,
-            selected_rows=selected,
-            **_direct_production_arguments(prepared),
-        )
-
-
-def test_direct_projection_does_not_reinterpret_legacy_checkpoint_routes(
-    tmp_path: Path,
-) -> None:
+    import maskimpute_benchmark.development_evaluation as development_evaluation
     from maskimpute_benchmark.comparator_tuning import (
-        ComparatorAuthorityReference,
-        load_comparator_tuning_authority,
+        validate_comparator_selection_object,
+    )
+    from maskimpute_benchmark.selection import (
+        _authority_with_comparator_projection,
+        _load_selection_authority,
+    )
+
+    (
+        repository,
+        checkpoint_path,
+        plan,
+        registry,
+        prepared,
+        authority,
+        runner_authority,
+        datasets,
+        comparator_selection,
+    ) = _write_complete_direct_selection_repository(tmp_path, monkeypatch)
+    projection = validate_comparator_selection_object(
+        repository,
+        comparator_selection,
+        expected_checkpoint=checkpoint_path,
+    )
+    evidence = development_evaluation.project_direct_comparator_evidence(
+        checkpoint_path,
+        plan,
+        repository=repository,
+        registry=registry,
+        prepared_datasets=prepared,
+        comparator_reference=runner_authority.comparator_tuning_reference,
+        comparator_authority=authority,
+        comparator_selection=comparator_selection,
+        runner_authority=runner_authority,
+        datasets=datasets,
+    )
+    selection_authority = _authority_with_comparator_projection(
+        _load_selection_authority(Path.cwd(), require_clean=False),
+        projection,
+    )
+    for value in prepared.values():
+        value.evaluator_dataset.obs["group"] = ["group-a", "group-a"]
+    monkeypatch.setattr(
+        development_evaluation,
+        "fixed_null_de_gene_mask",
+        lambda observed, *_args, **_kwargs: (
+            np.ones(observed.shape[1], dtype=bool),
+            "a" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "balanced_null_split",
+        lambda obs_ids, *_args, **_kwargs: (
+            np.arange(len(obs_ids), dtype=np.int64) % 2,
+            "b" * 64,
+        ),
+    )
+
+    bundle = development_evaluation.build_reconstruction_selection_records(
+        evidence,
+        checkpoint_directory=checkpoint_path.parent,
+        prepared_datasets=prepared,
+        declarations=selection_authority.declarations,
+        method_bindings=selection_authority.method_bindings,
+        comparator_projection=projection,
+    )
+
+    completed_run_ids = {
+        str(record["run"]["run_id"])
+        for record in evidence.records
+        if record["run"]["status"] == "completed"
+    }
+    completed_audits = [
+        audit for audit in bundle.null_de_audits if audit["run_id"] in completed_run_ids
+    ]
+    assert completed_audits
+    assert {audit["status"] for audit in completed_audits} == {"unavailable"}
+    assert {audit["reason"] for audit in completed_audits} == {
+        "direct_evaluator_output_not_retained"
+    }
+
+
+def test_direct_checkpoint_receipt_rebuilds_schema2_manifest_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.evaluation_manifest as evaluation_manifest
+    from maskimpute_benchmark.comparator_tuning import (
+        validate_comparator_selection_object,
     )
     from maskimpute_benchmark.development_evaluation import (
+        build_reconstruction_selection_records,
         project_direct_comparator_evidence,
     )
-    from maskimpute_benchmark.methods import load_method_registry
-
-    legacy_plan, legacy_store, _report, prepared = _completed_checkpoint(tmp_path)
-    registry = load_method_registry(Path("study/methods.json"))
-    authority = load_comparator_tuning_authority(
-        Path.cwd(), registry=registry, require_clean=False
+    from maskimpute_benchmark.direct_values import direct_json_value
+    from maskimpute_benchmark.selection import (
+        _authority_with_comparator_projection,
+        _load_selection_authority,
     )
-    with pytest.raises(TypeError, match="DirectCompetitionPlan"):
-        project_direct_comparator_evidence(
-            legacy_store.checkpoint_path,
-            legacy_plan,
-            registry=registry,
-            prepared_datasets={prepared.binding.dataset_id: prepared},
-            comparator_reference=ComparatorAuthorityReference(
-                path="study/comparator_tuning.json",
-                schema_version=authority.schema_version,
-                authority_revision=authority.authority_revision,
-            ),
-            comparator_authority=authority,
-            selected_rows=(),
-            **_direct_production_arguments({prepared.binding.dataset_id: prepared}),
-        )
+
+    (
+        repository,
+        checkpoint_path,
+        plan,
+        registry,
+        prepared,
+        authority,
+        runner_authority,
+        datasets,
+        comparator_selection,
+    ) = _write_complete_direct_selection_repository(tmp_path, monkeypatch)
+    projection = validate_comparator_selection_object(
+        repository,
+        comparator_selection,
+        expected_checkpoint=checkpoint_path,
+    )
+    evidence = project_direct_comparator_evidence(
+        checkpoint_path,
+        plan,
+        repository=repository,
+        registry=registry,
+        prepared_datasets=prepared,
+        comparator_reference=runner_authority.comparator_tuning_reference,
+        comparator_authority=authority,
+        comparator_selection=comparator_selection,
+        runner_authority=runner_authority,
+        datasets=datasets,
+    )
+    selection_authority = _authority_with_comparator_projection(
+        _load_selection_authority(Path.cwd(), require_clean=False),
+        projection,
+    )
+    bundle = build_reconstruction_selection_records(
+        evidence,
+        checkpoint_directory=checkpoint_path.parent,
+        prepared_datasets=prepared,
+        declarations=selection_authority.declarations,
+        method_bindings=selection_authority.method_bindings,
+        comparator_projection=projection,
+    )
+    checkpoint_binding = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+    reconstruction = {
+        "checkpoint_path": (
+            "artifacts/study/development/competition-reconstruction/checkpoint.json"
+        ),
+        "checkpoint_file_sha256": checkpoint_binding,
+        "checkpoint_sha256": checkpoint_binding,
+        "identity_mode": evidence.identity_mode,
+        "authority_revision": evidence.authority_revision,
+        "plan_snapshot": direct_json_value(evidence.plan_snapshot),
+        "input_descriptors": direct_json_value(evidence.input_descriptors),
+    }
+    records = [direct_json_value(dict(value)) for value in bundle.records]
+    audits = [dict(value) for value in bundle.null_de_audits]
+    monkeypatch.setattr(
+        evaluation_manifest,
+        "_rebuild_direct_reconstruction_plan",
+        lambda *_args: (
+            plan,
+            registry,
+            datasets,
+            prepared,
+            runner_authority,
+        ),
+    )
+    monkeypatch.setattr(
+        evaluation_manifest,
+        "_rebuild_reconstruction_plan",
+        lambda *_args: pytest.fail("direct manifest reached legacy plan rebuild"),
+    )
+    monkeypatch.setattr(
+        evaluation_manifest,
+        "_prepare_reconstruction_datasets",
+        lambda *_args: pytest.fail("direct manifest reached legacy preparation"),
+    )
+
+    bindings = evaluation_manifest._validate_reconstruction_evidence(
+        repository,
+        reconstruction,
+        selection_authority,
+        {},
+        {"records": records},
+        audits,
+        projection,
+    )
+
+    assert bindings["reconstruction_checkpoint_path"] == (
+        "artifacts/study/development/competition-reconstruction/checkpoint.json"
+    )
+    assert bindings["reconstruction_checkpoint_file_sha256"] == checkpoint_binding
+    assert bindings["reconstructed_selection_records_sha256"]
+
+
+def test_public_schema2_builder_routes_direct_checkpoint_without_legacy_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.development_evaluation as development_evaluation
+    import maskimpute_benchmark.methods as methods
+    import maskimpute_benchmark.runner as runner
+    import maskimpute_benchmark.selection as selection
+    from maskimpute_benchmark.development_evaluation import (
+        DirectReconstructionEvidence,
+    )
+
+    (
+        repository,
+        _checkpoint_path,
+        _plan,
+        registry,
+        prepared,
+        _authority,
+        runner_authority,
+        datasets,
+        _comparator_selection,
+    ) = _write_complete_direct_selection_repository(tmp_path, monkeypatch)
+    static_selection = selection._load_selection_authority(
+        Path.cwd(),
+        require_clean=False,
+    )
+    ready_selection = replace(
+        static_selection,
+        count_score_manifest=replace(
+            static_selection.count_score_manifest,
+            status="ready",
+            sha256="8" * 64,
+        ),
+        retained_calibration=replace(
+            static_selection.retained_calibration,
+            status="ready",
+            sha256="9" * 64,
+        ),
+    )
+    panel = SimpleNamespace(
+        method_inputs=(),
+        cite=object(),
+        tung=object(),
+        source_evidence=object(),
+    )
+    orthogonal = object()
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(runner, "load_runner_authority", lambda: runner_authority)
+    monkeypatch.setattr(
+        runner,
+        "build_competition_plan",
+        lambda *_args, **_kwargs: pytest.fail(
+            "direct schema-2 builder reached legacy planning"
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "load_prepared_development_panel",
+        lambda _authority: (datasets, MappingProxyType(prepared)),
+    )
+    monkeypatch.setattr(methods, "load_method_registry", lambda _path: registry)
+    monkeypatch.setattr(
+        selection,
+        "load_publication_execution_authority",
+        lambda: ready_selection,
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "prepare_real_orthogonal_panel",
+        lambda _root: panel,
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "run_real_orthogonal_outputs",
+        lambda *_args, **_kwargs: orthogonal,
+    )
+    monkeypatch.setattr(
+        development_evaluation,
+        "evaluate_real_orthogonal_intervals",
+        lambda *_args, **_kwargs: SimpleNamespace(intervals=({},), audits=()),
+    )
+
+    def capture_writer(_repository: Path, **kwargs: object):
+        captured.update(kwargs)
+        return repository / "selection.json", repository / "manifest.json"
+
+    monkeypatch.setattr(
+        development_evaluation,
+        "write_development_selection_artifacts",
+        capture_writer,
+    )
+
+    result = development_evaluation.build_development_selection_input(repository)
+
+    assert result == (repository / "selection.json", repository / "manifest.json")
+    assert isinstance(captured["reconstruction"], DirectReconstructionEvidence)
+    assert captured["dataset_manifest_sha256"] == datasets[0].manifest_sha256
+    assert not hasattr(captured["reconstruction"], "input_hashes")
 
 
 def test_null_de_uses_deterministic_balanced_stratified_split() -> None:
@@ -1201,6 +1297,95 @@ def test_reconstruction_projection_keeps_only_selected_comparator_configs(
     assert not any(
         row["run_identity"]["configuration_id"] != selected_id for row in magic_records
     )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "selected_by_method",
+        "nonexecution_identity_by_method",
+        "ready_comparison_population_ids",
+    ),
+)
+def test_schema2_writer_rejects_comparator_projection_tamper_with_unchanged_receipt(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+    )
+    from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
+        ReconstructionEvidence,
+        write_development_selection_artifacts,
+    )
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    for relative in ("study/methods.json", "study/comparator_tuning.json"):
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(relative), destination)
+    _task11, fixture = _task11_complete_selection_fixture()
+    projection = comparator_selection_projection(
+        build_comparator_selection_receipt(**fixture)
+    )
+    receipt_path = (
+        repository / "artifacts/study/development/evaluation/comparator_selection.json"
+    )
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_bytes(projection.receipt_bytes)
+    if field == "selected_by_method":
+        tampered = replace(
+            projection,
+            selected_by_method=MappingProxyType(
+                {
+                    method_id: selected
+                    for method_id, selected in projection.selected_by_method.items()
+                    if method_id != "magic"
+                }
+            ),
+        )
+    elif field == "nonexecution_identity_by_method":
+        tampered = replace(
+            projection,
+            nonexecution_identity_by_method=MappingProxyType(
+                {"magic": MappingProxyType({"forged": True})}
+            ),
+        )
+    else:
+        tampered = replace(
+            projection,
+            ready_comparison_population_ids=("observed",),
+        )
+    reconstruction = ReconstructionEvidence(
+        checkpoint_path="checkpoint.json",
+        checkpoint_file_sha256="1" * 64,
+        checkpoint_sha256="2" * 64,
+        plan_sha256="3" * 64,
+        input_hashes={},
+        records=(),
+        raw_artifacts=(),
+    )
+
+    with pytest.raises(DevelopmentEvaluationError, match="comparator selection"):
+        write_development_selection_artifacts(
+            repository,
+            dataset_manifest_sha256="4" * 64,
+            count_score_manifest_sha256="5" * 64,
+            retained_calibration_artifact_sha256="6" * 64,
+            reconstruction=reconstruction,
+            reconstruction_relative_directory="competition",
+            orthogonal=object(),
+            orthogonal_relative_directory="orthogonal",
+            records=(),
+            intervals=(),
+            null_de_audits=(),
+            orthogonal_audits=(),
+            sources=object(),
+            comparator_projection=tampered,
+        )
 
 
 def test_rna_protein_scores_are_matched_features_across_cells_in_one_specimen() -> None:
@@ -1814,6 +1999,10 @@ def test_schema2_writer_binds_evaluation_manifest_without_digest_cycle(
 
     repository = tmp_path / "repository"
     repository.mkdir()
+    for relative in ("study/methods.json", "study/comparator_tuning.json"):
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(Path(relative), destination)
     plan, store, _, prepared = _completed_checkpoint(repository)
     reconstruction = load_completed_reconstruction_checkpoint(
         store.output_dir,
@@ -1852,7 +2041,7 @@ def test_schema2_writer_binds_evaluation_manifest_without_digest_cycle(
     count_sha = hashlib.sha256(count_path.read_bytes()).hexdigest()
     calibration_sha = hashlib.sha256(calibration_path.read_bytes()).hexdigest()
     ledger_file = repository / "study/sources.json"
-    ledger_file.parent.mkdir(parents=True)
+    ledger_file.parent.mkdir(parents=True, exist_ok=True)
     ledger_file.write_bytes(b"tracked-source-ledger\n")
     receipt_bindings = []
     artifact_bindings = []

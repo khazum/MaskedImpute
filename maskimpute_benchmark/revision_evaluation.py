@@ -423,11 +423,27 @@ def write_revision_selection_artifacts(
 ) -> tuple[Path, Path]:
     """Write schema 3 and an acyclic manifest binding every stage separately."""
 
+    from .comparator_tuning import (
+        ComparatorTuningError,
+        comparator_selection_projection_value,
+        validate_comparator_selection_object,
+    )
     from .protocol import canonical_sha256
 
     if not isinstance(repository, Path):
         raise TypeError("repository must be a pathlib.Path")
     root = repository.absolute()
+    try:
+        canonical_projection = validate_comparator_selection_object(
+            root,
+            comparator_selection,
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise RevisionEvaluationError(
+            "comparator selection object failed complete validation"
+        ) from error
+    canonical_selection = comparator_selection_projection_value(canonical_projection)
+    canonical_receipt_bytes = canonical_projection.receipt_bytes
     stage_values = tuple(stages)
     expected_versions = (
         ("v28",)
@@ -484,7 +500,7 @@ def write_revision_selection_artifacts(
         "dataset_manifest_sha256": dataset_manifest_sha256,
         "count_score_manifest_sha256": count_score_manifest_sha256,
         "retained_calibration_artifact_sha256": (retained_calibration_artifact_sha256),
-        "comparator_selection": dict(comparator_selection),
+        "comparator_selection": canonical_selection,
         "records": list(records),
         "orthogonal_intervals": list(intervals),
     }
@@ -504,7 +520,7 @@ def write_revision_selection_artifacts(
             ),
             "file_sha256": retained_calibration_artifact_sha256,
         },
-        "comparator_selection": dict(comparator_selection),
+        "comparator_selection": canonical_selection,
         "base_selection": {
             "input_path": base_activation.selection_input_path,
             "input_file_sha256": base_activation.selection_input_file_sha256,
@@ -527,6 +543,19 @@ def write_revision_selection_artifacts(
         evaluation_path,
         _canonical_json_bytes(evaluation_payload) + b"\n",
     )
+    try:
+        after_evaluation = validate_comparator_selection_object(
+            root,
+            canonical_selection,
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise RevisionEvaluationError(
+            "comparator selection changed during revision evaluation publication"
+        ) from error
+    if after_evaluation.receipt_bytes != canonical_receipt_bytes:
+        raise RevisionEvaluationError(
+            "comparator selection receipt changed during revision evaluation publication"
+        )
     result_core = {
         **evidence_core,
         "evaluation_manifest_sha256": evaluation_file_sha,
@@ -537,6 +566,19 @@ def write_revision_selection_artifacts(
     }
     result_path = root / output_paths.selection_input
     _publish_bound_file(result_path, _canonical_json_bytes(result_payload) + b"\n")
+    try:
+        after_result = validate_comparator_selection_object(
+            root,
+            canonical_selection,
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise RevisionEvaluationError(
+            "comparator selection changed during revision selection publication"
+        ) from error
+    if after_result.receipt_bytes != canonical_receipt_bytes:
+        raise RevisionEvaluationError(
+            "comparator selection receipt changed during revision selection publication"
+        )
     return result_path, evaluation_path
 
 
@@ -547,6 +589,11 @@ def validate_revision_artifact_payloads(
 ) -> Mapping[str, str]:
     """Revalidate schema 3 and compare every declared stage to rebuilt evidence."""
 
+    from .comparator_tuning import (
+        ComparatorTuningError,
+        comparator_selection_projection_value,
+        validate_comparator_selection_object,
+    )
     from .development_evaluation import _strict_json
     from .protocol import canonical_sha256
 
@@ -571,6 +618,16 @@ def validate_revision_artifact_payloads(
         raise RevisionEvaluationError(
             "revision selection input has missing or extra fields"
         )
+    try:
+        canonical_projection = validate_comparator_selection_object(
+            root,
+            data["comparator_selection"],
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise RevisionEvaluationError(
+            "comparator selection object failed complete validation"
+        ) from error
+    canonical_selection = comparator_selection_projection_value(canonical_projection)
     expected_versions = [stage.spec.version for stage in assembled.stages]
     unsigned_result = {
         key: value for key, value in data.items() if key != "result_sha256"
@@ -600,10 +657,8 @@ def validate_revision_artifact_payloads(
         or data["count_score_manifest_sha256"] != assembled.count_score_manifest_sha256
         or data["retained_calibration_artifact_sha256"]
         != assembled.retained_calibration_artifact_sha256
-        or not direct_equal(
-            data["comparator_selection"],
-            assembled.comparator_selection,
-        )
+        or not direct_equal(data["comparator_selection"], canonical_selection)
+        or not direct_equal(canonical_selection, assembled.comparator_selection)
         or data["records"] != list(records)
         or data["orthogonal_intervals"] != list(intervals)
     ):
@@ -723,8 +778,46 @@ def validate_revision_artifact_payloads(
         root / base_checkpoint_path,
         "base reconstruction checkpoint",
     )
-    if (
-        hashlib.sha256(base_checkpoint_raw).hexdigest()
+    base_is_direct = base_reconstruction.get("identity_mode") == "direct-v1"
+    observed_base_checkpoint_file_sha = hashlib.sha256(base_checkpoint_raw).hexdigest()
+    if base_is_direct:
+        if (
+            observed_base_checkpoint_file_sha
+            != base_reconstruction.get("checkpoint_file_sha256")
+            or observed_base_checkpoint_file_sha
+            != base_reconstruction.get("checkpoint_sha256")
+            or base_checkpoint.get("identity_mode") != "direct-v1"
+            or base_checkpoint.get("authority_revision")
+            != base_reconstruction.get("authority_revision")
+            or not direct_equal(
+                base_checkpoint.get("plan_snapshot"),
+                base_reconstruction.get("plan_snapshot"),
+            )
+            or not direct_equal(
+                base_checkpoint.get("input_descriptors"),
+                base_reconstruction.get("input_descriptors"),
+            )
+        ):
+            raise RevisionEvaluationError(
+                "base direct reconstruction checkpoint differs from evaluation authority"
+            )
+        try:
+            from .evaluation_manifest import _validate_direct_reconstruction_evidence
+
+            _validate_direct_reconstruction_evidence(
+                root,
+                base_reconstruction,
+                assembled.authority,
+                {"records": list(assembled.base_records)},
+                base_evaluation.get("null_de_audits"),
+                canonical_projection,
+            )
+        except Exception as error:
+            raise RevisionEvaluationError(
+                "base direct reconstruction failed typed revision revalidation"
+            ) from error
+    elif (
+        observed_base_checkpoint_file_sha
         != base_reconstruction.get("checkpoint_file_sha256")
         or base_checkpoint.get("checkpoint_sha256")
         != base_reconstruction.get("checkpoint_sha256")
@@ -811,9 +904,6 @@ def validate_revision_artifact_payloads(
             raise RevisionEvaluationError("reconstruction status denominator is empty")
         return canonical_sha256(statuses)
 
-    base_input_hashes = base_reconstruction.get("input_hashes")
-    if not isinstance(base_input_hashes, Mapping):
-        raise RevisionEvaluationError("base reconstruction input binding is invalid")
     bindings = {
         "revision_evaluation_manifest_file_sha256": evaluation_file_sha,
         "revision_evaluation_manifest_payload_sha256": str(
@@ -829,10 +919,6 @@ def validate_revision_artifact_payloads(
         "base_reconstruction_checkpoint_payload_sha256": str(
             base_reconstruction["checkpoint_sha256"]
         ),
-        "base_reconstruction_plan_sha256": str(base_reconstruction["plan_sha256"]),
-        "base_reconstruction_input_hashes_sha256": canonical_sha256(
-            dict(base_input_hashes)
-        ),
         "base_reconstruction_statuses_sha256": status_sha256(
             base_checkpoint.get("records"), configuration_id=None
         ),
@@ -843,6 +929,22 @@ def validate_revision_artifact_payloads(
         "base_evaluation_manifest_payload_sha256": base_evaluation_payload_sha,
         "base_evaluation_source_sha256": canonical_sha256(dict(base_reconstruction)),
     }
+    if not base_is_direct:
+        base_input_hashes = base_reconstruction.get("input_hashes")
+        if not isinstance(base_input_hashes, Mapping):
+            raise RevisionEvaluationError(
+                "base reconstruction input binding is invalid"
+            )
+        bindings.update(
+            {
+                "base_reconstruction_plan_sha256": str(
+                    base_reconstruction["plan_sha256"]
+                ),
+                "base_reconstruction_input_hashes_sha256": canonical_sha256(
+                    dict(base_input_hashes)
+                ),
+            }
+        )
     for stage in assembled.stages:
         prefix = stage.spec.version
         bindings.update(
@@ -1016,9 +1118,8 @@ def assemble_revision_evaluation(
         load_publication_execution_authority,
     )
     from .comparator_tuning import (
-        comparator_selection_projection,
         comparator_selection_projection_value,
-        load_comparator_selection_receipt,
+        validate_comparator_selection_object,
     )
     from .direct_values import direct_equal
     from .revisions import (
@@ -1053,8 +1154,17 @@ def assemble_revision_evaluation(
         validate_revision_activation(root, version, require_clean=require_clean)
         for version in versions
     )
-    comparator_projection = comparator_selection_projection(
-        load_comparator_selection_receipt(root)
+    base_input, _base_raw = _strict_json(
+        root / activations[0].selection_input_path,
+        "base development selection input",
+    )
+    comparator_projection = validate_comparator_selection_object(
+        root,
+        base_input.get("comparator_selection"),
+        expected_checkpoint=(
+            root
+            / "artifacts/study/development/competition-reconstruction/checkpoint.json"
+        ),
     )
     base_authority = _authority_with_comparator_projection(
         load_publication_execution_authority(),
@@ -1064,10 +1174,6 @@ def assemble_revision_evaluation(
         base_authority,
         specs,
         activations,
-    )
-    base_input, _base_raw = _strict_json(
-        root / activations[0].selection_input_path,
-        "base development selection input",
     )
     if base_input.get("result_sha256") != activations[0].selection_result_sha256:
         raise RevisionEvaluationError("base selection result binding differs")
@@ -1092,6 +1198,33 @@ def assemble_revision_evaluation(
     base_intervals = base_input.get("orthogonal_intervals")
     if not isinstance(base_records, list) or not isinstance(base_intervals, list):
         raise RevisionEvaluationError("base selection rows are invalid")
+    base_evaluation, _base_evaluation_raw = _strict_json(
+        root / base_evaluation_path,
+        "base development evaluation manifest",
+    )
+    base_reconstruction = base_evaluation.get("reconstruction")
+    if (
+        not isinstance(base_reconstruction, Mapping)
+        or base_reconstruction.get("identity_mode") != "direct-v1"
+    ):
+        raise RevisionEvaluationError(
+            "base revision assembly requires direct-v1 reconstruction evidence"
+        )
+    try:
+        from .evaluation_manifest import _validate_direct_reconstruction_evidence
+
+        _validate_direct_reconstruction_evidence(
+            root,
+            base_reconstruction,
+            extended_authority,
+            {"records": base_records},
+            base_evaluation.get("null_de_audits"),
+            comparator_projection,
+        )
+    except Exception as error:
+        raise RevisionEvaluationError(
+            "base direct reconstruction failed revision assembly revalidation"
+        ) from error
     for name in (
         "dataset_manifest_sha256",
         "count_score_manifest_sha256",

@@ -522,6 +522,7 @@ def test_public_direct_boundaries_reject_coherent_15_input_plan(
         project_direct_comparator_evidence(
             tmp_path / "downstream.json",
             changed,
+            repository=tmp_path,
             registry=registry,
             prepared_datasets=prepared_by_id,
             comparator_reference=ComparatorAuthorityReference(
@@ -530,61 +531,7 @@ def test_public_direct_boundaries_reject_coherent_15_input_plan(
                 authority_revision="fair-comparator-direct-v1",
             ),
             comparator_authority=comparator_authority,
-            selected_rows=(comparator_authority.configurations[0],),
-            runner_authority=authority,
-            datasets=datasets,
-        )
-
-
-@pytest.mark.parametrize(
-    "selection",
-    ((), (0,), (2, 7, 11)),
-    ids=("empty", "one-row-nonwinning", "arbitrary-subset"),
-)
-def test_public_direct_handoff_never_accepts_caller_selected_rows(
-    tmp_path: Path,
-    selection: tuple[int, ...],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
-    from maskimpute_benchmark.development_evaluation import (
-        DevelopmentEvaluationError,
-        project_direct_comparator_evidence,
-    )
-
-    _allow_unbound_smoke_only_for_unrelated_structural_test(monkeypatch)
-    plan, registry, datasets, prepared = _direct_fixture()
-    authority = load_runner_authority()
-    comparator_authority = load_comparator_tuning_authority(
-        ROOT,
-        registry=registry,
-        require_clean=False,
-    )
-    checkpoint_path = tmp_path / "incomplete.json"
-    DirectCheckpointStore(checkpoint_path).write(
-        plan,
-        (),
-        registry=registry,
-        prepared_datasets={value.binding.dataset_id: value for value in prepared},
-        authority=authority,
-        datasets=datasets,
-    )
-
-    with pytest.raises(DevelopmentEvaluationError, match="denominator is not terminal"):
-        project_direct_comparator_evidence(
-            checkpoint_path,
-            plan,
-            registry=registry,
-            prepared_datasets={value.binding.dataset_id: value for value in prepared},
-            comparator_reference=ComparatorAuthorityReference(
-                path="study/comparator_tuning.json",
-                schema_version=2,
-                authority_revision="fair-comparator-direct-v1",
-            ),
-            comparator_authority=comparator_authority,
-            selected_rows=tuple(
-                comparator_authority.configurations[index] for index in selection
-            ),
+            comparator_selection={},
             runner_authority=authority,
             datasets=datasets,
         )
@@ -616,6 +563,7 @@ def test_public_direct_handoff_rejects_candidate_only_plan(
         project_direct_comparator_evidence(
             tmp_path / "candidate.json",
             plan,
+            repository=tmp_path,
             registry=registry,
             prepared_datasets={value.binding.dataset_id: value for value in prepared},
             comparator_reference=ComparatorAuthorityReference(
@@ -624,7 +572,7 @@ def test_public_direct_handoff_rejects_candidate_only_plan(
                 authority_revision="fair-comparator-direct-v1",
             ),
             comparator_authority=comparator_authority,
-            selected_rows=(),
+            comparator_selection={},
             runner_authority=authority,
             datasets=datasets,
         )
@@ -1006,8 +954,7 @@ def test_public_direct_builder_requires_and_validates_complete_smoke_evidence(
 
     plan_parameters = inspect.signature(DirectCompetitionPlan).parameters
     assert (
-        plan_parameters["comparator_smoke_receipt"].default
-        is inspect.Parameter.empty
+        plan_parameters["comparator_smoke_receipt"].default is inspect.Parameter.empty
     )
     assert (
         plan_parameters["comparator_smoke_receipt_bytes"].default
@@ -1046,9 +993,7 @@ def test_production_plan_and_checkpoint_reject_unbound_smoke_evidence(
     tmp_path: Path,
 ) -> None:
     plan, registry, datasets, prepared = _direct_fixture()
-    prepared_by_id = {
-        value.binding.dataset_id: value for value in prepared
-    }
+    prepared_by_id = {value.binding.dataset_id: value for value in prepared}
     authority = load_runner_authority()
 
     with pytest.raises(RunnerContractError, match="smoke receipt"):

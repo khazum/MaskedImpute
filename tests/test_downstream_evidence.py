@@ -41,9 +41,20 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
     }
     calls = []
 
-    def project(*args: object, **kwargs: object) -> dict[str, object]:
+    evidence = SimpleNamespace(
+        selected_by_method={
+            "magic": {
+                "configuration": {
+                    "configuration_id": "magic-t01-default",
+                    "payload": {"solver": "exact"},
+                }
+            }
+        }
+    )
+
+    def project(*args: object, **kwargs: object) -> object:
         calls.append((args, kwargs))
-        return expected
+        return evidence
 
     monkeypatch.setattr(
         development_evaluation,
@@ -55,16 +66,23 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
         expected,
         Path("synthetic-checkpoint.json"),
         plan,
+        repository=Path("synthetic-repository"),
         registry=object(),
         prepared_datasets={},
-        comparator_reference=object(),
+        comparator_reference=SimpleNamespace(
+            path="study/comparator_tuning.json",
+            schema_version=2,
+            authority_revision="fair-comparator-direct-v1",
+        ),
         comparator_authority=object(),
-        selected_rows=(),
+        comparator_selection={"complete": True},
         runner_authority=object(),
         datasets=(),
     )
     assert validated == expected
     assert len(calls) == 1
+    assert calls[0][1]["repository"] == Path("synthetic-repository")
+    assert calls[0][1]["comparator_selection"] == {"complete": True}
 
     changed = copy.deepcopy(expected)
     changed["selected_comparators"]["magic"]["payload"]["solver"] = "drifted"
@@ -73,11 +91,16 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
             changed,
             Path("synthetic-checkpoint.json"),
             plan,
+            repository=Path("synthetic-repository"),
             registry=object(),
             prepared_datasets={},
-            comparator_reference=object(),
+            comparator_reference=SimpleNamespace(
+                path="study/comparator_tuning.json",
+                schema_version=2,
+                authority_revision="fair-comparator-direct-v1",
+            ),
             comparator_authority=object(),
-            selected_rows=(),
+            comparator_selection={"complete": True},
             runner_authority=object(),
             datasets=(),
         )
@@ -89,11 +112,16 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
             mixed,
             Path("synthetic-checkpoint.json"),
             plan,
+            repository=Path("synthetic-repository"),
             registry=object(),
             prepared_datasets={},
-            comparator_reference=object(),
+            comparator_reference=SimpleNamespace(
+                path="study/comparator_tuning.json",
+                schema_version=2,
+                authority_revision="fair-comparator-direct-v1",
+            ),
             comparator_authority=object(),
-            selected_rows=(),
+            comparator_selection={"complete": True},
             runner_authority=object(),
             datasets=(),
         )
@@ -103,11 +131,16 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
             expected,
             Path("synthetic-checkpoint.json"),
             SimpleNamespace(identity_mode="legacy-v1"),
+            repository=Path("synthetic-repository"),
             registry=object(),
             prepared_datasets={},
-            comparator_reference=object(),
+            comparator_reference=SimpleNamespace(
+                path="study/comparator_tuning.json",
+                schema_version=2,
+                authority_revision="fair-comparator-direct-v1",
+            ),
             comparator_authority=object(),
-            selected_rows=(),
+            comparator_selection={"complete": True},
             runner_authority=object(),
             datasets=(),
         )
@@ -1395,6 +1428,15 @@ def test_revision_downstream_bundle_covers_base_and_activated_checkpoint(
         "count_score_manifest_sha256": "2" * 64,
         "retained_calibration_artifact_sha256": "3" * 64,
         "evaluation_manifest_sha256": evaluation_file_sha,
+        "comparator_selection": {
+            "path": (
+                "artifacts/study/development/evaluation/comparator_selection.json"
+            ),
+            "receipt": {},
+            "selected_by_method": {},
+            "nonexecution_identity_by_method": {},
+            "ready_comparison_population_ids": [],
+        },
         "records": selection_records,
         "orthogonal_intervals": [],
     }
@@ -3375,6 +3417,15 @@ def test_selection_schema_four_requires_bound_downstream_completeness(
         "count_score_manifest_sha256": "2" * 64,
         "retained_calibration_artifact_sha256": "3" * 64,
         "evaluation_manifest_sha256": "4" * 64,
+        "comparator_selection": {
+            "path": (
+                "artifacts/study/development/evaluation/comparator_selection.json"
+            ),
+            "receipt": {},
+            "selected_by_method": {},
+            "nonexecution_identity_by_method": {},
+            "ready_comparison_population_ids": [],
+        },
         "records": selection_records,
         "orthogonal_intervals": [],
     }

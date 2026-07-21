@@ -543,11 +543,12 @@ def validate_direct_comparator_projection(
     checkpoint_path: Path,
     plan: object,
     *,
+    repository: Path,
     registry: object,
     prepared_datasets: Mapping[str, object],
     comparator_reference: object,
     comparator_authority: object,
-    selected_rows: Sequence[object],
+    comparator_selection: object,
     runner_authority: object,
     datasets: Sequence[object],
 ) -> dict[str, object]:
@@ -583,17 +584,50 @@ def validate_direct_comparator_projection(
         )
     from .development_evaluation import project_direct_comparator_evidence
 
-    expected = project_direct_comparator_evidence(
+    evidence = project_direct_comparator_evidence(
         checkpoint_path,
         plan,
+        repository=repository,
         registry=registry,
         prepared_datasets=prepared_datasets,
         comparator_reference=comparator_reference,
         comparator_authority=comparator_authority,
-        selected_rows=selected_rows,
+        comparator_selection=comparator_selection,
         runner_authority=runner_authority,
         datasets=datasets,
     )
+    selected_evidence = getattr(evidence, "selected_by_method", None)
+    if not isinstance(selected_evidence, Mapping):
+        raise DownstreamEvidenceError("direct comparator evidence schema differs")
+    selected_expected: dict[str, object] = {}
+    for method_id, value in selected_evidence.items():
+        if not isinstance(method_id, str) or not isinstance(value, Mapping):
+            raise DownstreamEvidenceError("direct comparator evidence schema differs")
+        configuration = value.get("configuration")
+        if not isinstance(configuration, Mapping):
+            raise DownstreamEvidenceError("direct comparator evidence schema differs")
+        configuration_id = configuration.get("configuration_id")
+        payload = configuration.get("payload")
+        if (
+            not isinstance(configuration_id, str)
+            or not configuration_id
+            or type(payload) is not dict
+        ):
+            raise DownstreamEvidenceError("direct comparator evidence schema differs")
+        selected_expected[method_id] = {
+            "configuration_id": configuration_id,
+            "payload": payload,
+        }
+    expected = {
+        "comparator_authority": {
+            "path": getattr(comparator_reference, "path", None),
+            "schema_version": getattr(comparator_reference, "schema_version", None),
+            "authority_revision": getattr(
+                comparator_reference, "authority_revision", None
+            ),
+        },
+        "selected_comparators": selected_expected,
+    }
     if not _direct_projection_equal(projection, expected):
         raise DownstreamEvidenceError("direct comparator projection differs")
     return expected

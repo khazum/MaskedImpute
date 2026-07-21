@@ -30,11 +30,9 @@ from .comparator_tuning import (
     ComparatorTuningError,
     ComparatorTuningAuthority,
     ComparatorSelectionProjection,
-    comparator_selection_projection,
-    comparator_selection_projection_value,
     comparator_method_binding,
     decode_bound_comparator_configuration,
-    load_comparator_selection_receipt,
+    validate_comparator_selection_object,
     validate_comparator_tuning_authority,
 )
 from .direct_values import direct_equal, direct_json_value
@@ -3788,22 +3786,14 @@ def _select_for_repository(
             )
     authority = _load_selection_authority(repository, require_clean=require_clean)
     try:
-        comparator_receipt = load_comparator_selection_receipt(repository)
-        comparator_projection = comparator_selection_projection(comparator_receipt)
+        comparator_projection = validate_comparator_selection_object(
+            repository,
+            data["comparator_selection"],
+        )
     except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
         raise SelectionAuthorityError(
             "comparator selection receipt failed validation"
         ) from error
-    expected_comparator_selection = comparator_selection_projection_value(
-        comparator_projection
-    )
-    if not direct_equal(
-        data["comparator_selection"],
-        expected_comparator_selection,
-    ):
-        raise SelectionAuthorityError(
-            "development results comparator selection differs"
-        )
     ready_authority = _authority_with_comparator_projection(
         authority,
         comparator_projection,
