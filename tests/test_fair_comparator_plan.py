@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import json
 from pathlib import Path
 
 import anndata as ad
@@ -8,7 +9,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from maskimpute_benchmark.comparator_tuning import comparator_method_binding
+from maskimpute_benchmark.comparator_tuning import (
+    comparator_method_binding,
+    load_comparator_tuning_authority,
+)
+from maskimpute_benchmark.fair_comparator_checkpoint import DirectCheckpointStore
+from maskimpute_benchmark.fair_comparator_execution import (
+    DIRECT_RECONSTRUCTION_METRICS,
+    create_direct_request,
+)
 from maskimpute_benchmark.fair_comparator_plan import (
     DirectCompetitionPlan,
     build_direct_competition_plan,
@@ -203,19 +212,23 @@ def _direct_grid_cases():
         configurations=(comparator,),
         entries=_renumber_direct_entries(synthetic_entries),
     )
-    return {
-        "base": (base, comparator, prepared_map),
-        "revision": (revision, revision.configurations[0], prepared_map),
-        "ablation": (base, ablation, prepared_map),
-        "synthetic": (
-            synthetic,
-            comparator,
-            {
-                descriptor.dataset_id: prepared_map[descriptor.dataset_id]
-                for descriptor in synthetic.inputs
-            },
-        ),
-    }, registry
+    return (
+        {
+            "base": (base, comparator, prepared_map),
+            "revision": (revision, revision.configurations[0], prepared_map),
+            "ablation": (base, ablation, prepared_map),
+            "synthetic": (
+                synthetic,
+                comparator,
+                {
+                    descriptor.dataset_id: prepared_map[descriptor.dataset_id]
+                    for descriptor in synthetic.inputs
+                },
+            ),
+        },
+        registry,
+        datasets,
+    )
 
 
 def _mutate_configuration_cells(plan, configuration, mutation: str):
@@ -239,7 +252,7 @@ def _mutate_configuration_cells(plan, configuration, mutation: str):
 def test_direct_base_rejects_coherent_47_49_comparator_redistribution(
     _direct_grid_cases,
 ) -> None:
-    cases, registry = _direct_grid_cases
+    cases, registry, datasets = _direct_grid_cases
     plan, first, prepared = cases["base"]
     comparator_values = tuple(
         value
@@ -265,6 +278,8 @@ def test_direct_base_rejects_coherent_47_49_comparator_redistribution(
             changed,
             registry=registry,
             prepared_datasets=prepared,
+            authority=load_runner_authority(),
+            datasets=datasets,
         )
 
 
@@ -278,15 +293,89 @@ def test_direct_plan_rejects_noncanonical_configuration_cells(
     scope: str,
     mutation: str,
 ) -> None:
-    cases, registry = _direct_grid_cases
+    cases, registry, datasets = _direct_grid_cases
     plan, configuration, prepared = cases[scope]
     changed = _mutate_configuration_cells(plan, configuration, mutation)
 
     with pytest.raises(RunnerContractError, match="grid|seed|cell"):
+        keywords = {}
+        if len(plan.inputs) == 16:
+            keywords = {
+                "authority": (
+                    load_v28_revision_authority()
+                    if scope == "revision"
+                    else load_runner_authority()
+                ),
+                "datasets": datasets,
+            }
         validate_direct_competition_plan(
             changed,
             registry=registry,
             prepared_datasets=prepared,
+            **keywords,
+        )
+
+
+def test_production_direct_plan_requires_complete_runner_and_dataset_authority() -> (
+    None
+):
+    plan, registry, datasets, prepared = _direct_fixture()
+    prepared_map = {value.binding.dataset_id: value for value in prepared}
+
+    with pytest.raises(RunnerContractError, match="authority|dataset bindings"):
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_map,
+        )
+
+    authority = load_runner_authority()
+    changed = build_direct_competition_plan(
+        registry,
+        tuple(reversed(datasets)),
+        authority,
+        tuple(reversed(prepared)),
+    )
+    with pytest.raises(RunnerContractError, match="authority|canonical|dataset"):
+        validate_direct_competition_plan(
+            changed,
+            registry=registry,
+            prepared_datasets=prepared_map,
+            authority=authority,
+            datasets=datasets,
+        )
+
+
+def test_production_direct_plan_rejects_coherent_noncomparator_payload_mutation() -> (
+    None
+):
+    plan, registry, datasets, prepared = _direct_fixture()
+    configuration = plan.configurations[0]
+    payload = (("forged", 1),)
+    changed_configuration = replace(configuration, payload=payload)
+    entries = []
+    for entry in plan.entries:
+        if entry.identity.method.method_id == configuration.method.method_id:
+            identity = replace(entry.identity, configuration_payload=payload)
+            entry = replace(
+                entry,
+                identity=identity,
+                run_id=direct_run_id(identity),
+            )
+        entries.append(entry)
+    changed = replace(
+        plan,
+        configurations=(changed_configuration, *plan.configurations[1:]),
+        entries=tuple(entries),
+    )
+
+    with pytest.raises(RunnerContractError, match="authority|canonical|configuration"):
+        validate_direct_competition_plan(
+            changed,
+            registry=registry,
+            prepared_datasets={value.binding.dataset_id: value for value in prepared},
+            authority=load_runner_authority(),
+            datasets=datasets,
         )
 
 
@@ -398,6 +487,147 @@ def test_direct_plan_carries_full_frozen_methods_payloads_and_prepared_inputs() 
     )
     assert magic["method"] == asdict(comparator_method_binding(registry.by_id("magic")))
     assert magic["payload"] == dict(authority_magic.payload)
+
+
+def test_real_plan_all_dca_requests_and_checkpoint_json_round_trip(
+    tmp_path: Path,
+) -> None:
+    plan, registry, datasets, prepared = _direct_fixture()
+    runner_authority = load_runner_authority()
+    comparator_authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    prepared_by_id = {value.binding.dataset_id: value for value in prepared}
+    descriptor_by_id = {value.dataset_id: value for value in plan.inputs}
+    dca_entries = tuple(
+        entry for entry in plan.entries if entry.identity.method.method_id == "dca"
+    )
+
+    requests = tuple(
+        create_direct_request(
+            entry,
+            prepared_by_id[entry.identity.dataset_id],
+            descriptor_by_id[entry.identity.dataset_id],
+            registry.by_id("dca"),
+            comparator_authority,
+            timeout_seconds=registry.by_id("dca").resources.timeout_seconds,
+        )
+        for entry in dca_entries
+    )
+    assert len(requests) == 192
+    assert all(request.identity.configuration_payload for request in requests)
+
+    plan_snapshot = plan.to_dict()
+    encoded_entries = plan_snapshot["entries"]
+    assert isinstance(encoded_entries, list)
+    reason = "synthetic_checkpoint_roundtrip"
+    last_dca_position = max(
+        position
+        for position, entry in enumerate(plan.entries)
+        if entry.identity.method.method_id == "dca"
+    )
+    records = []
+    for position, entry in enumerate(plan.entries[: last_dca_position + 1]):
+        current = prepared_by_id[entry.identity.dataset_id]
+        encoded_entry = encoded_entries[position]
+        assert isinstance(encoded_entry, dict)
+        identity = encoded_entry["identity"]
+        prezero = (
+            {
+                "applicable": True,
+                "status": "blocked_authority",
+                "reason": reason,
+                "shape": None,
+                "dtype": None,
+                "encoding": None,
+                "path": None,
+                "compressed_byte_count": 0,
+            }
+            if entry.identity.method.method_id == "maskimpute"
+            else {
+                "applicable": False,
+                "status": "not_applicable",
+                "reason": "method_does_not_emit_p_pre_zero",
+                "shape": None,
+                "dtype": None,
+                "encoding": None,
+                "path": None,
+                "compressed_byte_count": 0,
+            }
+        )
+        records.append(
+            {
+                "run": {
+                    "run_id": entry.run_id,
+                    "identity": identity,
+                    "status": "blocked_authority",
+                    "reason": reason,
+                    "runtime_seconds": 0,
+                    "peak_rss_bytes": 0,
+                    "peak_gpu_bytes": 0,
+                    "rss_measurement": "synthetic_parent_rss",
+                    "gpu_measurement": "synthetic_gpu_receipt",
+                    "excluded_cell_count": current.audit.excluded_cell_count,
+                    "excluded_cell_ids": list(current.audit.excluded_cell_ids),
+                    "retained_cell_count": current.audit.retained_cell_count,
+                    "retained_cell_ids": list(current.audit.retained_cell_ids),
+                    "retained_gene_count": current.method_input.shape[1],
+                    "observed_zero_count": int(
+                        (current.method_input.counts == 0).sum()
+                    ),
+                    "stdout": {
+                        "stream": "stdout",
+                        "original_byte_count": 0,
+                        "capture_policy": "discard_content",
+                        "terminal_reason": reason,
+                    },
+                    "stderr": {
+                        "stream": "stderr",
+                        "original_byte_count": 0,
+                        "capture_policy": "discard_content",
+                        "terminal_reason": reason,
+                    },
+                },
+                "metrics": [
+                    {
+                        "identity": identity,
+                        "metric": metric,
+                        "value": None,
+                        "n": 0,
+                        "status": "blocked_authority",
+                        "reason": reason,
+                    }
+                    for metric in DIRECT_RECONSTRUCTION_METRICS
+                ],
+                "p_pre_zero_evidence": prezero,
+            }
+        )
+
+    checkpoint_path = tmp_path / "checkpoint.json"
+    report = DirectCheckpointStore(checkpoint_path).write(
+        plan,
+        records,
+        registry=registry,
+        prepared_datasets=prepared_by_id,
+        authority=runner_authority,
+        datasets=datasets,
+    )
+    stored = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert stored == report.to_dict()
+    stored_dca = tuple(
+        record
+        for record in stored["records"]
+        if record["run"]["identity"]["method"]["method_id"] == "dca"
+    )
+    assert len(stored_dca) == 192
+    assert all(
+        isinstance(
+            record["run"]["identity"]["configuration_payload"]["hidden_size"], list
+        )
+        for record in stored_dca
+    )
 
 
 def test_direct_plan_preserves_configuration_dataset_seed_order_and_blocks() -> None:

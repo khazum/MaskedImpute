@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass
-import math
+from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
@@ -16,6 +15,12 @@ from .comparator_tuning import (
     bind_comparator_configuration_identity,
     comparator_method_binding,
 )
+from .direct_values import (
+    direct_equal,
+    direct_json_value,
+    freeze_direct_mapping,
+    freeze_direct_value,
+)
 from .methods import MethodRegistry, MethodSpec
 from .runner import (
     DEVELOPMENT_MODEL_SEEDS,
@@ -24,6 +29,9 @@ from .runner import (
     PreparedDataset,
     RunnerAuthority,
     RunnerContractError,
+    load_runner_authority,
+    load_v28_revision_authority,
+    load_v29_revision_authority,
 )
 
 
@@ -31,28 +39,13 @@ _WORKFLOW_SCHEMA = "maskimpute-fair-comparator-run-v1"
 _PREPROCESSING_REVISION = "paired-zero-library-union-v1"
 
 
-class _FrozenJsonList(tuple[object, ...]):
-    pass
-
-
-class _FrozenJsonObject(tuple[tuple[str, object], ...]):
-    pass
-
-
 def _freeze_nested_payload(value: object) -> object:
-    if isinstance(value, Mapping):
-        if not all(isinstance(key, str) for key in value):
-            raise RunnerContractError("direct configuration keys must be strings")
-        return _FrozenJsonObject(
-            (key, _freeze_payload(nested)) for key, nested in sorted(value.items())
-        )
-    if isinstance(value, (list, tuple)):
-        return _FrozenJsonList(_freeze_payload(nested) for nested in value)
-    if value is None or type(value) in {str, bool, int}:
-        return value
-    if type(value) is float and math.isfinite(value):
-        return value
-    raise RunnerContractError("direct configuration payload is not canonical JSON")
+    try:
+        return freeze_direct_value(value)
+    except ValueError as error:
+        raise RunnerContractError(
+            "direct configuration payload is not canonical JSON"
+        ) from error
 
 
 def _freeze_payload(value: object) -> object:
@@ -62,44 +55,12 @@ def _freeze_payload(value: object) -> object:
 def _freeze_payload_mapping(
     value: Mapping[str, object],
 ) -> tuple[tuple[str, object], ...]:
-    return tuple(
-        (key, _freeze_nested_payload(nested)) for key, nested in sorted(value.items())
-    )
-
-
-def _thaw_payload(value: object) -> object:
-    if isinstance(value, _FrozenJsonObject):
-        return {item[0]: _thaw_payload(item[1]) for item in value}
-    if isinstance(value, _FrozenJsonList):
-        return [_thaw_payload(item) for item in value]
-    if isinstance(value, tuple):
-        if all(
-            isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
-            for item in value
-        ):
-            return {item[0]: _thaw_payload(item[1]) for item in value}
-        return [_thaw_payload(item) for item in value]
-    return value
-
-
-def direct_json_value(value: object, *, payload: bool = False) -> object:
-    """Encode one direct dataclass/value without losing JSON container types."""
-
-    if payload:
-        return _thaw_payload(value)
-    if is_dataclass(value) and not isinstance(value, type):
-        return {
-            item.name: direct_json_value(
-                getattr(value, item.name),
-                payload=item.name in {"payload", "configuration_payload"},
-            )
-            for item in fields(value)
-        }
-    if isinstance(value, tuple):
-        return [direct_json_value(item) for item in value]
-    if isinstance(value, Mapping):
-        return {str(key): direct_json_value(nested) for key, nested in value.items()}
-    return value
+    try:
+        return freeze_direct_mapping(value)
+    except ValueError as error:
+        raise RunnerContractError(
+            "direct configuration payload is not canonical JSON"
+        ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,36 +414,7 @@ def _validate_direct_plan(
         raise RunnerContractError("direct revision candidate denominator differs")
 
 
-def _direct_values_equal(left: object, right: object) -> bool:
-    if is_dataclass(left) or is_dataclass(right):
-        if (
-            not is_dataclass(left)
-            or not is_dataclass(right)
-            or isinstance(left, type)
-            or isinstance(right, type)
-            or type(left) is not type(right)
-        ):
-            return False
-        return all(
-            _direct_values_equal(getattr(left, item.name), getattr(right, item.name))
-            for item in fields(left)
-        )
-    if isinstance(left, Mapping) or isinstance(right, Mapping):
-        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
-            return False
-        return set(left) == set(right) and all(
-            _direct_values_equal(left[key], right[key]) for key in left
-        )
-    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
-        if type(left) is not type(right) or len(left) != len(right):
-            return False
-        return all(
-            _direct_values_equal(first, second)
-            for first, second in zip(left, right, strict=True)
-        )
-    if type(left) is float and type(right) is float:
-        return left.hex() == right.hex()
-    return type(left) is type(right) and left == right
+_direct_values_equal = direct_equal
 
 
 def _direct_configuration_payload(
@@ -510,6 +442,8 @@ def validate_direct_competition_plan(
     *,
     registry: MethodRegistry,
     prepared_datasets: Mapping[str, PreparedDataset],
+    authority: RunnerAuthority | None = None,
+    datasets: Sequence[DatasetBinding] | None = None,
 ) -> None:
     """Validate every direct plan/configuration/entry/input binding."""
 
@@ -532,6 +466,11 @@ def validate_direct_competition_plan(
         raise RunnerContractError("direct plan schema, mode, or revision differs")
     if not plan.inputs or not plan.configurations or not plan.entries:
         raise RunnerContractError("direct plan denominator must not be empty")
+    production = len(plan.inputs) == 16
+    if production and (not isinstance(authority, RunnerAuthority) or datasets is None):
+        raise RunnerContractError(
+            "production direct plan requires runner authority and dataset bindings"
+        )
 
     input_ids = tuple(descriptor.dataset_id for descriptor in plan.inputs)
     if (
@@ -556,9 +495,10 @@ def validate_direct_competition_plan(
             raise RunnerContractError("direct prepared input descriptor differs")
         prepared_by_id[descriptor.dataset_id] = prepared
 
-    authority = _canonical_comparator_tuning_authority()
+    comparator_authority = _canonical_comparator_tuning_authority()
     authority_rows = {
-        (row.method_id, row.configuration_id): row for row in authority.configurations
+        (row.method_id, row.configuration_id): row
+        for row in comparator_authority.configurations
     }
     configurations: dict[tuple[str, str], DirectAuthorizedConfiguration] = {}
     configuration_order: list[tuple[str, str]] = []
@@ -824,12 +764,53 @@ def validate_direct_competition_plan(
         ):
             raise RunnerContractError("direct revision candidate denominator differs")
 
+        assert authority is not None and datasets is not None
+        canonical_authorities = (
+            (load_runner_authority(),)
+            if authority.plan_scope == "base_full_panel"
+            else (load_v28_revision_authority(), load_v29_revision_authority())
+        )
+        if not any(direct_equal(authority, value) for value in canonical_authorities):
+            raise RunnerContractError(
+                "production direct runner authority differs from the fixed authority"
+            )
+        dataset_values = tuple(datasets)
+        if (
+            len(dataset_values) != 16
+            or not all(isinstance(value, DatasetBinding) for value in dataset_values)
+            or tuple(prepared_by_id)
+            != tuple(value.dataset_id for value in dataset_values)
+            or any(
+                not direct_equal(
+                    prepared_by_id[binding.dataset_id].binding,
+                    binding,
+                )
+                for binding in dataset_values
+            )
+        ):
+            raise RunnerContractError(
+                "production direct dataset binding authority differs"
+            )
+        expected_plan = _build_direct_competition_plan(
+            registry,
+            dataset_values,
+            authority,
+            tuple(prepared_by_id[value.dataset_id] for value in dataset_values),
+            _validate=False,
+        )
+        if not direct_equal(plan, expected_plan):
+            raise RunnerContractError(
+                "production direct plan differs from canonical authority"
+            )
 
-def build_direct_competition_plan(
+
+def _build_direct_competition_plan(
     registry: MethodRegistry,
     datasets: Sequence[DatasetBinding],
     authority: RunnerAuthority,
     prepared_datasets: Sequence[PreparedDataset],
+    *,
+    _validate: bool = True,
 ) -> DirectCompetitionPlan:
     """Build the complete direct-identity development denominator."""
 
@@ -931,14 +912,34 @@ def build_direct_competition_plan(
         configurations=configurations,
     )
     _validate_direct_plan(plan, authority)
-    validate_direct_competition_plan(
-        plan,
-        registry=registry,
-        prepared_datasets={
-            value.binding.dataset_id: value for value in prepared_values
-        },
-    )
+    if _validate:
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets={
+                value.binding.dataset_id: value for value in prepared_values
+            },
+            authority=authority,
+            datasets=dataset_values,
+        )
     return plan
+
+
+def build_direct_competition_plan(
+    registry: MethodRegistry,
+    datasets: Sequence[DatasetBinding],
+    authority: RunnerAuthority,
+    prepared_datasets: Sequence[PreparedDataset],
+) -> DirectCompetitionPlan:
+    """Build and centrally validate the direct development denominator."""
+
+    return _build_direct_competition_plan(
+        registry,
+        datasets,
+        authority,
+        prepared_datasets,
+        _validate=True,
+    )
 
 
 def _direct_plan_to_json(plan: DirectCompetitionPlan) -> dict[str, object]:

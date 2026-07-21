@@ -57,6 +57,8 @@ def project_direct_comparator_evidence(
     comparator_reference: object,
     comparator_authority: object,
     selected_rows: Sequence[object],
+    runner_authority: object | None = None,
+    datasets: Sequence[object] | None = None,
 ) -> dict[str, object]:
     """Validate terminal direct evidence and emit the plain comparator handoff."""
 
@@ -75,13 +77,10 @@ def project_direct_comparator_evidence(
     )
     from .methods import MethodRegistry
     from .runner import (
-        INTRINSIC_TERMINAL_STATUSES,
+        DatasetBinding,
         PreparedDataset,
+        RunnerAuthority,
         RunnerContractError,
-    )
-    from .selection import (
-        SelectionAuthorityError,
-        project_direct_selected_comparators,
     )
 
     if not isinstance(checkpoint_path, Path):
@@ -98,6 +97,15 @@ def project_direct_comparator_evidence(
         raise TypeError("comparator_reference must be a ComparatorAuthorityReference")
     if not isinstance(comparator_authority, ComparatorTuningAuthority):
         raise TypeError("comparator_authority must be a ComparatorTuningAuthority")
+    if runner_authority is not None and not isinstance(
+        runner_authority, RunnerAuthority
+    ):
+        raise TypeError("runner_authority must be a RunnerAuthority")
+    dataset_values = None if datasets is None else tuple(datasets)
+    if dataset_values is not None and not all(
+        isinstance(value, DatasetBinding) for value in dataset_values
+    ):
+        raise TypeError("datasets must contain DatasetBinding values")
     rows = tuple(selected_rows)
     if not all(isinstance(row, ComparatorConfiguration) for row in rows):
         raise TypeError("selected_rows must contain ComparatorConfiguration values")
@@ -124,11 +132,15 @@ def project_direct_comparator_evidence(
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=runner_authority,
+            datasets=dataset_values,
         )
         report = DirectCheckpointStore(checkpoint_path).load(
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=runner_authority,
+            datasets=dataset_values,
         )
     except RunnerContractError as error:
         raise DevelopmentEvaluationError(
@@ -138,33 +150,9 @@ def project_direct_comparator_evidence(
         raise DevelopmentEvaluationError(
             "direct comparator denominator is not terminal"
         )
-    terminal_comparator_keys = {
-        (entry.identity.method.method_id, entry.identity.configuration_id)
-        for entry, record in zip(plan.entries, report.records, strict=True)
-        if entry.identity.configuration_kind == "comparator_tuning"
-        and isinstance(record.get("run"), Mapping)
-        and (
-            record["run"].get("status") == "completed"
-            or record["run"].get("status") in INTRINSIC_TERMINAL_STATUSES
-        )
-    }
-    if any(
-        (row.method_id, row.configuration_id) not in terminal_comparator_keys
-        for row in rows
-    ):
-        raise DevelopmentEvaluationError(
-            "selected comparator row is absent from the terminal direct denominator"
-        )
-    try:
-        return project_direct_selected_comparators(
-            comparator_reference,
-            comparator_authority,
-            rows,
-        )
-    except SelectionAuthorityError as error:
-        raise DevelopmentEvaluationError(
-            "direct comparator projection validation failed"
-        ) from error
+    raise DevelopmentEvaluationError(
+        "validated later comparator selection receipt is required for direct handoff"
+    )
 
 
 @dataclass(frozen=True, slots=True)

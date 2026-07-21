@@ -14,6 +14,7 @@ from maskimpute_benchmark.comparator_tuning import (
     comparator_method_binding,
     load_comparator_tuning_authority,
 )
+from maskimpute_benchmark.direct_values import freeze_direct_mapping
 import maskimpute_benchmark.fair_comparator_plan as direct_plan_module
 from maskimpute_benchmark.fair_comparator_checkpoint import (
     DirectCheckpointStore,
@@ -48,14 +49,6 @@ from maskimpute_benchmark.runner import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_IDENTITY_TOKENS = ("hash", "digest", "checksum", "fingerprint", "sha")
-
-
-def _freeze(value: object) -> object:
-    if isinstance(value, dict):
-        return tuple((key, _freeze(nested)) for key, nested in sorted(value.items()))
-    if isinstance(value, list):
-        return tuple(_freeze(nested) for nested in value)
-    return value
 
 
 def _all_keys(value: object) -> tuple[str, ...]:
@@ -132,7 +125,7 @@ def _prepared() -> PreparedDataset:
     )
 
 
-def _direct_checkpoint_fixture():
+def _direct_checkpoint_fixture(method_id: str = "magic"):
     registry = load_method_registry(ROOT / "study/methods.json")
     authority = load_comparator_tuning_authority(
         ROOT,
@@ -141,18 +134,18 @@ def _direct_checkpoint_fixture():
     )
     prepared = _prepared()
     descriptor = describe_prepared_input(prepared)
-    spec = registry.by_id("magic")
+    spec = registry.by_id(method_id)
     method = comparator_method_binding(spec)
     configurations = tuple(
         DirectAuthorizedConfiguration(
             method=method,
             configuration_id=row.configuration_id,
             configuration_kind="comparator_tuning",
-            payload=_freeze(dict(row.payload)),
+            payload=freeze_direct_mapping(row.payload),
             requires_count_score=False,
             requires_calibration=False,
         )
-        for row in authority.configurations_for("magic")[:3]
+        for row in authority.configurations_for(method_id)[:3]
     )
     entries = []
     for ordinal, configuration in enumerate(configurations, start=1):
@@ -345,20 +338,36 @@ def _attempt(
             terminal_reason=reason,
         ),
     )
-    metric = DirectMetricRow(
-        identity=entry.identity,
-        metric="rmse_missing",
-        value=None if reason is not None else 0.0,
-        n=0 if reason is not None else 1,
-        status=status,
-        reason=reason,
+    metrics = tuple(
+        DirectMetricRow(
+            identity=entry.identity,
+            metric=metric,
+            value=None if reason is not None else 0.0,
+            n=0 if reason is not None else 1,
+            status=status,
+            reason=reason,
+        )
+        for metric in (
+            "mse",
+            "mse_dropout",
+            "gnrmse",
+            "mse_pre_dropout_zero",
+            "corr_err",
+            "mse_non_dropout_nonzero",
+        )
     )
     return DirectEvaluatedAttempt(
         run=run,
-        metrics=(metric,),
-        native_output=None,
-        native_output_scale=None,
-        evaluator_output=None,
+        metrics=metrics,
+        native_output=(
+            np.zeros((2, 3), dtype=np.float64) if status == "completed" else None
+        ),
+        native_output_scale=(
+            entry.identity.method.output_scale if status == "completed" else None
+        ),
+        evaluator_output=(
+            np.zeros((2, 3), dtype=np.float64) if status == "completed" else None
+        ),
         p_pre_zero_evidence=DirectPreZeroEvidence(
             applicable=False,
             status="not_applicable",
@@ -370,6 +379,169 @@ def _attempt(
             compressed_byte_count=0,
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("empty", "duplicate", "renamed", "reordered"),
+)
+def test_direct_attempt_and_checkpoint_require_exact_ordered_metric_denominator(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    attempt = _attempt(plan.entries[0])
+    metrics = list(attempt.metrics)
+    if mutation == "empty":
+        metrics = []
+    elif mutation == "duplicate":
+        metrics[-1] = metrics[0]
+    elif mutation == "renamed":
+        metrics[0] = replace(metrics[0], metric="renamed")
+    else:
+        metrics[0], metrics[1] = metrics[1], metrics[0]
+
+    with pytest.raises(RunnerContractError, match="metric|denominator|order"):
+        replace(attempt, metrics=tuple(metrics))
+    record = attempt.to_dict()
+    if mutation == "empty":
+        record["metrics"] = []
+    elif mutation == "duplicate":
+        record["metrics"][-1] = record["metrics"][0]
+    elif mutation == "renamed":
+        record["metrics"][0]["metric"] = "renamed"
+    else:
+        record["metrics"][0], record["metrics"][1] = (
+            record["metrics"][1],
+            record["metrics"][0],
+        )
+    with pytest.raises(RunnerContractError, match="metric|denominator|order"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("metric-identity", "metric-status", "metric-reason"),
+)
+def test_direct_attempt_rejects_run_metric_semantic_drift(mutation: str) -> None:
+    plan, _registry, _prepared = _direct_checkpoint_fixture()
+    attempt = _attempt(plan.entries[0])
+    metrics = list(attempt.metrics)
+    if mutation == "metric-identity":
+        metrics[0] = replace(
+            metrics[0],
+            identity=replace(metrics[0].identity, ordinal=99),
+        )
+    elif mutation == "metric-status":
+        metrics[0] = replace(metrics[0], status="failed", reason="different_failure")
+    else:
+        metrics[0] = replace(metrics[0], reason="different_failure")
+
+    with pytest.raises(RunnerContractError, match="metric|identity|status|reason"):
+        replace(attempt, metrics=tuple(metrics))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("cell-audit", "gene-count", "observed-zero-count"),
+)
+def test_direct_checkpoint_rebinds_qc_fields_to_prepared_input(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    record = _attempt(plan.entries[0]).to_dict()
+    run = record["run"]
+    if mutation == "cell-audit":
+        run.update(
+            excluded_cell_count=1,
+            excluded_cell_ids=["cell-1"],
+            retained_cell_count=1,
+            retained_cell_ids=["cell-2"],
+        )
+    elif mutation == "gene-count":
+        run["retained_gene_count"] = 2
+    else:
+        run["observed_zero_count"] = 2
+
+    with pytest.raises(RunnerContractError, match="audit|prepared|gene|zero"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
+@pytest.mark.parametrize("mutation", ("reason", "applicability"))
+def test_direct_attempt_and_checkpoint_bind_non_score_prezero_receipt(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    attempt = _attempt(plan.entries[0])
+    if mutation == "reason":
+        evidence = replace(
+            attempt.p_pre_zero_evidence,
+            reason="coherently_changed_non_applicable_reason",
+        )
+    else:
+        evidence = DirectPreZeroEvidence(
+            applicable=True,
+            status=attempt.run.status,
+            reason=attempt.run.reason,
+            shape=None,
+            dtype=None,
+            encoding=None,
+            path=None,
+            compressed_byte_count=0,
+        )
+
+    with pytest.raises(RunnerContractError, match="p_pre_zero|applicability|receipt"):
+        replace(attempt, p_pre_zero_evidence=evidence)
+    record = attempt.to_dict()
+    record["p_pre_zero_evidence"] = evidence.to_dict()
+    with pytest.raises(RunnerContractError, match="p_pre_zero|applicability|receipt"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
+def test_direct_checkpoint_load_reopens_applicable_prezero_receipt(
+    tmp_path: Path,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    store.write(
+        plan,
+        (_attempt(plan.entries[0], status="completed").to_dict(),),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+
+    def mutate(payload):
+        payload["records"][0]["p_pre_zero_evidence"] = {
+            "applicable": True,
+            "status": "completed",
+            "reason": None,
+            "shape": [2, 3],
+            "dtype": "<f8",
+            "encoding": "zlib",
+            "path": "missing-prezero.zlib",
+            "compressed_byte_count": 1,
+        }
+
+    _rewrite(store.path, mutate)
+    with pytest.raises(RunnerContractError, match="p_pre_zero|unavailable|path"):
+        store.load(plan, registry=registry, prepared_datasets=prepared)
 
 
 def _terminal_prefix(
@@ -648,6 +820,65 @@ def test_direct_budget_uses_configuration_ids_and_task7_scopes() -> None:
     assert budget_scope(replace(plan.entries[0], identity=ablation_identity)) == (
         "maskimpute:ablation"
     )
+
+
+@pytest.mark.parametrize(
+    ("method_id", "limit"),
+    (("magic", 86_400.0), ("dca", 28_800.0)),
+)
+def test_direct_budget_restore_and_record_enforce_exact_time_ceiling(
+    method_id: str,
+    limit: float,
+) -> None:
+    plan, registry, _prepared = _direct_checkpoint_fixture(method_id)
+    spec = registry.by_id(method_id)
+    entry = plan.entries[0]
+
+    exact_restore = DirectDevelopmentBudget()
+    exact_restore.restore(spec, entry.identity.configuration_id, "completed", limit)
+    assert exact_restore.to_dict()[method_id]["consumed_seconds"] == limit
+    exact_restore.restore(
+        spec,
+        entry.identity.configuration_id,
+        "infrastructure_error",
+        limit + 1.0,
+    )
+    assert exact_restore.to_dict()[method_id]["consumed_seconds"] == limit
+
+    with pytest.raises(RunnerContractError, match="time|budget|ceiling"):
+        DirectDevelopmentBudget().restore(
+            spec,
+            entry.identity.configuration_id,
+            "completed",
+            limit + 1.0,
+        )
+    with pytest.raises(RunnerContractError, match="time|budget|ceiling"):
+        DirectDevelopmentBudget().record(
+            spec,
+            entry.identity.configuration_id,
+            _attempt(entry, runtime_seconds=limit + 1.0),
+        )
+
+
+@pytest.mark.parametrize(
+    ("method_id", "limit"),
+    (("magic", 86_400.0), ("dca", 28_800.0)),
+)
+def test_direct_checkpoint_replay_rejects_coherent_time_ledger_over_ceiling(
+    tmp_path: Path,
+    method_id: str,
+    limit: float,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture(method_id)
+    record = _attempt(plan.entries[0], runtime_seconds=limit + 1.0).to_dict()
+
+    with pytest.raises(RunnerContractError, match="time|budget|ceiling"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
 
 
 @pytest.mark.parametrize(
@@ -937,16 +1168,7 @@ def test_direct_checkpoint_rejects_signed_negative_zero_metric(tmp_path: Path) -
 def test_direct_checkpoint_accepts_nonzero_negative_metric(tmp_path: Path) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     record = _attempt(plan.entries[0], status="completed").to_dict()
-    record["metrics"] = [
-        DirectMetricRow(
-            identity=plan.entries[0].identity,
-            metric="signed_error",
-            value=-0.25,
-            n=1,
-            status="completed",
-            reason=None,
-        ).to_dict()
-    ]
+    record["metrics"][0]["value"] = -0.25
 
     report = DirectCheckpointStore(tmp_path / "checkpoint.json").write(
         plan,

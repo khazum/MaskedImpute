@@ -102,6 +102,8 @@ def project_direct_selected_comparators(
     comparator_reference: ComparatorAuthorityReference,
     comparator_authority: ComparatorTuningAuthority,
     selected_rows: Sequence[ComparatorConfiguration],
+    *,
+    expected_method_ids: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """Return the closed direct comparator handoff for authoritative rows."""
 
@@ -112,6 +114,20 @@ def project_direct_selected_comparators(
     rows = tuple(selected_rows)
     if not all(isinstance(row, ComparatorConfiguration) for row in rows):
         raise TypeError("selected_rows must contain ComparatorConfiguration values")
+    expected_methods = (
+        tuple(dict.fromkeys(row.method_id for row in rows))
+        if expected_method_ids is None
+        else tuple(expected_method_ids)
+    )
+    if (
+        not expected_methods
+        or len(expected_methods) != len(set(expected_methods))
+        or any(not isinstance(value, str) or not value for value in expected_methods)
+        or tuple(row.method_id for row in rows) != expected_methods
+    ):
+        raise SelectionAuthorityError(
+            "direct synthetic projection methods must be unique and exact"
+        )
     try:
         validate_comparator_tuning_authority(comparator_authority)
     except ComparatorTuningError as error:

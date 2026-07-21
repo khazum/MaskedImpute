@@ -173,6 +173,29 @@ def _audited_direct_scope(node: ast.AST) -> bool:
     )
 
 
+def _reachable_module_functions(
+    functions: Mapping[str, ast.AST],
+    roots: set[str],
+    module_aliases: Mapping[str, str],
+) -> set[str]:
+    reachable: set[str] = set()
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        if name in reachable:
+            continue
+        scope = functions.get(name)
+        if scope is None:
+            continue
+        reachable.add(name)
+        symbols, _strings = _scope_aliases(scope, module_aliases)
+        for call in (node for node in ast.walk(scope) if isinstance(node, ast.Call)):
+            resolved = _resolve_symbol(call.func, symbols)
+            if resolved in functions and resolved not in reachable:
+                pending.append(resolved)
+    return reachable
+
+
 def _direct_source_audit_findings(
     source: str,
     *,
@@ -180,11 +203,32 @@ def _direct_source_audit_findings(
 ) -> tuple[str, ...]:
     tree = ast.parse(source)
     module_aliases = _module_symbol_aliases(tree)
-    scopes: tuple[ast.AST, ...] = (
-        tuple(node for node in ast.walk(tree) if _audited_direct_scope(node))
-        if shared
-        else (tree,)
-    )
+    if shared:
+        functions = {
+            node.name: node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        direct_roots = {
+            name for name, node in functions.items() if _audited_direct_scope(node)
+        }
+        legacy_roots = {
+            name
+            for name, node in functions.items()
+            if not name.startswith("_") and not _audited_direct_scope(node)
+        }
+        direct_reachable = _reachable_module_functions(
+            functions, direct_roots, module_aliases
+        )
+        legacy_reachable = _reachable_module_functions(
+            functions, legacy_roots, module_aliases
+        )
+        audited_names = direct_roots | (direct_reachable - legacy_reachable)
+        scopes: tuple[ast.AST, ...] = tuple(
+            functions[name] for name in functions if name in audited_names
+        )
+    else:
+        scopes = (tree,)
     findings: set[str] = set()
     if not shared:
         for local, imported in module_aliases.items():
@@ -254,9 +298,11 @@ def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
         DirectCheckpointReport,
     )
     from maskimpute_benchmark.fair_comparator_execution import (
+        DIRECT_RECONSTRUCTION_METRICS,
         DirectEvaluatedAttempt,
         DirectExecutionRequest,
         DirectLogReceipt,
+        DirectMetricRow,
         DirectPreZeroEvidence,
         DirectRunResult,
     )
@@ -399,7 +445,17 @@ def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
                 terminal_reason=reason,
             ),
         ),
-        metrics=(),
+        metrics=tuple(
+            DirectMetricRow(
+                identity=identity,
+                metric=metric,
+                value=None,
+                n=0,
+                status="unavailable",
+                reason=reason,
+            )
+            for metric in DIRECT_RECONSTRUCTION_METRICS
+        ),
         native_output=None,
         native_output_scale=None,
         evaluator_output=None,
@@ -562,6 +618,45 @@ def test_direct_source_audit_ignores_function_local_imports_in_legacy_siblings(
     assert _direct_source_audit_findings(source, shared=True) == ()
 
 
+def test_direct_source_audit_reaches_direct_only_helpers() -> None:
+    source = """
+from provenance import canonical_sha256
+
+def _serialize_receipt(value):
+    return canonical_sha256(value)
+
+def project_direct_payload(value):
+    return _serialize_receipt(value)
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_rejects_forbidden_calls_in_adapter_wrapper() -> None:
+    source = """
+import hashlib
+
+def run_magic_direct(value):
+    return hashlib.sha256(value).hexdigest()
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_ignores_legacy_only_helpers() -> None:
+    source = """
+from provenance import canonical_sha256
+
+def _serialize_receipt(value):
+    return canonical_sha256(value)
+
+def run_magic(value):
+    return _serialize_receipt(value)
+
+def run_magic_direct(value):
+    return value
+"""
+    assert _direct_source_audit_findings(source, shared=True) == ()
+
+
 def test_scoped_direct_source_and_schema_migration_audit() -> None:
     tuning = json.loads((ROOT / "study/comparator_tuning.json").read_text())
     contract = json.loads((ROOT / "study/selection_contract.json").read_text())
@@ -585,6 +680,7 @@ def test_scoped_direct_source_and_schema_migration_audit() -> None:
         "maskimpute_benchmark/fair_comparator_plan.py",
         "maskimpute_benchmark/fair_comparator_execution.py",
         "maskimpute_benchmark/fair_comparator_checkpoint.py",
+        "maskimpute_benchmark/methods/direct.py",
     )
     for relative in direct_modules:
         source = (ROOT / relative).read_text(encoding="utf-8")
@@ -595,6 +691,16 @@ def test_scoped_direct_source_and_schema_migration_audit() -> None:
         "maskimpute_benchmark/development_evaluation.py",
         "maskimpute_benchmark/downstream_evidence.py",
         "maskimpute_benchmark/selection.py",
+        "maskimpute_benchmark/methods/alra.py",
+        "maskimpute_benchmark/methods/magic.py",
+        "maskimpute_benchmark/methods/dca.py",
+        "maskimpute_benchmark/methods/scvi.py",
+        "maskimpute_benchmark/methods/saver.py",
+        "maskimpute_benchmark/methods/scziva.py",
+        "maskimpute_benchmark/methods/afmf.py",
+        "maskimpute_benchmark/methods/biaeimpute.py",
+        "maskimpute_benchmark/methods/sccr.py",
+        "maskimpute_benchmark/methods/scsdae.py",
     )
     for relative in shared_modules:
         source = (ROOT / relative).read_text(encoding="utf-8")

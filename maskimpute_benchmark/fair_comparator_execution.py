@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass
 import math
 import os
 from pathlib import Path, PurePosixPath
@@ -20,13 +20,14 @@ from .comparator_tuning import (
     ComparatorTuningError,
     comparator_method_binding,
     encode_comparator_configuration,
+    validate_comparator_tuning_authority,
 )
+from .direct_values import direct_equal, direct_json_value, freeze_direct_mapping
 from .fair_comparator_plan import (
     ComparatorRunIdentity,
     DirectPlanEntry,
     PreparedInputDescriptor,
     describe_prepared_input,
-    direct_json_value,
     direct_run_id,
 )
 from .methods import (
@@ -42,6 +43,7 @@ from .methods import (
     count_equivalent_to_log2_cp10k,
 )
 from .runner import AdapterOutcome, PreparedDataset, RunnerContractError
+from .runtime_environments import RuntimeEnvironmentError
 
 
 _RUN_STATUSES = frozenset(
@@ -61,38 +63,7 @@ _RUN_STATUSES = frozenset(
 DirectAdapter = Callable[..., AdapterOutcome]
 
 
-def _direct_equal(left: object, right: object) -> bool:
-    """Compare complete JSON-like values without numeric type coercion."""
-
-    if is_dataclass(left) or is_dataclass(right):
-        if (
-            not is_dataclass(left)
-            or not is_dataclass(right)
-            or isinstance(left, type)
-            or isinstance(right, type)
-            or type(left) is not type(right)
-        ):
-            return False
-        return all(
-            _direct_equal(getattr(left, item.name), getattr(right, item.name))
-            for item in fields(left)
-        )
-    if isinstance(left, Mapping) or isinstance(right, Mapping):
-        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
-            return False
-        return set(left) == set(right) and all(
-            _direct_equal(left[key], right[key]) for key in left
-        )
-    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
-        if type(left) is not type(right):
-            return False
-        return len(left) == len(right) and all(
-            _direct_equal(first, second)
-            for first, second in zip(left, right, strict=True)
-        )
-    if type(left) is float and type(right) is float:
-        return left.hex() == right.hex()
-    return type(left) is type(right) and left == right
+_direct_equal = direct_equal
 
 
 def _identity_dict(identity: ComparatorRunIdentity) -> dict[str, object]:
@@ -440,6 +411,40 @@ class DirectEvaluatedAttempt:
     evaluator_output: np.ndarray | None
     p_pre_zero_evidence: DirectPreZeroEvidence
 
+    def __post_init__(self) -> None:
+        validate_direct_evidence_semantics(
+            self.run,
+            self.metrics,
+            self.p_pre_zero_evidence,
+        )
+        matrices = (self.native_output, self.evaluator_output)
+        if self.run.status == "completed":
+            if (
+                any(type(value) is not np.ndarray for value in matrices)
+                or not isinstance(self.native_output_scale, str)
+                or not self.native_output_scale
+                or self.native_output_scale != self.run.identity.method.output_scale
+            ):
+                raise RunnerContractError(
+                    "completed direct attempt matrix/output scale is inconsistent"
+                )
+            assert self.native_output is not None and self.evaluator_output is not None
+            if (
+                self.native_output.shape != self.evaluator_output.shape
+                or self.native_output.ndim != 2
+                or not np.isfinite(self.native_output).all()
+                or not np.isfinite(self.evaluator_output).all()
+            ):
+                raise RunnerContractError("direct attempt output matrices differ")
+        elif (
+            self.native_output is not None
+            or self.native_output_scale is not None
+            or self.evaluator_output is not None
+        ):
+            raise RunnerContractError(
+                "noncompleted direct attempt retains an output matrix"
+            )
+
     def to_dict(self) -> dict[str, object]:
         """Return the checkpoint-safe record without in-memory matrices."""
 
@@ -448,6 +453,72 @@ class DirectEvaluatedAttempt:
             "metrics": [metric.to_dict() for metric in self.metrics],
             "p_pre_zero_evidence": self.p_pre_zero_evidence.to_dict(),
         }
+
+
+DIRECT_RECONSTRUCTION_METRICS = (
+    "mse",
+    "mse_dropout",
+    "gnrmse",
+    "mse_pre_dropout_zero",
+    "corr_err",
+    "mse_non_dropout_nonzero",
+)
+
+
+def validate_direct_evidence_semantics(
+    run: DirectRunResult,
+    metrics: tuple[DirectMetricRow, ...],
+    evidence: DirectPreZeroEvidence,
+) -> None:
+    """Close run, metric, and pre-zero evidence cross-field semantics."""
+
+    if not isinstance(run, DirectRunResult):
+        raise TypeError("run must be a DirectRunResult")
+    if type(metrics) is not tuple or not all(
+        isinstance(metric, DirectMetricRow) for metric in metrics
+    ):
+        raise TypeError("metrics must contain DirectMetricRow values")
+    if not isinstance(evidence, DirectPreZeroEvidence):
+        raise TypeError("evidence must be a DirectPreZeroEvidence")
+    if run.run_id != direct_run_id(run.identity):
+        raise RunnerContractError("direct attempt run identity differs")
+    if tuple(metric.metric for metric in metrics) != DIRECT_RECONSTRUCTION_METRICS:
+        raise RunnerContractError("direct attempt metric denominator/order differs")
+    if any(not direct_equal(metric.identity, run.identity) for metric in metrics):
+        raise RunnerContractError("direct attempt metric identity differs")
+    if run.status == "completed":
+        if any(metric.status not in {"completed", "unavailable"} for metric in metrics):
+            raise RunnerContractError("completed direct attempt metric status differs")
+    elif any(
+        metric.value is not None
+        or metric.n != 0
+        or metric.status != run.status
+        or metric.reason != run.reason
+        for metric in metrics
+    ):
+        raise RunnerContractError(
+            "noncompleted direct attempt metric status/reason differs"
+        )
+    if run.identity.method.method_id == "maskimpute":
+        if (
+            not evidence.applicable
+            or evidence.status != run.status
+            or evidence.reason != run.reason
+        ):
+            raise RunnerContractError("direct p_pre_zero applicability/receipt differs")
+    else:
+        expected = DirectPreZeroEvidence(
+            applicable=False,
+            status="not_applicable",
+            reason="method_does_not_emit_p_pre_zero",
+            shape=None,
+            dtype=None,
+            encoding=None,
+            path=None,
+            compressed_byte_count=0,
+        )
+        if not direct_equal(evidence, expected):
+            raise RunnerContractError("direct p_pre_zero applicability/receipt differs")
 
 
 def _request_matches_prepared(
@@ -474,14 +545,10 @@ def _request_matches_prepared(
 
 
 def _row_payload(row: ComparatorConfiguration) -> tuple[tuple[str, object], ...]:
-    def freeze(value: object) -> object:
-        if isinstance(value, Mapping):
-            return tuple((key, freeze(nested)) for key, nested in sorted(value.items()))
-        if isinstance(value, list):
-            return tuple(freeze(nested) for nested in value)
-        return value
-
-    return tuple((key, freeze(nested)) for key, nested in sorted(row.payload.items()))
+    try:
+        return freeze_direct_mapping(row.payload)
+    except ValueError as error:
+        raise RunnerContractError("direct request authority row differs") from error
 
 
 def _validate_direct_identity(
@@ -538,7 +605,7 @@ def create_direct_request(
     prepared: PreparedDataset,
     descriptor: PreparedInputDescriptor,
     method_spec: MethodSpec,
-    authority_row: ComparatorConfiguration,
+    authority: ComparatorTuningAuthority,
     *,
     timeout_seconds: int | float,
 ) -> DirectExecutionRequest:
@@ -552,8 +619,7 @@ def create_direct_request(
         raise TypeError("descriptor must be a PreparedInputDescriptor")
     if not isinstance(method_spec, MethodSpec):
         raise TypeError("method_spec must be a MethodSpec")
-    if not isinstance(authority_row, ComparatorConfiguration):
-        raise TypeError("authority_row must be a ComparatorConfiguration")
+    _require_complete_authority(authority)
     timeout = _require_nonnegative_number(timeout_seconds, "timeout_seconds")
     if timeout == 0:
         raise RunnerContractError("timeout_seconds must be positive")
@@ -570,7 +636,7 @@ def create_direct_request(
         raise RunnerContractError("direct request run ID differs")
     if not _direct_equal(describe_prepared_input(prepared), descriptor):
         raise RunnerContractError("direct prepared input descriptor differs")
-    _validate_direct_identity(entry.identity, method_spec, authority_row)
+    _resolve_identity_row(entry.identity, method_spec, authority)
     model_seed = entry.identity.model_seed
     if method_spec.stochastic:
         if (
@@ -614,9 +680,26 @@ def _resolve_row(
     request: DirectExecutionRequest,
     authority: ComparatorTuningAuthority,
 ) -> ComparatorConfiguration:
+    _require_complete_authority(authority)
+    return _resolve_identity_row(request.identity, request.method_spec, authority)
+
+
+def _require_complete_authority(authority: ComparatorTuningAuthority) -> None:
     if not isinstance(authority, ComparatorTuningAuthority):
         raise TypeError("authority must be a ComparatorTuningAuthority")
-    identity = request.identity
+    try:
+        validate_comparator_tuning_authority(authority)
+    except ComparatorTuningError as error:
+        raise RunnerContractError(
+            "direct comparator authority is not the complete fixed authority"
+        ) from error
+
+
+def _resolve_identity_row(
+    identity: ComparatorRunIdentity,
+    method_spec: MethodSpec,
+    authority: ComparatorTuningAuthority,
+) -> ComparatorConfiguration:
     if not _direct_equal(identity.authority_revision, authority.authority_revision):
         raise RunnerContractError("direct request authority revision differs")
     matches = tuple(
@@ -631,7 +714,7 @@ def _resolve_row(
             "direct request does not resolve to exactly one authority row"
         )
     row = matches[0]
-    _validate_direct_identity(identity, request.method_spec, row)
+    _validate_direct_identity(identity, method_spec, row)
     return row
 
 
@@ -706,6 +789,8 @@ def _dispatch(
             outcome = AdapterOutcome.timeout("timeout")
         except MemoryError:
             outcome = AdapterOutcome.resource_exceeded("memory_limit_exceeded")
+        except RuntimeEnvironmentError as error:
+            outcome = AdapterOutcome.infrastructure_error(str(error))
         except Exception:
             outcome = AdapterOutcome.failed("adapter_exception")
     finally:
@@ -731,20 +816,7 @@ def _dispatch(
     return outcome
 
 
-def _metric_names() -> tuple[str, ...]:
-    from .metrics import reconstruction_metrics
-
-    return tuple(
-        reconstruction_metrics(
-            np.zeros((1, 1), dtype=np.float64),
-            np.zeros((1, 1), dtype=np.float64),
-            None,
-            truth_kind="orthogonal_only",
-        )
-    )
-
-
-_RECONSTRUCTION_METRICS = _metric_names()
+_RECONSTRUCTION_METRICS = DIRECT_RECONSTRUCTION_METRICS
 
 
 def _dense_matrix(value: object, name: str) -> np.ndarray:
@@ -920,12 +992,14 @@ def _evaluate(
             DirectMetricRow(
                 identity=request.identity,
                 metric=name,
-                value=None if metric.value is None else float(metric.value),
-                n=int(metric.n),
-                status="unavailable" if metric.value is None else "completed",
-                reason=metric.reason,
+                value=(
+                    None if metrics[name].value is None else float(metrics[name].value)
+                ),
+                n=int(metrics[name].n),
+                status=("unavailable" if metrics[name].value is None else "completed"),
+                reason=metrics[name].reason,
             )
-            for name, metric in metrics.items()
+            for name in DIRECT_RECONSTRUCTION_METRICS
         )
     stdout = DirectLogReceipt(
         stream="stdout",

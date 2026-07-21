@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields
 import json
 import math
 import os
@@ -13,17 +13,20 @@ import tempfile
 from typing import Any, Literal
 
 from .comparator_tuning import comparator_method_binding
+from .direct_values import direct_equal, direct_json_value
 from .fair_comparator_execution import (
     DirectEvaluatedAttempt,
+    DirectLogReceipt,
+    DirectMetricRow,
     DirectPreZeroEvidence,
     DirectRunResult,
+    validate_direct_evidence_semantics,
 )
 from .fair_comparator_plan import (
     DirectCompetitionPlan,
     DirectPlanEntry,
     PreparedInputDescriptor,
     describe_prepared_input,
-    direct_json_value,
     direct_run_id,
     validate_direct_competition_plan,
 )
@@ -36,7 +39,9 @@ from .runner import (
     MAX_GPU_BUDGET_SECONDS,
     SELECTION_COMPLETENESS_BLOCKERS,
     BudgetDecision,
+    DatasetBinding,
     PreparedDataset,
+    RunnerAuthority,
     RunnerContractError,
 )
 
@@ -120,36 +125,7 @@ _RUN_STATUSES = frozenset(
 )
 
 
-def _direct_equal(left: object, right: object) -> bool:
-    if is_dataclass(left) or is_dataclass(right):
-        if (
-            not is_dataclass(left)
-            or not is_dataclass(right)
-            or isinstance(left, type)
-            or isinstance(right, type)
-            or type(left) is not type(right)
-        ):
-            return False
-        return all(
-            _direct_equal(getattr(left, item.name), getattr(right, item.name))
-            for item in fields(left)
-        )
-    if isinstance(left, Mapping) or isinstance(right, Mapping):
-        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
-            return False
-        return set(left) == set(right) and all(
-            _direct_equal(left[key], right[key]) for key in left
-        )
-    if isinstance(left, (list, tuple)) or isinstance(right, (list, tuple)):
-        if type(left) is not type(right) or len(left) != len(right):
-            return False
-        return all(
-            _direct_equal(first, second)
-            for first, second in zip(left, right, strict=True)
-        )
-    if type(left) is float and type(right) is float:
-        return left.hex() == right.hex()
-    return type(left) is type(right) and left == right
+_direct_equal = direct_equal
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -316,7 +292,7 @@ class DirectDevelopmentBudget:
             run = outcome
         else:
             raise TypeError("outcome must be a direct run or evaluated attempt")
-        if run.status == "infrastructure_error":
+        if run.status in COMPARATOR_SELECTION_BLOCKING_STATUSES:
             return
         self._restore_consuming(
             spec,
@@ -365,12 +341,22 @@ class DirectDevelopmentBudget:
     ) -> None:
         runtime = _require_nonnegative_number(runtime_seconds, "restored runtime")
         scope = _scope(spec.id if budget_scope is None else budget_scope)
+        limit = (
+            float(MAX_GPU_BUDGET_SECONDS)
+            if spec.resources.gpu_required
+            else float(MAX_CPU_BUDGET_SECONDS)
+        )
+        consumed = self._consumed_seconds.get(scope, 0.0)
+        if consumed + runtime > limit:
+            raise RunnerContractError(
+                f"{overage_message}: direct time budget ceiling exceeded"
+            )
         if counts_toward_configuration_limit:
             configurations = self._configurations.setdefault(scope, set())
             configurations.add(configuration_id)
             if len(configurations) > MAX_DEVELOPMENT_CONFIGURATIONS:
                 raise RunnerContractError(overage_message)
-        self._consumed_seconds[scope] = self._consumed_seconds.get(scope, 0.0) + runtime
+        self._consumed_seconds[scope] = consumed + runtime
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -451,6 +437,8 @@ def _validate_record(
     value: object,
     entry: DirectPlanEntry,
     *,
+    prepared: PreparedDataset | None = None,
+    evidence_repository: Path | None = None,
     expected_identity: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     if not isinstance(value, Mapping) or set(value) != {
@@ -504,11 +492,28 @@ def _validate_record(
         or not run.get("gpu_measurement")
     ):
         raise RunnerContractError("direct checkpoint run audit is invalid")
+    if prepared is not None:
+        expected_qc = {
+            "excluded_cell_count": prepared.audit.excluded_cell_count,
+            "excluded_cell_ids": list(prepared.audit.excluded_cell_ids),
+            "retained_cell_count": prepared.audit.retained_cell_count,
+            "retained_cell_ids": list(prepared.audit.retained_cell_ids),
+            "retained_gene_count": prepared.method_input.shape[1],
+            "observed_zero_count": int((prepared.method_input.counts == 0).sum()),
+        }
+        if any(
+            not _direct_equal(run.get(name), expected)
+            for name, expected in expected_qc.items()
+        ):
+            raise RunnerContractError(
+                "direct checkpoint run audit differs from prepared input"
+            )
     _validate_log(run.get("stdout"), "stdout", reason)
     _validate_log(run.get("stderr"), "stderr", reason)
     metrics = record.get("metrics")
     if not isinstance(metrics, list):
         raise RunnerContractError("direct checkpoint metrics are invalid")
+    metric_rows: list[DirectMetricRow] = []
     for metric in metrics:
         if not isinstance(metric, Mapping) or set(metric) != _METRIC_KEYS:
             raise RunnerContractError("direct checkpoint metric has wrong schema")
@@ -542,9 +547,63 @@ def _validate_record(
                 raise RunnerContractError("direct checkpoint metric is inconsistent")
         elif metric.get("status") != "completed" or metric_reason is not None:
             raise RunnerContractError("direct checkpoint metric is inconsistent")
-    record["p_pre_zero_evidence"] = _validate_prezero_evidence(
-        record.get("p_pre_zero_evidence")
+        metric_rows.append(
+            DirectMetricRow(
+                identity=entry.identity,
+                metric=metric["metric"],
+                value=metric_value,
+                n=metric["n"],
+                status=metric["status"],
+                reason=metric_reason,
+            )
+        )
+    encoded_evidence = _validate_prezero_evidence(record.get("p_pre_zero_evidence"))
+    record["p_pre_zero_evidence"] = encoded_evidence
+    shape_value = encoded_evidence["shape"]
+    evidence = DirectPreZeroEvidence(
+        applicable=encoded_evidence["applicable"],
+        status=encoded_evidence["status"],
+        reason=encoded_evidence["reason"],
+        shape=(None if shape_value is None else tuple(shape_value)),
+        dtype=encoded_evidence["dtype"],
+        encoding=encoded_evidence["encoding"],
+        path=encoded_evidence["path"],
+        compressed_byte_count=encoded_evidence["compressed_byte_count"],
     )
+    run_result = DirectRunResult(
+        run_id=run["run_id"],
+        identity=entry.identity,
+        status=status,
+        reason=reason,
+        runtime_seconds=run["runtime_seconds"],
+        peak_rss_bytes=run["peak_rss_bytes"],
+        peak_gpu_bytes=run["peak_gpu_bytes"],
+        rss_measurement=run["rss_measurement"],
+        gpu_measurement=run["gpu_measurement"],
+        excluded_cell_count=run["excluded_cell_count"],
+        excluded_cell_ids=tuple(run["excluded_cell_ids"]),
+        retained_cell_count=run["retained_cell_count"],
+        retained_cell_ids=tuple(run["retained_cell_ids"]),
+        retained_gene_count=run["retained_gene_count"],
+        observed_zero_count=run["observed_zero_count"],
+        stdout=DirectLogReceipt(**run["stdout"]),
+        stderr=DirectLogReceipt(**run["stderr"]),
+    )
+    validate_direct_evidence_semantics(run_result, tuple(metric_rows), evidence)
+    if (
+        evidence.applicable
+        and evidence.status == "completed"
+        and evidence_repository is not None
+    ):
+        matrix = evidence.reopen(evidence_repository)
+        if (
+            matrix is None
+            or prepared is None
+            or matrix.shape != prepared.method_input.shape
+        ):
+            raise RunnerContractError(
+                "direct checkpoint p_pre_zero evidence differs from prepared input"
+            )
     return json.loads(_canonical_bytes(record).decode("utf-8"))
 
 
@@ -760,10 +819,15 @@ def _snapshot_identity(
 class DirectCheckpointStore:
     """Atomic direct checkpoint with one recoverable provisional record."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, repository_root: Path | None = None) -> None:
         if not isinstance(path, Path):
             raise TypeError("path must be a pathlib.Path")
+        if repository_root is not None and not isinstance(repository_root, Path):
+            raise TypeError("repository_root must be a pathlib.Path")
         self.path = path.absolute()
+        self.repository_root = (
+            self.path.parent if repository_root is None else repository_root.absolute()
+        )
         self.intent_path = self.path.with_name(f".{self.path.name}.transaction.json")
 
     def _read_owned(self, path: Path, name: str) -> bytes:
@@ -852,11 +916,15 @@ class DirectCheckpointStore:
         *,
         registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
+        authority: RunnerAuthority | None = None,
+        datasets: Sequence[DatasetBinding] | None = None,
     ) -> DirectCheckpointReport:
         validate_direct_competition_plan(
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
         )
         snapshot = _validate_plan(plan)
         descriptors = _prepared_descriptors(plan, prepared_datasets)
@@ -864,6 +932,7 @@ class DirectCheckpointStore:
             _validate_record(
                 value,
                 entry,
+                prepared=prepared_datasets[entry.identity.dataset_id],
                 expected_identity=_snapshot_identity(snapshot, position),
             )
             for position, (value, entry) in enumerate(
@@ -877,6 +946,8 @@ class DirectCheckpointStore:
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
         )
 
     def append(
@@ -887,6 +958,8 @@ class DirectCheckpointStore:
         *,
         registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
+        authority: RunnerAuthority | None = None,
+        datasets: Sequence[DatasetBinding] | None = None,
     ) -> DirectCheckpointReport:
         if not isinstance(attempt, DirectEvaluatedAttempt):
             raise TypeError("attempt must be a DirectEvaluatedAttempt")
@@ -894,12 +967,16 @@ class DirectCheckpointStore:
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
         )
         if os.path.lexists(self.path):
             current = self.load(
                 plan,
                 registry=registry,
                 prepared_datasets=prepared_datasets,
+                authority=authority,
+                datasets=datasets,
             )
             if report is not None and not _direct_equal(
                 report.to_dict(), current.to_dict()
@@ -923,6 +1000,7 @@ class DirectCheckpointStore:
         record = _validate_record(
             attempt.to_dict(),
             entry,
+            prepared=prepared_datasets[entry.identity.dataset_id],
             expected_identity=_snapshot_identity(_validate_plan(plan), position),
         )
         self._publish_transaction_intent(plan, position, entry, attempt)
@@ -935,6 +1013,8 @@ class DirectCheckpointStore:
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
         )
 
     def _publish_transaction_intent(
@@ -1017,6 +1097,7 @@ class DirectCheckpointStore:
         record = _validate_record(
             intent.get("record"),
             entry,
+            prepared=prepared_datasets[entry.identity.dataset_id],
             expected_identity=identity,
         )
         descriptors = _prepared_descriptors(plan, prepared_datasets)
@@ -1090,6 +1171,8 @@ class DirectCheckpointStore:
             _validate_record(
                 value,
                 entry,
+                prepared=prepared_datasets[entry.identity.dataset_id],
+                evidence_repository=self.repository_root,
                 expected_identity=_snapshot_identity(snapshot, position),
             )
             for position, (value, entry) in enumerate(
@@ -1145,11 +1228,15 @@ class DirectCheckpointStore:
         *,
         registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
+        authority: RunnerAuthority | None = None,
+        datasets: Sequence[DatasetBinding] | None = None,
     ) -> DirectCheckpointReport:
         validate_direct_competition_plan(
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
         )
         self._recover_interrupted_transaction(
             plan,

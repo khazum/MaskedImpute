@@ -6085,6 +6085,9 @@ def execute_fair_comparator_plan(
         DirectEvaluatedAttempt,
     ],
     checkpoint_store: DirectCheckpointStore,
+    *,
+    authority: RunnerAuthority | None = None,
+    datasets: Sequence[DatasetBinding] | None = None,
 ) -> DirectCheckpointReport:
     """Execute/resume one direct plan through injected evaluated attempts."""
 
@@ -6118,12 +6121,16 @@ def execute_fair_comparator_plan(
         plan,
         registry=registry,
         prepared_datasets=prepared_datasets,
+        authority=authority,
+        datasets=datasets,
     )
     report = (
         checkpoint_store.load(
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
         )
         if os.path.lexists(checkpoint_store.path)
         else None
@@ -6215,6 +6222,8 @@ def execute_fair_comparator_plan(
             attempt,
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
         )
     if report is None:
         report = checkpoint_store.write(
@@ -6222,6 +6231,8 @@ def execute_fair_comparator_plan(
             (),
             registry=registry,
             prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
         )
     return report
 
@@ -6996,7 +7007,7 @@ class RepositoryAdapterDispatcher:
                 else:
                     self.environments.revalidate_control_state_for(method_id)
         except RuntimeEnvironmentError as error:
-            raise RunnerContractError(str(error)) from error
+            return AdapterOutcome.infrastructure_error(str(error))
         finally:
             if monitor is not None:
                 monitor.close()

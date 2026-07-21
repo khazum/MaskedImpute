@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 import time
 import zlib
@@ -13,17 +14,22 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import maskimpute_benchmark.fair_comparator_plan as direct_plan_module
 from maskimpute_benchmark.comparator_tuning import (
     comparator_method_binding,
     load_comparator_tuning_authority,
 )
 from maskimpute_benchmark.fair_comparator_execution import (
+    DIRECT_RECONSTRUCTION_METRICS,
     DirectExecutionRequest,
     DirectMetricRow,
     DirectPreZeroEvidence,
     create_direct_request,
+    dispatch_direct_request,
     execute_direct_request,
+    validate_direct_request,
 )
+from maskimpute_benchmark.direct_values import freeze_direct_mapping
 from maskimpute_benchmark.fair_comparator_plan import (
     ComparatorRunIdentity,
     DirectPlanEntry,
@@ -49,14 +55,6 @@ from maskimpute_benchmark.runner import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_IDENTITY_TOKENS = ("hash", "digest", "checksum", "fingerprint", "sha")
-
-
-def _freeze(value: object) -> object:
-    if isinstance(value, dict):
-        return tuple((key, _freeze(nested)) for key, nested in sorted(value.items()))
-    if isinstance(value, list):
-        return tuple(_freeze(nested) for nested in value)
-    return value
 
 
 def _all_keys(value: object) -> tuple[str, ...]:
@@ -152,7 +150,7 @@ def _direct_case(
         method=comparator_method_binding(spec),
         configuration_id=row.configuration_id,
         configuration_kind="comparator_tuning",
-        configuration_payload=_freeze(dict(row.payload)),
+        configuration_payload=freeze_direct_mapping(row.payload),
         dataset_id=prepared.binding.dataset_id,
         mechanism=prepared.binding.mechanism,
         biological_id=prepared.binding.biological_id,
@@ -174,7 +172,7 @@ def _direct_case(
         prepared,
         descriptor,
         spec,
-        row,
+        authority,
         timeout_seconds=5,
     )
     return request, entry, prepared, descriptor, spec, row, authority
@@ -199,6 +197,112 @@ def _completed_outcome(request: DirectExecutionRequest) -> AdapterOutcome:
         peak_rss_bytes=128,
         peak_gpu_bytes=0,
     )
+
+
+def test_create_direct_request_accepts_plan_codec_dca_payload() -> None:
+    _request, entry, prepared, descriptor, spec, row, authority = _direct_case("dca")
+    payload = direct_plan_module._freeze_payload_mapping(dict(row.payload))  # noqa: SLF001
+    identity = replace(entry.identity, configuration_payload=payload)
+    changed = replace(entry, identity=identity, run_id=direct_run_id(identity))
+
+    request = create_direct_request(
+        changed,
+        prepared,
+        descriptor,
+        spec,
+        authority,
+        timeout_seconds=5,
+    )
+
+    assert request.identity.configuration_payload == payload
+
+
+def test_create_direct_request_rejects_coherent_partial_authority() -> None:
+    _request, entry, prepared, descriptor, spec, row, authority = _direct_case()
+    payload = {**dict(row.payload), "diffusion_time": 11}
+    changed_row = replace(
+        row,
+        payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+    )
+    identity = replace(
+        entry.identity,
+        configuration_payload=freeze_direct_mapping(payload),
+    )
+    changed_entry = replace(
+        entry,
+        identity=identity,
+        run_id=direct_run_id(identity),
+    )
+    partial = replace(authority, configurations=(changed_row,))
+
+    with pytest.raises(RunnerContractError, match="authority|complete|fixed"):
+        create_direct_request(
+            changed_entry,
+            prepared,
+            descriptor,
+            spec,
+            partial,
+            timeout_seconds=5,
+        )
+
+
+@pytest.mark.parametrize("boundary", ("validate", "dispatch", "execute"))
+def test_every_direct_execution_boundary_rejects_one_row_authority(
+    boundary: str,
+) -> None:
+    request, _entry, prepared, _descriptor, _spec, row, authority = _direct_case()
+    partial = replace(authority, configurations=(row,))
+    adapters = {"magic": lambda *_args, **_kwargs: _completed_outcome(request)}
+
+    with pytest.raises(RunnerContractError, match="authority|complete|fixed"):
+        if boundary == "validate":
+            validate_direct_request(request, prepared, partial)
+        elif boundary == "dispatch":
+            dispatch_direct_request(request, partial, adapters)
+        else:
+            execute_direct_request(request, prepared, partial, adapters)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("native-missing", "scale-missing", "evaluator-missing", "nonterminal-matrix"),
+)
+def test_direct_attempt_rejects_matrix_and_scale_incoherence(mutation: str) -> None:
+    request, _entry, prepared, _descriptor, _spec, _row, authority = _direct_case()
+    attempt = execute_direct_request(
+        request,
+        prepared,
+        authority,
+        {"magic": lambda *_args, **_kwargs: _completed_outcome(request)},
+    )
+    if mutation == "native-missing":
+        changes = {"native_output": None}
+    elif mutation == "scale-missing":
+        changes = {"native_output_scale": None}
+    elif mutation == "evaluator-missing":
+        changes = {"evaluator_output": None}
+    else:
+        failed_run = replace(
+            attempt.run,
+            status="failed",
+            reason="synthetic_failed",
+            stdout=replace(attempt.run.stdout, terminal_reason="synthetic_failed"),
+            stderr=replace(attempt.run.stderr, terminal_reason="synthetic_failed"),
+        )
+        failed_metrics = tuple(
+            replace(
+                metric,
+                value=None,
+                n=0,
+                status="failed",
+                reason="synthetic_failed",
+            )
+            for metric in attempt.metrics
+        )
+        changes = {"run": failed_run, "metrics": failed_metrics}
+
+    with pytest.raises(RunnerContractError, match="matrix|output|scale"):
+        replace(attempt, **changes)
 
 
 def _slow_direct_executor(_request: DirectExecutionRequest) -> AdapterOutcome:
@@ -275,7 +379,7 @@ def test_all_ten_comparator_adapters_receive_exact_authority_payloads() -> None:
             method=comparator_method_binding(spec),
             configuration_id=row.configuration_id,
             configuration_kind="comparator_tuning",
-            configuration_payload=_freeze(dict(row.payload)),
+            configuration_payload=freeze_direct_mapping(row.payload),
             dataset_id=prepared.binding.dataset_id,
             mechanism=prepared.binding.mechanism,
             biological_id=prepared.binding.biological_id,
@@ -297,7 +401,7 @@ def test_all_ten_comparator_adapters_receive_exact_authority_payloads() -> None:
             prepared,
             descriptor,
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
 
@@ -324,7 +428,7 @@ def test_all_ten_comparator_adapters_receive_exact_authority_payloads() -> None:
 
 
 def test_create_direct_request_closes_descriptor_method_label_and_payload() -> None:
-    request, entry, prepared, descriptor, spec, row, _authority = _direct_case()
+    request, entry, prepared, descriptor, spec, row, authority = _direct_case()
     assert request.method_input is prepared.method_input
 
     with pytest.raises(RunnerContractError, match="descriptor"):
@@ -333,20 +437,20 @@ def test_create_direct_request_closes_descriptor_method_label_and_payload() -> N
             prepared,
             replace(descriptor, total_count=descriptor.total_count + 1.0),
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
 
 
 def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> None:
-    _request, entry, prepared, descriptor, spec, row, _authority = _direct_case()
+    _request, entry, prepared, descriptor, spec, row, authority = _direct_case()
     with pytest.raises(RunnerContractError, match="descriptor"):
         create_direct_request(
             entry,
             prepared,
             replace(descriptor, minimum=False),
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
     with pytest.raises(RunnerContractError, match="descriptor"):
@@ -355,7 +459,7 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
             prepared,
             replace(descriptor, minimum=-0.0),
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
     with pytest.raises(RunnerContractError, match="descriptor"):
@@ -364,7 +468,7 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
             prepared,
             replace(descriptor, cell_ids=list(descriptor.cell_ids)),
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
     changed_method = replace(entry.identity.method, max_gpu_gib=False)
@@ -377,7 +481,7 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
             prepared,
             descriptor,
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
     changed_identity = replace(entry.identity, draw_index=True)
@@ -389,7 +493,7 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
             prepared,
             descriptor,
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
     with pytest.raises(RunnerContractError, match="method projection"):
@@ -402,7 +506,7 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
             prepared,
             descriptor,
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
     with pytest.raises(RunnerContractError, match="authority row"):
@@ -414,7 +518,7 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
             prepared,
             descriptor,
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
     payload = dict(row.payload)
@@ -422,7 +526,7 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
     with pytest.raises(RunnerContractError, match="authority row"):
         changed_identity = replace(
             entry.identity,
-            configuration_payload=_freeze(payload),
+            configuration_payload=freeze_direct_mapping(payload),
         )
         create_direct_request(
             replace(
@@ -431,7 +535,7 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
             prepared,
             descriptor,
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
 
@@ -469,7 +573,7 @@ def test_create_direct_request_rejects_equal_numeric_type_substitutions() -> Non
 def test_create_direct_request_binds_every_execution_relevant_method_field(
     changed_spec,
 ) -> None:
-    _request, entry, prepared, descriptor, spec, row, _authority = _direct_case()
+    _request, entry, prepared, descriptor, spec, row, authority = _direct_case()
 
     with pytest.raises(RunnerContractError, match="method projection"):
         create_direct_request(
@@ -477,23 +581,19 @@ def test_create_direct_request_binds_every_execution_relevant_method_field(
             prepared,
             descriptor,
             changed_spec(spec),
-            row,
+            authority,
             timeout_seconds=5,
         )
 
 
 def test_create_direct_request_normalizes_unknown_payload_and_rejects_default() -> None:
-    _request, entry, prepared, descriptor, spec, row, _authority = _direct_case()
+    _request, entry, prepared, descriptor, spec, row, authority = _direct_case()
     unknown_payload = {**dict(row.payload), "unknown": 1}
-    unknown_row = replace(
-        row,
-        payload_json=json.dumps(unknown_payload, sort_keys=True, separators=(",", ":")),
-    )
     unknown_identity = replace(
         entry.identity,
-        configuration_payload=_freeze(unknown_payload),
+        configuration_payload=freeze_direct_mapping(unknown_payload),
     )
-    with pytest.raises(RunnerContractError, match="typed payload"):
+    with pytest.raises(RunnerContractError, match="exactly one authority row"):
         create_direct_request(
             replace(
                 entry,
@@ -503,7 +603,7 @@ def test_create_direct_request_normalizes_unknown_payload_and_rejects_default() 
             prepared,
             descriptor,
             spec,
-            unknown_row,
+            authority,
             timeout_seconds=5,
         )
 
@@ -511,7 +611,7 @@ def test_create_direct_request_normalizes_unknown_payload_and_rejects_default() 
         entry.identity,
         configuration_id="registry-default",
     )
-    with pytest.raises(RunnerContractError, match="registry-default"):
+    with pytest.raises(RunnerContractError, match="exactly one authority row"):
         create_direct_request(
             replace(
                 entry,
@@ -521,7 +621,7 @@ def test_create_direct_request_normalizes_unknown_payload_and_rejects_default() 
             prepared,
             descriptor,
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
 
@@ -538,11 +638,14 @@ def test_execute_direct_request_rejects_pre_dispatch_drift_and_duplicates() -> N
     payload["diffusion_time"] = 11
     drifted = replace(
         request,
-        identity=replace(request.identity, configuration_payload=_freeze(payload)),
+        identity=replace(
+            request.identity,
+            configuration_payload=freeze_direct_mapping(payload),
+        ),
     )
     with pytest.raises(RunnerContractError, match="exactly one"):
         execute_direct_request(drifted, prepared, authority, {"magic": spy})
-    with pytest.raises(RunnerContractError, match="exactly one"):
+    with pytest.raises(RunnerContractError, match="complete fixed authority"):
         execute_direct_request(
             request,
             prepared,
@@ -600,7 +703,7 @@ def test_execute_direct_request_preserves_resources_audit_and_complete_metrics()
         ),
         truth_kind="exact_pre_capture",
     )
-    assert tuple(row.metric for row in result.metrics) == tuple(expected)
+    assert tuple(row.metric for row in result.metrics) == DIRECT_RECONSTRUCTION_METRICS
     assert tuple(
         (row.value, row.n, row.status, row.reason) for row in result.metrics
     ) == tuple(
@@ -610,7 +713,7 @@ def test_execute_direct_request_preserves_resources_audit_and_complete_metrics()
             "unavailable" if metric.value is None else "completed",
             metric.reason,
         )
-        for metric in expected.values()
+        for metric in (expected[name] for name in DIRECT_RECONSTRUCTION_METRICS)
     )
 
 
@@ -634,7 +737,7 @@ def test_execute_direct_request_rejects_numeric_type_coercion_before_dispatch(
                 request,
                 identity=replace(
                     request.identity,
-                    configuration_payload=_freeze(payload),
+                    configuration_payload=freeze_direct_mapping(payload),
                 ),
             ),
             prepared,
@@ -836,9 +939,12 @@ def test_direct_prezero_rejects_regular_file_owned_by_another_uid(
         evidence.reopen(tmp_path)
 
 
-def test_direct_spawned_executor_enforces_deadline_with_parent_telemetry() -> None:
+def test_direct_spawned_executor_enforces_deadline_with_parent_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from maskimpute_benchmark import runner as runner_module
 
+    monkeypatch.setattr(sys, "warnoptions", [])
     request, _entry, _prepared_value, _descriptor, _spec, _row, _authority = (
         _direct_case()
     )
@@ -858,9 +964,12 @@ def test_direct_spawned_executor_enforces_deadline_with_parent_telemetry() -> No
     assert outcome.rss_measurement == "synthetic_parent_rss"
 
 
-def test_direct_spawned_executor_fails_closed_without_required_gpu_telemetry() -> None:
+def test_direct_spawned_executor_fails_closed_without_required_gpu_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from maskimpute_benchmark import runner as runner_module
 
+    monkeypatch.setattr(sys, "warnoptions", [])
     request, _entry, _prepared_value, _descriptor, _spec, _row, _authority = (
         _direct_case("dca")
     )
@@ -925,7 +1034,7 @@ def test_create_direct_request_rejects_invalid_seed_identity(
     value: object,
     message: str,
 ) -> None:
-    _request, entry, prepared, descriptor, spec, row, _authority = _direct_case()
+    _request, entry, prepared, descriptor, spec, row, authority = _direct_case()
     identity = replace(entry.identity, **{field: value})
     with pytest.raises(RunnerContractError, match=message):
         create_direct_request(
@@ -933,20 +1042,20 @@ def test_create_direct_request_rejects_invalid_seed_identity(
             prepared,
             descriptor,
             spec,
-            row,
+            authority,
             timeout_seconds=5,
         )
 
 
 def test_create_direct_request_rejects_boolean_timeout() -> None:
-    _request, entry, prepared, descriptor, spec, row, _authority = _direct_case()
+    _request, entry, prepared, descriptor, spec, row, authority = _direct_case()
     with pytest.raises(RunnerContractError, match="timeout"):
         create_direct_request(
             entry,
             prepared,
             descriptor,
             spec,
-            row,
+            authority,
             timeout_seconds=True,
         )
 

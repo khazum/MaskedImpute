@@ -27,8 +27,10 @@ from maskimpute_benchmark.fair_comparator_checkpoint import (
     DirectDevelopmentBudget,
 )
 from maskimpute_benchmark.fair_comparator_execution import (
+    DIRECT_RECONSTRUCTION_METRICS,
     DirectEvaluatedAttempt,
     DirectLogReceipt,
+    DirectMetricRow,
     DirectPreZeroEvidence,
     DirectRunResult,
 )
@@ -42,9 +44,11 @@ from maskimpute_benchmark.fair_comparator_plan import (
 )
 from maskimpute_benchmark.methods import (
     AdapterExecution,
+    DirectAdapterExecution,
     MethodInput,
     MethodRegistry,
     load_method_registry,
+    finalize_direct_method_output,
     run_observed,
 )
 from maskimpute_benchmark.runner import (
@@ -84,6 +88,7 @@ from maskimpute_benchmark.runner import (
     validate_development_manifest_payload,
 )
 from maskimpute_benchmark.runtime_environments import (
+    RuntimeEnvironmentError,
     RuntimeEnvironmentEntry,
     RuntimeEnvironmentLock,
     RuntimeEnvironmentSnapshot,
@@ -597,7 +602,7 @@ def test_direct_plan_is_full_denominator_with_fixed_seed_policy() -> None:
     plan = build_fair_comparator_plan(
         registry,
         datasets,
-        _authority(),
+        load_runner_authority(),
         _prepared_plan_inputs(datasets),
     )
 
@@ -805,6 +810,56 @@ def test_runner_direct_dispatch_route_uses_closed_comparator_mapping(
         },
         "evaluated": (request, prepared, authority, outcome),
     }
+
+
+@pytest.mark.parametrize("stage", ("before", "after"))
+def test_production_direct_dispatch_preserves_runtime_environment_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    dispatcher_fixture: RepositoryAdapterDispatcher,
+    stage: str,
+) -> None:
+    dispatcher = replace(dispatcher_fixture, monitor_runtime_changes=False)
+    calls = 0
+
+    def revalidate(_self, _method_id):
+        nonlocal calls
+        calls += 1
+        if stage == "before" or calls == 2:
+            raise RuntimeEnvironmentError(f"synthetic_{stage}_control_state")
+
+    monkeypatch.setattr(
+        ExecutionEnvironmentRegistry,
+        "revalidate_control_state_for",
+        revalidate,
+    )
+    spec = load_method_registry(METHODS_PATH).by_id("magic")
+    method_input = _method_input()
+
+    def completed(*_args, **_kwargs):
+        output = finalize_direct_method_output(
+            spec,
+            method_input,
+            method_input.counts,
+            output_scale=spec.output_scale,
+            obs_ids=method_input.obs_ids,
+            var_ids=method_input.var_ids,
+        )
+        return DirectAdapterExecution(output=output, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr("maskimpute_benchmark.methods.run_magic_direct", completed)
+    authority = dispatcher.comparator_tuning_authority
+    assert authority is not None
+    config = authority.configurations_for("magic")[0].decode()
+
+    outcome = dispatcher.direct_comparator_adapters()["magic"](
+        spec,
+        method_input,
+        seed=42,
+        config=config,
+    )
+
+    assert outcome.status == "infrastructure_error"
+    assert outcome.reason == f"synthetic_{stage}_control_state"
 
 
 def test_legacy_comparator_configuration_and_dispatch_entry_points_reject_directly(
@@ -1088,36 +1143,31 @@ def test_clean_publication_authority_loads_pending_revalidation_bindings() -> No
     assert "study/comparator_tuning.json" not in selection_authority.file_sha256
 
 
-def test_ready_maskimpute_authority_removes_only_its_preflight_block() -> None:
+def test_direct_plan_rejects_noncanonical_ready_maskimpute_authority() -> None:
     registry = load_method_registry(METHODS_PATH)
     datasets = validate_development_manifest_payload(_manifest_payload())
 
     prepared = _prepared_plan_inputs(datasets)
+    authority = load_runner_authority()
     blocked = build_fair_comparator_plan(
         registry,
         datasets,
-        _authority(),
+        authority,
         prepared,
     )
-    ready = build_fair_comparator_plan(
-        registry,
-        datasets,
-        _authority(maskimpute_ready=True),
-        prepared,
+    ready = replace(
+        authority,
+        count_score_manifest_status="ready",
+        count_score_manifest_sha256="8" * 64,
+        retained_calibration_status="ready",
+        retained_calibration_sha256="9" * 64,
     )
 
-    assert all(
-        entry.preflight_status == "planned"
-        for entry in ready.entries
-        if entry.requires_count_score
+    assert any(
+        entry.preflight_status == "blocked_authority" for entry in blocked.entries
     )
-    assert [
-        replace(entry, preflight_status="planned", preflight_reason=None)
-        if entry.requires_count_score
-        else entry
-        for entry in blocked.entries
-    ] == list(ready.entries)
-    assert blocked != ready
+    with pytest.raises(RunnerContractError, match="fixed authority"):
+        build_fair_comparator_plan(registry, datasets, ready, prepared)
 
 
 def test_method_input_hash_binds_only_truth_free_snapshot_and_is_stable() -> None:
@@ -2744,7 +2794,17 @@ def _direct_magic_record(
                 "terminal_reason": reason,
             },
         },
-        "metrics": [],
+        "metrics": [
+            {
+                "identity": identity,
+                "metric": metric,
+                "value": 0.0 if status == "completed" else None,
+                "n": 1 if status == "completed" else 0,
+                "status": status,
+                "reason": reason,
+            }
+            for metric in DIRECT_RECONSTRUCTION_METRICS
+        ],
         "p_pre_zero_evidence": {
             "applicable": False,
             "status": "not_applicable",
@@ -2791,7 +2851,17 @@ def _direct_magic_attempt(plan: DirectCompetitionPlan) -> DirectEvaluatedAttempt
                 terminal_reason=reason,
             ),
         ),
-        metrics=(),
+        metrics=tuple(
+            DirectMetricRow(
+                identity=entry.identity,
+                metric=metric,
+                value=None,
+                n=0,
+                status="unavailable",
+                reason=reason,
+            )
+            for metric in DIRECT_RECONSTRUCTION_METRICS
+        ),
         native_output=None,
         native_output_scale=None,
         evaluator_output=None,

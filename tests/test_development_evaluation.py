@@ -169,6 +169,10 @@ def _direct_projection_checkpoint(tmp_path: Path):
         load_comparator_tuning_authority,
     )
     from maskimpute_benchmark.fair_comparator_checkpoint import DirectCheckpointStore
+    from maskimpute_benchmark.direct_values import freeze_direct_mapping
+    from maskimpute_benchmark.fair_comparator_execution import (
+        DIRECT_RECONSTRUCTION_METRICS,
+    )
     from maskimpute_benchmark.fair_comparator_plan import (
         ComparatorRunIdentity,
         DirectAuthorizedConfiguration,
@@ -191,13 +195,6 @@ def _direct_projection_checkpoint(tmp_path: Path):
     spec = registry.by_id("magic")
     method = comparator_method_binding(spec)
 
-    def freeze(value: object) -> object:
-        if isinstance(value, dict):
-            return tuple((key, freeze(nested)) for key, nested in sorted(value.items()))
-        if isinstance(value, list):
-            return tuple(freeze(nested) for nested in value)
-        return value
-
     selected_rows = authority.configurations_for("magic")[:1]
     plan_rows = authority.configurations_for("magic")[:3]
     configurations = tuple(
@@ -205,7 +202,7 @@ def _direct_projection_checkpoint(tmp_path: Path):
             method=method,
             configuration_id=row.configuration_id,
             configuration_kind="comparator_tuning",
-            payload=freeze(dict(row.payload)),
+            payload=freeze_direct_mapping(row.payload),
             requires_count_score=False,
             requires_calibration=False,
         )
@@ -287,7 +284,17 @@ def _direct_projection_checkpoint(tmp_path: Path):
                         "terminal_reason": reason,
                     },
                 },
-                "metrics": [],
+                "metrics": [
+                    {
+                        "identity": encoded["identity"],
+                        "metric": metric,
+                        "value": None,
+                        "n": 0,
+                        "status": "unavailable",
+                        "reason": reason,
+                    }
+                    for metric in DIRECT_RECONSTRUCTION_METRICS
+                ],
                 "p_pre_zero_evidence": {
                     "applicable": False,
                     "status": "not_applicable",
@@ -376,6 +383,17 @@ def _direct_projection_checkpoint_with_selected_statuses(
         )
         record["run"]["stdout"]["terminal_reason"] = reason
         record["run"]["stderr"]["terminal_reason"] = reason
+        for metric in record["metrics"]:
+            metric["identity"] = encoded["identity"]
+            if status == "completed":
+                metric.update(
+                    value=None,
+                    n=0,
+                    status="unavailable",
+                    reason="synthetic_metric_unavailable",
+                )
+            else:
+                metric.update(value=None, n=0, status=status, reason=reason)
     checkpoint["plan_snapshot"] = changed_plan.to_dict()
     checkpoint["budget"] = replay_direct_development_budget(
         registry,
@@ -417,6 +435,7 @@ def test_direct_checkpoint_projects_full_selected_comparator_payloads(
 ) -> None:
     from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
     from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
         project_direct_comparator_evidence,
     )
 
@@ -428,33 +447,57 @@ def test_direct_checkpoint_projects_full_selected_comparator_payloads(
         authority,
         selected_rows,
     ) = _direct_projection_checkpoint(tmp_path)
-    projection = project_direct_comparator_evidence(
-        checkpoint_path,
-        plan,
-        registry=registry,
-        prepared_datasets=prepared,
-        comparator_reference=ComparatorAuthorityReference(
-            path="study/comparator_tuning.json",
-            schema_version=authority.schema_version,
-            authority_revision=authority.authority_revision,
-        ),
-        comparator_authority=authority,
-        selected_rows=selected_rows,
+    with pytest.raises(DevelopmentEvaluationError, match="selection receipt|later"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            plan,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=ComparatorAuthorityReference(
+                path="study/comparator_tuning.json",
+                schema_version=authority.schema_version,
+                authority_revision=authority.authority_revision,
+            ),
+            comparator_authority=authority,
+            selected_rows=selected_rows,
+        )
+
+
+@pytest.mark.parametrize("selection", ("empty", "subset", "arbitrary-terminal"))
+def test_public_direct_handoff_requires_later_validated_selection_receipt(
+    tmp_path: Path,
+    selection: str,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
+        project_direct_comparator_evidence,
     )
 
-    assert projection["comparator_authority"] == {
-        "path": "study/comparator_tuning.json",
-        "schema_version": 2,
-        "authority_revision": "fair-comparator-direct-v1",
-    }
-    assert projection["selected_comparators"] == {
-        row.method_id: {
-            "configuration_id": row.configuration_id,
-            "payload": dict(row.payload),
-        }
-        for row in selected_rows
-    }
-    assert not _contains_forbidden_identity_key(projection)
+    checkpoint_path, plan, registry, prepared, authority, selected = (
+        _direct_projection_checkpoint(tmp_path)
+    )
+    if selection == "empty":
+        rows = ()
+    elif selection == "subset":
+        rows = selected
+    else:
+        rows = authority.configurations_for("magic")[1:2]
+
+    with pytest.raises(DevelopmentEvaluationError, match="selection receipt|later"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            plan,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=ComparatorAuthorityReference(
+                path="study/comparator_tuning.json",
+                schema_version=2,
+                authority_revision="fair-comparator-direct-v1",
+            ),
+            comparator_authority=authority,
+            selected_rows=rows,
+        )
 
 
 @pytest.mark.parametrize(
@@ -468,6 +511,7 @@ def test_direct_projection_accepts_completed_selected_configuration(
 ) -> None:
     from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
     from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
         project_direct_comparator_evidence,
     )
 
@@ -475,26 +519,20 @@ def test_direct_projection_accepts_completed_selected_configuration(
         _direct_projection_checkpoint_with_selected_statuses(tmp_path, statuses)
     )
 
-    projection = project_direct_comparator_evidence(
-        checkpoint_path,
-        plan,
-        registry=registry,
-        prepared_datasets=prepared,
-        comparator_reference=ComparatorAuthorityReference(
-            path="study/comparator_tuning.json",
-            schema_version=2,
-            authority_revision="fair-comparator-direct-v1",
-        ),
-        comparator_authority=authority,
-        selected_rows=selected,
-    )
-
-    assert projection["selected_comparators"] == {
-        selected[0].method_id: {
-            "configuration_id": selected[0].configuration_id,
-            "payload": dict(selected[0].payload),
-        }
-    }
+    with pytest.raises(DevelopmentEvaluationError, match="selection receipt|later"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            plan,
+            registry=registry,
+            prepared_datasets=prepared,
+            comparator_reference=ComparatorAuthorityReference(
+                path="study/comparator_tuning.json",
+                schema_version=2,
+                authority_revision="fair-comparator-direct-v1",
+            ),
+            comparator_authority=authority,
+            selected_rows=selected,
+        )
 
 
 @pytest.mark.parametrize(
