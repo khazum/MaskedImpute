@@ -146,6 +146,168 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
         )
 
 
+def test_development_production_wrapper_routes_direct_base_without_legacy_planner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.comparator_tuning as comparator_tuning
+    import maskimpute_benchmark.downstream_evidence as downstream
+    import maskimpute_benchmark.methods as methods
+    import maskimpute_benchmark.runner as runner
+
+    root = Path(downstream.__file__).absolute().parents[1]
+    source = tmp_path / "direct-development"
+    checkpoint = {
+        "schema_version": 1,
+        "identity_mode": "direct-v1",
+        "authority_revision": "fair-comparator-direct-v1",
+        "plan_snapshot": {
+            "comparator_smoke_receipt": {"status": "complete"},
+            "comparator_smoke_receipt_bytes": [123, 125],
+        },
+        "input_descriptors": [],
+        "planned_run_count": 0,
+        "status": "completed",
+        "records": [],
+    }
+    checkpoint_file_sha256 = _write_canonical(source / "checkpoint.json", checkpoint)
+    assert "input_hashes" not in checkpoint
+
+    class DirectCheckpoint(dict[str, object]):
+        def get(self, key: str, default: object = None) -> object:
+            if key == "input_hashes":
+                pytest.fail("legacy input_hashes were read")
+            return super().get(key, default)
+
+    guarded_checkpoint = DirectCheckpoint(checkpoint)
+    strict_json = downstream._strict_json
+
+    def guarded_strict_json(path: Path, name: str):
+        if path == source / "checkpoint.json":
+            return (
+                guarded_checkpoint,
+                b"synthetic-direct-checkpoint",
+                (checkpoint_file_sha256),
+            )
+        return strict_json(path, name)
+
+    monkeypatch.setattr(downstream, "_strict_json", guarded_strict_json)
+
+    registry = SimpleNamespace(methods=())
+    runner_bindings = (object(),)
+    prepared = {"dataset-synthetic": object()}
+    datasets = (object(),)
+    reference = SimpleNamespace(
+        path="study/comparator_tuning.json",
+        schema_version=2,
+        authority_revision="fair-comparator-direct-v1",
+    )
+    authority = SimpleNamespace(
+        configurations=(),
+        comparator_tuning_reference=reference,
+        comparator_tuning=object(),
+    )
+    direct_plan = SimpleNamespace(identity_mode="direct-v1")
+    comparator_selection = {
+        "path": "artifacts/study/development/comparator-selection.json",
+        "receipt": {"selection_complete": True},
+        "selected_by_method": {
+            "magic": {
+                "configuration": {
+                    "configuration_id": "magic-t01-default",
+                    "payload": {"solver": "exact"},
+                },
+                "authority_reference": {},
+                "method": {},
+            }
+        },
+        "nonexecution_identity_by_method": {},
+        "ready_comparison_population_ids": ["magic"],
+    }
+    expected_handoff = {
+        "comparator_authority": {
+            "path": "study/comparator_tuning.json",
+            "schema_version": 2,
+            "authority_revision": "fair-comparator-direct-v1",
+        },
+        "selected_comparators": {
+            "magic": {
+                "configuration_id": "magic-t01-default",
+                "payload": {"solver": "exact"},
+            }
+        },
+    }
+    calls: list[tuple[str, object]] = []
+    result = object()
+
+    monkeypatch.setattr(methods, "load_method_registry", lambda _path: registry)
+    monkeypatch.setattr(runner, "load_runner_authority", lambda: authority)
+    monkeypatch.setattr(
+        runner,
+        "load_prepared_development_panel",
+        lambda _authority: (runner_bindings, prepared),
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_competition_plan",
+        lambda *args, **kwargs: pytest.fail("legacy planner was called"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "build_fair_comparator_plan",
+        lambda *args, **kwargs: direct_plan,
+    )
+    monkeypatch.setattr(
+        downstream,
+        "bind_prepared_evaluator_panel",
+        lambda *args, **kwargs: datasets,
+    )
+    monkeypatch.setattr(
+        comparator_tuning,
+        "load_comparator_selection_receipt",
+        lambda *args, **kwargs: {"selection_complete": True},
+    )
+    monkeypatch.setattr(
+        comparator_tuning,
+        "comparator_selection_projection",
+        lambda _receipt: object(),
+    )
+    monkeypatch.setattr(
+        comparator_tuning,
+        "comparator_selection_projection_value",
+        lambda _projection: comparator_selection,
+    )
+
+    def validate(projection: object, *args: object, **kwargs: object) -> object:
+        calls.append(("adapter", (projection, args, kwargs)))
+        assert projection == expected_handoff
+        assert args[0] == source / "checkpoint.json"
+        assert args[1] is direct_plan
+        assert kwargs["comparator_selection"] is comparator_selection
+        return expected_handoff
+
+    def handoff(*args: object, **kwargs: object) -> object:
+        calls.append(("handoff", (args, kwargs)))
+        assert kwargs["comparator_projection"] == expected_handoff
+        return result
+
+    monkeypatch.setattr(downstream, "validate_direct_comparator_projection", validate)
+    monkeypatch.setattr(
+        downstream,
+        "_build_downstream_plan_from_selected_handoff",
+        handoff,
+        raising=False,
+    )
+
+    actual = downstream.build_development_downstream_evidence_plan(
+        root,
+        checkpoint_directory=source,
+    )
+
+    assert actual is result
+    assert [name for name, _payload in calls] == ["adapter", "handoff"]
+
+
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), allow_nan=False

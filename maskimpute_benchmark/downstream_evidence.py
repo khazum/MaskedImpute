@@ -4230,6 +4230,45 @@ def _validated_development_source_binding(
         )
     source_sha = canonical_sha256(dict(evaluation_source))
     input_hashes = evaluation_source.get("input_hashes")
+    direct_source = evaluation_source.get("identity_mode") == "direct-v1"
+    if direct_source:
+        from .direct_values import direct_equal
+
+        checkpoint, _checkpoint_raw, checkpoint_file_sha = _strict_json(
+            Path(plan.source_root) / "checkpoint.json",
+            "direct development component checkpoint",
+        )
+        source_binding_differs = (
+            checkpoint.get("identity_mode") != "direct-v1"
+            or evaluation_source.get("checkpoint_path") != checkpoint_relative
+            or evaluation_source.get("checkpoint_file_sha256") != checkpoint_file_sha
+            or evaluation_source.get("checkpoint_sha256") != checkpoint_file_sha
+            or plan.source_manifest_file_sha256 != checkpoint_file_sha
+            or plan.source_manifest_payload_sha256 != checkpoint_file_sha
+            or plan.source_plan_sha256 != checkpoint_file_sha
+            or plan.source_input_hashes_sha256 != checkpoint_file_sha
+            or evaluation_source.get("authority_revision")
+            != checkpoint.get("authority_revision")
+            or not direct_equal(
+                evaluation_source.get("plan_snapshot"),
+                checkpoint.get("plan_snapshot"),
+            )
+            or not direct_equal(
+                evaluation_source.get("input_descriptors"),
+                checkpoint.get("input_descriptors"),
+            )
+        )
+    else:
+        source_binding_differs = (
+            evaluation_source.get("checkpoint_path") != checkpoint_relative
+            or evaluation_source.get("checkpoint_file_sha256")
+            != plan.source_manifest_file_sha256
+            or evaluation_source.get("checkpoint_sha256")
+            != plan.source_manifest_payload_sha256
+            or evaluation_source.get("plan_sha256") != plan.source_plan_sha256
+            or not isinstance(input_hashes, Mapping)
+            or canonical_sha256(dict(input_hashes)) != plan.source_input_hashes_sha256
+        )
     if (
         canonical_sha256(evaluation_body) != evaluation_payload_sha
         or evaluation_file_sha
@@ -4247,14 +4286,7 @@ def _validated_development_source_binding(
             source.evaluation_source_sha256,
             "development evaluation source checksum",
         )
-        or evaluation_source.get("checkpoint_path") != checkpoint_relative
-        or evaluation_source.get("checkpoint_file_sha256")
-        != plan.source_manifest_file_sha256
-        or evaluation_source.get("checkpoint_sha256")
-        != plan.source_manifest_payload_sha256
-        or evaluation_source.get("plan_sha256") != plan.source_plan_sha256
-        or not isinstance(input_hashes, Mapping)
-        or canonical_sha256(dict(input_hashes)) != plan.source_input_hashes_sha256
+        or source_binding_differs
     ):
         raise DownstreamEvidenceError(
             "development checkpoint differs from evaluation authority"
@@ -4433,6 +4465,264 @@ def combine_development_downstream_evidence_plans(
     return replace(provisional, plan_sha256=canonical_sha256(provisional.body()))
 
 
+def _plain_selected_comparator_handoff(
+    comparator_selection: object,
+    comparator_reference: object,
+) -> dict[str, object]:
+    """Cross the direct segment through only the selected comparator map."""
+
+    if not isinstance(comparator_selection, Mapping):
+        raise DownstreamEvidenceError("direct comparator selection schema differs")
+    selected = comparator_selection.get("selected_by_method")
+    if not isinstance(selected, Mapping):
+        raise DownstreamEvidenceError("direct selected comparator map is absent")
+    selected_plain: dict[str, object] = {}
+    for method_id, value in selected.items():
+        if not isinstance(method_id, str) or not isinstance(value, Mapping):
+            raise DownstreamEvidenceError(
+                "direct selected comparator map schema differs"
+            )
+        configuration = value.get("configuration")
+        if not isinstance(configuration, Mapping):
+            raise DownstreamEvidenceError(
+                "direct selected comparator configuration is absent"
+            )
+        configuration_id = configuration.get("configuration_id")
+        payload = configuration.get("payload")
+        if (
+            not isinstance(configuration_id, str)
+            or not configuration_id
+            or type(payload) is not dict
+        ):
+            raise DownstreamEvidenceError(
+                "direct selected comparator configuration schema differs"
+            )
+        selected_plain[method_id] = {
+            "configuration_id": configuration_id,
+            "payload": payload,
+        }
+    return {
+        "comparator_authority": {
+            "path": getattr(comparator_reference, "path", None),
+            "schema_version": getattr(comparator_reference, "schema_version", None),
+            "authority_revision": getattr(
+                comparator_reference, "authority_revision", None
+            ),
+        },
+        "selected_comparators": selected_plain,
+    }
+
+
+def _build_downstream_plan_from_selected_handoff(
+    source: Path,
+    *,
+    checkpoint: Mapping[str, object],
+    checkpoint_file_sha256: str,
+    source_plan: object,
+    datasets: Sequence[DatasetEvidenceBinding],
+    comparator_projection: object,
+) -> DownstreamEvidencePlan:
+    """Adapt already validated direct evidence into the legacy publication envelope."""
+
+    from .direct_values import direct_equal, direct_json_value
+
+    if getattr(source_plan, "identity_mode", None) != "direct-v1":
+        raise DownstreamEvidenceError("direct downstream source plan differs")
+    if not isinstance(comparator_projection, Mapping) or set(comparator_projection) != {
+        "comparator_authority",
+        "selected_comparators",
+    }:
+        raise DownstreamEvidenceError("direct comparator projection schema differs")
+    selected = comparator_projection.get("selected_comparators")
+    if not isinstance(selected, Mapping):
+        raise DownstreamEvidenceError("direct selected comparator map is absent")
+    records = checkpoint.get("records")
+    plan_entries = getattr(source_plan, "entries", None)
+    configurations = getattr(source_plan, "configurations", None)
+    if (
+        checkpoint.get("identity_mode") != "direct-v1"
+        or checkpoint.get("status") != "completed"
+        or not isinstance(records, list)
+        or isinstance(plan_entries, (str, bytes))
+        or not isinstance(plan_entries, Sequence)
+        or len(records) != len(plan_entries)
+        or isinstance(configurations, (str, bytes))
+        or not isinstance(configurations, Sequence)
+    ):
+        raise DownstreamEvidenceError("direct development checkpoint is incomplete")
+
+    dataset_values = tuple(datasets)
+    dataset_lookup = {value.dataset_id: value for value in dataset_values}
+    if len(dataset_lookup) != len(dataset_values):
+        raise DownstreamEvidenceError("direct downstream datasets are duplicated")
+
+    adapted: dict[tuple[str, str, str], AuthorizedConfiguration] = {}
+    for value in configurations:
+        method = getattr(value, "method", None)
+        method_id = getattr(method, "method_id", None)
+        configuration_id = getattr(value, "configuration_id", None)
+        configuration_kind = getattr(value, "configuration_kind", None)
+        payload_value = direct_json_value(getattr(value, "payload", None), payload=True)
+        if (
+            not isinstance(method_id, str)
+            or not isinstance(configuration_id, str)
+            or not isinstance(configuration_kind, str)
+            or type(payload_value) is not dict
+        ):
+            raise DownstreamEvidenceError(
+                "direct downstream configuration schema differs"
+            )
+        retained_kind = configuration_kind
+        retained_payload = payload_value
+        if configuration_kind == "comparator_tuning":
+            chosen = selected.get(method_id)
+            if (
+                not isinstance(chosen, Mapping)
+                or chosen.get("configuration_id") != configuration_id
+                or not direct_equal(chosen.get("payload"), payload_value)
+            ):
+                continue
+            retained_kind = "selected_comparator"
+        elif method_id == "observed":
+            encoded_method = direct_json_value(method)
+            if not isinstance(encoded_method, dict):
+                raise DownstreamEvidenceError(
+                    "direct control method binding schema differs"
+                )
+            retained_kind = "direct_control"
+            retained_payload = {
+                "schema": "maskimpute-direct-control-configuration-v1",
+                "method": encoded_method,
+            }
+        elif method_id != "capacity-matched-ae" and configuration_kind != (
+            "candidate_search"
+        ):
+            continue
+        try:
+            legacy = AuthorizedConfiguration.create(
+                method_id=method_id,
+                configuration_id=configuration_id,
+                kind=retained_kind,
+                payload=retained_payload,
+                requires_count_score=getattr(value, "requires_count_score", None),
+                requires_calibration=getattr(value, "requires_calibration", None),
+            )
+        except (TypeError, ValueError) as error:
+            raise DownstreamEvidenceError(
+                "direct downstream configuration cannot cross the publication boundary"
+            ) from error
+        adapted[(method_id, configuration_id, configuration_kind)] = legacy
+
+    entries: list[DownstreamPlanEntry] = []
+    for source_ordinal, (record, planned) in enumerate(
+        zip(records, plan_entries, strict=True), start=1
+    ):
+        if not isinstance(record, Mapping):
+            raise DownstreamEvidenceError("direct downstream record schema differs")
+        run = record.get("run")
+        identity = None if not isinstance(run, Mapping) else run.get("identity")
+        if not isinstance(run, Mapping) or not isinstance(identity, Mapping):
+            raise DownstreamEvidenceError("direct downstream run schema differs")
+        key = (
+            identity.get("method", {}).get("method_id")
+            if isinstance(identity.get("method"), Mapping)
+            else None,
+            identity.get("configuration_id"),
+            identity.get("configuration_kind"),
+        )
+        configuration = adapted.get(key)
+        if configuration is None:
+            continue
+        dataset_id = identity.get("dataset_id")
+        dataset = dataset_lookup.get(dataset_id)
+        if dataset is None:
+            raise DownstreamEvidenceError("direct downstream dataset authority differs")
+        if getattr(planned, "run_id", None) != run.get("run_id"):
+            raise DownstreamEvidenceError("direct downstream plan entry differs")
+        status = run.get("status")
+        reason = run.get("reason")
+        if status == "completed":
+            status = "unavailable"
+            reason = "direct_evaluator_output_not_retained"
+        entries.append(
+            DownstreamPlanEntry(
+                ordinal=len(entries) + 1,
+                source_record_path=f"checkpoint.json#records/{source_ordinal - 1}",
+                source_record_sha256=canonical_sha256(dict(record)),
+                run_id=_text(run.get("run_id"), "direct downstream run ID"),
+                method_id=_text(key[0], "direct downstream method ID"),
+                dataset_id=_text(dataset_id, "direct downstream dataset ID"),
+                source_dataset_sha256=dataset.dataset_sha256,
+                mechanism=_text(
+                    identity.get("mechanism"), "direct downstream mechanism"
+                ),
+                biological_id=_text(
+                    identity.get("biological_id"),
+                    "direct downstream biological ID",
+                ),
+                technical_view=_text(
+                    identity.get("technical_view"),
+                    "direct downstream technical view",
+                ),
+                model_seed=_optional_model_seed(identity.get("model_seed")),
+                configuration_id=configuration.configuration_id,
+                configuration_sha256=configuration.configuration_sha256,
+                configuration_kind=configuration.kind,
+                method_artifact_sha256=_method_artifact_sha256(configuration),
+                method_input_sha256=dataset.method_input_sha256,
+                retained_cell_ids_sha256=dataset.retained_cell_ids_sha256,
+                status=_text(status, "direct downstream status"),
+                reason=(None if reason is None else _text(reason, "direct reason")),
+                evaluator_output_sha256=None,
+                evaluator_output_path=None,
+                evaluator_output_file_sha256=None,
+                evaluator_output_shape=None,
+                evaluator_output_encoding=None,
+                evaluator_output_uncompressed_nbytes=None,
+                evaluator_output_uncompressed_sha256=None,
+            )
+        )
+    if not entries:
+        raise DownstreamEvidenceError("direct source has no downstream denominators")
+    statuses_sha256 = canonical_sha256(
+        [
+            {"run_id": value.run_id, "status": value.status, "reason": value.reason}
+            for value in entries
+        ]
+    )
+    provisional = DownstreamEvidencePlan(
+        source_root=str(source),
+        source_kind="development",
+        evidence_scope="selection_primary",
+        evaluator_source_sha256=_evaluator_source_sha256(),
+        source_manifest_path="checkpoint.json",
+        source_manifest_file_sha256=checkpoint_file_sha256,
+        source_manifest_payload_sha256=checkpoint_file_sha256,
+        source_plan_sha256=checkpoint_file_sha256,
+        source_input_hashes_sha256=checkpoint_file_sha256,
+        source_statuses_sha256=statuses_sha256,
+        source_plan_authority="independent",
+        evaluated_round_binding=None,
+        development_revision_versions=(),
+        development_sources=(),
+        datasets=tuple(sorted(dataset_values, key=lambda value: value.dataset_id)),
+        configurations=tuple(
+            sorted(
+                adapted.values(),
+                key=lambda value: (
+                    value.method_id,
+                    value.configuration_id,
+                    value.kind,
+                    value.configuration_sha256,
+                ),
+            )
+        ),
+        entries=tuple(entries),
+        plan_sha256="0" * 64,
+    )
+    return replace(provisional, plan_sha256=canonical_sha256(provisional.body()))
+
+
 def build_development_downstream_evidence_plan(
     repository: str | Path,
     *,
@@ -4457,6 +4747,7 @@ def build_development_downstream_evidence_plan(
     from .methods import load_method_registry
     from .runner import (
         build_competition_plan,
+        build_fair_comparator_plan,
         load_activated_v28_revision_authority,
         load_activated_v29_revision_authority,
         load_prepared_development_panel,
@@ -4470,7 +4761,99 @@ def build_development_downstream_evidence_plan(
         source: Path,
         *,
         evidence_scope: str,
+        allow_direct: bool = False,
     ) -> DownstreamEvidencePlan:
+        checkpoint, _checkpoint_raw, checkpoint_file_sha = _strict_json(
+            source / "checkpoint.json", "development checkpoint"
+        )
+        identity_mode = checkpoint.get("identity_mode")
+        if allow_direct and identity_mode == "direct-v1":
+            from .comparator_tuning import (
+                comparator_selection_projection,
+                comparator_selection_projection_value,
+                load_comparator_selection_receipt,
+            )
+
+            runner_bindings, prepared = load_prepared_development_panel(authority)
+            datasets = bind_prepared_evaluator_panel(
+                runner_bindings,
+                prepared,
+                dataset_root=root / "artifacts/study/development/results",
+            )
+            snapshot = checkpoint.get("plan_snapshot")
+            if not isinstance(snapshot, Mapping):
+                raise DownstreamEvidenceError(
+                    "direct checkpoint plan snapshot is invalid"
+                )
+            smoke_receipt = snapshot.get("comparator_smoke_receipt")
+            smoke_bytes_value = snapshot.get("comparator_smoke_receipt_bytes")
+            if not isinstance(smoke_receipt, Mapping) or not isinstance(
+                smoke_bytes_value, list
+            ):
+                raise DownstreamEvidenceError(
+                    "direct checkpoint smoke receipt evidence is incomplete"
+                )
+            try:
+                smoke_bytes = bytes(smoke_bytes_value)
+            except (TypeError, ValueError) as error:
+                raise DownstreamEvidenceError(
+                    "direct checkpoint smoke receipt bytes are invalid"
+                ) from error
+            direct_plan = build_fair_comparator_plan(
+                registry,
+                runner_bindings,
+                authority,
+                tuple(prepared.values()),
+                _comparator_smoke_receipt=smoke_receipt,
+                _comparator_smoke_receipt_bytes=smoke_bytes,
+            )
+            comparator_receipt = load_comparator_selection_receipt(
+                root,
+                expected_checkpoint=source / "checkpoint.json",
+            )
+            selection_projection = comparator_selection_projection(comparator_receipt)
+            comparator_selection = comparator_selection_projection_value(
+                selection_projection
+            )
+            plain_projection = _plain_selected_comparator_handoff(
+                comparator_selection,
+                authority.comparator_tuning_reference,
+            )
+            validated_projection = validate_direct_comparator_projection(
+                plain_projection,
+                source / "checkpoint.json",
+                direct_plan,
+                repository=root,
+                registry=registry,
+                prepared_datasets=prepared,
+                comparator_reference=authority.comparator_tuning_reference,
+                comparator_authority=authority.comparator_tuning,
+                comparator_selection=comparator_selection,
+                runner_authority=authority,
+                datasets=runner_bindings,
+            )
+            checkpoint_after, _raw_after, file_sha_after = _strict_json(
+                source / "checkpoint.json", "development checkpoint after validation"
+            )
+            if (
+                not _direct_projection_equal(checkpoint_after, checkpoint)
+                or file_sha_after != checkpoint_file_sha
+            ):
+                raise DownstreamEvidenceError(
+                    "direct checkpoint changed during downstream validation"
+                )
+            return _build_downstream_plan_from_selected_handoff(
+                source,
+                checkpoint=checkpoint_after,
+                checkpoint_file_sha256=file_sha_after,
+                source_plan=direct_plan,
+                datasets=datasets,
+                comparator_projection=validated_projection,
+            )
+        if identity_mode is not None:
+            raise DownstreamEvidenceError(
+                "development checkpoint identity mode is unsupported"
+            )
         configured_method_ids = {value.method_id for value in authority.configurations}
         configurations = tuple(authority.configurations) + tuple(
             AuthorizedConfiguration.registry_default(spec)
@@ -4483,9 +4866,6 @@ def build_development_downstream_evidence_plan(
             runner_bindings,
             prepared,
             dataset_root=root / "artifacts/study/development/results",
-        )
-        checkpoint, _checkpoint_raw, _checkpoint_file_sha = _strict_json(
-            source / "checkpoint.json", "development checkpoint"
         )
         checkpoint_inputs = checkpoint.get("input_hashes")
         if not isinstance(checkpoint_inputs, Mapping):
@@ -4520,6 +4900,7 @@ def build_development_downstream_evidence_plan(
         base_authority,
         base_source,
         evidence_scope="selection_primary",
+        allow_direct=True,
     )
     if through_version is None:
         return base
@@ -5387,14 +5768,27 @@ def _rebuild_development_bundle(
             raise DownstreamEvidenceError(
                 "development component checkpoint path is not fixed"
             )
-        component = build_downstream_evidence_plan(
-            source_root,
-            source_kind="development",
-            evidence_scope="all",
-            datasets=plan.datasets,
-            configurations=plan.configurations,
-            _source_plan_authority="independent",
+        checkpoint, _checkpoint_raw, _checkpoint_file_sha = _strict_json(
+            source_root / "checkpoint.json", "development component checkpoint"
         )
+        if checkpoint.get("identity_mode") == "direct-v1":
+            if binding.source_id != "base":
+                raise DownstreamEvidenceError(
+                    "direct development component is confined to the base source"
+                )
+            component = build_development_downstream_evidence_plan(
+                repository,
+                checkpoint_directory=source_root,
+            )
+        else:
+            component = build_downstream_evidence_plan(
+                source_root,
+                source_kind="development",
+                evidence_scope="all",
+                datasets=plan.datasets,
+                configurations=plan.configurations,
+                _source_plan_authority="independent",
+            )
         sources.append(
             DevelopmentSourcePlan(
                 source_id=binding.source_id,
@@ -5441,6 +5835,18 @@ def _revalidate_plan(plan: DownstreamEvidencePlan) -> None:
             raise DownstreamEvidenceError("persisted final downstream scope differs")
     elif plan.development_sources:
         rebuilt = _rebuild_development_bundle(plan)
+    elif (
+        plan.source_kind == "development"
+        and _strict_json(
+            Path(plan.source_root) / "checkpoint.json",
+            "development checkpoint identity",
+        )[0].get("identity_mode")
+        == "direct-v1"
+    ):
+        rebuilt = build_development_downstream_evidence_plan(
+            Path(__file__).absolute().parents[1],
+            checkpoint_directory=plan.source_root,
+        )
     else:
         rebuilt = build_downstream_evidence_plan(
             plan.source_root,
@@ -5777,18 +6183,35 @@ def _load_persisted_plan(
                         "persisted final downstream scope differs"
                     )
             else:
-                rebuilt = build_downstream_evidence_plan(
-                    _text(plan_payload.get("source_root"), "persisted source root"),
-                    source_kind=source_kind,
-                    evidence_scope=evidence_scope,
-                    datasets=persisted_datasets,
-                    configurations=persisted_configurations,
-                    evaluated_round_binding=evaluated_round_binding,
-                    _source_plan_authority=_text(
-                        plan_payload.get("source_plan_authority"),
-                        "persisted source plan authority",
-                    ),
+                source_root = _text(
+                    plan_payload.get("source_root"), "persisted source root"
                 )
+                source_checkpoint = (
+                    _strict_json(
+                        Path(source_root) / "checkpoint.json",
+                        "persisted development checkpoint identity",
+                    )[0]
+                    if source_kind == "development"
+                    else {}
+                )
+                if source_checkpoint.get("identity_mode") == "direct-v1":
+                    rebuilt = build_development_downstream_evidence_plan(
+                        Path(__file__).absolute().parents[1],
+                        checkpoint_directory=source_root,
+                    )
+                else:
+                    rebuilt = build_downstream_evidence_plan(
+                        source_root,
+                        source_kind=source_kind,
+                        evidence_scope=evidence_scope,
+                        datasets=persisted_datasets,
+                        configurations=persisted_configurations,
+                        evaluated_round_binding=evaluated_round_binding,
+                        _source_plan_authority=_text(
+                            plan_payload.get("source_plan_authority"),
+                            "persisted source plan authority",
+                        ),
+                    )
     except DownstreamEvidenceError:
         raise
     except (TypeError, ValueError) as error:

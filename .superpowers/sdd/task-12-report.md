@@ -217,3 +217,87 @@ git diff --check: exit 0
 No comparator, smoke, tuning, evaluator, competition, final, or other real
 scientific workload ran. All new evidence and all verification fixtures were
 synthetic. The progress ledger was not edited.
+
+## Second independent re-review Critical fix
+
+The remaining production downstream Critical is closed. The production
+`build_development_downstream_evidence_plan` component now reads the checkpoint
+identity mode before any legacy planning. A direct-v1 base rebuilds the exact
+fair-comparator plan from the checkpoint's complete embedded smoke evidence,
+loads and projects the fixed Task 11 selection receipt against that exact
+checkpoint, and calls the accepted receipt-backed
+`validate_direct_comparator_projection` adapter. That adapter validates the
+complete direct plan and terminal checkpoint through `DirectCheckpointStore`.
+
+Only the plain `{comparator_authority, selected_comparators}` map crosses into
+the established downstream publication envelope. Selected comparator
+configurations are adapted only after that boundary; nonselected comparator
+configurations are excluded. Because direct checkpoint attempts intentionally
+retain no evaluator matrices, completed selected rows become explicit
+fail-closed `unavailable` downstream rows with reason
+`direct_evaluator_output_not_retained` and no numerical output binding.
+
+Direct base components also replay through the same production builder during
+persisted-plan and revision-bundle revalidation. Separately activated v28/v29
+candidate-only components remain on the unchanged legacy planner. Legacy
+checkpoints without `identity_mode` retain the existing `input_hashes` and
+`build_competition_plan` path; any other identity mode fails closed.
+
+### Second-fix TDD evidence
+
+Focused RED, from the production entry point after adding the guarded direct
+checkpoint regression:
+
+```text
+FAILED tests/test_downstream_evidence.py::test_development_production_wrapper_routes_direct_base_without_legacy_planner
+DownstreamEvidenceError: development source input authority is absent
+1 failed in 2.36s
+```
+
+The final regression uses a guarded direct checkpoint mapping whose
+`get("input_hashes")` fails the test, replaces legacy
+`build_competition_plan` with an immediate failure, and observes the exact
+adapter and plain selected-map handoff. Focused GREEN:
+
+```text
+1 passed in 2.15s
+```
+
+During boundary refactoring, the scoped source audit correctly rejected outer
+publication-envelope provenance under a direct-named helper:
+
+```text
+1 failed, 1 passed in 2.95s
+```
+
+The helper was moved explicitly to the post-direct selected-map boundary; no
+summary helper or generated summary field was added to the direct segment.
+Focused regression plus both scoped direct audits then passed:
+
+```text
+3 passed in 3.38s
+```
+
+### Second-fix verification
+
+```text
+Complete downstream-evidence suite:
+90 passed in 19.29s
+
+Adjacent complete synthetic direct checkpoint/receipt validation:
+1 passed in 80.99s (0:01:20)
+
+ruff check maskimpute_benchmark/downstream_evidence.py tests/test_downstream_evidence.py:
+All checks passed!
+
+ruff format --check maskimpute_benchmark/downstream_evidence.py tests/test_downstream_evidence.py:
+2 files already formatted
+
+python -m compileall -q maskimpute_benchmark scripts tests: exit 0
+git diff --check: exit 0
+```
+
+No real comparator, smoke, tuning, evaluator, competition, final, scaling, or
+other scientific workload ran. All verification evidence was synthetic. The
+progress ledger was not edited. The exact post-commit review package path is
+`.superpowers/sdd/review-fcfdb30..task12-second-fix.diff`.
