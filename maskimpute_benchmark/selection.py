@@ -8,7 +8,7 @@ No weighted efficacy score is constructed.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
@@ -22,14 +22,22 @@ from types import MappingProxyType
 from typing import Any
 
 from .comparator_tuning import (
+    BoundComparatorConfiguration,
+    COMPARATOR_SELECTION_RELATIVE_PATH,
     ComparatorAuthorityReference,
     ComparatorConfiguration,
     ComparatorMethodBinding,
     ComparatorTuningError,
     ComparatorTuningAuthority,
+    ComparatorSelectionProjection,
+    comparator_selection_projection,
+    comparator_selection_projection_value,
     comparator_method_binding,
+    decode_bound_comparator_configuration,
+    load_comparator_selection_receipt,
     validate_comparator_tuning_authority,
 )
+from .direct_values import direct_equal, direct_json_value
 
 
 _SAFE_ID = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z")
@@ -66,10 +74,28 @@ _RECORD_FIELDS = {
     "dataset_sha256",
     "method",
     "method_sha256",
+    "run_identity",
+    "selected_configuration",
     "model_seed",
     "metric",
     "value",
     "status",
+}
+_COMPARATOR_RUN_IDENTITY_FIELDS = {
+    "workflow_schema",
+    "authority_revision",
+    "ordinal",
+    "method",
+    "configuration_id",
+    "configuration_kind",
+    "configuration_payload",
+    "dataset_id",
+    "mechanism",
+    "biological_id",
+    "technical_view",
+    "mask_seed",
+    "model_seed",
+    "draw_index",
 }
 _INTERVAL_FIELDS = {
     "configuration",
@@ -351,6 +377,8 @@ class SelectionAuthority:
     revision_policy: RevisionPolicy
     exclusions: tuple[SearchExclusion, ...]
     method_bindings: Mapping[str, str]
+    selected_comparators: Mapping[str, BoundComparatorConfiguration]
+    comparator_nonexecution_identities: Mapping[str, Mapping[str, object]]
     base_maskimpute_config: Mapping[str, Any]
     base_maskimpute_config_sha256: str
     count_model_config: Mapping[str, Any]
@@ -373,6 +401,58 @@ class SelectionAuthority:
             for method_id in self.scheduled_same_input_ids
             if method_id != "biaeimpute"
         )
+
+
+def _authority_with_comparator_projection(
+    authority: SelectionAuthority,
+    projection: ComparatorSelectionProjection,
+) -> SelectionAuthority:
+    """Close selection authority to the receipt's exact ready population."""
+
+    if not isinstance(authority, SelectionAuthority):
+        raise TypeError("authority must be a SelectionAuthority")
+    if not isinstance(projection, ComparatorSelectionProjection):
+        raise TypeError("projection must be a ComparatorSelectionProjection")
+    by_id = {row.id: row for row in authority.declarations}
+    population = tuple(projection.ready_comparison_population_ids)
+    if any(method_id not in by_id for method_id in population):
+        raise SelectionAuthorityError(
+            "comparator ready population is absent from static declarations"
+        )
+    declarations = tuple(
+        replace(by_id[method_id], required_for_claim=True) for method_id in population
+    ) + tuple(row for row in authority.declarations if row.role == "candidate")
+    retained_ids = {row.id for row in declarations}
+    bindings = {
+        method_id: value
+        for method_id, value in authority.method_bindings.items()
+        if method_id in retained_ids
+        and method_id not in projection.scheduled_same_input_ids
+    }
+    for method_id in authority.required_control_ids:
+        if method_id not in population:
+            raise SelectionAuthorityError(
+                "required control is absent from comparator ready population"
+            )
+        bindings[method_id] = authority.method_bindings[method_id]
+    if set(projection.selected_by_method) != set(population) - set(
+        authority.required_control_ids
+    ):
+        raise SelectionAuthorityError(
+            "selected comparator map differs from the ready population"
+        )
+    return replace(
+        authority,
+        declarations=declarations,
+        method_bindings=MappingProxyType(bindings),
+        selected_comparators=MappingProxyType(
+            {
+                method_id: selected.configuration
+                for method_id, selected in projection.selected_by_method.items()
+            }
+        ),
+        comparator_nonexecution_identities=(projection.nonexecution_identity_by_method),
+    )
 
 
 def _freeze_detail_value(value: Any, name: str) -> Any:
@@ -482,6 +562,9 @@ class SelectionReport:
     trigger: str
     excluded_configurations: tuple[SearchExclusion, ...] = ()
     authority_bindings: Mapping[str, str] | None = None
+    comparison_population_ids: tuple[str, ...] = ()
+    selected_comparators: Mapping[str, BoundComparatorConfiguration] | None = None
+    comparator_nonexecution_identities: Mapping[str, Mapping[str, object]] | None = None
 
     @property
     def by_configuration(self) -> dict[str, CandidateAssessment]:
@@ -501,6 +584,23 @@ class SelectionReport:
                 if self.authority_bindings is None
                 else dict(self.authority_bindings)
             ),
+            "comparison_population_ids": list(self.comparison_population_ids),
+            "selected_comparators": (
+                {}
+                if self.selected_comparators is None
+                else {
+                    method_id: direct_json_value(value)
+                    for method_id, value in self.selected_comparators.items()
+                }
+            ),
+            "comparator_nonexecution_identities": (
+                {}
+                if self.comparator_nonexecution_identities is None
+                else {
+                    method_id: direct_json_value(value, payload=True)
+                    for method_id, value in self.comparator_nonexecution_identities.items()
+                }
+            ),
             "selection_rule": (
                 "all_hard_gates_then_lowest_version_then_configuration_id"
             ),
@@ -516,7 +616,9 @@ class _ValidatedRecord:
     dataset_id: str
     dataset_sha256: str
     method: str
-    method_sha256: str
+    method_sha256: str | None
+    run_identity: Mapping[str, object] | None
+    selected_configuration: BoundComparatorConfiguration | None
     model_seed: int | None
     metric: str
     value: float | None
@@ -631,6 +733,7 @@ def _validate_records(
     model_seeds: tuple[int, ...],
     dataset_bindings: Mapping[tuple[str, str, str], tuple[str, str]],
     method_bindings: Mapping[str, str],
+    selected_comparators: Mapping[str, BoundComparatorConfiguration],
 ) -> tuple[_ValidatedRecord, ...]:
     if isinstance(records, (str, bytes)) or not isinstance(records, Sequence):
         raise TypeError("records must be a sequence of mappings")
@@ -645,14 +748,73 @@ def _validate_records(
         if method not in by_method:
             raise ValueError(f"record {index} method is undeclared")
         method_sha256 = raw["method_sha256"]
-        if not isinstance(method_sha256, str) or not re.fullmatch(
-            r"[0-9a-f]{64}", method_sha256
-        ):
-            raise ValueError(f"record {index} method_sha256 is invalid")
-        if method_bindings.get(method) != method_sha256:
-            raise ValueError(
-                "record method checksum mismatches the tracked method or configuration"
-            )
+        selected = selected_comparators.get(method)
+        run_identity: Mapping[str, object] | None
+        selected_configuration: BoundComparatorConfiguration | None
+        if selected is None:
+            if (
+                raw["run_identity"] is not None
+                or raw["selected_configuration"] is not None
+                or not isinstance(method_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", method_sha256) is None
+                or method_bindings.get(method) != method_sha256
+            ):
+                raise ValueError(
+                    "record method binding mismatches the tracked method or configuration"
+                )
+            run_identity = None
+            selected_configuration = None
+        else:
+            if method_sha256 is not None:
+                raise ValueError(
+                    "record selected comparator must use its complete direct identity"
+                )
+            identity_value = raw["run_identity"]
+            if (
+                type(identity_value) is not dict
+                or set(identity_value) != _COMPARATOR_RUN_IDENTITY_FIELDS
+            ):
+                raise ValueError("record comparator run identity is invalid")
+            try:
+                selected_configuration = decode_bound_comparator_configuration(
+                    raw["selected_configuration"]
+                )
+            except ComparatorTuningError as error:
+                raise ValueError(
+                    "record selected comparator configuration differs"
+                ) from error
+            if not direct_equal(selected_configuration, selected):
+                raise ValueError("record selected comparator configuration differs")
+            expected_method = direct_json_value(selected.method)
+            if (
+                identity_value.get("workflow_schema")
+                != "maskimpute-fair-comparator-run-v1"
+                or identity_value.get("authority_revision")
+                != selected.authority_reference.authority_revision
+                or identity_value.get("configuration_kind") != "comparator_tuning"
+                or identity_value.get("configuration_id")
+                != selected.configuration.configuration_id
+                or not direct_equal(
+                    identity_value.get("configuration_payload"),
+                    selected.configuration.payload,
+                )
+                or not direct_equal(identity_value.get("method"), expected_method)
+                or identity_value.get("dataset_id") != raw["dataset_id"]
+                or identity_value.get("mechanism") != raw["mechanism"]
+                or identity_value.get("biological_id") != raw["biological_id"]
+                or identity_value.get("technical_view") != raw["technical_view"]
+                or identity_value.get("model_seed") != raw["model_seed"]
+                or isinstance(identity_value.get("ordinal"), bool)
+                or type(identity_value.get("ordinal")) is not int
+                or int(identity_value["ordinal"]) < 1
+                or isinstance(identity_value.get("mask_seed"), bool)
+                or type(identity_value.get("mask_seed")) is not int
+                or isinstance(identity_value.get("draw_index"), bool)
+                or type(identity_value.get("draw_index")) is not int
+                or int(identity_value["draw_index"]) < 1
+            ):
+                raise ValueError("record comparator run identity differs")
+            run_identity = MappingProxyType(dict(identity_value))
         mechanism = raw["mechanism"]
         biological_id = raw["biological_id"]
         technical_view = raw["technical_view"]
@@ -721,6 +883,8 @@ def _validate_records(
             dataset_sha256=dataset_sha256,
             method=method,
             method_sha256=method_sha256,
+            run_identity=run_identity,
+            selected_configuration=selected_configuration,
             model_seed=seed,
             metric=metric,
             value=value,
@@ -1602,11 +1766,48 @@ def _evaluate_development_candidates(
     endpoint_policies: object,
     revision_policy: RevisionPolicy,
     exclusions: object,
+    comparison_population_ids: object = None,
+    selected_comparators: Mapping[str, BoundComparatorConfiguration] | None = None,
+    comparator_nonexecution_identities: Mapping[str, Mapping[str, object]]
+    | None = None,
 ) -> SelectionReport:
     """Apply the prespecified hard gates and conditional revision trigger."""
 
     attempt_values = _validate_attempts(attempts)
     declaration_values = _validate_declarations(declarations, attempt_values)
+    selected_comparator_values = (
+        MappingProxyType({}) if selected_comparators is None else selected_comparators
+    )
+    if not isinstance(selected_comparator_values, Mapping) or any(
+        not isinstance(method_id, str)
+        or not isinstance(value, BoundComparatorConfiguration)
+        for method_id, value in selected_comparator_values.items()
+    ):
+        raise TypeError("selected_comparators is invalid")
+    nonexecution_values = (
+        MappingProxyType({})
+        if comparator_nonexecution_identities is None
+        else comparator_nonexecution_identities
+    )
+    if not isinstance(nonexecution_values, Mapping):
+        raise TypeError("comparator_nonexecution_identities is invalid")
+    declared_population = tuple(
+        sorted(row.id for row in declaration_values if row.role != "candidate")
+    )
+    population_values = (
+        declared_population
+        if comparison_population_ids is None
+        else _canonical_string_tuple(
+            comparison_population_ids,
+            "comparison_population_ids",
+        )
+    )
+    if len(population_values) != len(set(population_values)) or set(
+        population_values
+    ) != set(declared_population):
+        raise ValueError(
+            "comparison_population_ids must equal the declared comparison population"
+        )
     mechanism_values = _canonical_string_tuple(mechanisms, "mechanisms")
     if mechanism_values != ("symsim", "sergio", "sparsim", "semisynthetic"):
         raise ValueError("mechanisms must equal the four-mechanism publication panel")
@@ -1681,8 +1882,28 @@ def _evaluate_development_candidates(
         model_seeds=seed_values,
         dataset_bindings=dataset_bindings,
         method_bindings=method_bindings,
+        selected_comparators=selected_comparator_values,
     )
     lookup = _record_lookup(validated_records)
+    for declaration in declaration_values:
+        if declaration.role == "candidate" or not declaration.required_for_claim:
+            continue
+        for metric in _METRICS:
+            for mechanism in _expected_mechanisms(metric, mechanism_values):
+                for biological_id in biological_values:
+                    for technical_view in technical_values:
+                        for seed in _expected_seeds(declaration, seed_values):
+                            if (
+                                declaration.id,
+                                metric,
+                                mechanism,
+                                biological_id,
+                                technical_view,
+                                seed,
+                            ) not in lookup:
+                                raise ValueError(
+                                    "required comparison population record is missing"
+                                )
     complete = {
         declaration.id: _method_complete(
             declaration,
@@ -1771,6 +1992,9 @@ def _evaluate_development_candidates(
         selected_configuration=selected,
         trigger=trigger,
         excluded_configurations=exclusion_values,
+        comparison_population_ids=population_values,
+        selected_comparators=MappingProxyType(dict(selected_comparator_values)),
+        comparator_nonexecution_identities=MappingProxyType(dict(nonexecution_values)),
     )
 
 
@@ -2938,6 +3162,8 @@ def _load_selection_authority(
         revision_policy=revision_policy,
         exclusions=tuple(exclusions),
         method_bindings=MappingProxyType(method_bindings),
+        selected_comparators=MappingProxyType({}),
+        comparator_nonexecution_identities=MappingProxyType({}),
         base_maskimpute_config=_freeze_details(base_config),
         base_maskimpute_config_sha256=base_config_sha,
         count_model_config=_freeze_details(count_config),
@@ -2985,9 +3211,19 @@ _SELECTION_SOURCE_BASE_FIELDS = frozenset(
         "count_score_manifest_sha256",
         "retained_calibration_artifact_sha256",
         "evaluation_manifest_sha256",
+        "comparator_selection",
         "records",
         "orthogonal_intervals",
         "result_sha256",
+    }
+)
+_COMPARATOR_SELECTION_FIELDS = frozenset(
+    {
+        "path",
+        "receipt",
+        "selected_by_method",
+        "nonexecution_identity_by_method",
+        "ready_comparison_population_ids",
     }
 )
 
@@ -3010,6 +3246,19 @@ def _validate_selection_source_payload(payload: object) -> str | None:
     if not expected_fields or set(payload) != expected_fields:
         raise SelectionAuthorityError(
             "source selection input has missing or extra fields"
+        )
+    comparator = payload.get("comparator_selection")
+    if (
+        type(comparator) is not dict
+        or set(comparator) != _COMPARATOR_SELECTION_FIELDS
+        or comparator.get("path") != COMPARATOR_SELECTION_RELATIVE_PATH
+        or type(comparator.get("receipt")) is not dict
+        or type(comparator.get("selected_by_method")) is not dict
+        or type(comparator.get("nonexecution_identity_by_method")) is not dict
+        or type(comparator.get("ready_comparison_population_ids")) is not list
+    ):
+        raise SelectionAuthorityError(
+            "source comparator selection has missing or extra fields"
         )
     revision_versions = payload.get("revision_versions", [])
     if schema_version == 2:
@@ -3503,6 +3752,7 @@ def _select_for_repository(
         "count_score_manifest_sha256",
         "retained_calibration_artifact_sha256",
         "evaluation_manifest_sha256",
+        "comparator_selection",
         "records",
         "orthogonal_intervals",
         "result_sha256",
@@ -3537,6 +3787,27 @@ def _select_for_repository(
                 "development revision versions are incomplete or reordered"
             )
     authority = _load_selection_authority(repository, require_clean=require_clean)
+    try:
+        comparator_receipt = load_comparator_selection_receipt(repository)
+        comparator_projection = comparator_selection_projection(comparator_receipt)
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise SelectionAuthorityError(
+            "comparator selection receipt failed validation"
+        ) from error
+    expected_comparator_selection = comparator_selection_projection_value(
+        comparator_projection
+    )
+    if not direct_equal(
+        data["comparator_selection"],
+        expected_comparator_selection,
+    ):
+        raise SelectionAuthorityError(
+            "development results comparator selection differs"
+        )
+    ready_authority = _authority_with_comparator_projection(
+        authority,
+        comparator_projection,
+    )
     if authority.retained_calibration.status != "ready":
         raise SelectionAuthorityError(
             "retained calibration artifact is pending and blocks development selection"
@@ -3685,13 +3956,13 @@ def _select_for_repository(
                     "result_sha256": _canonical_sha256(evaluation_core),
                 }
             evaluation_evidence = validate_selection_evaluation_manifest(
-                repository, evaluation_data, authority, status
+                repository, evaluation_data, ready_authority, status
             )
         except EvaluationManifestError as error:
             raise SelectionAuthorityError(
                 f"development evaluation manifest failed validation: {error}"
             ) from error
-        selection_authority = authority
+        selection_authority = ready_authority
     else:
         try:
             from .revision_evaluation import (
@@ -3726,6 +3997,10 @@ def _select_for_repository(
             raise SelectionAuthorityError(
                 "development revision evaluation returned invalid authority"
             )
+        selection_authority = _authority_with_comparator_projection(
+            selection_authority,
+            comparator_projection,
+        )
 
     if schema_version == 4 and data["revision_versions"] == []:
         expected_checkpoint_binding = {
@@ -3773,6 +4048,13 @@ def _select_for_repository(
         endpoint_policies=selection_authority.endpoint_policies,
         revision_policy=selection_authority.revision_policy,
         exclusions=selection_authority.exclusions,
+        comparison_population_ids=(
+            comparator_projection.ready_comparison_population_ids
+        ),
+        selected_comparators=selection_authority.selected_comparators,
+        comparator_nonexecution_identities=(
+            selection_authority.comparator_nonexecution_identities
+        ),
     )
     bindings = {
         relative.replace("/", "_").replace(".", "_") + "_sha256": digest
@@ -3796,6 +4078,9 @@ def _select_for_repository(
         trigger=report.trigger,
         excluded_configurations=report.excluded_configurations,
         authority_bindings=MappingProxyType(bindings),
+        comparison_population_ids=report.comparison_population_ids,
+        selected_comparators=report.selected_comparators,
+        comparator_nonexecution_identities=(report.comparator_nonexecution_identities),
     )
 
 

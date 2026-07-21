@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from .protocol import canonical_sha256 as _canonical_sha256
+from .direct_values import direct_equal, direct_json_value
 
 if TYPE_CHECKING:
     from .selection import SelectionAuthority
@@ -172,6 +173,7 @@ def _validate_selection_evaluation_envelope(
             "dataset_manifest_sha256",
             "count_score_manifest",
             "retained_calibration_artifact",
+            "comparator_selection",
             "reconstruction",
             "orthogonal",
             "sources",
@@ -204,6 +206,7 @@ def _validate_selection_evaluation_envelope(
             "dataset_manifest_sha256",
             "count_score_manifest_sha256",
             "retained_calibration_artifact_sha256",
+            "comparator_selection",
             "records",
             "orthogonal_intervals",
         )
@@ -232,6 +235,11 @@ def _validate_selection_evaluation_envelope(
         "file_sha256": data["retained_calibration_artifact_sha256"],
     }:
         raise SelectionAuthorityError("evaluation calibration binding mismatch")
+    if not direct_equal(
+        evaluation_root["comparator_selection"],
+        data["comparator_selection"],
+    ):
+        raise SelectionAuthorityError("evaluation comparator selection differs")
     return evaluation_root, MappingProxyType(
         {
             "evaluation_manifest_file_sha256": observed_file_sha256,
@@ -279,6 +287,7 @@ def _validate_reconstruction_evidence(
     status: Mapping[str, Any],
     data: Mapping[str, Any],
     raw_null_de_audits: object,
+    comparator_projection: object,
 ) -> Mapping[str, str]:
     try:
         reconstruction = _exact_authority_mapping(
@@ -413,26 +422,23 @@ def _validate_reconstruction_evidence(
             prepared_datasets=prepared,
             declarations=authority.declarations,
             method_bindings=authority.method_bindings,
+            comparator_projection=comparator_projection,
         )
-        rebuilt_records = [dict(value) for value in rebuilt.records]
+        rebuilt_records = [direct_json_value(dict(value)) for value in rebuilt.records]
         rebuilt_audits = [dict(value) for value in rebuilt.null_de_audits]
     except Exception as error:
         raise SelectionAuthorityError(
             "reconstruction selection records could not be independently rebuilt"
         ) from error
-    if (
-        type(data.get("records")) is not list
-        or _canonical_json_bytes(data["records"])
-        != _canonical_json_bytes(rebuilt_records)
-    ):
+    if type(data.get("records")) is not list or _canonical_json_bytes(
+        data["records"]
+    ) != _canonical_json_bytes(rebuilt_records):
         raise SelectionAuthorityError(
             "reconstructed selection records differ from validated checkpoint evidence"
         )
-    if (
-        type(raw_null_de_audits) is not list
-        or _canonical_json_bytes(raw_null_de_audits)
-        != _canonical_json_bytes(rebuilt_audits)
-    ):
+    if type(raw_null_de_audits) is not list or _canonical_json_bytes(
+        raw_null_de_audits
+    ) != _canonical_json_bytes(rebuilt_audits):
         raise SelectionAuthorityError(
             "null-DE audits differ from independently reconstructed evaluator evidence"
         )
@@ -451,9 +457,7 @@ def _validate_reconstruction_evidence(
             "reconstructed_selection_records_sha256": _canonical_sha256(
                 rebuilt_records
             ),
-            "reconstructed_null_de_audits_sha256": _canonical_sha256(
-                rebuilt_audits
-            ),
+            "reconstructed_null_de_audits_sha256": _canonical_sha256(rebuilt_audits),
         }
     )
 
@@ -487,11 +491,9 @@ def _prepare_reconstruction_datasets(
             "execution_environment_sha256"
         ],
     )
-    if (
-        independently_rebuilt_plan.plan_sha256 != expected_plan.plan_sha256
-        or dict(independently_rebuilt_plan.input_hashes)
-        != dict(expected_plan.input_hashes)
-    ):
+    if independently_rebuilt_plan.plan_sha256 != expected_plan.plan_sha256 or dict(
+        independently_rebuilt_plan.input_hashes
+    ) != dict(expected_plan.input_hashes):
         raise SelectionAuthorityError(
             "prepared development datasets differ from reconstruction plan authority"
         )
@@ -759,19 +761,15 @@ def _validate_orthogonal_evidence(
             raise SelectionAuthorityError(
                 "orthogonal intervals and audits could not be independently recomputed"
             ) from error
-        if (
-            type(data.get("orthogonal_intervals")) is not list
-            or _canonical_json_bytes(data["orthogonal_intervals"])
-            != _canonical_json_bytes(expected_intervals)
-        ):
+        if type(data.get("orthogonal_intervals")) is not list or _canonical_json_bytes(
+            data["orthogonal_intervals"]
+        ) != _canonical_json_bytes(expected_intervals):
             raise SelectionAuthorityError(
                 "orthogonal intervals differ from independently recomputed outputs"
             )
-        if (
-            type(raw_orthogonal_audits) is not list
-            or _canonical_json_bytes(raw_orthogonal_audits)
-            != _canonical_json_bytes(expected_audits)
-        ):
+        if type(raw_orthogonal_audits) is not list or _canonical_json_bytes(
+            raw_orthogonal_audits
+        ) != _canonical_json_bytes(expected_audits):
             raise SelectionAuthorityError(
                 "orthogonal audits differ from independently recomputed outputs"
             )
@@ -1004,6 +1002,29 @@ class ValidatedEvaluationEvidence:
     bindings: Mapping[str, str]
 
 
+def _validate_comparator_selection_evidence(
+    repository: Path,
+    value: object,
+) -> object:
+    from .comparator_tuning import (
+        ComparatorTuningError,
+        comparator_selection_projection,
+        comparator_selection_projection_value,
+        load_comparator_selection_receipt,
+    )
+
+    try:
+        receipt = load_comparator_selection_receipt(repository)
+        projection = comparator_selection_projection(receipt)
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise EvaluationManifestError(
+            "comparator selection evidence failed validation"
+        ) from error
+    if not direct_equal(value, comparator_selection_projection_value(projection)):
+        raise EvaluationManifestError("comparator selection evidence differs")
+    return projection
+
+
 def validate_selection_evaluation_manifest(
     repository: Path,
     data: Mapping[str, Any],
@@ -1012,6 +1033,10 @@ def validate_selection_evaluation_manifest(
 ) -> ValidatedEvaluationEvidence:
     try:
         manifest, envelope = _validate_selection_evaluation_envelope(repository, data)
+        comparator_projection = _validate_comparator_selection_evidence(
+            repository,
+            manifest["comparator_selection"],
+        )
         sources = _validate_evaluation_source_evidence(repository, manifest["sources"])
         reconstruction = _validate_reconstruction_evidence(
             repository,
@@ -1020,6 +1045,7 @@ def validate_selection_evaluation_manifest(
             status,
             data,
             manifest["null_de_audits"],
+            comparator_projection,
         )
         orthogonal = _validate_orthogonal_evidence(
             repository,

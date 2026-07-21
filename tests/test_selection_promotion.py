@@ -41,6 +41,18 @@ def _source_payload(through_version: str | None) -> dict[str, object]:
         "count_score_manifest_sha256": "2" * 64,
         "retained_calibration_artifact_sha256": "3" * 64,
         "evaluation_manifest_sha256": "4" * 64,
+        "comparator_selection": {
+            "path": (
+                "artifacts/study/development/evaluation/comparator_selection.json"
+            ),
+            "receipt": {
+                "schema_version": 1,
+                "artifact_type": "synthetic-comparator-selection-receipt",
+            },
+            "selected_by_method": {},
+            "nonexecution_identity_by_method": {},
+            "ready_comparison_population_ids": ["observed", "capacity-matched-ae"],
+        },
         "records": [],
         "orthogonal_intervals": [],
     }
@@ -59,6 +71,12 @@ def _prepare_fake_stage(
 
     paths = development_selection_stage_paths(through_version)
     source = _source_payload(through_version)
+    comparator = source["comparator_selection"]
+    assert isinstance(comparator, dict)
+    _write_canonical(
+        repository / str(comparator["path"]),
+        comparator["receipt"],
+    )
     source_file_sha = _write_canonical(
         repository / paths.source_selection_input,
         source,
@@ -154,9 +172,10 @@ def test_promotes_each_stage_to_immutable_canonical_schema_four(
     assert receipt.downstream_manifest_file_sha256 == manifest_file_sha
     assert receipt.selection_complete_input_path == paths.selection_complete_input
     assert receipt.selection_complete_result_sha256 == published["result_sha256"]
-    assert receipt.selection_complete_input_file_sha256 == hashlib.sha256(
-        _canonical_bytes(published)
-    ).hexdigest()
+    assert (
+        receipt.selection_complete_input_file_sha256
+        == hashlib.sha256(_canonical_bytes(published)).hexdigest()
+    )
 
     repeated = promotion.promote_development_selection_input(
         repository,
@@ -440,7 +459,14 @@ def test_latest_stage_missing_downstream_never_falls_back(
     repository.mkdir()
     base = development_selection_stage_paths(None)
     v28 = development_selection_stage_paths("v28")
-    _write_canonical(repository / v28.source_selection_input, _source_payload("v28"))
+    source = _source_payload("v28")
+    _write_canonical(repository / v28.source_selection_input, source)
+    comparator = source["comparator_selection"]
+    assert isinstance(comparator, dict)
+    _write_canonical(
+        repository / str(comparator["path"]),
+        comparator["receipt"],
+    )
     earlier_complete = b'{"earlier":"complete"}\n'
     (repository / base.selection_complete_input).parent.mkdir(
         parents=True,

@@ -18,10 +18,22 @@ def _record(method: str, metric: str = "mse", *, value: float = 1.0):
         "dataset_sha256": "a" * 64,
         "method": method,
         "method_sha256": "b" * 64,
+        "run_identity": None,
+        "selected_configuration": None,
         "model_seed": 42,
         "metric": metric,
         "value": value,
         "status": "completed",
+    }
+
+
+def _comparator_selection() -> dict[str, object]:
+    return {
+        "path": "artifacts/study/development/evaluation/comparator_selection.json",
+        "receipt": {"schema_version": 1, "artifact_type": "synthetic"},
+        "selected_by_method": {},
+        "nonexecution_identity_by_method": {},
+        "ready_comparison_population_ids": ["observed", "capacity-matched-ae"],
     }
 
 
@@ -270,6 +282,7 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
         base_evaluation_manifest_sha256=hashlib.sha256(
             base_evaluation_path.read_bytes()
         ).hexdigest(),
+        comparator_selection=_comparator_selection(),
         stages=(stage,),
     )
 
@@ -309,6 +322,7 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
         base_evaluation_manifest_sha256=hashlib.sha256(
             base_evaluation_path.read_bytes()
         ).hexdigest(),
+        comparator_selection=_comparator_selection(),
         stages=(stage,),
         authority=SimpleNamespace(
             declarations=(
@@ -377,6 +391,7 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
             base_evaluation_manifest_sha256=hashlib.sha256(
                 base_evaluation_path.read_bytes()
             ).hexdigest(),
+            comparator_selection=_comparator_selection(),
             stages=(stage,),
         )
 

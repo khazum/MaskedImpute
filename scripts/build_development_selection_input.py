@@ -25,7 +25,8 @@ def _parser() -> argparse.ArgumentParser:
     return argparse.ArgumentParser(
         description=(
             "Build the fixed development selection artifact from the repository-owned "
-            "reconstruction checkpoint, real-source receipts, and orthogonal outputs. "
+            "reconstruction checkpoint, selected-comparator receipt, real-source "
+            "receipts, and orthogonal outputs. "
             "Scientific design and paths are not command-line options."
         )
     )

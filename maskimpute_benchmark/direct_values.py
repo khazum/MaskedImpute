@@ -46,6 +46,8 @@ def freeze_direct_mapping(
 
 
 def _thaw_direct_value(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _thaw_direct_value(nested) for key, nested in value.items()}
     if isinstance(value, FrozenDirectObject):
         return {item[0]: _thaw_direct_value(item[1]) for item in value}
     if isinstance(value, FrozenDirectList):

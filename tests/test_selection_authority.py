@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from functools import lru_cache
 import inspect
 import hashlib
 import json
@@ -67,9 +68,7 @@ def _direct_artifact_strings(value: object) -> tuple[str, ...]:
         )
     if isinstance(value, (list, tuple)):
         return tuple(
-            string
-            for nested in value
-            for string in _direct_artifact_strings(nested)
+            string for nested in value for string in _direct_artifact_strings(nested)
         )
     return (value,) if isinstance(value, str) else ()
 
@@ -1863,6 +1862,54 @@ def _dataset_rows():
     return rows
 
 
+@lru_cache(maxsize=1)
+def _task11_selection_fixture():
+    path = Path(__file__).with_name("test_comparator_tuning.py")
+    spec = importlib.util.spec_from_file_location(
+        "_selection_authority_task11_factory",
+        path,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registry = module.smoke_registry.__wrapped__()
+    comparator_authority = module.smoke_authority.__wrapped__(registry)
+    bound = module.smoke_bound_rows.__wrapped__(registry, comparator_authority)
+    outcomes = module.complete_smoke_outcomes.__wrapped__(bound)
+    fixture = module.complete_selection_fixture.__wrapped__(
+        registry,
+        comparator_authority,
+        bound,
+        outcomes,
+    )
+    return module, fixture
+
+
+@lru_cache(maxsize=1)
+def _complete_comparator_projection():
+    """Reuse Task 11's exact synthetic receipt for schema-bound consumers."""
+
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+    )
+
+    _module, fixture = _task11_selection_fixture()
+    receipt = build_comparator_selection_receipt(**fixture)
+    assert len(receipt["plan_snapshot"]["entries"]) == 2_896
+    assert receipt["readiness"]["status"] == "ready"
+    return receipt, comparator_selection_projection(receipt)
+
+
+def _comparator_selection_value() -> dict[str, object]:
+    from maskimpute_benchmark.comparator_tuning import (
+        comparator_selection_projection_value,
+    )
+
+    _receipt, projection = _complete_comparator_projection()
+    return comparator_selection_projection_value(projection)
+
+
 def _ready_repository(tmp_path: Path):
     from maskimpute.calibration import CalibrationRecord, fit_development_calibration
     from maskimpute_benchmark.selection import _canonical_sha256
@@ -1990,6 +2037,15 @@ def _ready_repository(tmp_path: Path):
         "sha256": calibration_sha,
     }
     ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    receipt, _projection = _complete_comparator_projection()
+    receipt_path = (
+        repository / "artifacts/study/development/evaluation/comparator_selection.json"
+    )
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.write_text(
+        json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
     return repository, calibration_sha
 
 
@@ -2086,6 +2142,10 @@ def _source_evidence(repository: Path):
 
 def _status_and_payload(authority):
     from maskimpute_benchmark.selection import _canonical_sha256
+    from maskimpute_benchmark.comparator_tuning import (
+        comparator_selection_projection_value,
+    )
+    from maskimpute_benchmark.direct_values import direct_json_value
 
     datasets = _dataset_rows()
     dataset_by_unit = {
@@ -2099,6 +2159,8 @@ def _status_and_payload(authority):
         or declaration.role == "candidate"
     ]
     records = []
+    _receipt, comparator_projection = _complete_comparator_projection()
+    ordinal = 0
     for declaration in selected_methods:
         if declaration.role == "observed_control":
             base = 1.4
@@ -2118,6 +2180,46 @@ def _status_and_payload(authority):
                     for view in authority.technical_views:
                         dataset = dataset_by_unit[(mechanism, draw, view)]
                         for seed in seeds:
+                            ordinal += 1
+                            selected = comparator_projection.selected_by_method.get(
+                                declaration.id
+                            )
+                            selected_configuration = (
+                                None
+                                if selected is None
+                                else direct_json_value(selected.configuration)
+                            )
+                            run_identity = (
+                                None
+                                if selected is None
+                                else {
+                                    "workflow_schema": (
+                                        "maskimpute-fair-comparator-run-v1"
+                                    ),
+                                    "authority_revision": (
+                                        selected.configuration.authority_reference.authority_revision
+                                    ),
+                                    "ordinal": ordinal,
+                                    "method": direct_json_value(
+                                        selected.configuration.method
+                                    ),
+                                    "configuration_id": (
+                                        selected.configuration.configuration.configuration_id
+                                    ),
+                                    "configuration_kind": "comparator_tuning",
+                                    "configuration_payload": direct_json_value(
+                                        selected.configuration.configuration.payload,
+                                        payload=True,
+                                    ),
+                                    "dataset_id": dataset["dataset_id"],
+                                    "mechanism": mechanism,
+                                    "biological_id": draw,
+                                    "technical_view": view,
+                                    "mask_seed": 17,
+                                    "model_seed": seed,
+                                    "draw_index": 1,
+                                }
+                            )
                             value = 0.05 if metric == "null_de_fpr" else base
                             records.append(
                                 {
@@ -2127,9 +2229,13 @@ def _status_and_payload(authority):
                                     "dataset_id": dataset["dataset_id"],
                                     "dataset_sha256": dataset["dataset_sha256"],
                                     "method": declaration.id,
-                                    "method_sha256": authority.method_bindings[
-                                        declaration.id
-                                    ],
+                                    "method_sha256": (
+                                        None
+                                        if selected is not None
+                                        else authority.method_bindings[declaration.id]
+                                    ),
+                                    "run_identity": run_identity,
+                                    "selected_configuration": (selected_configuration),
                                     "model_seed": seed,
                                     "metric": metric,
                                     "value": value,
@@ -2171,6 +2277,9 @@ def _status_and_payload(authority):
         "count_score_manifest_sha256": authority.count_score_manifest.sha256,
         "retained_calibration_artifact_sha256": (authority.retained_calibration.sha256),
         "evaluation_manifest_sha256": "e" * 64,
+        "comparator_selection": comparator_selection_projection_value(
+            comparator_projection
+        ),
         "records": records,
         "orthogonal_intervals": intervals,
     }
@@ -2211,6 +2320,7 @@ def _attach_evaluation_manifest(
             ),
             "file_sha256": payload["retained_calibration_artifact_sha256"],
         },
+        "comparator_selection": payload["comparator_selection"],
         "reconstruction": {} if reconstruction is None else reconstruction,
         "orthogonal": {} if orthogonal is None else orthogonal,
         "sources": {} if sources is None else sources,
@@ -2584,6 +2694,72 @@ def test_selection_authority_uses_exact_comparator_readiness_sets() -> None:
     )
 
 
+def test_ready_selection_authority_uses_only_projected_comparator_identities() -> None:
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.selection import (
+        _authority_with_comparator_projection,
+        _load_selection_authority,
+    )
+
+    static = _load_selection_authority(Path.cwd(), require_clean=False)
+    _receipt, projection = _complete_comparator_projection()
+    ready = _authority_with_comparator_projection(static, projection)
+
+    candidate_ids = tuple(
+        row.id for row in static.declarations if row.role == "candidate"
+    )
+    assert tuple(row.id for row in ready.declarations) == (
+        *projection.ready_comparison_population_ids,
+        *candidate_ids,
+    )
+    assert set(ready.selected_comparators) == set(projection.selected_by_method)
+    assert all(
+        direct_equal(
+            ready.selected_comparators[method_id],
+            selected.configuration,
+        )
+        for method_id, selected in projection.selected_by_method.items()
+    )
+    selected_method_ids = set(projection.selected_by_method)
+    assert selected_method_ids.isdisjoint(ready.method_bindings)
+    assert set(ready.comparator_nonexecution_identities) == set(
+        projection.nonexecution_identity_by_method
+    )
+
+
+def test_intrinsically_unavailable_comparator_has_no_numeric_selection_binding() -> (
+    None
+):
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+    )
+    from maskimpute_benchmark.selection import (
+        _authority_with_comparator_projection,
+        _load_selection_authority,
+    )
+
+    task11, fixture = _task11_selection_fixture()
+    unavailable_fixture = task11.selection_fixture_with_intrinsic_unavailable(
+        fixture,
+        "biaeimpute",
+    )
+    projection = comparator_selection_projection(
+        build_comparator_selection_receipt(**unavailable_fixture)
+    )
+    ready = _authority_with_comparator_projection(
+        _load_selection_authority(Path.cwd(), require_clean=False),
+        projection,
+    )
+
+    assert "biaeimpute" in projection.scheduled_same_input_ids
+    assert "biaeimpute" not in projection.ready_comparison_population_ids
+    assert "biaeimpute" not in ready.selected_comparators
+    assert "biaeimpute" not in ready.method_bindings
+    assert "biaeimpute" not in {row.id for row in ready.declarations}
+    assert "biaeimpute" in ready.comparator_nonexecution_identities
+
+
 def test_selection_authority_rejects_biaeimpute_omission(tmp_path: Path) -> None:
     from maskimpute_benchmark.selection import (
         SelectionAuthorityError,
@@ -2639,6 +2815,15 @@ def test_ready_public_selection_binds_results_to_all_repository_authorities(
     )
 
     assert report.selected_configuration == "v27-c01-direct-r1-g1"
+    _receipt, comparator_projection = _complete_comparator_projection()
+    assert report.comparison_population_ids == (
+        comparator_projection.ready_comparison_population_ids
+    )
+    assert "biaeimpute" in report.comparison_population_ids
+    assert not any(
+        configuration_id in report.comparison_population_ids
+        for configuration_id in ("magic-t01", "magic-t05", "magic-t07")
+    )
     assert tuple(item.configuration_id for item in report.excluded_configurations) == (
         "v27-c21-calibrated-r10-g4",
         "v27-c22-calibrated-r10-g6",
@@ -2862,6 +3047,7 @@ def test_selection_blocks_if_count_score_manifest_binding_is_pending(tmp_path):
         "count_score_manifest_sha256": "b" * 64,
         "retained_calibration_artifact_sha256": "c" * 64,
         "evaluation_manifest_sha256": "d" * 64,
+        "comparator_selection": _comparator_selection_value(),
         "records": [],
         "orthogonal_intervals": [],
         "result_sha256": "e" * 64,
@@ -2965,6 +3151,7 @@ def test_cli_forwards_results_without_reconstructing_caller_design(
         "count_score_manifest_sha256": "b" * 64,
         "retained_calibration_artifact_sha256": "c" * 64,
         "evaluation_manifest_sha256": "e" * 64,
+        "comparator_selection": _comparator_selection_value(),
         "records": [],
         "orthogonal_intervals": [],
         "result_sha256": "d" * 64,
@@ -3313,6 +3500,7 @@ def test_cli_accepts_selection_complete_schema_four(tmp_path):
         "count_score_manifest_sha256": "b" * 64,
         "retained_calibration_artifact_sha256": "c" * 64,
         "evaluation_manifest_sha256": "e" * 64,
+        "comparator_selection": _comparator_selection_value(),
         "records": [],
         "orthogonal_intervals": [],
         "revision_versions": [],
@@ -3415,6 +3603,7 @@ def test_result_payload_cannot_supply_attempts_declarations_or_design(tmp_path):
         "count_score_manifest_sha256": "c" * 64,
         "retained_calibration_artifact_sha256": "d" * 64,
         "evaluation_manifest_sha256": "e" * 64,
+        "comparator_selection": _comparator_selection_value(),
         "records": [],
         "orthogonal_intervals": [],
         "attempts": [],
@@ -4131,6 +4320,7 @@ def test_result_payload_checksum_is_verified_before_dataset_access(
         "count_score_manifest_sha256": "c" * 64,
         "retained_calibration_artifact_sha256": "d" * 64,
         "evaluation_manifest_sha256": "e" * 64,
+        "comparator_selection": _comparator_selection_value(),
         "records": [],
         "orthogonal_intervals": [],
         "result_sha256": "b" * 64,

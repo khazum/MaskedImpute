@@ -15,6 +15,7 @@ from .development_evaluation import (
     _publish_bound_file,
     _verify_bound_repository_file,
 )
+from .direct_values import direct_equal
 from .revisions import (
     RevisionActivation,
     RevisionSpec,
@@ -127,6 +128,7 @@ class AssembledRevisionEvaluation:
     base_intervals: tuple[Mapping[str, object], ...]
     base_evaluation_manifest_path: str
     base_evaluation_manifest_sha256: str
+    comparator_selection: Mapping[str, object]
     stages: tuple[RevisionStageEvaluation, ...]
     authority: object
 
@@ -416,6 +418,7 @@ def write_revision_selection_artifacts(
     base_intervals: Sequence[Mapping[str, object]],
     base_evaluation_manifest_path: str,
     base_evaluation_manifest_sha256: str,
+    comparator_selection: Mapping[str, object],
     stages: Sequence[RevisionStageEvaluation],
 ) -> tuple[Path, Path]:
     """Write schema 3 and an acyclic manifest binding every stage separately."""
@@ -481,6 +484,7 @@ def write_revision_selection_artifacts(
         "dataset_manifest_sha256": dataset_manifest_sha256,
         "count_score_manifest_sha256": count_score_manifest_sha256,
         "retained_calibration_artifact_sha256": (retained_calibration_artifact_sha256),
+        "comparator_selection": dict(comparator_selection),
         "records": list(records),
         "orthogonal_intervals": list(intervals),
     }
@@ -500,6 +504,7 @@ def write_revision_selection_artifacts(
             ),
             "file_sha256": retained_calibration_artifact_sha256,
         },
+        "comparator_selection": dict(comparator_selection),
         "base_selection": {
             "input_path": base_activation.selection_input_path,
             "input_file_sha256": base_activation.selection_input_file_sha256,
@@ -557,6 +562,7 @@ def validate_revision_artifact_payloads(
         "count_score_manifest_sha256",
         "retained_calibration_artifact_sha256",
         "evaluation_manifest_sha256",
+        "comparator_selection",
         "records",
         "orthogonal_intervals",
         "result_sha256",
@@ -594,6 +600,10 @@ def validate_revision_artifact_payloads(
         or data["count_score_manifest_sha256"] != assembled.count_score_manifest_sha256
         or data["retained_calibration_artifact_sha256"]
         != assembled.retained_calibration_artifact_sha256
+        or not direct_equal(
+            data["comparator_selection"],
+            assembled.comparator_selection,
+        )
         or data["records"] != list(records)
         or data["orthogonal_intervals"] != list(intervals)
     ):
@@ -617,6 +627,7 @@ def validate_revision_artifact_payloads(
         "dataset_manifest_sha256",
         "count_score_manifest",
         "retained_calibration_artifact",
+        "comparator_selection",
         "base_selection",
         "revisions",
         "combined_score",
@@ -633,6 +644,7 @@ def validate_revision_artifact_payloads(
             "dataset_manifest_sha256",
             "count_score_manifest_sha256",
             "retained_calibration_artifact_sha256",
+            "comparator_selection",
             "records",
             "orthogonal_intervals",
         )
@@ -669,6 +681,10 @@ def validate_revision_artifact_payloads(
             ),
             "file_sha256": assembled.retained_calibration_artifact_sha256,
         }
+        or not direct_equal(
+            evaluation["comparator_selection"],
+            assembled.comparator_selection,
+        )
         or evaluation["base_selection"] != expected_base
         or evaluation["revisions"] != expected_revisions
         or evaluation["combined_score"] is not None
@@ -720,9 +736,49 @@ def validate_revision_artifact_payloads(
             "base reconstruction checkpoint differs from evaluation authority"
         )
 
-    from .development_evaluation import reconstruction_selection_method
-
     declared = {value.id for value in assembled.authority.declarations}
+    selected_by_method = assembled.comparator_selection.get("selected_by_method")
+    if not isinstance(selected_by_method, Mapping):
+        raise RevisionEvaluationError("selected comparator map is invalid")
+
+    def projected_method(run: Mapping[str, object]) -> str | None:
+        nested = run.get("identity")
+        identity = nested if isinstance(nested, Mapping) else run
+        configuration_id = identity.get("configuration_id")
+        if (
+            identity.get("configuration_kind") == "candidate_search"
+            and isinstance(configuration_id, str)
+            and configuration_id in declared
+        ):
+            return configuration_id
+        method_value = identity.get("method")
+        method_id = (
+            method_value.get("method_id")
+            if isinstance(method_value, Mapping)
+            else identity.get("method_id")
+        )
+        if not isinstance(method_id, str) or method_id not in declared:
+            return None
+        selected = selected_by_method.get(method_id)
+        if selected is None:
+            return (
+                method_id if method_id in {"observed", "capacity-matched-ae"} else None
+            )
+        if not isinstance(selected, Mapping):
+            raise RevisionEvaluationError("selected comparator identity is invalid")
+        configuration = selected.get("configuration")
+        if not isinstance(configuration, Mapping):
+            raise RevisionEvaluationError("selected comparator identity is invalid")
+        return (
+            method_id
+            if configuration_id == configuration.get("configuration_id")
+            and direct_equal(
+                identity.get("configuration_payload"),
+                configuration.get("payload"),
+            )
+            and direct_equal(method_value, selected.get("method"))
+            else None
+        )
 
     def status_sha256(records: object, *, configuration_id: str | None) -> str:
         if not isinstance(records, list) and not isinstance(records, tuple):
@@ -737,10 +793,13 @@ def validate_revision_artifact_payloads(
             if not isinstance(run, Mapping):
                 raise RevisionEvaluationError("reconstruction status run is invalid")
             if configuration_id is None:
-                if reconstruction_selection_method(run, declared) is None:
+                if projected_method(run) is None:
                     continue
-            elif run.get("configuration_id") != configuration_id:
-                continue
+            else:
+                nested = run.get("identity")
+                identity = nested if isinstance(nested, Mapping) else run
+                if identity.get("configuration_id") != configuration_id:
+                    continue
             statuses.append(
                 {
                     "run_id": run.get("run_id"),
@@ -952,7 +1011,16 @@ def assemble_revision_evaluation(
         load_activated_v29_revision_authority,
         load_prepared_development_panel,
     )
-    from .selection import load_publication_execution_authority
+    from .selection import (
+        _authority_with_comparator_projection,
+        load_publication_execution_authority,
+    )
+    from .comparator_tuning import (
+        comparator_selection_projection,
+        comparator_selection_projection_value,
+        load_comparator_selection_receipt,
+    )
+    from .direct_values import direct_equal
     from .revisions import (
         derive_extended_selection_authority,
         load_revision_spec,
@@ -985,7 +1053,13 @@ def assemble_revision_evaluation(
         validate_revision_activation(root, version, require_clean=require_clean)
         for version in versions
     )
-    base_authority = load_publication_execution_authority()
+    comparator_projection = comparator_selection_projection(
+        load_comparator_selection_receipt(root)
+    )
+    base_authority = _authority_with_comparator_projection(
+        load_publication_execution_authority(),
+        comparator_projection,
+    )
     extended_authority = derive_extended_selection_authority(
         base_authority,
         specs,
@@ -997,6 +1071,11 @@ def assemble_revision_evaluation(
     )
     if base_input.get("result_sha256") != activations[0].selection_result_sha256:
         raise RevisionEvaluationError("base selection result binding differs")
+    if not direct_equal(
+        base_input.get("comparator_selection"),
+        comparator_selection_projection_value(comparator_projection),
+    ):
+        raise RevisionEvaluationError("base comparator selection differs")
     base_evaluation_path = (
         "artifacts/study/development/evaluation/evaluation_manifest.json"
     )
@@ -1074,6 +1153,7 @@ def assemble_revision_evaluation(
             prepared_datasets=prepared,
             declarations=extended_authority.declarations,
             method_bindings=extended_authority.method_bindings,
+            comparator_projection=comparator_projection,
         )
         records = tuple(
             value
@@ -1141,6 +1221,7 @@ def assemble_revision_evaluation(
         base_intervals=tuple(dict(value) for value in base_intervals),
         base_evaluation_manifest_path=base_evaluation_path,
         base_evaluation_manifest_sha256=base_evaluation_sha,
+        comparator_selection=dict(base_input["comparator_selection"]),
         stages=tuple(stages),
         authority=extended_authority,
     )
@@ -1170,6 +1251,7 @@ def build_revision_selection_input(
         base_intervals=assembled.base_intervals,
         base_evaluation_manifest_path=assembled.base_evaluation_manifest_path,
         base_evaluation_manifest_sha256=(assembled.base_evaluation_manifest_sha256),
+        comparator_selection=assembled.comparator_selection,
         stages=assembled.stages,
     )
 

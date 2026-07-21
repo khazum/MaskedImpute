@@ -119,9 +119,7 @@ def _pinned_parent(path: Path, label: str):
         for component in path.parent.relative_to(path.anchor).parts:
             named = os.stat(component, dir_fd=current, follow_symlinks=False)
             if not stat.S_ISDIR(named.st_mode):
-                raise SelectionPromotionError(
-                    f"{label} parent path is not a directory"
-                )
+                raise SelectionPromotionError(f"{label} parent path is not a directory")
             child = os.open(component, flags, dir_fd=current)
             opened = os.fstat(child)
             expected = _directory_identity(named)
@@ -172,9 +170,7 @@ def _read_unique_regular_at(parent: int, name: str, label: str) -> bytes:
             raise SelectionPromotionError(f"{label} is not a unique regular file")
         descriptor = os.open(
             name,
-            os.O_RDONLY
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
             dir_fd=parent,
         )
         opened_before = os.fstat(descriptor)
@@ -194,10 +190,9 @@ def _read_unique_regular_at(parent: int, name: str, label: str) -> bytes:
             chunks.append(chunk)
         opened_after = os.fstat(descriptor)
         named_after = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        if (
-            _file_identity(opened_before) != _file_identity(opened_after)
-            or _file_identity(opened_before) != _file_identity(named_after)
-        ):
+        if _file_identity(opened_before) != _file_identity(
+            opened_after
+        ) or _file_identity(opened_before) != _file_identity(named_after):
             raise SelectionPromotionError(f"{label} changed while being read")
         raw = b"".join(chunks)
         if len(raw) != opened_before.st_size:
@@ -328,10 +323,46 @@ def _read_source(
         )
         observed_stage = _validate_selection_source_payload(source)
     except (SelectionPromotionError, SelectionAuthorityError) as error:
-        raise SelectionPromotionError(f"source selection input is invalid: {error}") from error
+        raise SelectionPromotionError(
+            f"source selection input is invalid: {error}"
+        ) from error
     if observed_stage != through_version:
         raise SelectionPromotionError("source selection input stage differs")
     return source, file_sha256
+
+
+def _read_embedded_comparator_receipt(
+    repository: Path,
+    source: dict[str, Any],
+) -> bytes:
+    """Reread and byte-compare the complete embedded direct receipt."""
+
+    selection = source.get("comparator_selection")
+    if not isinstance(selection, dict):
+        raise SelectionPromotionError("source comparator selection is invalid")
+    path_value = selection.get("path")
+    receipt = selection.get("receipt")
+    if not isinstance(path_value, str) or type(receipt) is not dict:
+        raise SelectionPromotionError("source comparator selection is invalid")
+    path = _fixed_repository_path(
+        repository,
+        path_value,
+        "comparator selection receipt",
+    )
+    try:
+        with _pinned_parent(path, "comparator selection receipt") as parent:
+            raw = _read_unique_regular_at(
+                parent,
+                path.name,
+                "comparator selection receipt",
+            )
+    except SelectionPromotionError as error:
+        raise SelectionPromotionError(
+            "comparator selection receipt is invalid"
+        ) from error
+    if raw != _canonical_json_bytes(receipt):
+        raise SelectionPromotionError("comparator selection receipt differs")
+    return raw
 
 
 def _validate_promoted_payload(
@@ -356,19 +387,15 @@ def _validate_promoted_payload(
         raise SelectionPromotionError(str(error)) from error
     if (
         binding.get("path") != paths.downstream_directory
-        or binding.get("source_selection_input_path")
-        != paths.source_selection_input
+        or binding.get("source_selection_input_path") != paths.source_selection_input
         or binding.get("source_selection_input_file_sha256") != source_file_sha256
-        or binding.get("source_selection_result_sha256")
-        != source.get("result_sha256")
+        or binding.get("source_selection_result_sha256") != source.get("result_sha256")
     ):
         raise SelectionPromotionError("promoted source or downstream path differs")
     promoted_result_sha = promoted.get("result_sha256")
     if not isinstance(promoted_result_sha, str):
         raise SelectionPromotionError("promoted selection checksum is invalid")
-    unsigned = {
-        key: value for key, value in promoted.items() if key != "result_sha256"
-    }
+    unsigned = {key: value for key, value in promoted.items() if key != "result_sha256"}
     if canonical_sha256(unsigned) != promoted_result_sha:
         raise SelectionPromotionError("promoted selection checksum differs")
     manifest_path_value = str(
@@ -413,6 +440,7 @@ def promote_development_selection_input(
         )
     paths = development_selection_stage_paths(through_version)
     source, source_file_sha = _read_source(root, through_version)
+    comparator_receipt_bytes = _read_embedded_comparator_receipt(root, source)
     try:
         attached = attach_downstream_evidence_to_selection_result(
             source,
@@ -447,6 +475,14 @@ def promote_development_selection_input(
     if published != promoted or reread_file_sha != published_file_sha:
         raise SelectionPromotionError(
             "published selection-complete input differs after publication"
+        )
+    if (
+        published.get("comparator_selection") != source["comparator_selection"]
+        or _read_embedded_comparator_receipt(root, published)
+        != comparator_receipt_bytes
+    ):
+        raise SelectionPromotionError(
+            "published comparator selection differs after publication"
         )
     result_sha = promoted["result_sha256"]
     assert isinstance(result_sha, str)

@@ -1791,10 +1791,16 @@ def write_development_selection_artifacts(
     null_de_audits: Sequence[Mapping[str, object]],
     orthogonal_audits: Sequence[Mapping[str, object]],
     sources: RealSourceEvidence,
+    comparator_projection: object,
 ) -> tuple[Path, Path]:
     """Write canonical schema 2 plus its acyclic, byte-bound evidence manifest."""
 
     from .protocol import canonical_sha256
+    from .comparator_tuning import (
+        ComparatorSelectionProjection,
+        comparator_selection_projection_value,
+    )
+    from .direct_values import direct_json_value
 
     if not isinstance(repository, Path):
         raise TypeError("repository must be a pathlib.Path")
@@ -1805,6 +1811,9 @@ def write_development_selection_artifacts(
         raise TypeError("orthogonal must be OrthogonalOutputEvidence")
     if not isinstance(sources, RealSourceEvidence):
         raise TypeError("sources must be RealSourceEvidence")
+    if not isinstance(comparator_projection, ComparatorSelectionProjection):
+        raise TypeError("comparator_projection must be a ComparatorSelectionProjection")
+    comparator_selection = comparator_selection_projection_value(comparator_projection)
     for name, value in (
         ("dataset_manifest_sha256", dataset_manifest_sha256),
         ("count_score_manifest_sha256", count_score_manifest_sha256),
@@ -1898,7 +1907,7 @@ def write_development_selection_artifacts(
             f"{binding.source_id} source artifact",
             expected_size=binding.size_bytes,
         )
-    result_records = [dict(value) for value in records]
+    result_records = [direct_json_value(dict(value)) for value in records]
     result_intervals = [dict(value) for value in intervals]
     if not result_records or not result_intervals:
         raise DevelopmentEvaluationError(
@@ -1909,6 +1918,7 @@ def write_development_selection_artifacts(
         "dataset_manifest_sha256": dataset_manifest_sha256,
         "count_score_manifest_sha256": count_score_manifest_sha256,
         "retained_calibration_artifact_sha256": (retained_calibration_artifact_sha256),
+        "comparator_selection": comparator_selection,
         "records": result_records,
         "orthogonal_intervals": result_intervals,
     }
@@ -1925,6 +1935,7 @@ def write_development_selection_artifacts(
             "path": "artifacts/study/development/calibration/retained_calibration.json",
             "file_sha256": retained_calibration_artifact_sha256,
         },
+        "comparator_selection": comparator_selection,
         "reconstruction": {
             "checkpoint_path": checkpoint_relative,
             "checkpoint_file_sha256": reconstruction.checkpoint_file_sha256,
@@ -1980,6 +1991,19 @@ def write_development_selection_artifacts(
         "development selection input",
     )
     _publish_bound_file(result_path, _canonical_json_bytes(result_payload) + b"\n")
+    receipt_path = _repository_file(
+        root,
+        str(comparator_selection["path"]),
+        "comparator selection receipt",
+    )
+    receipt_raw, _receipt_binding = _read_stable_bytes(
+        receipt_path,
+        "comparator selection receipt",
+    )
+    if receipt_raw != comparator_projection.receipt_bytes:
+        raise DevelopmentEvaluationError(
+            "comparator selection receipt changed during selection input publication"
+        )
     return result_path, evaluation_path
 
 
@@ -2590,6 +2614,10 @@ def build_development_selection_input(
     """Build the fixed schema-2 selection input from completed immutable evidence."""
 
     from .methods import load_method_registry
+    from .comparator_tuning import (
+        comparator_selection_projection,
+        load_comparator_selection_receipt,
+    )
     from .runner import (
         build_competition_plan,
         load_prepared_development_panel,
@@ -2609,6 +2637,11 @@ def build_development_selection_input(
     checkpoint_directory = _repository_file(
         root, reconstruction_relative_directory, "reconstruction directory"
     )
+    comparator_receipt = load_comparator_selection_receipt(
+        root,
+        expected_checkpoint=checkpoint_directory / "checkpoint.json",
+    )
+    comparator_projection = comparator_selection_projection(comparator_receipt)
     checkpoint_payload, _ = _strict_json(
         checkpoint_directory / "checkpoint.json", "reconstruction checkpoint"
     )
@@ -2638,6 +2671,7 @@ def build_development_selection_input(
         prepared_datasets=prepared,
         declarations=selection.declarations,
         method_bindings=selection.method_bindings,
+        comparator_projection=comparator_projection,
     )
     real_panel = prepare_real_orthogonal_panel(root)
     orthogonal_directory = _repository_file(
@@ -2704,6 +2738,7 @@ def build_development_selection_input(
         null_de_audits=reconstruction_bundle.null_de_audits,
         orthogonal_audits=endpoint_bundle.audits,
         sources=real_panel.source_evidence,
+        comparator_projection=comparator_projection,
     )
 
 
@@ -2937,19 +2972,64 @@ _SELECTION_FAILED_STATUS = {
 
 
 def reconstruction_selection_method(
-    run: Mapping[str, object], declared: set[str]
+    run: Mapping[str, object],
+    declared: set[str],
+    comparator_projection: object,
 ) -> str | None:
     """Return the exact selection identity for one reconstruction source run."""
 
-    configuration_id = run.get("configuration_id")
+    from .comparator_tuning import ComparatorSelectionProjection
+    from .direct_values import direct_equal, direct_json_value
+
+    if not isinstance(comparator_projection, ComparatorSelectionProjection):
+        raise TypeError("comparator_projection must be a ComparatorSelectionProjection")
+    identity = run.get("identity")
+    if not isinstance(identity, Mapping):
+        method_id = run.get("method_id")
+        configuration_id = run.get("configuration_id")
+        if (
+            run.get("configuration_kind") == "candidate_search"
+            and isinstance(configuration_id, str)
+            and configuration_id in declared
+        ):
+            return configuration_id
+        comparator_ids = set(comparator_projection.selected_by_method) | set(
+            comparator_projection.nonexecution_identity_by_method
+        )
+        return (
+            method_id
+            if isinstance(method_id, str)
+            and method_id in declared
+            and method_id not in comparator_ids
+            else None
+        )
+    configuration_id = identity.get("configuration_id")
     if (
-        run.get("configuration_kind") == "candidate_search"
+        identity.get("configuration_kind") == "candidate_search"
         and isinstance(configuration_id, str)
         and configuration_id in declared
     ):
         return configuration_id
-    method_id = run.get("method_id")
-    return method_id if isinstance(method_id, str) and method_id in declared else None
+    method = identity.get("method")
+    method_id = method.get("method_id") if isinstance(method, Mapping) else None
+    if not isinstance(method_id, str) or method_id not in declared:
+        return None
+    selected = comparator_projection.selected_by_method.get(method_id)
+    if selected is None:
+        return method_id if method_id in {"observed", "capacity-matched-ae"} else None
+    bound = selected.configuration
+    if (
+        identity.get("authority_revision")
+        != bound.authority_reference.authority_revision
+        or configuration_id != bound.configuration.configuration_id
+        or not direct_equal(
+            identity.get("configuration_payload"),
+            bound.configuration.payload,
+        )
+        or not direct_equal(method, direct_json_value(bound.method))
+    ):
+        return None
+    return method_id
 
 
 def _selection_status(status: object) -> str:
@@ -2999,8 +3079,10 @@ def _null_de_entropy_sha256(
 ) -> str:
     """Derive assignment entropy only after the complete checkpoint is sealed."""
 
-    mechanism = run.get("mechanism")
-    biological_id = run.get("biological_id")
+    identity = run.get("identity")
+    source = identity if isinstance(identity, Mapping) else run
+    mechanism = source.get("mechanism")
+    biological_id = source.get("biological_id")
     if not isinstance(mechanism, str) or not isinstance(biological_id, str):
         raise DevelopmentEvaluationError("null-DE run identity is incomplete")
     digest = hashlib.sha256()
@@ -3037,22 +3119,28 @@ def build_reconstruction_selection_records(
     prepared_datasets: Mapping[str, object],
     declarations: Sequence[object],
     method_bindings: Mapping[str, str],
+    comparator_projection: object,
 ) -> ReconstructionSelectionBundle:
     """Bridge runner rows to selection rows and append evaluator-only null-DE."""
 
     from .methods import count_equivalent_to_log2_cp10k
     from .runner import PreparedDataset, method_input_sha256
     from .selection import MethodDeclaration
+    from .comparator_tuning import ComparatorSelectionProjection
 
     if not isinstance(evidence, ReconstructionEvidence):
         raise TypeError("evidence must be ReconstructionEvidence")
     if not isinstance(checkpoint_directory, Path):
         raise TypeError("checkpoint_directory must be a pathlib.Path")
+    if not isinstance(comparator_projection, ComparatorSelectionProjection):
+        raise TypeError("comparator_projection must be a ComparatorSelectionProjection")
     declaration_values = tuple(declarations)
     if any(not isinstance(value, MethodDeclaration) for value in declaration_values):
         raise TypeError("declarations must contain MethodDeclaration values")
     declared = {value.id for value in declaration_values}
-    if set(method_bindings) < declared:
+    if not declared <= (
+        set(method_bindings) | set(comparator_projection.selected_by_method)
+    ):
         raise DevelopmentEvaluationError("selection method bindings are incomplete")
     records: list[dict[str, object]] = []
     audits: list[dict[str, object]] = []
@@ -3064,10 +3152,16 @@ def build_reconstruction_selection_records(
             raise DevelopmentEvaluationError(
                 f"checkpoint record {record_index} is malformed"
             )
-        method = reconstruction_selection_method(run, declared)
+        method = reconstruction_selection_method(
+            run,
+            declared,
+            comparator_projection,
+        )
         if method is None:
             continue
-        dataset_id = run.get("dataset_id")
+        direct_identity = run.get("identity")
+        identity = direct_identity if isinstance(direct_identity, Mapping) else run
+        dataset_id = identity.get("dataset_id")
         prepared = (
             prepared_datasets.get(dataset_id) if isinstance(dataset_id, str) else None
         )
@@ -3075,7 +3169,17 @@ def build_reconstruction_selection_records(
             raise DevelopmentEvaluationError(
                 f"prepared evaluator dataset is missing for {dataset_id!r}"
             )
-        if (
+        if isinstance(direct_identity, Mapping):
+            if (
+                identity.get("mechanism") != prepared.binding.mechanism
+                or identity.get("biological_id") != prepared.binding.biological_id
+                or identity.get("technical_view") != prepared.binding.technical_view
+                or run.get("retained_cell_count") != prepared.audit.retained_cell_count
+            ):
+                raise DevelopmentEvaluationError(
+                    f"direct checkpoint dataset/QC binding mismatches {dataset_id}"
+                )
+        elif (
             run.get("source_dataset_sha256") != prepared.binding.dataset_sha256
             or run.get("method_input_sha256")
             != method_input_sha256(prepared.method_input)
@@ -3095,18 +3199,28 @@ def build_reconstruction_selection_records(
             if name in metric_lookup:
                 raise DevelopmentEvaluationError("runner metric identity is duplicated")
             metric_lookup[name] = metric
+        selected = comparator_projection.selected_by_method.get(method)
+        selected_configuration = None if selected is None else selected.configuration
         common = {
-            "mechanism": run.get("mechanism"),
-            "biological_id": run.get("biological_id"),
-            "technical_view": run.get("technical_view"),
+            "mechanism": identity.get("mechanism"),
+            "biological_id": identity.get("biological_id"),
+            "technical_view": identity.get("technical_view"),
             "dataset_id": dataset_id,
-            "dataset_sha256": run.get("source_dataset_sha256"),
+            "dataset_sha256": prepared.binding.dataset_sha256,
             "method": method,
-            "method_sha256": method_bindings[method],
-            "model_seed": run.get("model_seed"),
+            "method_sha256": (
+                None if selected is not None else method_bindings[method]
+            ),
+            "run_identity": (
+                dict(direct_identity)
+                if selected is not None and isinstance(direct_identity, Mapping)
+                else None
+            ),
+            "selected_configuration": selected_configuration,
+            "model_seed": identity.get("model_seed"),
         }
         for name in _SELECTION_RECONSTRUCTION_METRICS:
-            if name == "mse_pre_dropout_zero" and run.get("mechanism") != "symsim":
+            if name == "mse_pre_dropout_zero" and identity.get("mechanism") != "symsim":
                 continue
             source = metric_lookup.get(name)
             if source is None:
@@ -3224,7 +3338,7 @@ def build_reconstruction_selection_records(
                 "run_id": run.get("run_id"),
                 "dataset_id": dataset_id,
                 "method": method,
-                "model_seed": run.get("model_seed"),
+                "model_seed": identity.get("model_seed"),
                 "status": null_result.status,
                 "value": null_result.fpr,
                 "nominal_alpha": null_result.nominal_alpha,

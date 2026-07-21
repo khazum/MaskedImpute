@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
 import hashlib
 import gzip
 import io
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tarfile
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 import zlib
 
 import anndata as ad
@@ -25,6 +27,30 @@ ORTHOGONAL_ARTIFACT_BINDINGS = {
     "retained_calibration_artifact_sha256": "d" * 64,
     "score_fit_policy": "refit_cross_fitted_count_score_from_truth_free_input",
 }
+
+
+@lru_cache(maxsize=1)
+def _task11_complete_selection_fixture():
+    """Reuse Task 11's exact file-local 2,896-row synthetic factory."""
+
+    path = Path(__file__).with_name("test_comparator_tuning.py")
+    spec = importlib.util.spec_from_file_location("_task11_test_factory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registry = module.smoke_registry.__wrapped__()
+    authority = module.smoke_authority.__wrapped__(registry)
+    bound = module.smoke_bound_rows.__wrapped__(registry, authority)
+    outcomes = module.complete_smoke_outcomes.__wrapped__(bound)
+    fixture = module.complete_selection_fixture.__wrapped__(
+        registry,
+        authority,
+        bound,
+        outcomes,
+    )
+    checkpoint = fixture["checkpoint"]
+    assert len(checkpoint["plan_snapshot"]["entries"]) == 2_896
+    return module, fixture
 
 
 def _completed_checkpoint(tmp_path: Path):
@@ -967,6 +993,7 @@ def test_reconstruction_bridge_emits_exact_selection_rows_and_null_de_audit(
         build_reconstruction_selection_records,
         load_completed_reconstruction_checkpoint,
     )
+    from maskimpute_benchmark.comparator_tuning import ComparatorSelectionProjection
     from maskimpute_benchmark.selection import MethodDeclaration
 
     plan, store, _report, prepared = _completed_checkpoint(tmp_path)
@@ -1052,6 +1079,14 @@ def test_reconstruction_bridge_emits_exact_selection_rows_and_null_de_audit(
             ),
         ),
         method_bindings={"observed": binding_sha},
+        comparator_projection=ComparatorSelectionProjection(
+            receipt=MappingProxyType({}),
+            receipt_bytes=b"",
+            selected_by_method=MappingProxyType({}),
+            nonexecution_identity_by_method=MappingProxyType({}),
+            scheduled_same_input_ids=("observed",),
+            ready_comparison_population_ids=("observed",),
+        ),
     )
 
     assert len(bundle.records) == 7
@@ -1076,6 +1111,8 @@ def test_reconstruction_bridge_emits_exact_selection_rows_and_null_de_audit(
             "dataset_sha256",
             "method",
             "method_sha256",
+            "run_identity",
+            "selected_configuration",
             "model_seed",
             "metric",
             "value",
@@ -1090,6 +1127,80 @@ def test_reconstruction_bridge_emits_exact_selection_rows_and_null_de_audit(
         "completed_checkpoint" in bundle.null_de_audits[0]["split_entropy_derivation"]
     )
     assert len(bundle.null_de_audits[0]["gene_mask_sha256"]) == 64
+
+
+def test_reconstruction_projection_keeps_only_selected_comparator_configs(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+    )
+    from maskimpute_benchmark.development_evaluation import (
+        ReconstructionEvidence,
+        build_reconstruction_selection_records,
+    )
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.runner import validate_development_manifest_payload
+    from maskimpute_benchmark.selection import _load_selection_authority
+
+    task11, fixture = _task11_complete_selection_fixture()
+    checkpoint = fixture["checkpoint"]
+    receipt = build_comparator_selection_receipt(**fixture)
+    receipt_bytes = (
+        json.dumps(
+            receipt,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    assert json.loads(receipt_bytes) == receipt
+    assert receipt["checkpoint_path"].endswith("checkpoint.json")
+    assert len(receipt["plan_snapshot"]["entries"]) == 2_896
+    assert receipt["readiness"]["status"] == "ready"
+
+    projection = comparator_selection_projection(receipt)
+    datasets = validate_development_manifest_payload(
+        task11._selection_manifest_payload()
+    )
+    prepared = {
+        row.dataset_id: task11._selection_prepared_dataset(row, ordinal)
+        for ordinal, row in enumerate(datasets, start=1)
+    }
+    evidence = ReconstructionEvidence(
+        checkpoint_path="checkpoint.json",
+        checkpoint_file_sha256="a" * 64,
+        checkpoint_sha256="b" * 64,
+        plan_sha256="c" * 64,
+        input_hashes={},
+        records=tuple(checkpoint["records"]),
+        raw_artifacts=(),
+    )
+    selection_authority = _load_selection_authority(Path.cwd(), require_clean=False)
+    bundle = build_reconstruction_selection_records(
+        evidence,
+        checkpoint_directory=tmp_path,
+        prepared_datasets=prepared,
+        declarations=selection_authority.declarations,
+        method_bindings=selection_authority.method_bindings,
+        comparator_projection=projection,
+    )
+    magic_records = [row for row in bundle.records if row["method"] == "magic"]
+    assert magic_records
+    selected = projection.selected_by_method["magic"].configuration
+    assert all(
+        direct_equal(row["selected_configuration"], selected) for row in magic_records
+    )
+    selected_id = selected.configuration.configuration_id
+    assert all(
+        row["run_identity"]["configuration_id"] == selected_id for row in magic_records
+    )
+    assert not any(
+        row["run_identity"]["configuration_id"] != selected_id for row in magic_records
+    )
 
 
 def test_rna_protein_scores_are_matched_features_across_cells_in_one_specimen() -> None:
@@ -1684,6 +1795,10 @@ def test_orthogonal_output_producer_resumes_validated_record_prefix(
 def test_schema2_writer_binds_evaluation_manifest_without_digest_cycle(
     tmp_path: Path,
 ) -> None:
+    from maskimpute_benchmark.comparator_tuning import (
+        build_comparator_selection_receipt,
+        comparator_selection_projection,
+    )
     from maskimpute_benchmark.development_evaluation import (
         OrthogonalConfiguration,
         OrthogonalInput,
@@ -1774,6 +1889,17 @@ def test_schema2_writer_binds_evaluation_manifest_without_digest_cycle(
         receipts=tuple(receipt_bindings),
         artifacts=tuple(artifact_bindings),
     )
+    _task11, fixture = _task11_complete_selection_fixture()
+    comparator_receipt = build_comparator_selection_receipt(**fixture)
+    comparator_projection = comparator_selection_projection(comparator_receipt)
+    comparator_path = (
+        repository / "artifacts/study/development/evaluation/comparator_selection.json"
+    )
+    comparator_path.parent.mkdir(parents=True, exist_ok=True)
+    comparator_path.write_text(
+        json.dumps(comparator_receipt, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
     records = [
         {
             "mechanism": "symsim",
@@ -1783,6 +1909,8 @@ def test_schema2_writer_binds_evaluation_manifest_without_digest_cycle(
             "dataset_sha256": "a" * 64,
             "method": "observed",
             "method_sha256": "b" * 64,
+            "run_identity": None,
+            "selected_configuration": None,
             "model_seed": None,
             "metric": "mse",
             "value": 0.0,
@@ -1814,6 +1942,7 @@ def test_schema2_writer_binds_evaluation_manifest_without_digest_cycle(
         null_de_audits=(),
         orthogonal_audits=(),
         sources=sources,
+        comparator_projection=comparator_projection,
     )
 
     result = json.loads(result_path.read_text())
@@ -1824,6 +1953,7 @@ def test_schema2_writer_binds_evaluation_manifest_without_digest_cycle(
         "count_score_manifest_sha256",
         "retained_calibration_artifact_sha256",
         "evaluation_manifest_sha256",
+        "comparator_selection",
         "records",
         "orthogonal_intervals",
         "result_sha256",
@@ -1838,10 +1968,13 @@ def test_schema2_writer_binds_evaluation_manifest_without_digest_cycle(
             "dataset_manifest_sha256": "a" * 64,
             "count_score_manifest_sha256": count_sha,
             "retained_calibration_artifact_sha256": calibration_sha,
+            "comparator_selection": result["comparator_selection"],
             "records": records,
             "orthogonal_intervals": intervals,
         }
     )
+    assert result["comparator_selection"] == evaluation["comparator_selection"]
+    assert result["comparator_selection"]["receipt"] == comparator_receipt
     assert "result_sha256" not in evaluation
     assert result["result_sha256"] == canonical_sha256(
         {key: value for key, value in result.items() if key != "result_sha256"}

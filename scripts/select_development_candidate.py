@@ -27,8 +27,7 @@ from maskimpute_benchmark.selection_promotion import (  # noqa: E402
 
 
 SELECTION_INPUT_PATH = (
-    REPOSITORY_ROOT
-    / "artifacts/study/development/evaluation/"
+    REPOSITORY_ROOT / "artifacts/study/development/evaluation/"
     "development_selection_input-downstream.json"
 )
 SELECTION_REPORT_PATH = (
@@ -73,6 +72,7 @@ def _load(path: Path) -> dict[str, Any]:
         "count_score_manifest_sha256",
         "retained_calibration_artifact_sha256",
         "evaluation_manifest_sha256",
+        "comparator_selection",
         "result_sha256",
     }
     expected_fields = (
@@ -136,7 +136,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "base selection-complete input",
         )
         if payload.get("schema_version") != 4:
-            raise ValueError("fixed selection input must be selection-complete schema 4")
+            raise ValueError(
+                "fixed selection input must be selection-complete schema 4"
+            )
         report = _report(payload, REPOSITORY_ROOT)
         encoded = _canonical_bytes(report)
         _immutable_publish(SELECTION_REPORT_PATH, encoded)

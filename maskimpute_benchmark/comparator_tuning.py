@@ -2667,6 +2667,49 @@ def _load_selection_authorities(
     return registry, authority
 
 
+_selection_validation_cache: (
+    tuple[
+        bytes,
+        ComparatorTuningAuthority,
+        tuple[ComparatorMethodBinding, ...],
+    ]
+    | None
+) = None
+
+
+def _cached_selection_receipt(
+    raw: bytes,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+) -> dict[str, object] | None:
+    cached = _selection_validation_cache
+    if cached is None or cached[0] != raw or not direct_equal(cached[1], authority):
+        return None
+    current_methods = tuple(
+        comparator_method_binding(registry.by_id(method_id))
+        for method_id in authority.method_order
+    )
+    if not direct_equal(cached[2], current_methods):
+        return None
+    return _parse_canonical_selection_json(raw, "comparator selection receipt")
+
+
+def _remember_selection_receipt(
+    raw: bytes,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+) -> None:
+    global _selection_validation_cache
+    _selection_validation_cache = (
+        raw,
+        authority,
+        tuple(
+            comparator_method_binding(registry.by_id(method_id))
+            for method_id in authority.method_order
+        ),
+    )
+
+
 def _expected_checkpoint_payload(
     expected_checkpoint: object,
     repository: Path,
@@ -2718,6 +2761,9 @@ def load_comparator_selection_receipt(
         raise ComparatorTuningError(
             "comparator selection receipt authority or scope differs"
         )
+    cached = _cached_selection_receipt(raw, authority, registry)
+    if cached is not None and expected_checkpoint is None:
+        return cached
     inputs, plan_entries = _validate_selection_plan_snapshot(
         payload.get("plan_snapshot"),
         authority=authority,
@@ -2762,6 +2808,7 @@ def load_comparator_selection_receipt(
             raise ComparatorTuningError(
                 "comparator selection receipt differs from expected checkpoint"
             )
+    _remember_selection_receipt(raw, authority, registry)
     return recomputed
 
 
@@ -2805,6 +2852,215 @@ def publish_comparator_selection(repository: Path) -> dict[str, object]:
         root,
         expected_checkpoint=checkpoint_path,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class SelectedComparatorConfiguration:
+    """One complete comparator identity selected by the validated receipt."""
+
+    configuration: BoundComparatorConfiguration
+
+
+@dataclass(frozen=True, slots=True)
+class ComparatorSelectionProjection:
+    """Immutable full receipt plus its exact selected/nonexecution projection."""
+
+    receipt: Mapping[str, object]
+    receipt_bytes: bytes
+    selected_by_method: Mapping[str, SelectedComparatorConfiguration]
+    nonexecution_identity_by_method: Mapping[str, Mapping[str, object]]
+    scheduled_same_input_ids: tuple[str, ...]
+    ready_comparison_population_ids: tuple[str, ...]
+
+
+def decode_bound_comparator_configuration(
+    value: object,
+) -> BoundComparatorConfiguration:
+    """Decode one closed complete bound configuration from direct JSON."""
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "configuration",
+        "authority_reference",
+        "method",
+    }:
+        raise ComparatorTuningError("selected comparator configuration differs")
+    raw_configuration = value.get("configuration")
+    raw_reference = value.get("authority_reference")
+    if not isinstance(raw_configuration, Mapping) or set(raw_configuration) != {
+        item.name for item in fields(ComparatorConfiguration)
+    }:
+        raise ComparatorTuningError("selected comparator configuration differs")
+    if not isinstance(raw_reference, Mapping) or set(raw_reference) != {
+        item.name for item in fields(ComparatorAuthorityReference)
+    }:
+        raise ComparatorTuningError("selected comparator authority differs")
+    try:
+        configuration = ComparatorConfiguration(**dict(raw_configuration))
+        reference = ComparatorAuthorityReference(**dict(raw_reference))
+        method = _selection_method_binding(value.get("method"))
+    except (TypeError, ValueError) as error:
+        raise ComparatorTuningError(
+            "selected comparator configuration differs"
+        ) from error
+    bound = BoundComparatorConfiguration(configuration, reference, method)
+    _validate_bound_selection_configuration(bound)
+    if not direct_equal(direct_json_value(bound), value):
+        raise ComparatorTuningError("selected comparator configuration differs")
+    return bound
+
+
+def validate_comparator_selection_receipt(
+    receipt: Mapping[str, object],
+) -> dict[str, object]:
+    """Semantically recompute one complete Task 11 receipt value."""
+
+    if type(receipt) is not dict:
+        raise ComparatorTuningError("comparator selection receipt is invalid")
+    canonical = _canonical_selection_receipt_bytes(receipt)
+    payload = _parse_canonical_selection_json(
+        canonical,
+        "comparator selection receipt value",
+    )
+    _validate_selection_receipt_schemas(payload)
+    authority = _canonical_comparator_tuning_authority()
+    registry = load_method_registry(
+        Path(__file__).resolve().parents[1] / "study/methods.json"
+    )
+    cached = _cached_selection_receipt(canonical, authority, registry)
+    if cached is not None:
+        return cached
+    methods = payload.get("methods")
+    readiness = payload.get("readiness")
+    if (
+        not isinstance(methods, Mapping)
+        or set(methods) != set(authority.method_order)
+        or not isinstance(readiness, Mapping)
+        or readiness.get("status") != "ready"
+        or payload.get("scheduled_same_input_ids")
+        != list(authority.scheduled_same_input_ids)
+    ):
+        raise ComparatorTuningError("comparator selection projection is not ready")
+    inputs, plan_entries = _validate_selection_plan_snapshot(
+        payload.get("plan_snapshot"),
+        authority=authority,
+        registry=registry,
+    )
+    if not direct_equal(payload.get("input_descriptors"), list(inputs)):
+        raise ComparatorTuningError(
+            "comparator selection receipt input descriptors differ"
+        )
+    tuning, controls, blocking_status_count = _validate_embedded_selection_records(
+        plan_entries=plan_entries,
+        tuning_records=payload.get("scheduled_tuning_records"),
+        control_records=payload.get("control_records"),
+        authority=authority,
+    )
+    plan_snapshot = payload.get("plan_snapshot")
+    if not isinstance(plan_snapshot, Mapping):
+        raise ComparatorTuningError("comparator selection plan snapshot differs")
+    recomputed = _build_selection_receipt_from_evidence(
+        authority=authority,
+        registry=registry,
+        plan_snapshot=plan_snapshot,
+        input_descriptors=inputs,
+        tuning_records=tuning,
+        control_records=controls,
+        blocking_status_count=blocking_status_count,
+        allow_blocked=False,
+    )
+    if not direct_equal(payload, recomputed):
+        raise ComparatorTuningError(
+            "comparator selection receipt differs from recomputed evidence"
+        )
+    _remember_selection_receipt(canonical, authority, registry)
+    return recomputed
+
+
+def _frozen_direct_object(value: Mapping[str, object]) -> Mapping[str, object]:
+    try:
+        return MappingProxyType(dict(freeze_direct_mapping(value)))
+    except ValueError as error:
+        raise ComparatorTuningError("comparator selection value is invalid") from error
+
+
+def comparator_selection_projection(
+    receipt: Mapping[str, object],
+) -> ComparatorSelectionProjection:
+    """Project only exact selected comparator identities from a full receipt."""
+
+    validated = validate_comparator_selection_receipt(receipt)
+    methods = validated["methods"]
+    readiness = validated["readiness"]
+    assert isinstance(methods, Mapping) and isinstance(readiness, Mapping)
+    selected: dict[str, SelectedComparatorConfiguration] = {}
+    unavailable: dict[str, Mapping[str, object]] = {}
+    for method_id, value in methods.items():
+        if not isinstance(method_id, str) or not isinstance(value, Mapping):
+            raise ComparatorTuningError("comparator method projection is invalid")
+        chosen = value.get("selected_configuration")
+        nonexecution = value.get("nonexecution_identity")
+        if chosen is None:
+            if not isinstance(nonexecution, Mapping):
+                raise ComparatorTuningError(
+                    "comparator nonexecution projection is invalid"
+                )
+            unavailable[method_id] = _frozen_direct_object(nonexecution)
+        else:
+            if nonexecution is not None:
+                raise ComparatorTuningError(
+                    "comparator selected/nonexecution projection overlaps"
+                )
+            bound = decode_bound_comparator_configuration(chosen)
+            if (
+                bound.configuration.method_id != method_id
+                or value.get("selected_configuration_id")
+                != bound.configuration.configuration_id
+            ):
+                raise ComparatorTuningError("selected comparator projection is invalid")
+            selected[method_id] = SelectedComparatorConfiguration(bound)
+    if set(selected) & set(unavailable) or set(selected) | set(unavailable) != set(
+        methods
+    ):
+        raise ComparatorTuningError(
+            "comparator selected/nonexecution projection is incomplete"
+        )
+    return ComparatorSelectionProjection(
+        receipt=_frozen_direct_object(validated),
+        receipt_bytes=_canonical_selection_receipt_bytes(validated),
+        selected_by_method=MappingProxyType(selected),
+        nonexecution_identity_by_method=MappingProxyType(unavailable),
+        scheduled_same_input_ids=tuple(validated["scheduled_same_input_ids"]),
+        ready_comparison_population_ids=tuple(
+            readiness["ready_comparison_population_ids"]
+        ),
+    )
+
+
+def comparator_selection_projection_value(
+    projection: ComparatorSelectionProjection,
+) -> dict[str, object]:
+    """Encode the complete receipt and selected/nonexecution maps for handoff."""
+
+    if not isinstance(projection, ComparatorSelectionProjection):
+        raise TypeError("projection must be a ComparatorSelectionProjection")
+    receipt = direct_json_value(projection.receipt, payload=True)
+    if not isinstance(receipt, dict):  # pragma: no cover - frozen mapping invariant
+        raise AssertionError("comparator selection receipt must encode as an object")
+    return {
+        "path": COMPARATOR_SELECTION_RELATIVE_PATH,
+        "receipt": receipt,
+        "selected_by_method": {
+            method_id: direct_json_value(row.configuration)
+            for method_id, row in projection.selected_by_method.items()
+        },
+        "nonexecution_identity_by_method": {
+            method_id: direct_json_value(value, payload=True)
+            for method_id, value in projection.nonexecution_identity_by_method.items()
+        },
+        "ready_comparison_population_ids": list(
+            projection.ready_comparison_population_ids
+        ),
+    }
 
 
 @dataclass(frozen=True, slots=True)

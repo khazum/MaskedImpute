@@ -207,9 +207,7 @@ def _reject_constant(value: str) -> None:
 
 
 def _read_stable_bytes(path: Path, name: str) -> bytes:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
-        os, "O_NOFOLLOW", 0
-    )
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as error:
@@ -259,7 +257,9 @@ def _read_stable_bytes(path: Path, name: str) -> bytes:
     return raw
 
 
-def _read_canonical_json(path: Path, name: str, *, indented: bool) -> tuple[dict[str, Any], str]:
+def _read_canonical_json(
+    path: Path, name: str, *, indented: bool
+) -> tuple[dict[str, Any], str]:
     try:
         raw = _read_stable_bytes(path, name)
         payload = json.loads(
@@ -293,7 +293,15 @@ def _read_canonical_json(path: Path, name: str, *, indented: bool) -> tuple[dict
 def _assert_tracked_clean(repository: Path, relative: str) -> None:
     try:
         subprocess.run(
-            ["git", "-C", str(repository), "ls-files", "--error-unmatch", "--", relative],
+            [
+                "git",
+                "-C",
+                str(repository),
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                relative,
+            ],
             check=True,
             capture_output=True,
             timeout=15,
@@ -315,7 +323,9 @@ def _assert_tracked_clean(repository: Path, relative: str) -> None:
             timeout=15,
         ).stdout
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        raise RevisionAuthorityError("revision authority must be tracked by Git") from error
+        raise RevisionAuthorityError(
+            "revision authority must be tracked by Git"
+        ) from error
     if dirty:
         raise RevisionAuthorityError("revision authority differs from the Git index")
 
@@ -376,7 +386,9 @@ def load_revision_spec(
         "parent_configuration_id",
         "configuration_id",
     ):
-        if not isinstance(payload[field], str) or not _SAFE_ID.fullmatch(payload[field]):
+        if not isinstance(payload[field], str) or not _SAFE_ID.fullmatch(
+            payload[field]
+        ):
             raise RevisionAuthorityError(f"{version} revision identity is invalid")
     for field in ("parent_configuration_sha256", "configuration_sha256"):
         if not isinstance(payload[field], str) or not _SHA256.fullmatch(payload[field]):
@@ -441,7 +453,9 @@ def derive_extended_selection_authority(
             "revision denominator must contain v28 or consecutive v28 and v29"
         )
     if len(spec_values) != len(activation_values):
-        missing = spec_values[len(activation_values)].version if spec_values else "revision"
+        missing = (
+            spec_values[len(activation_values)].version if spec_values else "revision"
+        )
         raise RevisionAuthorityError(f"{missing} activation is absent")
     attempts = list(base.attempts)
     declarations = list(base.declarations)
@@ -507,6 +521,8 @@ def derive_extended_selection_authority(
         revision_policy=base.revision_policy,
         exclusions=base.exclusions,
         method_bindings=MappingProxyType(bindings),
+        selected_comparators=base.selected_comparators,
+        comparator_nonexecution_identities=(base.comparator_nonexecution_identities),
         base_maskimpute_config=base.base_maskimpute_config,
         base_maskimpute_config_sha256=base.base_maskimpute_config_sha256,
         count_model_config=base.count_model_config,
@@ -562,13 +578,12 @@ def _validate_activation_denominator(
     typed: list[Mapping[str, object]] = []
     for index, assessment in enumerate(assessments):
         if not isinstance(assessment, Mapping):
-            raise RevisionAuthorityError(
-                f"activation assessment {index} is malformed"
-            )
+            raise RevisionAuthorityError(f"activation assessment {index} is malformed")
         typed.append(assessment)
-        if _activation_gate_passed(
-            assessment, "required_comparator_completeness"
-        ) is not True:
+        if (
+            _activation_gate_passed(assessment, "required_comparator_completeness")
+            is not True
+        ):
             raise RevisionAuthorityError(
                 "activation comparator denominator is incomplete"
             )
@@ -582,21 +597,15 @@ def _validate_activation_denominator(
         if assessment.get("configuration_id") == spec.parent_configuration_id
     ]
     expected_parent_version = "v27" if spec.version == "v28" else "v28"
-    if (
-        len(parents) != 1
-        or parents[0].get("version") != expected_parent_version
-    ):
+    if len(parents) != 1 or parents[0].get("version") != expected_parent_version:
         raise RevisionAuthorityError(
             f"{spec.version} activation lacks its exact assessed parent"
         )
     if spec.version == "v29":
         parent = parents[0]
-        structure_failure = (
-            parent.get("efficacy_pass") is True
-            and (
-                _activation_gate_passed(parent, "corr_err_degradation") is False
-                or _activation_gate_passed(parent, "orthogonal_safety") is False
-            )
+        structure_failure = parent.get("efficacy_pass") is True and (
+            _activation_gate_passed(parent, "corr_err_degradation") is False
+            or _activation_gate_passed(parent, "orthogonal_safety") is False
         )
         if not structure_failure:
             raise RevisionAuthorityError(

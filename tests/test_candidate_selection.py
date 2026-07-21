@@ -164,6 +164,8 @@ def _records(values, declarations, *, fail=(), omit=()):
                                     "method_sha256": hashlib.sha256(
                                         method.encode()
                                     ).hexdigest(),
+                                    "run_identity": None,
+                                    "selected_configuration": None,
                                     "model_seed": seed,
                                     "metric": metric,
                                     "value": None
@@ -200,6 +202,7 @@ def _select(
     records=None,
     intervals=None,
     exclusions=(),
+    comparison_population_ids=None,
 ):
     from maskimpute_benchmark.selection import _evaluate_development_candidates
     from maskimpute_benchmark.selection import EndpointPolicy
@@ -253,6 +256,7 @@ def _select(
         ),
         revision_policy=RevisionPolicy(v29_max_dropout_mse_loss=0.02),
         exclusions=exclusions,
+        comparison_population_ids=comparison_population_ids,
     )
 
 
@@ -299,6 +303,59 @@ def test_candidate_passes_each_prespecified_gate_without_a_combined_score():
     ] == pytest.approx(0.005)
     assert not hasattr(assessment, "combined_score")
     assert not hasattr(report, "combined_score")
+
+
+def test_candidate_gate_population_is_exact_ready_projection() -> None:
+    from maskimpute_benchmark.selection import MethodDeclaration
+
+    expected = (
+        "observed",
+        "capacity-matched-ae",
+        "alra",
+        "magic",
+        "dca",
+        "scvi",
+        "saver",
+        "scziva",
+        "afmf",
+        "biaeimpute",
+        "sccr",
+        "scsdae",
+    )
+    declarations = (
+        tuple(
+            MethodDeclaration(
+                id=method_id,
+                role=(
+                    "observed_control"
+                    if method_id == "observed"
+                    else "learned_control"
+                    if method_id == "capacity-matched-ae"
+                    else "learned_comparator"
+                ),
+                track="same_input",
+                stochastic=method_id != "observed",
+                required_for_claim=True,
+            )
+            for method_id in expected
+        )
+        + _declarations("v27-a")[-1:]
+    )
+    values = {method_id: dict(_base_values()["strong"]) for method_id in expected}
+    values["observed"] = dict(_base_values()["observed"])
+    values["v27-a"] = dict(_base_values()["v27-a"])
+    report = _select(
+        values,
+        declarations=declarations,
+        records=_records(values, declarations),
+        comparison_population_ids=expected,
+    )
+    assert report.comparison_population_ids == expected
+    assert "biaeimpute" in expected
+    assert not any(
+        configuration_id in report.comparison_population_ids
+        for configuration_id in ("magic-t01", "magic-t05", "magic-t07")
+    )
 
 
 def test_seed_and_view_rows_are_nested_before_draw_level_ranking():
@@ -646,7 +703,7 @@ def test_record_method_hash_must_match_the_tracked_method_or_configuration():
     records = _records(_base_values(), declarations)
     records[0]["method_sha256"] = "0" * 64
 
-    with pytest.raises(ValueError, match="method.*checksum|method_sha256"):
+    with pytest.raises(ValueError, match="method.*(?:checksum|binding)|method_sha256"):
         _select(declarations=declarations, records=records)
 
 
