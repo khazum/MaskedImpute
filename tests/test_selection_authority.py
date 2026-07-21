@@ -412,6 +412,33 @@ def _called_scope(
     return None
 
 
+def _called_scope_for_expression(
+    expression: ast.AST,
+    symbols: Mapping[str, str],
+    current_name: str,
+    functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    class_owners: Mapping[str, str],
+    lexical_parents: Mapping[str, str],
+) -> tuple[str, bool] | None:
+    if isinstance(expression, ast.Name):
+        lexical = _called_scope(
+            expression.id,
+            current_name,
+            functions,
+            class_owners,
+            lexical_parents,
+        )
+        if lexical is not None:
+            return lexical
+    return _called_scope(
+        _resolve_symbol(expression, symbols),
+        current_name,
+        functions,
+        class_owners,
+        lexical_parents,
+    )
+
+
 def _reachable_direct_scopes(
     functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef],
     class_owners: Mapping[str, str],
@@ -439,9 +466,9 @@ def _reachable_direct_scopes(
         call_function_nodes: set[int] = set()
         for call in (node for node in nodes if isinstance(node, ast.Call)):
             call_function_nodes.add(id(call.func))
-            resolved = _resolve_symbol(call.func, symbols)
-            target = _called_scope(
-                resolved,
+            target = _called_scope_for_expression(
+                call.func,
+                symbols,
                 name,
                 functions,
                 class_owners,
@@ -468,8 +495,9 @@ def _reachable_direct_scopes(
             and isinstance(node.ctx, ast.Load)
             and id(node) not in call_function_nodes
         ):
-            target = _called_scope(
-                _resolve_symbol(reference, symbols),
+            target = _called_scope_for_expression(
+                reference,
+                symbols,
                 name,
                 functions,
                 class_owners,
@@ -1060,6 +1088,68 @@ class RepositoryDispatcher:
         return invoke(value)
 """
     assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_prefers_called_nested_function_over_import() -> None:
+    source = """
+from provenance import canonical_sha256
+from safe_module import invoke
+
+class RepositoryDispatcher:
+    def execute_direct(self, value):
+        def invoke(value):
+            return canonical_sha256(value)
+
+        return invoke(value)
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_reaches_import_shadow_registered_in_mapping() -> None:
+    source = """
+from safe_module import execute
+
+class RepositoryAdapterDispatcher:
+    def direct_comparator_adapters(self):
+        def execute(value):
+            return {"plan_sha256": value}
+
+        return {"magic": execute}
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_allows_actual_imported_alias_call() -> None:
+    source = """
+from safe_module import invoke
+
+def run_magic_direct(value):
+    return invoke(value)
+"""
+    assert _direct_source_audit_findings(source, shared=True) == ()
+
+
+def test_direct_source_audit_excludes_path_sensitive_legacy_local_shadow() -> None:
+    source = """
+from provenance import canonical_sha256
+from safe_module import invoke
+
+class RepositoryDispatcher:
+    def _shared(self, value, *, _direct=False):
+        if not _direct:
+            def invoke(value):
+                return canonical_sha256(value)
+
+            return invoke(value)
+        return value
+
+    def execute_direct(self, value):
+        return self._shared(value, _direct=True)
+
+    def execute_legacy(self, value):
+        return self._shared(value, _direct=False)
+"""
+    assert _direct_source_audit_findings(source, shared=True) == ()
 
 
 def test_direct_source_audit_reaches_nested_adapter_factory_callable() -> None:
