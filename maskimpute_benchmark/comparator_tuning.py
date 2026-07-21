@@ -12,6 +12,7 @@ import re
 import stat
 import sys
 import tempfile
+import time
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence, TypeAlias
 
@@ -578,11 +579,15 @@ def _validate_bound_selection_configuration(
     try:
         payload = dict(configuration.payload)
         decoded = configuration.decode()
-    except (ComparatorTuningError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (
+        ComparatorTuningError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
         raise ComparatorTuningError("bound comparator payload is invalid") from error
     if (
-        configuration.payload_json
-        != _canonical_bytes(payload).decode("utf-8")
+        configuration.payload_json != _canonical_bytes(payload).decode("utf-8")
         or encode_comparator_configuration(decoded) != payload
     ):
         raise ComparatorTuningError("bound comparator payload differs")
@@ -643,7 +648,9 @@ def _selection_method_binding(value: object) -> ComparatorMethodBinding:
     )
     if (
         any(not isinstance(item, str) or not item for item in required_strings)
-        or any(item is not None and not isinstance(item, str) for item in optional_strings)
+        or any(
+            item is not None and not isinstance(item, str) for item in optional_strings
+        )
         or type(method.stochastic) is not bool
         or type(method.preserves_observed_positives) is not bool
         or type(method.cpu_cores) is not int
@@ -676,7 +683,9 @@ def _validate_selection_identity(
         != bound.authority_reference.authority_revision
         or identity.get("configuration_id") != configuration.configuration_id
         or identity.get("configuration_kind") != "comparator_tuning"
-        or not direct_equal(identity.get("configuration_payload"), configuration.payload)
+        or not direct_equal(
+            identity.get("configuration_payload"), configuration.payload
+        )
         or not direct_equal(method, bound.method)
         or any(type(identity.get(name)) is not int for name in integers)
         or int(identity["ordinal"]) <= 0
@@ -744,17 +753,15 @@ def _selection_metric_rows(
         SELECTION_METRICS
         if identity["mechanism"] == "symsim"
         else tuple(
-            metric
-            for metric in SELECTION_METRICS
-            if metric != "mse_pre_dropout_zero"
+            metric for metric in SELECTION_METRICS if metric != "mse_pre_dropout_zero"
         )
     )
     if names != expected:
         if set(names) == set(expected):
             raise ComparatorTuningError("comparator selection metric order differs")
-        extra_or_missing_prezero = (
-            "mse_pre_dropout_zero" in names
-        ) != (identity["mechanism"] == "symsim")
+        extra_or_missing_prezero = ("mse_pre_dropout_zero" in names) != (
+            identity["mechanism"] == "symsim"
+        )
         if extra_or_missing_prezero:
             raise ComparatorTuningError(
                 "comparator selection metric applicability differs"
@@ -844,9 +851,7 @@ def collapse_comparator_configuration(
             "comparator selection unit grid must contain exactly 48 records"
         )
 
-    parsed: list[
-        tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]
-    ] = []
+    parsed: list[tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]] = []
     status_counts: Counter[str] = Counter()
     reason_counts: Counter[str] = Counter()
     ordinal_values: set[int] = set()
@@ -880,8 +885,7 @@ def collapse_comparator_configuration(
         metric_rows = _selection_metric_rows(record, identity)
         if status == "completed":
             if any(
-                row["status"] not in {"completed", "unavailable"}
-                for row in metric_rows
+                row["status"] not in {"completed", "unavailable"} for row in metric_rows
             ):
                 raise ComparatorTuningError(
                     "comparator selection metric status differs from run"
@@ -926,11 +930,9 @@ def collapse_comparator_configuration(
     dataset_meta: dict[str, tuple[str, str, str, int, int]] = {}
     dataset_metric_values: dict[tuple[str, str], float] = {}
     for dataset_id, dataset_rows in by_dataset.items():
-        if (
-            len(dataset_rows) != 3
-            or {item[0]["model_seed"] for item in dataset_rows}
-            != set(EXPECTED_MODEL_SEEDS)
-        ):
+        if len(dataset_rows) != 3 or {
+            item[0]["model_seed"] for item in dataset_rows
+        } != set(EXPECTED_MODEL_SEEDS):
             raise ComparatorTuningError(
                 "comparator selection unit grid must contain three model seeds"
             )
@@ -1029,9 +1031,7 @@ def collapse_comparator_configuration(
             moderate = dataset_metric_values.get((views["moderate"], metric))
             severe = dataset_metric_values.get((views["severe"], metric))
             if moderate is not None and severe is not None:
-                collapsed.append(
-                    (f"{unit[0]}:{unit[1]}", (moderate + severe) / 2.0)
-                )
+                collapsed.append((f"{unit[0]}:{unit[1]}", (moderate + severe) / 2.0))
         unit_ids[metric] = tuple(item[0] for item in collapsed)
         unit_values[metric] = tuple(item[1] for item in collapsed)
         unit_counts[metric] = len(collapsed)
@@ -1043,7 +1043,10 @@ def collapse_comparator_configuration(
     }
     eligible = (
         status_counts == Counter({"completed": 48})
-        and all(unit_counts[metric] == expected_counts[metric] for metric in SELECTION_METRICS)
+        and all(
+            unit_counts[metric] == expected_counts[metric]
+            for metric in SELECTION_METRICS
+        )
         and set(metric_medians) == set(SELECTION_METRICS)
     )
     return CollapsedComparatorConfiguration(
@@ -1208,9 +1211,7 @@ def select_one_comparator_method(
         collapsed.append(
             collapse_comparator_configuration(bound, configuration_records)
         )
-    defaults = {
-        row.configuration_id: row.is_upstream_default for row in authority_rows
-    }
+    defaults = {row.configuration_id: row.is_upstream_default for row in authority_rows}
     collapsed_rows = tuple(collapsed)
     ranked_rows = _ranked_pareto_rows(collapsed_rows, defaults)
     selected = (
@@ -1223,6 +1224,1643 @@ def select_one_comparator_method(
         collapsed_rows=collapsed_rows,
         pareto_rows=ranked_rows,
         selected_configuration_id=selected,
+    )
+
+
+_SELECTION_CHECKPOINT_RELATIVE_PATH = (
+    "artifacts/study/development/competition-reconstruction/checkpoint.json"
+)
+_SELECTION_RECEIPT_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "data_scope",
+        "final_data_used",
+        "authority_reference",
+        "plan_snapshot",
+        "input_descriptors",
+        "checkpoint_path",
+        "scheduled_tuning_records",
+        "control_records",
+        "model_seeds",
+        "selection_metrics",
+        "methods",
+        "controls",
+        "scheduled_same_input_ids",
+        "required_control_ids",
+        "established_comparator_ids",
+        "modern_core_ids",
+        "readiness",
+    }
+)
+_METHOD_RECEIPT_KEYS = frozenset(
+    {
+        "method",
+        "selection_status",
+        "configuration_order",
+        "terminal_status_counts",
+        "reason_histogram",
+        "configurations",
+        "pareto_configuration_ids",
+        "selected_configuration_id",
+        "selected_configuration",
+        "nonexecution_identity",
+    }
+)
+_CONFIGURATION_RECEIPT_KEYS = frozenset(
+    {
+        "configuration",
+        "is_upstream_default",
+        "terminal_status_counts",
+        "reason_histogram",
+        "eligible",
+        "eligibility_reason",
+        "unit_ids",
+        "unit_values",
+        "unit_counts",
+        "metric_medians",
+        "pareto_member",
+        "metric_rank_quarters",
+        "selection_tuple",
+    }
+)
+_NONEXECUTION_IDENTITY_KEYS = frozenset(
+    {
+        "schema_version",
+        "authority_reference",
+        "method",
+        "selection_receipt_namespace",
+        "configuration_terminal_denominator",
+    }
+)
+_DIRECT_CHECKPOINT_KEYS = frozenset(
+    {
+        "schema_version",
+        "identity_mode",
+        "authority_revision",
+        "plan_snapshot",
+        "input_descriptors",
+        "planned_run_count",
+        "status",
+        "evaluation_scope",
+        "comparator_selection_status",
+        "selection_complete",
+        "selection_blockers",
+        "records",
+        "budget",
+        "storage_preflight",
+        "remaining_storage_preflight",
+    }
+)
+_DIRECT_PLAN_KEYS = frozenset(
+    {
+        "schema_version",
+        "identity_mode",
+        "authority_revision",
+        "inputs",
+        "entries",
+        "configurations",
+        "comparator_smoke_receipt",
+        "comparator_smoke_receipt_bytes",
+    }
+)
+_DIRECT_INPUT_KEYS = frozenset(
+    {
+        "dataset_id",
+        "source_reference",
+        "preprocessing_revision",
+        "shape",
+        "dtype",
+        "cell_ids",
+        "gene_ids",
+        "batch_labels",
+        "total_count",
+        "nonzero_count",
+        "minimum",
+        "maximum",
+        "mechanism",
+        "mask_seed",
+        "technical_view",
+    }
+)
+_DIRECT_CONFIGURATION_KEYS = frozenset(
+    {
+        "method",
+        "configuration_id",
+        "configuration_kind",
+        "payload",
+        "requires_count_score",
+        "requires_calibration",
+    }
+)
+_DIRECT_ENTRY_KEYS = frozenset(
+    {
+        "run_id",
+        "identity",
+        "preflight_status",
+        "preflight_reason",
+        "requires_count_score",
+        "requires_calibration",
+    }
+)
+_DIRECT_RECORD_KEYS = frozenset({"run", "metrics", "p_pre_zero_evidence"})
+_DIRECT_RUN_KEYS = frozenset(
+    {
+        "run_id",
+        "identity",
+        "status",
+        "reason",
+        "runtime_seconds",
+        "peak_rss_bytes",
+        "peak_gpu_bytes",
+        "rss_measurement",
+        "gpu_measurement",
+        "excluded_cell_count",
+        "excluded_cell_ids",
+        "retained_cell_count",
+        "retained_cell_ids",
+        "retained_gene_count",
+        "observed_zero_count",
+        "stdout",
+        "stderr",
+    }
+)
+_DIRECT_LOG_KEYS = frozenset(
+    {"stream", "original_byte_count", "capture_policy", "terminal_reason"}
+)
+_DIRECT_PREZERO_KEYS = frozenset(
+    {
+        "applicable",
+        "status",
+        "reason",
+        "shape",
+        "dtype",
+        "encoding",
+        "path",
+        "compressed_byte_count",
+    }
+)
+_ALL_DIRECT_TERMINAL_STATUSES = frozenset(
+    {
+        "completed",
+        *_SELECTION_INTRINSIC_STATUSES,
+        "budget_exhausted",
+        "blocked_authority",
+        "infrastructure_error",
+    }
+)
+_SELECTION_EVALUATOR_METRIC_REASONS = frozenset(
+    {
+        "noncanonical_metric_reason",
+        "constant_cell_profile",
+        "constant_gene_profile",
+        "fewer_than_two_cells",
+        "fewer_than_two_variable_cells",
+        "fewer_than_two_variable_genes",
+        "marker_genes_not_provided",
+        "no_entries",
+        "nonfinite_correlation",
+        "proxy_truth_not_exact",
+        "truth_unavailable",
+        "undefined_for_continuous_truth",
+    }
+)
+_BLOCKING_DIRECT_STATUSES = frozenset(
+    {"budget_exhausted", "blocked_authority", "infrastructure_error"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ComparatorReadiness:
+    """Record-derived publication readiness for the fixed comparison population."""
+
+    status: str
+    blocker_codes: tuple[str, ...]
+    required_controls_complete: bool
+    established_selectable_ids: tuple[str, ...]
+    modern_selectable_ids: tuple[str, ...]
+    modern_selectable_count: int
+    ready_comparison_population_ids: tuple[str, ...]
+
+
+def _authority_reference(
+    authority: ComparatorTuningAuthority,
+) -> ComparatorAuthorityReference:
+    return ComparatorAuthorityReference(
+        path="study/comparator_tuning.json",
+        schema_version=authority.schema_version,
+        authority_revision=authority.authority_revision,
+    )
+
+
+def _nonexecution_identity(
+    *,
+    method: ComparatorMethodBinding,
+    authority_reference: ComparatorAuthorityReference,
+    configuration_terminal_denominator: Sequence[Mapping[str, object]],
+) -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "authority_reference": direct_json_value(authority_reference),
+        "method": direct_json_value(method),
+        "selection_receipt_namespace": "maskimpute-comparator-selection-v1",
+        "configuration_terminal_denominator": [
+            direct_json_value(row) for row in configuration_terminal_denominator
+        ],
+    }
+
+
+def _readiness(
+    authority: ComparatorTuningAuthority,
+    control_statuses: Mapping[str, str],
+    selectable_ids: set[str],
+    blocking_status_count: int,
+) -> ComparatorReadiness:
+    controls_complete = not any(
+        control_statuses.get(item) != "completed"
+        for item in authority.required_control_ids
+    )
+    blockers: list[str] = []
+    if not controls_complete:
+        blockers.append("required_control_incomplete")
+    if not set(authority.established_comparator_ids) <= selectable_ids:
+        blockers.append("established_comparator_unselectable")
+    modern = tuple(item for item in authority.modern_core_ids if item in selectable_ids)
+    if len(modern) < 3:
+        blockers.append("fewer_than_three_modern_core_selectable")
+    if blocking_status_count:
+        blockers.append("nonscientific_incomplete_outcome_present")
+    return ComparatorReadiness(
+        status="ready" if not blockers else "blocked",
+        blocker_codes=tuple(blockers),
+        required_controls_complete=controls_complete,
+        established_selectable_ids=tuple(
+            item
+            for item in authority.established_comparator_ids
+            if item in selectable_ids
+        ),
+        modern_selectable_ids=modern,
+        modern_selectable_count=len(modern),
+        ready_comparison_population_ids=tuple(
+            item
+            for item in authority.scheduled_same_input_ids
+            if item in authority.required_control_ids or item in selectable_ids
+        ),
+    )
+
+
+def _require_selection_number(value: object, name: str) -> float:
+    if (
+        isinstance(value, bool)
+        or type(value) not in {int, float}
+        or not math.isfinite(float(value))
+        or value < 0
+        or (value == 0 and math.copysign(1.0, float(value)) < 0.0)
+    ):
+        raise ComparatorTuningError(f"{name} is invalid")
+    return float(value)
+
+
+def _validate_receipt_input_descriptor(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _DIRECT_INPUT_KEYS:
+        raise ComparatorTuningError("comparator selection input descriptor differs")
+    for name in ("dataset_id", "source_reference", "preprocessing_revision", "dtype"):
+        if not isinstance(value.get(name), str) or not value.get(name):
+            raise ComparatorTuningError("comparator selection input descriptor differs")
+    if (
+        value.get("mechanism") not in _SELECTION_MECHANISMS
+        or value.get("technical_view") not in _SELECTION_VIEWS
+    ):
+        raise ComparatorTuningError("comparator selection input descriptor differs")
+    shape = value.get("shape")
+    if (
+        not isinstance(shape, list)
+        or len(shape) != 2
+        or any(type(item) is not int or item <= 0 for item in shape)
+        or type(value.get("mask_seed")) is not int
+        or int(value["mask_seed"]) < 0
+        or type(value.get("nonzero_count")) is not int
+        or int(value["nonzero_count"]) < 0
+    ):
+        raise ComparatorTuningError("comparator selection input descriptor differs")
+    for name in ("cell_ids", "gene_ids", "batch_labels"):
+        observed = value.get(name)
+        if not isinstance(observed, list) or any(
+            not isinstance(item, str) for item in observed
+        ):
+            raise ComparatorTuningError("comparator selection input descriptor differs")
+    if (
+        len(value["cell_ids"]) != shape[0]
+        or len(value["gene_ids"]) != shape[1]
+        or value["batch_labels"]
+        and len(value["batch_labels"]) != shape[0]
+    ):
+        raise ComparatorTuningError("comparator selection input descriptor differs")
+    for name in ("total_count", "minimum", "maximum"):
+        _require_selection_number(value.get(name), f"input descriptor {name}")
+    return value
+
+
+def _validate_selection_plan_snapshot(
+    snapshot: object,
+    *,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+) -> tuple[tuple[Mapping[str, object], ...], tuple[Mapping[str, object], ...]]:
+    if not isinstance(snapshot, Mapping) or set(snapshot) != _DIRECT_PLAN_KEYS:
+        raise ComparatorTuningError("comparator selection plan snapshot differs")
+    if (
+        type(snapshot.get("schema_version")) is not int
+        or snapshot.get("schema_version") != 1
+        or snapshot.get("identity_mode") != "direct-v1"
+        or snapshot.get("authority_revision") != authority.authority_revision
+    ):
+        raise ComparatorTuningError("comparator selection plan snapshot differs")
+    inputs = snapshot.get("inputs")
+    configurations = snapshot.get("configurations")
+    entries = snapshot.get("entries")
+    if (
+        not isinstance(inputs, list)
+        or len(inputs) != 16
+        or not isinstance(configurations, list)
+        or len(configurations) != 61
+        or not isinstance(entries, list)
+        or len(entries) != 2_896
+    ):
+        raise ComparatorTuningError("comparator selection plan denominator differs")
+    input_values = tuple(_validate_receipt_input_descriptor(value) for value in inputs)
+    input_ids = tuple(str(value["dataset_id"]) for value in input_values)
+    if len(set(input_ids)) != 16:
+        raise ComparatorTuningError("comparator selection input denominator differs")
+
+    from .fair_comparator_plan import _configuration_grid
+    from .runner import load_runner_authority
+
+    _specs, expected_configurations, _by_method = _configuration_grid(
+        registry,
+        load_runner_authority(),
+    )
+    expected_configuration_values = direct_json_value(expected_configurations)
+    if not direct_equal(configurations, expected_configuration_values):
+        raise ComparatorTuningError(
+            "comparator selection plan configurations differ from authority"
+        )
+    for value in configurations:
+        if not isinstance(value, Mapping) or set(value) != _DIRECT_CONFIGURATION_KEYS:
+            raise ComparatorTuningError(
+                "comparator selection plan configuration schema differs"
+            )
+
+    smoke = snapshot.get("comparator_smoke_receipt")
+    smoke_bytes = snapshot.get("comparator_smoke_receipt_bytes")
+    if (
+        not isinstance(smoke, Mapping)
+        or not isinstance(smoke_bytes, list)
+        or any(type(item) is not int or item < 0 or item > 255 for item in smoke_bytes)
+    ):
+        raise ComparatorTuningError("comparator selection plan smoke evidence differs")
+    validate_comparator_smoke_receipt(
+        dict(smoke),
+        bytes(smoke_bytes),
+        authority=authority,
+        registry=registry,
+    )
+
+    method_fields = {item.name for item in fields(ComparatorMethodBinding)}
+    cursor = 0
+    dataset_metadata: dict[str, tuple[str, str, int, int]] = {}
+    for configuration in configurations:
+        assert isinstance(configuration, Mapping)
+        method = configuration.get("method")
+        if not isinstance(method, Mapping) or set(method) != method_fields:
+            raise ComparatorTuningError(
+                "comparator selection plan method binding differs"
+            )
+        method_id = method.get("method_id")
+        if not isinstance(method_id, str):
+            raise ComparatorTuningError(
+                "comparator selection plan method binding differs"
+            )
+        try:
+            spec = registry.by_id(method_id)
+        except KeyError as error:
+            raise ComparatorTuningError(
+                "comparator selection plan method binding differs"
+            ) from error
+        if not direct_equal(method, direct_json_value(comparator_method_binding(spec))):
+            raise ComparatorTuningError(
+                "comparator selection plan method binding differs"
+            )
+        seeds: tuple[int | None, ...] = (
+            EXPECTED_MODEL_SEEDS if spec.stochastic else (None,)
+        )
+        for input_value in input_values:
+            for model_seed in seeds:
+                if cursor >= len(entries):
+                    raise ComparatorTuningError(
+                        "comparator selection plan entry denominator differs"
+                    )
+                entry = entries[cursor]
+                cursor += 1
+                if not isinstance(entry, Mapping) or set(entry) != _DIRECT_ENTRY_KEYS:
+                    raise ComparatorTuningError(
+                        "comparator selection plan entry schema differs"
+                    )
+                identity = entry.get("identity")
+                if (
+                    not isinstance(identity, Mapping)
+                    or set(identity) != _SELECTION_IDENTITY_KEYS
+                    or identity.get("workflow_schema")
+                    != "maskimpute-fair-comparator-run-v1"
+                    or identity.get("authority_revision")
+                    != authority.authority_revision
+                    or identity.get("ordinal") != cursor
+                    or not direct_equal(identity.get("method"), method)
+                    or identity.get("configuration_id")
+                    != configuration.get("configuration_id")
+                    or identity.get("configuration_kind")
+                    != configuration.get("configuration_kind")
+                    or not direct_equal(
+                        identity.get("configuration_payload"),
+                        configuration.get("payload"),
+                    )
+                    or identity.get("dataset_id") != input_value["dataset_id"]
+                    or identity.get("mechanism") != input_value["mechanism"]
+                    or identity.get("technical_view") != input_value["technical_view"]
+                    or identity.get("mask_seed") != input_value["mask_seed"]
+                    or identity.get("model_seed") != model_seed
+                    or type(identity.get("draw_index")) is not int
+                    or int(identity["draw_index"]) <= 0
+                    or not isinstance(identity.get("biological_id"), str)
+                    or not identity.get("biological_id")
+                    or entry.get("preflight_status") != "planned"
+                    or entry.get("preflight_reason") is not None
+                    or entry.get("requires_count_score")
+                    is not configuration.get("requires_count_score")
+                    or entry.get("requires_calibration")
+                    is not configuration.get("requires_calibration")
+                ):
+                    raise ComparatorTuningError(
+                        "comparator selection plan entry differs"
+                    )
+                seed = "deterministic" if model_seed is None else f"seed-{model_seed}"
+                expected_run_id = (
+                    f"run-{cursor:04d}-{method_id}-"
+                    f"{str(input_value['dataset_id']).removeprefix('dataset-')}-"
+                    f"{seed}-{configuration['configuration_id']}"
+                )
+                if entry.get("run_id") != expected_run_id:
+                    raise ComparatorTuningError(
+                        "comparator selection plan run ID differs"
+                    )
+                metadata = (
+                    str(identity["mechanism"]),
+                    str(identity["biological_id"]),
+                    int(identity["draw_index"]),
+                    int(identity["mask_seed"]),
+                )
+                previous = dataset_metadata.setdefault(
+                    str(identity["dataset_id"]), metadata
+                )
+                if previous != metadata:
+                    raise ComparatorTuningError(
+                        "comparator selection plan dataset identity differs"
+                    )
+    if cursor != 2_896:
+        raise ComparatorTuningError("comparator selection plan denominator differs")
+    return input_values, tuple(entries)
+
+
+def _validate_checkpoint_log(
+    value: object,
+    *,
+    stream: str,
+    reason: object,
+) -> None:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _DIRECT_LOG_KEYS
+        or value.get("stream") != stream
+        or value.get("capture_policy") != "discard_content"
+        or value.get("terminal_reason") != reason
+        or type(value.get("original_byte_count")) is not int
+        or int(value["original_byte_count"]) < 0
+    ):
+        raise ComparatorTuningError(
+            "comparator selection checkpoint log receipt differs"
+        )
+
+
+def _validate_selection_checkpoint_record(
+    value: object,
+    entry: Mapping[str, object],
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _DIRECT_RECORD_KEYS:
+        raise ComparatorTuningError(
+            "comparator selection checkpoint record schema differs"
+        )
+    run = value.get("run")
+    expected_identity = entry.get("identity")
+    if (
+        not isinstance(run, Mapping)
+        or set(run) != _DIRECT_RUN_KEYS
+        or not isinstance(expected_identity, Mapping)
+        or not direct_equal(run.get("identity"), expected_identity)
+        or run.get("run_id") != entry.get("run_id")
+    ):
+        raise ComparatorTuningError(
+            "comparator selection checkpoint record identity differs"
+        )
+    status = run.get("status")
+    reason = run.get("reason")
+    if (
+        status not in _ALL_DIRECT_TERMINAL_STATUSES
+        or (status == "completed") != (reason is None)
+        or (reason is not None and (not isinstance(reason, str) or not reason))
+    ):
+        raise ComparatorTuningError("comparator selection checkpoint status differs")
+    _require_selection_number(
+        run.get("runtime_seconds"),
+        "comparator selection checkpoint runtime",
+    )
+    for name in (
+        "peak_rss_bytes",
+        "peak_gpu_bytes",
+        "excluded_cell_count",
+        "retained_cell_count",
+        "retained_gene_count",
+        "observed_zero_count",
+    ):
+        if type(run.get(name)) is not int or int(run[name]) < 0:
+            raise ComparatorTuningError(
+                "comparator selection checkpoint run audit differs"
+            )
+    for count, name in (
+        ("excluded_cell_count", "excluded_cell_ids"),
+        ("retained_cell_count", "retained_cell_ids"),
+    ):
+        observed = run.get(name)
+        if (
+            not isinstance(observed, list)
+            or any(not isinstance(item, str) for item in observed)
+            or len(observed) != run[count]
+            or len(observed) != len(set(observed))
+        ):
+            raise ComparatorTuningError(
+                "comparator selection checkpoint run audit differs"
+            )
+    for name in ("rss_measurement", "gpu_measurement"):
+        if not isinstance(run.get(name), str) or not run.get(name):
+            raise ComparatorTuningError(
+                "comparator selection checkpoint run audit differs"
+            )
+    _validate_checkpoint_log(run.get("stdout"), stream="stdout", reason=reason)
+    _validate_checkpoint_log(run.get("stderr"), stream="stderr", reason=reason)
+
+    metrics = value.get("metrics")
+    if (
+        not isinstance(metrics, list)
+        or tuple(
+            row.get("metric") if isinstance(row, Mapping) else None for row in metrics
+        )
+        != SELECTION_METRICS
+    ):
+        raise ComparatorTuningError(
+            "comparator selection checkpoint metric denominator differs"
+        )
+    for row in metrics:
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != _SELECTION_METRIC_KEYS
+            or not direct_equal(row.get("identity"), expected_identity)
+            or row.get("status") not in _ALL_DIRECT_TERMINAL_STATUSES
+            or type(row.get("n")) is not int
+            or int(row["n"]) < 0
+        ):
+            raise ComparatorTuningError(
+                "comparator selection checkpoint metric differs"
+            )
+        metric_value = row.get("value")
+        metric_reason = row.get("reason")
+        if metric_value is None:
+            if (
+                row.get("status") == "completed"
+                or not isinstance(metric_reason, str)
+                or not metric_reason
+                or row.get("n") != 0
+            ):
+                raise ComparatorTuningError(
+                    "comparator selection checkpoint metric differs"
+                )
+        elif (
+            type(metric_value) is not float
+            or not math.isfinite(metric_value)
+            or (metric_value == 0.0 and math.copysign(1.0, metric_value) < 0.0)
+            or row.get("status") != "completed"
+            or metric_reason is not None
+        ):
+            raise ComparatorTuningError(
+                "comparator selection checkpoint metric differs"
+            )
+        if status != "completed" and (
+            row.get("status") != status
+            or row.get("reason") != reason
+            or row.get("value") is not None
+        ):
+            raise ComparatorTuningError(
+                "comparator selection checkpoint metric status differs"
+            )
+        if (
+            status == "completed"
+            and row.get("status") == "unavailable"
+            and (row.get("reason") not in _SELECTION_EVALUATOR_METRIC_REASONS)
+        ):
+            raise ComparatorTuningError(
+                "comparator selection checkpoint metric reason differs"
+            )
+        if status == "completed" and row.get("status") not in {
+            "completed",
+            "unavailable",
+        }:
+            raise ComparatorTuningError(
+                "comparator selection checkpoint metric status differs"
+            )
+    evidence = value.get("p_pre_zero_evidence")
+    if (
+        not isinstance(evidence, Mapping)
+        or set(evidence) != _DIRECT_PREZERO_KEYS
+        or type(evidence.get("applicable")) is not bool
+        or not isinstance(evidence.get("status"), str)
+        or type(evidence.get("compressed_byte_count")) is not int
+        or int(evidence["compressed_byte_count"]) < 0
+    ):
+        raise ComparatorTuningError(
+            "comparator selection checkpoint prezero evidence differs"
+        )
+    method = expected_identity.get("method")
+    method_id = method.get("method_id") if isinstance(method, Mapping) else None
+    if method_id == "maskimpute":
+        if (
+            evidence.get("applicable") is not True
+            or evidence.get("status") != status
+            or evidence.get("reason") != reason
+        ):
+            raise ComparatorTuningError(
+                "comparator selection checkpoint prezero evidence differs"
+            )
+        if status == "completed":
+            relative = evidence.get("path")
+            shape = evidence.get("shape")
+            if (
+                evidence.get("reason") is not None
+                or not isinstance(shape, list)
+                or len(shape) != 2
+                or any(type(item) is not int or item <= 0 for item in shape)
+                or evidence.get("dtype") != "<f8"
+                or evidence.get("encoding") != "zlib"
+                or not isinstance(relative, str)
+                or not relative
+                or PurePosixPath(relative).is_absolute()
+                or ".." in PurePosixPath(relative).parts
+                or evidence.get("compressed_byte_count", 0) <= 0
+            ):
+                raise ComparatorTuningError(
+                    "comparator selection checkpoint prezero evidence differs"
+                )
+    elif evidence != {
+        "applicable": False,
+        "status": "not_applicable",
+        "reason": "method_does_not_emit_p_pre_zero",
+        "shape": None,
+        "dtype": None,
+        "encoding": None,
+        "path": None,
+        "compressed_byte_count": 0,
+    }:
+        raise ComparatorTuningError(
+            "comparator selection checkpoint prezero evidence differs"
+        )
+    encoded = direct_json_value(value)
+    assert isinstance(encoded, Mapping)
+    return encoded
+
+
+def _replay_selection_budget(
+    entries: Sequence[Mapping[str, object]],
+    records: Sequence[Mapping[str, object]],
+    registry: MethodRegistry,
+) -> dict[str, object]:
+    configurations: dict[str, set[str]] = {}
+    consumed: dict[str, float] = {}
+    for entry, record in zip(entries, records, strict=True):
+        identity = entry["identity"]
+        run = record["run"]
+        assert isinstance(identity, Mapping) and isinstance(run, Mapping)
+        status = str(run["status"])
+        if status in _BLOCKING_DIRECT_STATUSES:
+            continue
+        method = identity["method"]
+        assert isinstance(method, Mapping)
+        method_id = str(method["method_id"])
+        configuration_kind = str(identity["configuration_kind"])
+        scope = (
+            f"{method_id}:{configuration_kind}"
+            if method_id == "maskimpute"
+            else method_id
+        )
+        configuration_id = str(identity["configuration_id"])
+        runtime = float(run["runtime_seconds"])
+        consumed[scope] = consumed.get(scope, 0.0) + runtime
+        if configuration_kind in {"candidate_search", "comparator_tuning"}:
+            configurations.setdefault(scope, set()).add(configuration_id)
+            if len(configurations[scope]) > 20:
+                raise ComparatorTuningError(
+                    "comparator selection checkpoint exceeds configuration budget"
+                )
+        try:
+            spec = registry.by_id(method_id)
+        except KeyError as error:
+            raise ComparatorTuningError(
+                "comparator selection checkpoint method differs"
+            ) from error
+        limit = 28_800.0 if spec.resources.gpu_required else 86_400.0
+        if consumed[scope] > limit:
+            raise ComparatorTuningError(
+                "comparator selection checkpoint exceeds time budget"
+            )
+    return {
+        scope: {
+            "configuration_ids": sorted(configurations.get(scope, set())),
+            "consumed_seconds": consumed.get(scope, 0.0),
+        }
+        for scope in sorted(set(configurations) | set(consumed))
+    }
+
+
+def _project_selection_record(
+    record: Mapping[str, object],
+) -> Mapping[str, object]:
+    projected = direct_json_value(record)
+    assert isinstance(projected, dict)
+    run = projected["run"]
+    assert isinstance(run, dict)
+    identity = run["identity"]
+    assert isinstance(identity, dict)
+    if identity["mechanism"] != "symsim":
+        metrics = projected["metrics"]
+        assert isinstance(metrics, list)
+        projected["metrics"] = [
+            row for row in metrics if row["metric"] != "mse_pre_dropout_zero"
+        ]
+    return projected
+
+
+def _validate_selection_checkpoint(
+    checkpoint: object,
+    *,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+) -> tuple[
+    Mapping[str, object],
+    tuple[Mapping[str, object], ...],
+    tuple[Mapping[str, object], ...],
+    tuple[Mapping[str, object], ...],
+    int,
+]:
+    if (
+        not isinstance(checkpoint, Mapping)
+        or set(checkpoint) != _DIRECT_CHECKPOINT_KEYS
+    ):
+        raise ComparatorTuningError("comparator selection checkpoint schema differs")
+    if (
+        type(checkpoint.get("schema_version")) is not int
+        or checkpoint.get("schema_version") != 1
+        or checkpoint.get("identity_mode") != "direct-v1"
+        or checkpoint.get("authority_revision") != authority.authority_revision
+        or checkpoint.get("planned_run_count") != 2_896
+        or type(checkpoint.get("planned_run_count")) is not int
+        or checkpoint.get("status") != "completed"
+        or checkpoint.get("evaluation_scope") != "reconstruction_only"
+        or checkpoint.get("comparator_selection_status")
+        != "complete_terminal_denominator"
+        or checkpoint.get("selection_complete") is not False
+        or checkpoint.get("selection_blockers")
+        != [
+            "downstream_safety_not_evaluated",
+            "null_de_fpr_not_evaluated",
+            "orthogonal_endpoints_not_evaluated",
+        ]
+        or not isinstance(checkpoint.get("storage_preflight"), Mapping)
+        or not isinstance(checkpoint.get("remaining_storage_preflight"), Mapping)
+    ):
+        raise ComparatorTuningError(
+            "comparator selection checkpoint completeness differs"
+        )
+    snapshot = checkpoint.get("plan_snapshot")
+    inputs, entries = _validate_selection_plan_snapshot(
+        snapshot,
+        authority=authority,
+        registry=registry,
+    )
+    if not direct_equal(checkpoint.get("input_descriptors"), list(inputs)):
+        raise ComparatorTuningError(
+            "comparator selection checkpoint input descriptors differ"
+        )
+    records = checkpoint.get("records")
+    if not isinstance(records, list) or len(records) != 2_896:
+        raise ComparatorTuningError(
+            "comparator selection checkpoint record denominator differs"
+        )
+    validated_records = tuple(
+        _validate_selection_checkpoint_record(value, entry)
+        for value, entry in zip(records, entries, strict=True)
+    )
+    run_ids = tuple(str(record["run"]["run_id"]) for record in validated_records)
+    identity_values = tuple(
+        _canonical_bytes(record["run"]["identity"]) for record in validated_records
+    )
+    if len(set(run_ids)) != 2_896 or len(set(identity_values)) != 2_896:
+        raise ComparatorTuningError(
+            "comparator selection checkpoint identities are duplicated"
+        )
+    replayed_budget = _replay_selection_budget(entries, validated_records, registry)
+    if not direct_equal(checkpoint.get("budget"), replayed_budget):
+        raise ComparatorTuningError(
+            "comparator selection checkpoint budget differs from replay"
+        )
+
+    tuning_records: list[Mapping[str, object]] = []
+    control_records: list[Mapping[str, object]] = []
+    blocking_status_count = 0
+    for entry, record in zip(entries, validated_records, strict=True):
+        identity = entry["identity"]
+        run = record["run"]
+        assert isinstance(identity, Mapping) and isinstance(run, Mapping)
+        status = str(run["status"])
+        if status in _BLOCKING_DIRECT_STATUSES:
+            blocking_status_count += 1
+        method = identity["method"]
+        assert isinstance(method, Mapping)
+        method_id = str(method["method_id"])
+        if identity["configuration_kind"] == "comparator_tuning":
+            if status in _BLOCKING_DIRECT_STATUSES:
+                raise ComparatorTuningError(
+                    "comparator selection checkpoint tuning denominator is blocked"
+                )
+            tuning_records.append(_project_selection_record(record))
+        elif method_id in authority.required_control_ids:
+            control_records.append(direct_json_value(record))
+    if len(tuning_records) != 1_632 or len(control_records) != 64:
+        raise ComparatorTuningError(
+            "comparator selection checkpoint scheduled denominator differs"
+        )
+    assert isinstance(snapshot, Mapping)
+    return (
+        direct_json_value(snapshot),
+        inputs,
+        tuple(tuning_records),
+        tuple(control_records),
+        blocking_status_count,
+    )
+
+
+def _control_receipts(
+    authority: ComparatorTuningAuthority,
+    control_records: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], dict[str, str]]:
+    grouped: dict[str, list[Mapping[str, object]]] = {
+        item: [] for item in authority.required_control_ids
+    }
+    for record in control_records:
+        identity = _selection_record_identity(record)
+        method = identity.get("method")
+        method_id = method.get("method_id") if isinstance(method, Mapping) else None
+        if method_id not in grouped:
+            raise ComparatorTuningError("comparator selection control identity differs")
+        grouped[str(method_id)].append(record)
+    expected_counts = {"observed": 16, "capacity-matched-ae": 48}
+    controls: dict[str, object] = {}
+    statuses: dict[str, str] = {}
+    for method_id in authority.required_control_ids:
+        rows = grouped[method_id]
+        if len(rows) != expected_counts[method_id]:
+            raise ComparatorTuningError(
+                "comparator selection control denominator differs"
+            )
+        status_counts: Counter[str] = Counter()
+        reasons: Counter[str] = Counter()
+        run_ids: list[str] = []
+        for row in rows:
+            run = row["run"]
+            assert isinstance(run, Mapping)
+            status_counts[str(run["status"])] += 1
+            if run["reason"] is not None:
+                reasons[str(run["reason"])] += 1
+            run_ids.append(str(run["run_id"]))
+        status = (
+            "completed"
+            if status_counts == Counter({"completed": expected_counts[method_id]})
+            else "incomplete"
+        )
+        statuses[method_id] = status
+        controls[method_id] = {
+            "status": status,
+            "terminal_status_counts": dict(sorted(status_counts.items())),
+            "reason_histogram": dict(sorted(reasons.items())),
+            "run_ids": run_ids,
+        }
+    return controls, statuses
+
+
+def _method_receipt(
+    selection: ComparatorMethodSelection,
+    authority_reference: ComparatorAuthorityReference,
+) -> dict[str, object]:
+    ranked = {row.configuration_id: row for row in selection.pareto_rows}
+    terminal_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    configurations: dict[str, object] = {}
+    terminal_denominator: list[Mapping[str, object]] = []
+    selected_configuration: BoundComparatorConfiguration | None = None
+    for row in selection.collapsed_rows:
+        terminal_counts.update(row.status_counts)
+        reason_counts.update(row.reason_histogram)
+        rank = ranked.get(row.configuration_id)
+        configurations[row.configuration_id] = {
+            "configuration": direct_json_value(row.configuration),
+            "is_upstream_default": (
+                row.configuration.configuration.is_upstream_default
+            ),
+            "terminal_status_counts": direct_json_value(row.status_counts),
+            "reason_histogram": direct_json_value(row.reason_histogram),
+            "eligible": row.eligible,
+            "eligibility_reason": row.eligibility_reason,
+            "unit_ids": direct_json_value(row.unit_ids),
+            "unit_values": direct_json_value(row.unit_values),
+            "unit_counts": direct_json_value(row.unit_counts),
+            "metric_medians": direct_json_value(row.metric_medians),
+            "pareto_member": rank is not None,
+            "metric_rank_quarters": (
+                None if rank is None else direct_json_value(rank.metric_rank_quarters)
+            ),
+            "selection_tuple": (
+                None if rank is None else direct_json_value(rank.selection_tuple)
+            ),
+        }
+        terminal_denominator.append(
+            {
+                "configuration": direct_json_value(row.configuration),
+                "terminal_status_counts": direct_json_value(row.status_counts),
+                "reason_histogram": direct_json_value(row.reason_histogram),
+            }
+        )
+        if row.configuration_id == selection.selected_configuration_id:
+            selected_configuration = row.configuration
+    method = selection.collapsed_rows[0].configuration.method
+    if selection.selected_configuration_id is None:
+        selection_status = "intrinsic_terminal_no_eligible_configuration"
+        nonexecution = _nonexecution_identity(
+            method=method,
+            authority_reference=authority_reference,
+            configuration_terminal_denominator=terminal_denominator,
+        )
+    else:
+        if selected_configuration is None:  # pragma: no cover - selector invariant
+            raise AssertionError("selected comparator configuration is absent")
+        selection_status = "selected"
+        nonexecution = None
+    return {
+        "method": direct_json_value(method),
+        "selection_status": selection_status,
+        "configuration_order": list(selection.configuration_ids),
+        "terminal_status_counts": dict(sorted(terminal_counts.items())),
+        "reason_histogram": dict(sorted(reason_counts.items())),
+        "configurations": configurations,
+        "pareto_configuration_ids": list(selection.pareto_configuration_ids),
+        "selected_configuration_id": selection.selected_configuration_id,
+        "selected_configuration": (
+            None
+            if selected_configuration is None
+            else direct_json_value(selected_configuration)
+        ),
+        "nonexecution_identity": nonexecution,
+    }
+
+
+def _build_selection_receipt_from_evidence(
+    *,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+    plan_snapshot: Mapping[str, object],
+    input_descriptors: Sequence[Mapping[str, object]],
+    tuning_records: Sequence[Mapping[str, object]],
+    control_records: Sequence[Mapping[str, object]],
+    blocking_status_count: int,
+    allow_blocked: bool,
+) -> dict[str, object]:
+    validate_comparator_tuning_authority(authority)
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    reference = _authority_reference(authority)
+    methods: dict[str, object] = {}
+    selectable_ids: set[str] = set()
+    for method_id in authority.method_order:
+        expected_method = comparator_method_binding(registry.by_id(method_id))
+        selection = select_one_comparator_method(
+            method_id,
+            tuning_records,
+            authority,
+        )
+        if not direct_equal(
+            selection.collapsed_rows[0].configuration.method,
+            expected_method,
+        ):
+            raise ComparatorTuningError(
+                "comparator selection method differs from registry"
+            )
+        method = _method_receipt(selection, reference)
+        methods[method_id] = method
+        if selection.selected_configuration_id is not None:
+            selectable_ids.add(method_id)
+    controls, control_statuses = _control_receipts(authority, control_records)
+    readiness = _readiness(
+        authority,
+        control_statuses,
+        selectable_ids,
+        blocking_status_count,
+    )
+    if readiness.status != "ready" and not allow_blocked:
+        raise ComparatorTuningError(
+            "comparator publication readiness is blocked: "
+            + ",".join(readiness.blocker_codes)
+        )
+    result = {
+        "schema_version": 1,
+        "artifact_type": "maskimpute-comparator-selection-receipt-v1",
+        "data_scope": "development_only",
+        "final_data_used": False,
+        "authority_reference": direct_json_value(reference),
+        "plan_snapshot": direct_json_value(plan_snapshot),
+        "input_descriptors": direct_json_value(tuple(input_descriptors)),
+        "checkpoint_path": _SELECTION_CHECKPOINT_RELATIVE_PATH,
+        "scheduled_tuning_records": direct_json_value(tuple(tuning_records)),
+        "control_records": direct_json_value(tuple(control_records)),
+        "model_seeds": list(authority.model_seeds),
+        "selection_metrics": list(authority.selection_metrics),
+        "methods": methods,
+        "controls": controls,
+        "scheduled_same_input_ids": list(authority.scheduled_same_input_ids),
+        "required_control_ids": list(authority.required_control_ids),
+        "established_comparator_ids": list(authority.established_comparator_ids),
+        "modern_core_ids": list(authority.modern_core_ids),
+        "readiness": direct_json_value(readiness),
+    }
+    if set(result) != _SELECTION_RECEIPT_KEYS:  # pragma: no cover - literal invariant
+        raise AssertionError("comparator selection receipt schema is incomplete")
+    return result
+
+
+def build_comparator_selection_receipt(
+    checkpoint: Mapping[str, object],
+    *,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+) -> dict[str, object]:
+    """Build the fixed ready receipt from one complete direct checkpoint."""
+
+    if not isinstance(checkpoint, Mapping):
+        raise TypeError("checkpoint must be a mapping")
+    if not isinstance(authority, ComparatorTuningAuthority):
+        raise TypeError("authority must be a ComparatorTuningAuthority")
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    (
+        plan_snapshot,
+        input_descriptors,
+        tuning_records,
+        control_records,
+        blocking_status_count,
+    ) = _validate_selection_checkpoint(
+        checkpoint,
+        authority=authority,
+        registry=registry,
+    )
+    return _build_selection_receipt_from_evidence(
+        authority=authority,
+        registry=registry,
+        plan_snapshot=plan_snapshot,
+        input_descriptors=input_descriptors,
+        tuning_records=tuning_records,
+        control_records=control_records,
+        blocking_status_count=blocking_status_count,
+        allow_blocked=False,
+    )
+
+
+def _validate_selection_receipt_schemas(value: object) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _SELECTION_RECEIPT_KEYS:
+        raise ComparatorTuningError(
+            "comparator selection receipt has missing or extra fields"
+        )
+    methods = value.get("methods")
+    if not isinstance(methods, Mapping):
+        raise ComparatorTuningError("comparator selection methods are invalid")
+    for method in methods.values():
+        if not isinstance(method, Mapping) or set(method) != _METHOD_RECEIPT_KEYS:
+            raise ComparatorTuningError(
+                "comparator selection method has missing or extra fields"
+            )
+        configurations = method.get("configurations")
+        if not isinstance(configurations, Mapping):
+            raise ComparatorTuningError(
+                "comparator selection configurations are invalid"
+            )
+        for configuration in configurations.values():
+            if (
+                not isinstance(configuration, Mapping)
+                or set(configuration) != _CONFIGURATION_RECEIPT_KEYS
+            ):
+                raise ComparatorTuningError(
+                    "comparator selection configuration has missing or extra fields"
+                )
+        nonexecution = method.get("nonexecution_identity")
+        if nonexecution is not None and (
+            not isinstance(nonexecution, Mapping)
+            or set(nonexecution) != _NONEXECUTION_IDENTITY_KEYS
+        ):
+            raise ComparatorTuningError(
+                "comparator selection nonexecution identity differs"
+            )
+    return value
+
+
+def _canonical_selection_receipt_bytes(value: object) -> bytes:
+    try:
+        return _canonical_bytes(value) + b"\n"
+    except (TypeError, ValueError) as error:
+        raise ComparatorTuningError(
+            "comparator selection receipt is not canonical JSON"
+        ) from error
+
+
+def _selection_unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ComparatorTuningError(
+                f"duplicate comparator selection JSON key {key!r}"
+            )
+        result[key] = value
+    return result
+
+
+def _selection_reject_constant(value: str) -> None:
+    raise ComparatorTuningError(f"nonfinite comparator selection JSON constant {value}")
+
+
+def _parse_canonical_selection_json(raw: bytes, label: str) -> dict[str, object]:
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_selection_reject_constant,
+            object_pairs_hook=_selection_unique_object,
+        )
+    except ComparatorTuningError:
+        raise
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ComparatorTuningError(f"{label} is invalid") from error
+    if type(value) is not dict or raw != _canonical_selection_receipt_bytes(value):
+        raise ComparatorTuningError(f"{label} is not canonical JSON")
+    return value
+
+
+def _selection_path(
+    repository: Path,
+    relative_path: str,
+    label: str,
+) -> Path:
+    relative = PurePosixPath(relative_path)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or ".." in relative.parts
+        or relative.as_posix() != relative_path
+    ):
+        raise ComparatorTuningError(f"{label} path is unsafe")
+    return repository.joinpath(*relative.parts)
+
+
+def _reject_selection_symlinks(path: Path, repository: Path) -> None:
+    try:
+        relative = path.absolute().relative_to(repository.absolute())
+    except ValueError as error:
+        raise ComparatorTuningError(
+            "comparator selection path leaves its repository"
+        ) from error
+    current = repository
+    for component in relative.parts:
+        current = current / component
+        if os.path.lexists(current) and stat.S_ISLNK(current.lstat().st_mode):
+            raise ComparatorTuningError("comparator selection path is not owned")
+
+
+def _selection_file_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _secure_read_regular(
+    path: Path,
+    repository: Path,
+    label: str,
+    *,
+    allowed_link_counts: frozenset[int] = frozenset({1}),
+) -> bytes:
+    """Read one stable owned unique regular file without following links."""
+
+    _reject_selection_symlinks(path, repository)
+    descriptor = -1
+    try:
+        named_before = path.lstat()
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        opened_before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_before.st_mode)
+            or stat.S_ISLNK(named_before.st_mode)
+            or opened_before.st_uid != os.geteuid()
+            or opened_before.st_nlink not in allowed_link_counts
+            or opened_before.st_mode & 0o002
+            or _selection_file_identity(opened_before)
+            != _selection_file_identity(named_before)
+            or opened_before.st_size > 128 * 1024 * 1024
+        ):
+            raise ComparatorTuningError(f"{label} must be an owned regular file")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        opened_after = os.fstat(descriptor)
+        named_after = path.lstat()
+        raw = b"".join(chunks)
+        if (
+            _selection_file_identity(opened_before)
+            != _selection_file_identity(opened_after)
+            or _selection_file_identity(opened_before)
+            != _selection_file_identity(named_after)
+            or len(raw) != opened_before.st_size
+        ):
+            raise ComparatorTuningError(f"{label} changed while being read")
+        return raw
+    except ComparatorTuningError:
+        raise
+    except OSError as error:
+        raise ComparatorTuningError(f"{label} is unavailable") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _read_published_selection(
+    path: Path,
+    repository: Path,
+    label: str,
+    *,
+    allow_transient_link: bool,
+) -> bytes:
+    """Read a concurrent publication through a bounded hard-link transition."""
+
+    allowed_link_counts = frozenset({1, 2}) if allow_transient_link else frozenset({1})
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            return _secure_read_regular(
+                path,
+                repository,
+                label,
+                allowed_link_counts=allowed_link_counts,
+            )
+        except ComparatorTuningError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.001)
+
+
+def _immutable_publish(
+    path: Path,
+    data: bytes,
+    repository: Path,
+) -> None:
+    """Create one receipt through an exclusive hard link, accepting equal bytes."""
+
+    _reject_selection_symlinks(path.parent, repository)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _reject_selection_symlinks(path.parent, repository)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            existing = _read_published_selection(
+                path,
+                repository,
+                "existing comparator selection",
+                allow_transient_link=True,
+            )
+            if existing != data:
+                raise ComparatorTuningError(
+                    "existing comparator selection differs from new evidence"
+                )
+        except OSError as error:
+            raise ComparatorTuningError(
+                "comparator selection could not be published"
+            ) from error
+        temporary.unlink()
+        published = _read_published_selection(
+            path,
+            repository,
+            "published comparator selection",
+            allow_transient_link=False,
+        )
+        if published != data:
+            raise ComparatorTuningError("published comparator selection differs")
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validate_embedded_selection_records(
+    *,
+    plan_entries: Sequence[Mapping[str, object]],
+    tuning_records: object,
+    control_records: object,
+    authority: ComparatorTuningAuthority,
+) -> tuple[
+    tuple[Mapping[str, object], ...],
+    tuple[Mapping[str, object], ...],
+    int,
+]:
+    if not isinstance(tuning_records, list) or not isinstance(control_records, list):
+        raise ComparatorTuningError("comparator selection embedded records are invalid")
+    expected_tuning = tuple(
+        entry
+        for entry in plan_entries
+        if isinstance(entry.get("identity"), Mapping)
+        and entry["identity"].get("configuration_kind") == "comparator_tuning"
+    )
+    expected_controls = tuple(
+        entry
+        for entry in plan_entries
+        if isinstance(entry.get("identity"), Mapping)
+        and isinstance(entry["identity"].get("method"), Mapping)
+        and entry["identity"]["method"].get("method_id")
+        in authority.required_control_ids
+    )
+    if (
+        len(tuning_records) != len(expected_tuning) != 0
+        or len(tuning_records) != 1_632
+        or len(control_records) != len(expected_controls) != 0
+        or len(control_records) != 64
+    ):
+        raise ComparatorTuningError(
+            "comparator selection embedded record denominator differs"
+        )
+    validated_tuning: list[Mapping[str, object]] = []
+    blocking_status_count = 0
+    for value, entry in zip(tuning_records, expected_tuning, strict=True):
+        if not isinstance(value, Mapping):
+            raise ComparatorTuningError("comparator selection tuning record differs")
+        expanded = json.loads(_canonical_bytes(value).decode("utf-8"))
+        assert isinstance(expanded, dict)
+        run = expanded.get("run")
+        identity = run.get("identity") if isinstance(run, Mapping) else None
+        if isinstance(identity, Mapping) and identity.get("mechanism") != "symsim":
+            metrics = expanded.get("metrics")
+            if not isinstance(metrics, list):
+                raise ComparatorTuningError(
+                    "comparator selection tuning record differs"
+                )
+            prezero_rows = [
+                row for row in metrics if row.get("metric") == "mse_pre_dropout_zero"
+            ]
+            if prezero_rows:
+                raise ComparatorTuningError(
+                    "comparator selection metric applicability differs"
+                )
+            metrics.insert(
+                3,
+                {
+                    "identity": direct_json_value(identity),
+                    "metric": "mse_pre_dropout_zero",
+                    "value": None,
+                    "n": 0,
+                    "status": (
+                        "unavailable"
+                        if run.get("status") == "completed"
+                        else run.get("status")
+                    ),
+                    "reason": (
+                        "truth_unavailable"
+                        if run.get("status") == "completed"
+                        else run.get("reason")
+                    ),
+                },
+            )
+        validated = _validate_selection_checkpoint_record(expanded, entry)
+        status = str(validated["run"]["status"])
+        if status in _BLOCKING_DIRECT_STATUSES:
+            blocking_status_count += 1
+        validated_tuning.append(_project_selection_record(validated))
+    validated_controls = tuple(
+        _validate_selection_checkpoint_record(value, entry)
+        for value, entry in zip(control_records, expected_controls, strict=True)
+    )
+    blocking_status_count += sum(
+        record["run"]["status"] in _BLOCKING_DIRECT_STATUSES
+        for record in validated_controls
+    )
+    return tuple(validated_tuning), validated_controls, blocking_status_count
+
+
+def _load_selection_authorities(
+    repository: Path,
+) -> tuple[MethodRegistry, ComparatorTuningAuthority]:
+    try:
+        registry = load_method_registry(repository / "study/methods.json")
+        authority = load_comparator_tuning_authority(
+            repository,
+            registry=registry,
+            require_clean=False,
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise ComparatorTuningError(
+            "comparator selection authority is unavailable"
+        ) from error
+    return registry, authority
+
+
+def _expected_checkpoint_payload(
+    expected_checkpoint: object,
+    repository: Path,
+) -> Mapping[str, object]:
+    if isinstance(expected_checkpoint, Mapping):
+        return expected_checkpoint
+    if isinstance(expected_checkpoint, Path):
+        path = (
+            expected_checkpoint
+            if expected_checkpoint.is_absolute()
+            else repository / expected_checkpoint
+        )
+        raw = _secure_read_regular(path, repository, "expected direct checkpoint")
+        return _parse_canonical_selection_json(raw, "expected direct checkpoint")
+    raise TypeError("expected_checkpoint must be a mapping, pathlib.Path, or None")
+
+
+def load_comparator_selection_receipt(
+    repository: Path,
+    *,
+    expected_checkpoint: object = None,
+) -> dict[str, object]:
+    """Load canonical selection evidence and recompute every derived value."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    root = repository.resolve(strict=True)
+    registry, authority = _load_selection_authorities(root)
+    receipt_path = _selection_path(
+        root,
+        COMPARATOR_SELECTION_RELATIVE_PATH,
+        "comparator selection receipt",
+    )
+    raw = _secure_read_regular(receipt_path, root, "comparator selection receipt")
+    payload = _parse_canonical_selection_json(raw, "comparator selection receipt")
+    _validate_selection_receipt_schemas(payload)
+    if (
+        payload.get("schema_version") != 1
+        or type(payload.get("schema_version")) is not int
+        or payload.get("artifact_type") != "maskimpute-comparator-selection-receipt-v1"
+        or payload.get("data_scope") != "development_only"
+        or payload.get("final_data_used") is not False
+        or payload.get("checkpoint_path") != _SELECTION_CHECKPOINT_RELATIVE_PATH
+        or not direct_equal(
+            payload.get("authority_reference"),
+            direct_json_value(_authority_reference(authority)),
+        )
+    ):
+        raise ComparatorTuningError(
+            "comparator selection receipt authority or scope differs"
+        )
+    inputs, plan_entries = _validate_selection_plan_snapshot(
+        payload.get("plan_snapshot"),
+        authority=authority,
+        registry=registry,
+    )
+    if not direct_equal(payload.get("input_descriptors"), list(inputs)):
+        raise ComparatorTuningError(
+            "comparator selection receipt input descriptors differ"
+        )
+    tuning, controls, blocking_status_count = _validate_embedded_selection_records(
+        plan_entries=plan_entries,
+        tuning_records=payload.get("scheduled_tuning_records"),
+        control_records=payload.get("control_records"),
+        authority=authority,
+    )
+    plan_snapshot = payload["plan_snapshot"]
+    assert isinstance(plan_snapshot, Mapping)
+    recomputed = _build_selection_receipt_from_evidence(
+        authority=authority,
+        registry=registry,
+        plan_snapshot=plan_snapshot,
+        input_descriptors=inputs,
+        tuning_records=tuning,
+        control_records=controls,
+        blocking_status_count=blocking_status_count,
+        allow_blocked=False,
+    )
+    if not direct_equal(
+        payload, recomputed
+    ) or raw != _canonical_selection_receipt_bytes(recomputed):
+        raise ComparatorTuningError(
+            "comparator selection receipt differs from recomputed evidence"
+        )
+    if expected_checkpoint is not None:
+        checkpoint = _expected_checkpoint_payload(expected_checkpoint, root)
+        expected = build_comparator_selection_receipt(
+            checkpoint,
+            authority=authority,
+            registry=registry,
+        )
+        if raw != _canonical_selection_receipt_bytes(expected):
+            raise ComparatorTuningError(
+                "comparator selection receipt differs from expected checkpoint"
+            )
+    return recomputed
+
+
+def publish_comparator_selection(repository: Path) -> dict[str, object]:
+    """Publish the fixed comparator selection create-only with no overrides."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    root = repository.resolve(strict=True)
+    registry, authority = _load_selection_authorities(root)
+    checkpoint_path = _selection_path(
+        root,
+        _SELECTION_CHECKPOINT_RELATIVE_PATH,
+        "direct checkpoint",
+    )
+    checkpoint_raw = _secure_read_regular(
+        checkpoint_path,
+        root,
+        "direct checkpoint",
+    )
+    checkpoint = _parse_canonical_selection_json(
+        checkpoint_raw,
+        "direct checkpoint",
+    )
+    receipt = build_comparator_selection_receipt(
+        checkpoint,
+        authority=authority,
+        registry=registry,
+    )
+    receipt_path = _selection_path(
+        root,
+        COMPARATOR_SELECTION_RELATIVE_PATH,
+        "comparator selection receipt",
+    )
+    _immutable_publish(
+        receipt_path,
+        _canonical_selection_receipt_bytes(receipt),
+        root,
+    )
+    return load_comparator_selection_receipt(
+        root,
+        expected_checkpoint=checkpoint_path,
     )
 
 
@@ -1408,7 +3046,9 @@ def comparator_smoke_input_descriptor(
         or type(method_input._count_bytes) is not bytes
         or method_input._count_bytes != expected._count_bytes
     ):
-        raise ComparatorTuningError("comparator smoke fixture differs from the fixed input")
+        raise ComparatorTuningError(
+            "comparator smoke fixture differs from the fixed input"
+        )
     counts = method_input.counts
     batch = method_input.obs_covariates[0]
     return ComparatorSmokeInputDescriptor(
@@ -1493,8 +3133,7 @@ def build_comparator_smoke_receipt(
         or not math.isfinite(row.runtime_seconds)
         or row.runtime_seconds < 0
         or (
-            row.runtime_seconds == 0.0
-            and math.copysign(1.0, row.runtime_seconds) < 0.0
+            row.runtime_seconds == 0.0 and math.copysign(1.0, row.runtime_seconds) < 0.0
         )
         or type(row.peak_rss_bytes) is not int
         or row.peak_rss_bytes < 0
@@ -1513,10 +3152,7 @@ def build_comparator_smoke_receipt(
         projected[method_id] = (
             projected.get(method_id, 0.0) + 48.0 * row.runtime_seconds
         )
-        if (
-            row.peak_rss_bytes > 48 * 1024**3
-            or row.peak_gpu_bytes > 14 * 1024**3
-        ):
+        if row.peak_rss_bytes > 48 * 1024**3 or row.peak_gpu_bytes > 14 * 1024**3:
             raise ComparatorTuningError("smoke resource cap is exceeded")
     if any(
         seconds
@@ -1597,9 +3233,7 @@ def _parse_smoke_receipt(raw: bytes) -> dict[str, object]:
     except (UnicodeError, ValueError, json.JSONDecodeError) as error:
         raise ComparatorTuningError("comparator smoke receipt is invalid") from error
     if type(payload) is not dict or raw != _canonical_smoke_receipt_bytes(payload):
-        raise ComparatorTuningError(
-            "comparator smoke receipt is not canonical JSON"
-        )
+        raise ComparatorTuningError("comparator smoke receipt is not canonical JSON")
     return payload
 
 
@@ -1619,13 +3253,9 @@ def validate_comparator_smoke_receipt(
             "comparator smoke receipt has missing or extra fields"
         )
     if raw != _canonical_smoke_receipt_bytes(payload):
-        raise ComparatorTuningError(
-            "comparator smoke receipt is not canonical JSON"
-        )
+        raise ComparatorTuningError("comparator smoke receipt is not canonical JSON")
     expected_configurations = _bound_smoke_configurations(authority, registry)
-    encoded_configurations = [
-        direct_json_value(row) for row in expected_configurations
-    ]
+    encoded_configurations = [direct_json_value(row) for row in expected_configurations]
     if not direct_equal(payload.get("configurations"), encoded_configurations):
         raise ComparatorTuningError(
             "comparator smoke receipt configurations differ from authority"
@@ -1713,6 +3343,7 @@ def _read_owned_smoke_receipt(path: Path, repository: Path) -> bytes:
         raise ComparatorTuningError(
             "comparator smoke receipt is unavailable"
         ) from error
+
     def identity(value: os.stat_result) -> tuple[int, ...]:
         return (
             value.st_dev,
@@ -1724,10 +3355,9 @@ def _read_owned_smoke_receipt(path: Path, repository: Path) -> bytes:
             value.st_mtime_ns,
             value.st_ctime_ns,
         )
+
     if identity(before) != identity(after) or before.st_size != len(raw):
-        raise ComparatorTuningError(
-            "comparator smoke receipt changed while being read"
-        )
+        raise ComparatorTuningError("comparator smoke receipt changed while being read")
     return raw
 
 
@@ -1932,9 +3562,7 @@ def run_comparator_tuning_smoke(
 
             environments = ExecutionEnvironmentRegistry.fixed(
                 root,
-                runtime_lock_path=(
-                    root / "environments/development-runtime.lock.json"
-                ),
+                runtime_lock_path=(root / "environments/development-runtime.lock.json"),
                 benchmark_python=Path(sys.executable),
                 r_library_paths={"saver": (root / "artifacts/envs/saver-r/library",)},
                 lock_only_environment_ids=derive_lock_only_environment_ids(registry),
@@ -1968,9 +3596,8 @@ def run_comparator_tuning_smoke(
             raise ComparatorTuningError(
                 "comparator smoke adapter boundary failed"
             ) from error
-        if (
-            not isinstance(outcome, ComparatorSmokeOutcome)
-            or not direct_equal(outcome.configuration, configuration)
+        if not isinstance(outcome, ComparatorSmokeOutcome) or not direct_equal(
+            outcome.configuration, configuration
         ):
             raise ComparatorTuningError(
                 "comparator smoke executor returned a noncanonical outcome"

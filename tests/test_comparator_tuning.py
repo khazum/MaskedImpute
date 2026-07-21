@@ -7,11 +7,16 @@ from pathlib import Path
 import shutil
 import struct
 import sys
+import threading
 
+import anndata as ad
+import numpy as np
+import pandas as pd
 import pytest
 
 from maskimpute_benchmark.comparator_tuning import (
     AUTHORITY_REVISION,
+    COMPARATOR_SELECTION_RELATIVE_PATH,
     ComparatorSmokeOutcome,
     ComparatorTuningError,
     DEVELOPMENT_MAX_CHECKPOINT_BYTES,
@@ -35,13 +40,24 @@ from maskimpute_benchmark.comparator_tuning import (
 )
 import maskimpute_benchmark.comparator_tuning as comparator_tuning_module
 from maskimpute_benchmark.direct_values import direct_json_value, freeze_direct_mapping
-from maskimpute_benchmark.fair_comparator_plan import ComparatorRunIdentity
-from maskimpute_benchmark.methods import load_method_registry
+from maskimpute_benchmark.fair_comparator_checkpoint import (
+    replay_direct_development_budget,
+)
+from maskimpute_benchmark.fair_comparator_plan import (
+    ComparatorRunIdentity,
+    _build_structural_direct_competition_plan,
+    bind_comparator_smoke_receipt_to_plan,
+)
+from maskimpute_benchmark.methods import load_method_registry, prepare_method_input
 from maskimpute_benchmark.runner import (
     AdapterOutcome,
+    DatasetQCAudit,
     ExecutionEnvironmentRegistry,
+    PreparedDataset,
     RepositoryAdapterDispatcher,
     RunnerContractError,
+    load_runner_authority,
+    validate_development_manifest_payload,
 )
 
 
@@ -148,8 +164,7 @@ def smoke_bound_rows(smoke_registry, smoke_authority):
         )
         for row in rows
     ) == tuple(
-        (row.method_id, row.configuration_id)
-        for row in smoke_authority.configurations
+        (row.method_id, row.configuration_id) for row in smoke_authority.configurations
     )
     assert tuple(row.configuration for row in rows) == smoke_authority.configurations
     return rows
@@ -170,6 +185,371 @@ def complete_smoke_outcomes(smoke_bound_rows):
         )
         for row in smoke_bound_rows
     )
+
+
+def _selection_manifest_payload() -> dict[str, object]:
+    rows = []
+    ordinal = 0
+    for mechanism in ("symsim", "sergio", "sparsim", "semisynthetic"):
+        for draw in (1, 2):
+            for view in ("moderate", "severe"):
+                ordinal += 1
+                rows.append(
+                    {
+                        "biological_id": f"draw-{draw:02d}",
+                        "cells": 900,
+                        "dataset_id": f"dataset-{ordinal:024x}",
+                        "dataset_sha256": f"{ordinal:064x}",
+                        "genes": 500,
+                        "independent_unit_id": (
+                            f"biological-{(ordinal + 1) // 2:024x}"
+                        ),
+                        "mechanism": mechanism,
+                        "output_file_sha256": f"{ordinal + 100:064x}",
+                        "output_path": (
+                            f"dev/datasets/{mechanism}/draw-{draw:02d}/{view}.h5ad"
+                        ),
+                        "status": "completed",
+                        "technical_view": view,
+                        "truth_sha256": f"{(ordinal + 1) // 2 + 300:064x}",
+                    }
+                )
+    return {
+        "schema_version": 1,
+        "namespace": "dev",
+        "status": "completed",
+        "completed_count": 16,
+        "failed_count": 0,
+        "independent_unit_count": 8,
+        "manifest_sha256": "a" * 64,
+        "protocol_sha256": "b" * 64,
+        "design_sha256": "c" * 64,
+        "seed_source_sha256": "d" * 64,
+        "rows": rows,
+    }
+
+
+def _selection_prepared_dataset(binding, ordinal: int) -> PreparedDataset:
+    counts = np.asarray([[ordinal, 0, 1], [0, ordinal + 1, 0]], dtype=np.int64)
+    cell_ids = [f"cell-{ordinal}-1", f"cell-{ordinal}-2"]
+    gene_ids = ["gene-1", "gene-2", "gene-3"]
+    method_view = ad.AnnData(
+        X=counts,
+        obs=pd.DataFrame(index=cell_ids),
+        var=pd.DataFrame(index=gene_ids),
+    )
+    method_view.uns["source_dataset_sha256"] = binding.dataset_sha256
+    method_view.uns["allowed_covariates"] = {"obs": [], "var": []}
+    draw_index = int(binding.biological_id.removeprefix("draw-"))
+    evaluator = ad.AnnData(
+        X=counts,
+        obs=pd.DataFrame({"draw": [draw_index, draw_index]}, index=cell_ids),
+        var=pd.DataFrame(index=gene_ids),
+    )
+    evaluator.uns["provenance"] = {
+        "seeds": {"biological": 10_000 + ordinal, "measurement": 20_000 + ordinal}
+    }
+    return PreparedDataset(
+        binding=binding,
+        audit=DatasetQCAudit(
+            excluded_cell_count=0,
+            excluded_cell_ids_sha256="e" * 64,
+            retained_cell_count=2,
+            retained_cell_ids_sha256="f" * 64,
+            excluded_cell_ids=(),
+            retained_cell_ids=tuple(cell_ids),
+        ),
+        method_input=prepare_method_input(method_view),
+        evaluator_dataset=evaluator,
+    )
+
+
+def _complete_selection_plan(
+    registry,
+    authority,
+    complete_smoke_outcomes,
+    smoke_bound_rows,
+):
+    datasets = validate_development_manifest_payload(_selection_manifest_payload())
+    prepared = tuple(
+        _selection_prepared_dataset(binding, ordinal)
+        for ordinal, binding in enumerate(datasets, start=1)
+    )
+    runner_authority = replace(
+        load_runner_authority(),
+        count_score_manifest_status="ready",
+        count_score_manifest_sha256="8" * 64,
+        retained_calibration_status="ready",
+        retained_calibration_sha256="9" * 64,
+    )
+    plan = _build_structural_direct_competition_plan(
+        registry,
+        datasets,
+        runner_authority,
+        prepared,
+        _validate=False,
+    )
+    smoke_receipt = build_comparator_smoke_receipt(
+        complete_smoke_outcomes,
+        authority=authority,
+        registry=registry,
+        bound_configurations=smoke_bound_rows,
+    )
+    smoke_raw = (
+        json.dumps(
+            smoke_receipt,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    return bind_comparator_smoke_receipt_to_plan(
+        plan,
+        smoke_receipt,
+        smoke_raw,
+        authority=authority,
+        registry=registry,
+    )
+
+
+def _complete_checkpoint_payload(plan, registry) -> dict[str, object]:
+    comparator_positions = {
+        (row.method.method_id, row.configuration_id): position
+        for position, row in enumerate(
+            (
+                item
+                for item in plan.configurations
+                if item.configuration_kind == "comparator_tuning"
+            ),
+            start=1,
+        )
+    }
+    candidate_metric_values: dict[str, tuple[float, ...]] = {}
+    records = []
+    for entry in plan.entries:
+        identity = direct_json_value(entry.identity)
+        assert isinstance(identity, dict)
+        method_id = entry.identity.method.method_id
+        if entry.identity.configuration_kind == "comparator_tuning":
+            position = comparator_positions[
+                (method_id, entry.identity.configuration_id)
+            ]
+            base_values = tuple(float(position + index / 10) for index in range(6))
+        elif method_id == "maskimpute":
+            base_values = tuple(
+                float(100 + entry.identity.ordinal / 10_000 + index / 10)
+                for index in range(6)
+            )
+            candidate_metric_values[entry.run_id] = base_values
+        else:
+            base_values = tuple(float(index) for index in range(6))
+        offset = (
+            0.01 * entry.identity.draw_index
+            + (0.001 if entry.identity.technical_view == "severe" else 0.0)
+            + (
+                0.0001 * (entry.identity.model_seed - 42)
+                if entry.identity.model_seed is not None
+                else 0.0
+            )
+        )
+        metrics = []
+        for index, metric in enumerate(
+            (
+                "mse",
+                "mse_dropout",
+                "gnrmse",
+                "mse_pre_dropout_zero",
+                "corr_err",
+                "mse_non_dropout_nonzero",
+            )
+        ):
+            applicable = not (
+                metric == "mse_pre_dropout_zero"
+                and entry.identity.mechanism != "symsim"
+            )
+            metrics.append(
+                {
+                    "identity": copy.deepcopy(identity),
+                    "metric": metric,
+                    "value": float(base_values[index] + offset) if applicable else None,
+                    "n": 2 if applicable else 0,
+                    "status": "completed" if applicable else "unavailable",
+                    "reason": None if applicable else "truth_unavailable",
+                }
+            )
+        maskimpute = method_id == "maskimpute"
+        records.append(
+            {
+                "run": {
+                    "run_id": entry.run_id,
+                    "identity": identity,
+                    "status": "completed",
+                    "reason": None,
+                    "runtime_seconds": 0.01,
+                    "peak_rss_bytes": 1024,
+                    "peak_gpu_bytes": 0,
+                    "rss_measurement": "linux_proc_process_tree_rss",
+                    "gpu_measurement": "gpu_measurement_unavailable",
+                    "excluded_cell_count": 0,
+                    "excluded_cell_ids": [],
+                    "retained_cell_count": 2,
+                    "retained_cell_ids": ["cell-1", "cell-2"],
+                    "retained_gene_count": 3,
+                    "observed_zero_count": 3,
+                    "stdout": {
+                        "stream": "stdout",
+                        "original_byte_count": 0,
+                        "capture_policy": "discard_content",
+                        "terminal_reason": None,
+                    },
+                    "stderr": {
+                        "stream": "stderr",
+                        "original_byte_count": 0,
+                        "capture_policy": "discard_content",
+                        "terminal_reason": None,
+                    },
+                },
+                "metrics": metrics,
+                "p_pre_zero_evidence": (
+                    {
+                        "applicable": True,
+                        "status": "completed",
+                        "reason": None,
+                        "shape": [2, 3],
+                        "dtype": "<f8",
+                        "encoding": "zlib",
+                        "path": f"synthetic/prezero-{entry.identity.ordinal:04d}.zlib",
+                        "compressed_byte_count": 1,
+                    }
+                    if maskimpute
+                    else {
+                        "applicable": False,
+                        "status": "not_applicable",
+                        "reason": "method_does_not_emit_p_pre_zero",
+                        "shape": None,
+                        "dtype": None,
+                        "encoding": None,
+                        "path": None,
+                        "compressed_byte_count": 0,
+                    }
+                ),
+            }
+        )
+    assert len(records) == 2_896
+    assert len({record["run"]["run_id"] for record in records}) == 2_896
+    budget = replay_direct_development_budget(
+        registry,
+        plan.entries,
+        records,
+    ).to_dict()
+    return {
+        "schema_version": 1,
+        "identity_mode": "direct-v1",
+        "authority_revision": AUTHORITY_REVISION,
+        "plan_snapshot": plan.to_dict(),
+        "input_descriptors": list(plan.to_dict()["inputs"]),
+        "planned_run_count": 2_896,
+        "status": "completed",
+        "evaluation_scope": "reconstruction_only",
+        "comparator_selection_status": "complete_terminal_denominator",
+        "selection_complete": False,
+        "selection_blockers": [
+            "downstream_safety_not_evaluated",
+            "null_de_fpr_not_evaluated",
+            "orthogonal_endpoints_not_evaluated",
+        ],
+        "records": records,
+        "budget": budget,
+        "storage_preflight": {},
+        "remaining_storage_preflight": {},
+        "_candidate_metric_values": candidate_metric_values,
+    }
+
+
+@pytest.fixture(scope="module")
+def complete_selection_fixture(
+    smoke_registry,
+    smoke_authority,
+    smoke_bound_rows,
+    complete_smoke_outcomes,
+):
+    plan = _complete_selection_plan(
+        smoke_registry,
+        smoke_authority,
+        complete_smoke_outcomes,
+        smoke_bound_rows,
+    )
+    checkpoint = _complete_checkpoint_payload(plan, smoke_registry)
+    checkpoint.pop("_candidate_metric_values")
+    assert len({record["run"]["run_id"] for record in checkpoint["records"]}) == 2_896
+    return {
+        "checkpoint": checkpoint,
+        "authority": smoke_authority,
+        "registry": smoke_registry,
+    }
+
+
+def mutate_only_maskimpute_values(fixture):
+    mutated = copy.deepcopy(fixture)
+    for record in mutated["checkpoint"]["records"]:
+        if record["run"]["identity"]["method"]["method_id"] != "maskimpute":
+            continue
+        for metric in record["metrics"]:
+            if metric["value"] is not None:
+                metric["value"] += 10_000.0
+    return mutated
+
+
+def selection_fixture_with_intrinsic_unavailable(fixture, method_id: str):
+    changed = copy.deepcopy(fixture)
+    matched = 0
+    for record in changed["checkpoint"]["records"]:
+        identity = record["run"]["identity"]
+        if (
+            identity["method"]["method_id"] != method_id
+            or identity["configuration_kind"] != "comparator_tuning"
+        ):
+            continue
+        matched += 1
+        record["run"]["status"] = "unavailable"
+        record["run"]["reason"] = "adapter_not_registered"
+        record["run"]["stdout"]["terminal_reason"] = "adapter_not_registered"
+        record["run"]["stderr"]["terminal_reason"] = "adapter_not_registered"
+        for metric in record["metrics"]:
+            metric["value"] = None
+            metric["n"] = 0
+            metric["status"] = "unavailable"
+            metric["reason"] = "adapter_not_registered"
+    assert matched == 48 * len(changed["authority"].configurations_for(method_id))
+    return changed
+
+
+@pytest.fixture()
+def complete_checkpoint_tree(tmp_path: Path, complete_selection_fixture) -> Path:
+    repository = tmp_path / "repository"
+    for relative in ("study/methods.json", "study/comparator_tuning.json"):
+        destination = repository / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, destination)
+    checkpoint = (
+        repository
+        / "artifacts/study/development/competition-reconstruction/checkpoint.json"
+    )
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_text(
+        json.dumps(
+            complete_selection_fixture["checkpoint"],
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return repository
 
 
 def golden_authority():
@@ -194,8 +574,7 @@ def golden_comparator_records(
         require_clean=False,
     )
     authority_by_id = {
-        row.configuration_id: row
-        for row in authority.configurations_for(method_id)
+        row.configuration_id: row for row in authority.configurations_for(method_id)
     }
     metrics = authority.selection_metrics
     records: list[dict[str, object]] = []
@@ -215,12 +594,8 @@ def golden_comparator_records(
                 ("draw-01", "draw-02"),
                 start=1,
             ):
-                for view_index, technical_view in enumerate(
-                    ("moderate", "severe")
-                ):
-                    dataset_id = (
-                        f"dataset-{mechanism}-{biological_id}-{technical_view}"
-                    )
+                for view_index, technical_view in enumerate(("moderate", "severe")):
+                    dataset_id = f"dataset-{mechanism}-{biological_id}-{technical_view}"
                     for model_seed in (42, 43, 44):
                         ordinal += 1
                         identity = ComparatorRunIdentity(
@@ -339,15 +714,19 @@ def test_seed_view_draw_collapse_and_quarter_rank_golden() -> None:
         for row in result.pareto_rows
         for value in row.metric_rank_quarters.values()
     )
-    assert result.selected_configuration_id == min(
-        result.pareto_rows,
-        key=lambda row: row.selection_tuple,
-    ).configuration_id
+    assert (
+        result.selected_configuration_id
+        == min(
+            result.pareto_rows,
+            key=lambda row: row.selection_tuple,
+        ).configuration_id
+    )
     for row in (*result.collapsed_rows, *result.pareto_rows):
         assert row.configuration.configuration in golden_authority().configurations
-        assert row.configuration.method == result.configuration(
-            row.configuration_id
-        ).configuration.method
+        assert (
+            row.configuration.method
+            == result.configuration(row.configuration_id).configuration.method
+        )
 
 
 def test_average_ties_encode_exact_quarter_rank_integer() -> None:
@@ -400,6 +779,108 @@ def test_selection_tuple_uses_default_penalty_then_configuration_id() -> None:
     )
 
 
+def test_nonduplicated_seed_values_collapse_before_view_pairing() -> None:
+    records = golden_comparator_records(
+        method_id="magic",
+        configuration_values={
+            "magic-t03": (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        },
+        duplicate_each_seed_value=False,
+    )
+    authority = golden_authority()
+    registry = load_method_registry(ROOT / "study/methods.json")
+    bound = bind_comparator_configuration_identity(
+        authority.configurations_for("magic")[0],
+        registry.by_id("magic"),
+        authority,
+    )
+    row = collapse_comparator_configuration(bound, records)
+
+    assert row.unit_values["mse"][0] == pytest.approx(1.0106)
+    assert row.unit_counts == {
+        "mse": 8,
+        "mse_dropout": 8,
+        "gnrmse": 8,
+        "mse_pre_dropout_zero": 2,
+        "corr_err": 8,
+        "mse_non_dropout_nonzero": 8,
+    }
+
+
+def test_selection_rejects_blocking_status_and_returns_none_when_all_ineligible() -> (
+    None
+):
+    blocking = [copy.deepcopy(record) for record in _magic_golden_records()]
+    blocking[0]["run"]["status"] = "budget_exhausted"
+    blocking[0]["run"]["reason"] = "cpu_time_budget_exhausted"
+    for metric in blocking[0]["metrics"]:
+        metric["value"] = None
+        metric["n"] = 0
+        metric["status"] = "budget_exhausted"
+        metric["reason"] = "cpu_time_budget_exhausted"
+    with pytest.raises(ComparatorTuningError, match="blocking run status"):
+        select_one_comparator_method("magic", blocking, golden_authority())
+
+    unavailable = [copy.deepcopy(record) for record in _magic_golden_records()]
+    for offset in range(0, len(unavailable), 48):
+        record = unavailable[offset]
+        record["run"]["status"] = "unavailable"
+        record["run"]["reason"] = "adapter_not_registered"
+        for metric in record["metrics"]:
+            metric["value"] = None
+            metric["n"] = 0
+            metric["status"] = "unavailable"
+            metric["reason"] = "adapter_not_registered"
+    result = select_one_comparator_method(
+        "magic",
+        unavailable,
+        golden_authority(),
+    )
+    assert result.eligible_configuration_ids == ()
+    assert result.pareto_configuration_ids == ()
+    assert result.selected_configuration_id is None
+
+
+def test_selection_rejects_otherwise_valid_cross_configuration_unit_grid_drift() -> (
+    None
+):
+    records = [copy.deepcopy(record) for record in _magic_golden_records()]
+    for record in records[48:96]:
+        identity = record["run"]["identity"]
+        if identity["biological_id"] == "draw-01":
+            identity["biological_id"] = "draw-alpha"
+            for metric in record["metrics"]:
+                metric["identity"]["biological_id"] = "draw-alpha"
+
+    with pytest.raises(ComparatorTuningError, match="unit-ID grid differs"):
+        select_one_comparator_method("magic", records, golden_authority())
+
+
+def test_selection_tuple_reaches_final_configuration_id_fallback() -> None:
+    records = golden_comparator_records(
+        method_id="magic",
+        configuration_values={
+            "magic-t03": (10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+            "magic-t01": (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            "magic-t05": (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            "magic-t07": (10.0, 10.0, 10.0, 10.0, 10.0, 10.0),
+        },
+        duplicate_each_seed_value=True,
+    )
+    result = select_one_comparator_method("magic", records, golden_authority())
+    first = next(
+        row for row in result.pareto_rows if row.configuration_id == "magic-t01"
+    )
+    second = next(
+        row for row in result.pareto_rows if row.configuration_id == "magic-t05"
+    )
+
+    assert first.selection_tuple[:-1] == second.selection_tuple[:-1]
+    assert first.selection_tuple[-2:] == (1, "magic-t01")
+    assert second.selection_tuple[-2:] == (1, "magic-t05")
+    assert result.selected_configuration_id == "magic-t01"
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     (
@@ -449,7 +930,9 @@ def test_collapse_fails_closed_on_malformed_direct_records(
         collapse_comparator_configuration(bound, records)
 
 
-def test_collapse_intrinsic_terminal_row_is_ineligible_without_aborting_method() -> None:
+def test_collapse_intrinsic_terminal_row_is_ineligible_without_aborting_method() -> (
+    None
+):
     records = [copy.deepcopy(record) for record in _magic_golden_records()]
     broken = records[0]
     broken["run"]["status"] = "unavailable"
@@ -497,13 +980,464 @@ def test_collapse_rejects_bound_authority_reference_drift() -> None:
         )
 
 
+SELECTION_RECEIPT_KEYS = {
+    "schema_version",
+    "artifact_type",
+    "data_scope",
+    "final_data_used",
+    "authority_reference",
+    "plan_snapshot",
+    "input_descriptors",
+    "checkpoint_path",
+    "scheduled_tuning_records",
+    "control_records",
+    "model_seeds",
+    "selection_metrics",
+    "methods",
+    "controls",
+    "scheduled_same_input_ids",
+    "required_control_ids",
+    "established_comparator_ids",
+    "modern_core_ids",
+    "readiness",
+}
+METHOD_RECEIPT_KEYS = {
+    "method",
+    "selection_status",
+    "configuration_order",
+    "terminal_status_counts",
+    "reason_histogram",
+    "configurations",
+    "pareto_configuration_ids",
+    "selected_configuration_id",
+    "selected_configuration",
+    "nonexecution_identity",
+}
+CONFIGURATION_RECEIPT_KEYS = {
+    "configuration",
+    "is_upstream_default",
+    "terminal_status_counts",
+    "reason_histogram",
+    "eligible",
+    "eligibility_reason",
+    "unit_ids",
+    "unit_values",
+    "unit_counts",
+    "metric_medians",
+    "pareto_member",
+    "metric_rank_quarters",
+    "selection_tuple",
+}
+NONEXECUTION_IDENTITY_KEYS = {
+    "schema_version",
+    "authority_reference",
+    "method",
+    "selection_receipt_namespace",
+    "configuration_terminal_denominator",
+}
+
+
+def test_readiness_requires_controls_established_and_three_modern(
+    complete_selection_fixture,
+) -> None:
+    receipt = comparator_tuning_module.build_comparator_selection_receipt(
+        **complete_selection_fixture
+    )
+    assert receipt["readiness"]["status"] == "ready"
+    assert receipt["readiness"]["modern_selectable_count"] == 4
+
+    three_modern = selection_fixture_with_intrinsic_unavailable(
+        complete_selection_fixture,
+        "biaeimpute",
+    )
+    receipt = comparator_tuning_module.build_comparator_selection_receipt(
+        **three_modern
+    )
+    assert receipt["readiness"]["status"] == "ready"
+    assert receipt["methods"]["biaeimpute"]["selected_configuration_id"] is None
+    assert (
+        receipt["methods"]["biaeimpute"]["nonexecution_identity"]["method"]["method_id"]
+        == "biaeimpute"
+    )
+
+    with pytest.raises(ComparatorTuningError, match="publication readiness"):
+        comparator_tuning_module.build_comparator_selection_receipt(
+            **selection_fixture_with_intrinsic_unavailable(three_modern, "sccr")
+        )
+
+    incomplete_control = copy.deepcopy(complete_selection_fixture)
+    control = next(
+        record
+        for record in incomplete_control["checkpoint"]["records"]
+        if record["run"]["identity"]["method"]["method_id"] == "observed"
+    )
+    control["run"]["status"] = "unavailable"
+    control["run"]["reason"] = "adapter_not_registered"
+    control["run"]["stdout"]["terminal_reason"] = "adapter_not_registered"
+    control["run"]["stderr"]["terminal_reason"] = "adapter_not_registered"
+    for metric in control["metrics"]:
+        metric["value"] = None
+        metric["n"] = 0
+        metric["status"] = "unavailable"
+        metric["reason"] = "adapter_not_registered"
+    with pytest.raises(ComparatorTuningError, match="required_control_incomplete"):
+        comparator_tuning_module.build_comparator_selection_receipt(
+            **incomplete_control
+        )
+
+
+def test_candidate_values_cannot_change_complete_comparator_receipt(
+    complete_selection_fixture,
+) -> None:
+    first = comparator_tuning_module.build_comparator_selection_receipt(
+        **complete_selection_fixture
+    )
+    mutated = mutate_only_maskimpute_values(complete_selection_fixture)
+    second = comparator_tuning_module.build_comparator_selection_receipt(**mutated)
+
+    assert first == second
+    assert json.dumps(
+        first,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8") == json.dumps(
+        second,
+        allow_nan=False,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    assert all(
+        record["run"]["identity"]["method"]["method_id"] != "maskimpute"
+        for record in first["scheduled_tuning_records"]
+    )
+    assert all(
+        record["run"]["identity"]["method"]["method_id"]
+        in {"observed", "capacity-matched-ae"}
+        for record in first["control_records"]
+    )
+
+
+def test_selection_builder_rejects_noncanonical_completed_run_metric_reason(
+    complete_selection_fixture,
+) -> None:
+    malformed = copy.deepcopy(complete_selection_fixture)
+    record = next(
+        record
+        for record in malformed["checkpoint"]["records"]
+        if record["run"]["identity"]["method"]["method_id"] == "magic"
+        and record["run"]["identity"]["configuration_kind"] == "comparator_tuning"
+    )
+    metric = record["metrics"][0]
+    metric["value"] = None
+    metric["n"] = 0
+    metric["status"] = "unavailable"
+    metric["reason"] = "invented_reason"
+
+    with pytest.raises(ComparatorTuningError, match="metric reason"):
+        comparator_tuning_module.build_comparator_selection_receipt(**malformed)
+
+
+def test_comparator_selection_receipt_has_exact_closed_direct_schemas(
+    complete_selection_fixture,
+) -> None:
+    receipt = comparator_tuning_module.build_comparator_selection_receipt(
+        **complete_selection_fixture
+    )
+    assert set(receipt) == SELECTION_RECEIPT_KEYS
+    assert receipt["authority_reference"] == {
+        "path": "study/comparator_tuning.json",
+        "schema_version": 2,
+        "authority_revision": AUTHORITY_REVISION,
+    }
+    assert (
+        receipt["plan_snapshot"]
+        == complete_selection_fixture["checkpoint"]["plan_snapshot"]
+    )
+    assert (
+        receipt["input_descriptors"]
+        == complete_selection_fixture["checkpoint"]["input_descriptors"]
+    )
+    assert len(receipt["scheduled_tuning_records"]) == 1_632
+    assert len(receipt["control_records"]) == 64
+    for method_id, method in receipt["methods"].items():
+        assert set(method) == METHOD_RECEIPT_KEYS
+        assert method["method"]["method_id"] == method_id
+        for configuration in method["configurations"].values():
+            assert set(configuration) == CONFIGURATION_RECEIPT_KEYS
+            assert set(configuration["configuration"]) == {
+                "configuration",
+                "authority_reference",
+                "method",
+            }
+            assert set(configuration["configuration"]["configuration"]) == {
+                "method_id",
+                "configuration_id",
+                "payload_json",
+                "is_upstream_default",
+            }
+    assert receipt["methods"]["magic"]["selected_configuration"]["configuration"][
+        "payload_json"
+    ]
+    assert receipt["methods"]["magic"]["nonexecution_identity"] is None
+
+    unavailable = selection_fixture_with_intrinsic_unavailable(
+        complete_selection_fixture,
+        "biaeimpute",
+    )
+    unavailable_receipt = comparator_tuning_module.build_comparator_selection_receipt(
+        **unavailable
+    )
+    nonexecution = unavailable_receipt["methods"]["biaeimpute"]["nonexecution_identity"]
+    assert set(nonexecution) == NONEXECUTION_IDENTITY_KEYS
+    assert len(nonexecution["configuration_terminal_denominator"]) == 4
+
+
+def test_comparator_receipt_publication_is_create_only_and_idempotent(
+    complete_checkpoint_tree: Path,
+) -> None:
+    repository_copy = complete_checkpoint_tree
+    first = comparator_tuning_module.publish_comparator_selection(repository_copy)
+    second = comparator_tuning_module.publish_comparator_selection(repository_copy)
+    assert first == second
+    path = repository_copy / COMPARATOR_SELECTION_RELATIVE_PATH
+    first_bytes = path.read_bytes()
+    payload = json.loads(first_bytes)
+    payload["readiness"]["status"] = "blocked"
+    path.write_text(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        ComparatorTuningError,
+        match="existing comparator selection differs",
+    ):
+        comparator_tuning_module.publish_comparator_selection(repository_copy)
+    assert path.read_bytes() != first_bytes
+
+
+def test_selection_publication_rejects_symlink_and_nonunique_destination(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    destination = repository / COMPARATOR_SELECTION_RELATIVE_PATH
+    destination.parent.mkdir(parents=True)
+    other = repository / "other.json"
+    other.write_bytes(b"{}\n")
+    destination.symlink_to(other)
+    with pytest.raises(ComparatorTuningError, match="not owned"):
+        comparator_tuning_module._immutable_publish(
+            destination,
+            b"{}\n",
+            repository,
+        )
+
+    destination.unlink()
+    destination.hardlink_to(other)
+    with pytest.raises(ComparatorTuningError, match="owned regular"):
+        comparator_tuning_module._immutable_publish(
+            destination,
+            b"{}\n",
+            repository,
+        )
+
+
+def test_identical_concurrent_publication_accepts_transient_two_link_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    destination = repository / COMPARATOR_SELECTION_RELATIVE_PATH
+    destination.parent.mkdir(parents=True)
+    data = b'{"receipt":"same"}\n'
+    original_link = comparator_tuning_module.os.link
+    original_secure_read = comparator_tuning_module._secure_read_regular
+    existing_read_finished = threading.Event()
+
+    def coordinated_link(*args, **kwargs):
+        original_link(*args, **kwargs)
+        assert existing_read_finished.wait(timeout=5)
+
+    def observed_secure_read(*args, **kwargs):
+        try:
+            return original_secure_read(*args, **kwargs)
+        finally:
+            if len(args) >= 3 and args[2] == "existing comparator selection":
+                existing_read_finished.set()
+
+    monkeypatch.setattr(comparator_tuning_module.os, "link", coordinated_link)
+    monkeypatch.setattr(
+        comparator_tuning_module,
+        "_secure_read_regular",
+        observed_secure_read,
+    )
+    start = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def publish() -> None:
+        try:
+            start.wait(timeout=5)
+            comparator_tuning_module._immutable_publish(
+                destination,
+                data,
+                repository,
+            )
+        except BaseException as error:  # noqa: BLE001 - asserted thread outcome
+            errors.append(error)
+
+    threads = [threading.Thread(target=publish) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert errors == []
+    assert destination.read_bytes() == data
+    assert destination.stat().st_nlink == 1
+
+
+def test_comparator_selection_loader_recomputes_and_rejects_tamper(
+    complete_checkpoint_tree: Path,
+) -> None:
+    receipt = comparator_tuning_module.publish_comparator_selection(
+        complete_checkpoint_tree
+    )
+    loaded = comparator_tuning_module.load_comparator_selection_receipt(
+        complete_checkpoint_tree,
+        expected_checkpoint=(
+            complete_checkpoint_tree
+            / "artifacts/study/development/competition-reconstruction/checkpoint.json"
+        ),
+    )
+    assert loaded == receipt
+    target = complete_checkpoint_tree / COMPARATOR_SELECTION_RELATIVE_PATH
+    baseline = target.read_bytes()
+    mutations = (
+        (("authority_reference", "authority_revision"), "fair-comparator-direct-v2"),
+        (("methods", "magic", "selected_configuration_id"), "magic-t07"),
+        (
+            (
+                "methods",
+                "magic",
+                "selected_configuration",
+                "configuration",
+                "payload_json",
+            ),
+            "{}",
+        ),
+        (
+            ("scheduled_tuning_records", 0, "run", "identity", "configuration_id"),
+            "alra-forged",
+        ),
+        (("scheduled_tuning_records", 0, "metrics", 0, "value"), 999.0),
+        (("scheduled_tuning_records", 0, "run", "status"), "unavailable"),
+        (
+            (
+                "methods",
+                "magic",
+                "configurations",
+                "magic-t03",
+                "pareto_member",
+            ),
+            False,
+        ),
+        (
+            (
+                "methods",
+                "magic",
+                "configurations",
+                "magic-t03",
+                "selection_tuple",
+                0,
+            ),
+            999,
+        ),
+    )
+    checkpoint_path = (
+        complete_checkpoint_tree
+        / "artifacts/study/development/competition-reconstruction/checkpoint.json"
+    )
+    for path, replacement in mutations:
+        changed = json.loads(baseline)
+        nested = changed
+        for item in path[:-1]:
+            nested = nested[item]
+        nested[path[-1]] = replacement
+        target.write_text(
+            json.dumps(changed, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        with pytest.raises(ComparatorTuningError):
+            comparator_tuning_module.load_comparator_selection_receipt(
+                complete_checkpoint_tree,
+                expected_checkpoint=checkpoint_path,
+            )
+        target.write_bytes(baseline)
+
+    changed = json.loads(baseline)
+    changed["extra"] = True
+    target.write_text(
+        json.dumps(changed, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ComparatorTuningError, match="missing or extra"):
+        comparator_tuning_module.load_comparator_selection_receipt(
+            complete_checkpoint_tree
+        )
+    target.write_bytes(baseline + b" ")
+    with pytest.raises(ComparatorTuningError, match="canonical"):
+        comparator_tuning_module.load_comparator_selection_receipt(
+            complete_checkpoint_tree
+        )
+
+
+def test_selection_publication_api_and_cli_have_no_overrides(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert tuple(
+        inspect.signature(
+            comparator_tuning_module.publish_comparator_selection
+        ).parameters
+    ) == ("repository",)
+    assert tuple(
+        inspect.signature(
+            comparator_tuning_module.load_comparator_selection_receipt
+        ).parameters
+    ) == ("repository", "expected_checkpoint")
+    script = ROOT / "scripts/select_comparator_configurations.py"
+    spec = importlib.util.spec_from_file_location("task11_selection_cli", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module,
+        "publish_comparator_selection",
+        lambda repository: {
+            "readiness": {"status": "ready"},
+            "methods": {
+                "magic": {"selection_status": "selected"},
+                "biaeimpute": {
+                    "selection_status": ("intrinsic_terminal_no_eligible_configuration")
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(sys, "argv", [str(script)])
+    assert module.main() == 0
+    monkeypatch.setattr(sys, "argv", [str(script), "--method", "magic"])
+    with pytest.raises(SystemExit):
+        module.main()
+
+
 def test_smoke_input_is_exact_truth_free_900_by_500() -> None:
     method_input = build_comparator_smoke_input()
     assert method_input.shape == (900, 500)
     assert method_input.counts[0, 0] == 0
-    assert method_input.counts[17, 31] == (
-        17 * 17 + 31 * 31 + 7 * (17 ^ 31)
-    ) % 6
+    assert method_input.counts[17, 31] == (17 * 17 + 31 * 31 + 7 * (17 ^ 31)) % 6
     assert len(method_input.obs_covariates) == 1
     batch = method_input.obs_covariates[0]
     assert batch.name == "batch"
@@ -700,10 +1634,13 @@ def test_smoke_run_uses_all_bound_rows_and_create_only_complete_bytes(
     assert load_comparator_smoke_receipt(repository, authority, registry) == receipt
     path = repository / authority.smoke_receipt_path
     first_bytes = path.read_bytes()
-    assert run_comparator_tuning_smoke(
-        repository,
-        _executor=fake_executor,
-    ) == receipt
+    assert (
+        run_comparator_tuning_smoke(
+            repository,
+            _executor=fake_executor,
+        )
+        == receipt
+    )
     assert path.read_bytes() == first_bytes
 
     def changed_executor(request, _dispatcher, _authority):
@@ -742,9 +1679,7 @@ def test_spawned_smoke_request_retains_complete_fixed_fixture_descriptor(
         configuration=smoke_bound_rows[0],
         fixture=descriptor,
         method_input=method_input,
-        method_spec=smoke_registry.by_id(
-            smoke_bound_rows[0].configuration.method_id
-        ),
+        method_spec=smoke_registry.by_id(smoke_bound_rows[0].configuration.method_id),
         model_seed=42,
         ordinal=1,
     )
@@ -1070,9 +2005,7 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
             id="scheduled-set",
         ),
         pytest.param(("required_control_ids",), ["observed"], id="control-set"),
-        pytest.param(
-            ("established_comparator_ids",), ["alra"], id="established-set"
-        ),
+        pytest.param(("established_comparator_ids",), ["alra"], id="established-set"),
         pytest.param(("modern_core_ids",), ["scziva"], id="modern-set"),
         pytest.param(("model_seeds",), [42, 43, 45], id="model-seeds"),
         pytest.param(("selection", "metrics"), ["mse"], id="selection-metrics"),
@@ -1084,9 +2017,7 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
         pytest.param(
             ("selection", "prezero_mechanism"), "sergio", id="selection-prezero"
         ),
-        pytest.param(
-            ("selection", "pareto_rule"), "changed", id="selection-pareto"
-        ),
+        pytest.param(("selection", "pareto_rule"), "changed", id="selection-pareto"),
         pytest.param(("selection", "rank_rule"), "changed", id="selection-rank"),
         pytest.param(
             ("selection", "selection_tuple"),
@@ -1120,9 +2051,7 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
         ),
         pytest.param(("budgets", "gpu_seconds_per_method"), 1, id="budget-gpu"),
         pytest.param(("budgets", "cpu_seconds_per_method"), 1, id="budget-cpu"),
-        pytest.param(
-            ("budgets", "per_run_timeout_seconds"), 1, id="budget-timeout"
-        ),
+        pytest.param(("budgets", "per_run_timeout_seconds"), 1, id="budget-timeout"),
         pytest.param(("budgets", "max_rss_bytes"), 1, id="budget-rss"),
         pytest.param(("budgets", "max_gpu_bytes"), 1, id="budget-gpu-memory"),
         pytest.param(
@@ -1140,9 +2069,7 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
             ("storage", "max_executor_receipt_bytes"), 1, id="storage-executor"
         ),
         pytest.param(("storage", "max_record_bytes"), 1, id="storage-record"),
-        pytest.param(
-            ("storage", "max_checkpoint_bytes"), 1, id="storage-checkpoint"
-        ),
+        pytest.param(("storage", "max_checkpoint_bytes"), 1, id="storage-checkpoint"),
         pytest.param(("storage", "reserve_bytes"), 1, id="storage-reserve"),
         pytest.param(("smoke", "receipt_path"), "elsewhere.json", id="smoke-path"),
         pytest.param(("smoke", "cells"), 899, id="smoke-cells"),
@@ -1150,12 +2077,8 @@ def test_decode_comparator_configuration_is_closed_and_exact() -> None:
         pytest.param(("smoke", "model_seed"), 43, id="smoke-seed"),
         pytest.param(("smoke", "batch_rule"), "changed", id="smoke-batches"),
         pytest.param(("smoke", "count_formula"), "changed", id="smoke-formula"),
-        pytest.param(
-            ("smoke", "projection_multiplier"), 47, id="smoke-projection"
-        ),
-        pytest.param(
-            ("smoke", "output_retention"), "retained", id="smoke-retention"
-        ),
+        pytest.param(("smoke", "projection_multiplier"), 47, id="smoke-projection"),
+        pytest.param(("smoke", "output_retention"), "retained", id="smoke-retention"),
     ),
 )
 def test_authority_rejects_policy_mutation(
@@ -1328,9 +2251,7 @@ def test_loader_rejects_malformed_authority_bytes(
 def test_loader_rejects_non_regular_authority(tmp_path: Path) -> None:
     study = tmp_path / "study"
     study.mkdir()
-    (study / "comparator_tuning.json").symlink_to(
-        ROOT / "study/comparator_tuning.json"
-    )
+    (study / "comparator_tuning.json").symlink_to(ROOT / "study/comparator_tuning.json")
     registry = load_method_registry(ROOT / "study/methods.json")
 
     with pytest.raises(ComparatorTuningError, match="owned regular file"):
