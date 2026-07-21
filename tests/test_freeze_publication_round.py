@@ -2468,6 +2468,21 @@ def _schema_four_stage_chain(
     repository = tmp_path / "repository" if repository is None else repository
     repository.mkdir(exist_ok=True)
     reports: dict[str, dict[str, object]] = {}
+    comparator_selection = {
+        "path": ("artifacts/study/development/evaluation/comparator_selection.json"),
+        "receipt": {
+            "schema_version": 1,
+            "authority_revision": "fair-comparator-direct-v1",
+            "methods": [],
+        },
+        "selected_by_method": {},
+        "nonexecution_identity_by_method": {},
+        "ready_comparison_population_ids": [
+            "observed",
+            "capacity-matched-ae",
+            "maskimpute",
+        ],
+    }
     for index, stage in enumerate(order):
         _materialize_publication_stage_footprint(repository, stage)
         versions = [] if stage == "base" else list(order[1 : index + 1])
@@ -2477,6 +2492,7 @@ def _schema_four_stage_chain(
             "count_score_manifest_sha256": "2" * 64,
             "retained_calibration_artifact_sha256": "3" * 64,
             "evaluation_manifest_sha256": "4" * 64,
+            "comparator_selection": deepcopy(comparator_selection),
             "records": [],
             "orthogonal_intervals": [],
         }
@@ -2592,6 +2608,7 @@ def _patch_schema_four_stage_replay(
             selection_report_file_sha256=hashlib.sha256(
                 (repository / paths.activation_selection_report).read_bytes()
             ).hexdigest(),
+            base_comparator_selection=selection_input["comparator_selection"],
         )
 
     monkeypatch.setattr(freeze_module, "validate_revision_activation", activate)
@@ -2634,6 +2651,56 @@ def test_schema_four_stage_chain_revalidates_exact_activation_prefix(
     for stage in receipt.stages:
         assert stage.source_result_sha256 == stage.source_input["result_sha256"]
         assert stage.complete_result_sha256 == stage.complete_input["result_sha256"]
+        assert (
+            stage.complete_input["comparator_selection"]
+            == stage.source_input["comparator_selection"]
+        )
+
+
+def test_activation_chain_rejects_changed_base_comparator_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.publication_freeze as freeze_module
+    from maskimpute_benchmark.publication_freeze import (
+        PublicationFreezeError,
+        _resolve_publication_stage,
+        _validate_publication_stage_evidence,
+    )
+    from maskimpute_benchmark.revisions import RevisionActivation, revision_stage_paths
+
+    repository, reports = _schema_four_stage_chain(tmp_path, "v28")
+    _patch_schema_four_stage_replay(monkeypatch, repository, reports)
+    paths = revision_stage_paths("v28")
+    selection_input = json.loads(
+        (repository / paths.activation_selection_input).read_text(encoding="utf-8")
+    )
+    changed = deepcopy(selection_input["comparator_selection"])
+    changed["ready_comparison_population_ids"] = ["observed"]
+    monkeypatch.setattr(
+        freeze_module,
+        "validate_revision_activation",
+        lambda *_args, **_kwargs: RevisionActivation(
+            version="v28",
+            trigger="v28",
+            selection_input_path=paths.activation_selection_input,
+            selection_input_file_sha256=hashlib.sha256(
+                (repository / paths.activation_selection_input).read_bytes()
+            ).hexdigest(),
+            selection_result_sha256=selection_input["result_sha256"],
+            selection_report_path=paths.activation_selection_report,
+            selection_report_file_sha256=hashlib.sha256(
+                (repository / paths.activation_selection_report).read_bytes()
+            ).hexdigest(),
+            base_comparator_selection=changed,
+        ),
+    )
+
+    with pytest.raises(PublicationFreezeError, match="comparator"):
+        _validate_publication_stage_evidence(
+            repository,
+            _resolve_publication_stage(repository),
+        )
 
 
 def test_activation_chain_rejects_wrong_retained_hash(
@@ -2662,6 +2729,11 @@ def test_activation_chain_rejects_wrong_retained_hash(
             selection_result_sha256="0" * 64,
             selection_report_path=paths.activation_selection_report,
             selection_report_file_sha256="0" * 64,
+            base_comparator_selection=json.loads(
+                (repository / paths.activation_selection_input).read_text(
+                    encoding="utf-8"
+                )
+            )["comparator_selection"],
         ),
     )
 

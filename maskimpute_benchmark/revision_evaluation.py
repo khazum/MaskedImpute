@@ -9,6 +9,7 @@ import re
 from typing import Mapping, Sequence
 
 from .development_evaluation import (
+    DirectReconstructionEvidence,
     OrthogonalOutputEvidence,
     ReconstructionEvidence,
     _canonical_json_bytes,
@@ -96,7 +97,7 @@ class RevisionStageEvaluation:
 
     spec: RevisionSpec
     activation: RevisionActivation
-    reconstruction: ReconstructionEvidence
+    reconstruction: ReconstructionEvidence | DirectReconstructionEvidence
     records: tuple[Mapping[str, object], ...]
     null_de_audits: tuple[Mapping[str, object], ...]
     orthogonal: OrthogonalOutputEvidence
@@ -110,8 +111,11 @@ class RevisionStageEvaluation:
             raise TypeError("activation must be a RevisionActivation")
         if self.spec.version != self.activation.version:
             raise ValueError("revision spec and activation versions differ")
-        if not isinstance(self.reconstruction, ReconstructionEvidence):
-            raise TypeError("reconstruction must be ReconstructionEvidence")
+        if not isinstance(
+            self.reconstruction,
+            (ReconstructionEvidence, DirectReconstructionEvidence),
+        ):
+            raise TypeError("reconstruction evidence schema is unsupported")
         if not isinstance(self.orthogonal, OrthogonalOutputEvidence):
             raise TypeError("orthogonal must be OrthogonalOutputEvidence")
 
@@ -219,6 +223,31 @@ def combine_selection_rows(
     return tuple(combined_records), tuple(combined_intervals)
 
 
+def _require_inherited_rows_unchanged(
+    base_records: Sequence[Mapping[str, object]],
+    base_intervals: Sequence[Mapping[str, object]],
+    combined_records: Sequence[Mapping[str, object]],
+    combined_intervals: Sequence[Mapping[str, object]],
+) -> None:
+    """Require the complete base prefix to remain value-identical and ordered."""
+
+    record_count = len(base_records)
+    interval_count = len(base_intervals)
+    if (
+        len(combined_records) < record_count
+        or len(combined_intervals) < interval_count
+        or not direct_equal(
+            tuple(combined_records[:record_count]),
+            tuple(base_records),
+        )
+        or not direct_equal(
+            tuple(combined_intervals[:interval_count]),
+            tuple(base_intervals),
+        )
+    ):
+        raise RevisionEvaluationError("inherited base rows changed or were reordered")
+
+
 def _validate_stage_runner_authority(spec: RevisionSpec, authority: object) -> None:
     """Bind tracked revision semantics to the exact independently loaded runner."""
 
@@ -249,12 +278,45 @@ def _validate_stage_runner_authority(spec: RevisionSpec, authority: object) -> N
         )
 
 
+def _require_stage_comparator_selection(
+    canonical_selection: Mapping[str, object],
+    activation: RevisionActivation,
+    runner_authority: object,
+) -> None:
+    """Bind one activation and its runner to the same complete base object."""
+
+    from .direct_values import direct_json_value
+
+    activation_selection = (
+        None
+        if activation.base_comparator_selection is None
+        else direct_json_value(
+            activation.base_comparator_selection,
+            payload=True,
+        )
+    )
+    runner_selection = direct_json_value(
+        getattr(runner_authority, "base_comparator_selection", None),
+        payload=True,
+    )
+    if (
+        activation_selection is None
+        or not direct_equal(activation_selection, canonical_selection)
+        or not direct_equal(runner_selection, canonical_selection)
+    ):
+        raise RevisionEvaluationError(
+            f"{activation.version} comparator selection differs across authorities"
+        )
+
+
 def _require_sha256(value: str, name: str) -> None:
     if not isinstance(value, str) or not _SHA256.fullmatch(value):
         raise RevisionEvaluationError(f"{name} is not a lowercase SHA-256")
 
 
 def _activation_dict(value: RevisionActivation) -> dict[str, object]:
+    from .direct_values import direct_json_value
+
     return {
         "version": value.version,
         "trigger": value.trigger,
@@ -263,6 +325,14 @@ def _activation_dict(value: RevisionActivation) -> dict[str, object]:
         "selection_result_sha256": value.selection_result_sha256,
         "selection_report_path": value.selection_report_path,
         "selection_report_file_sha256": value.selection_report_file_sha256,
+        "base_comparator_selection": (
+            None
+            if value.base_comparator_selection is None
+            else direct_json_value(
+                value.base_comparator_selection,
+                payload=True,
+            )
+        ),
     }
 
 
@@ -280,6 +350,113 @@ def _spec_dict(value: RevisionSpec) -> dict[str, object]:
     }
 
 
+def _load_direct_revision_reconstruction(
+    checkpoint_path: Path,
+    plan: object,
+    *,
+    repository: Path,
+    registry: object,
+    prepared_datasets: Mapping[str, object],
+    runner_authority: object,
+    datasets: Sequence[object],
+    comparator_projection: object,
+) -> DirectReconstructionEvidence:
+    """Load one complete direct checkpoint containing only its revision candidate."""
+
+    from .direct_values import direct_json_value
+    from .fair_comparator_checkpoint import DirectCheckpointStore
+    from .fair_comparator_plan import validate_direct_competition_plan
+
+    validate_direct_competition_plan(
+        plan,
+        registry=registry,
+        prepared_datasets=prepared_datasets,
+        authority=runner_authority,
+        datasets=datasets,
+    )
+    try:
+        report = DirectCheckpointStore(checkpoint_path).load(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+            authority=runner_authority,
+            datasets=datasets,
+        )
+    except Exception as error:
+        raise RevisionEvaluationError(
+            "direct revision checkpoint failed typed validation"
+        ) from error
+    configurations = tuple(getattr(runner_authority, "configurations", ()))
+    configuration_id = (
+        getattr(configurations[0], "configuration_id", None)
+        if len(configurations) == 1
+        else None
+    )
+    entries = tuple(getattr(plan, "entries", ()))
+    if (
+        getattr(runner_authority, "plan_scope", None) != "revision_candidate_only"
+        or getattr(plan, "identity_mode", None) != "direct-v1"
+        or not isinstance(configuration_id, str)
+        or len(getattr(plan, "configurations", ())) != 1
+        or len(entries) != 48
+        or any(
+            getattr(entry.identity.method, "method_id", None) != "maskimpute"
+            or getattr(entry.identity, "configuration_kind", None) != "candidate_search"
+            or getattr(entry.identity, "configuration_id", None) != configuration_id
+            for entry in entries
+        )
+    ):
+        raise RevisionEvaluationError(
+            "direct revision plan is not its exact 48-row candidate denominator"
+        )
+    records = tuple(getattr(report, "records", ()))
+    if (
+        getattr(report, "status", None) != "completed"
+        or getattr(report, "planned_run_count", None) != 48
+        or len(records) != 48
+    ):
+        raise RevisionEvaluationError(
+            "direct revision checkpoint is not its complete 48-row denominator"
+        )
+    for record in records:
+        run = record.get("run") if isinstance(record, Mapping) else None
+        identity = run.get("identity") if isinstance(run, Mapping) else None
+        method = identity.get("method") if isinstance(identity, Mapping) else None
+        if (
+            not isinstance(identity, Mapping)
+            or identity.get("configuration_id") != configuration_id
+            or identity.get("configuration_kind") != "candidate_search"
+            or not isinstance(method, Mapping)
+            or method.get("method_id") != "maskimpute"
+        ):
+            raise RevisionEvaluationError(
+                "direct revision checkpoint contains a noncandidate row"
+            )
+    selected_by_method = {
+        method_id: direct_json_value(selected.configuration)
+        for method_id, selected in getattr(
+            comparator_projection,
+            "selected_by_method",
+            {},
+        ).items()
+    }
+    receipt_bytes = getattr(comparator_projection, "receipt_bytes", None)
+    if type(receipt_bytes) is not bytes:
+        raise RevisionEvaluationError(
+            "direct revision comparator receipt bytes are absent"
+        )
+    return DirectReconstructionEvidence(
+        checkpoint_path=checkpoint_path.name,
+        identity_mode=report.identity_mode,
+        authority_revision=report.authority_revision,
+        plan_snapshot=report.plan_snapshot,
+        input_descriptors=report.input_descriptors,
+        records=records,
+        selected_by_method=selected_by_method,
+        comparator_receipt_bytes=receipt_bytes,
+    )
+
+
 def _reconstruction_dict(
     repository: Path,
     stage: RevisionStageEvaluation,
@@ -289,6 +466,38 @@ def _reconstruction_dict(
         PurePosixPath(paths.reconstruction_directory)
         / stage.reconstruction.checkpoint_path
     )
+    if isinstance(stage.reconstruction, DirectReconstructionEvidence):
+        from .direct_values import direct_json_value
+
+        checkpoint_path = repository / checkpoint_relative
+        try:
+            checkpoint_raw = checkpoint_path.read_bytes()
+        except OSError as error:
+            raise RevisionEvaluationError(
+                f"{stage.spec.version} direct reconstruction checkpoint is absent"
+            ) from error
+        checkpoint_file_sha256 = hashlib.sha256(checkpoint_raw).hexdigest()
+        _verify_bound_repository_file(
+            repository,
+            checkpoint_relative,
+            checkpoint_file_sha256,
+            f"{stage.spec.version} direct reconstruction checkpoint",
+        )
+        return {
+            "checkpoint_path": checkpoint_relative,
+            "checkpoint_file_sha256": checkpoint_file_sha256,
+            "checkpoint_sha256": checkpoint_file_sha256,
+            "identity_mode": stage.reconstruction.identity_mode,
+            "authority_revision": stage.reconstruction.authority_revision,
+            "plan_snapshot": direct_json_value(
+                stage.reconstruction.plan_snapshot,
+                payload=True,
+            ),
+            "input_descriptors": direct_json_value(
+                stage.reconstruction.input_descriptors,
+                payload=True,
+            ),
+        }
     _verify_bound_repository_file(
         repository,
         checkpoint_relative,
@@ -312,6 +521,45 @@ def _reconstruction_dict(
         "plan_sha256": stage.reconstruction.plan_sha256,
         "input_hashes": dict(stage.reconstruction.input_hashes),
         "raw_artifacts": raw_artifacts,
+    }
+
+
+def _outer_reconstruction_provenance(
+    reconstruction: Mapping[str, object],
+) -> dict[str, str]:
+    """Keep the legacy outer source bindings over either checkpoint schema."""
+
+    from .protocol import canonical_sha256
+
+    if reconstruction.get("identity_mode") == "direct-v1":
+        plan_snapshot = reconstruction.get("plan_snapshot")
+        input_descriptors = reconstruction.get("input_descriptors")
+        if not isinstance(plan_snapshot, Mapping) or not isinstance(
+            input_descriptors, list
+        ):
+            raise RevisionEvaluationError(
+                "direct reconstruction outer provenance is incomplete"
+            )
+        return {
+            "plan_sha256": canonical_sha256(dict(plan_snapshot)),
+            "input_hashes_sha256": canonical_sha256(input_descriptors),
+            "raw_artifacts_sha256": canonical_sha256([]),
+        }
+    input_hashes = reconstruction.get("input_hashes")
+    raw_artifacts = reconstruction.get("raw_artifacts")
+    plan_sha256 = reconstruction.get("plan_sha256")
+    if (
+        not isinstance(plan_sha256, str)
+        or not isinstance(input_hashes, Mapping)
+        or not isinstance(raw_artifacts, list)
+    ):
+        raise RevisionEvaluationError(
+            "legacy reconstruction outer provenance is incomplete"
+        )
+    return {
+        "plan_sha256": plan_sha256,
+        "input_hashes_sha256": canonical_sha256(dict(input_hashes)),
+        "raw_artifacts_sha256": canonical_sha256(raw_artifacts),
     }
 
 
@@ -493,6 +741,12 @@ def write_revision_selection_artifacts(
         base_intervals,
         revision_rows,
     )
+    _require_inherited_rows_unchanged(
+        base_records,
+        base_intervals,
+        records,
+        intervals,
+    )
     revision_evidence = [_stage_evidence_dict(root, stage) for stage in stage_values]
     evidence_core = {
         "schema_version": 3,
@@ -651,6 +905,12 @@ def validate_revision_artifact_payloads(
             )
             for stage in assembled.stages
         ),
+    )
+    _require_inherited_rows_unchanged(
+        assembled.base_records,
+        assembled.base_intervals,
+        records,
+        intervals,
     )
     if (
         data["dataset_manifest_sha256"] != assembled.dataset_manifest_sha256
@@ -929,24 +1189,25 @@ def validate_revision_artifact_payloads(
         "base_evaluation_manifest_payload_sha256": base_evaluation_payload_sha,
         "base_evaluation_source_sha256": canonical_sha256(dict(base_reconstruction)),
     }
-    if not base_is_direct:
-        base_input_hashes = base_reconstruction.get("input_hashes")
-        if not isinstance(base_input_hashes, Mapping):
-            raise RevisionEvaluationError(
-                "base reconstruction input binding is invalid"
-            )
-        bindings.update(
-            {
-                "base_reconstruction_plan_sha256": str(
-                    base_reconstruction["plan_sha256"]
-                ),
-                "base_reconstruction_input_hashes_sha256": canonical_sha256(
-                    dict(base_input_hashes)
-                ),
-            }
-        )
+    base_provenance = _outer_reconstruction_provenance(base_reconstruction)
+    bindings.update(
+        {
+            "base_reconstruction_plan_sha256": base_provenance["plan_sha256"],
+            "base_reconstruction_input_hashes_sha256": base_provenance[
+                "input_hashes_sha256"
+            ],
+        }
+    )
     for stage in assembled.stages:
         prefix = stage.spec.version
+        stage_reconstruction = expected_revisions[expected_versions.index(prefix)][
+            "reconstruction"
+        ]
+        if not isinstance(stage_reconstruction, Mapping):
+            raise RevisionEvaluationError(
+                f"{prefix} reconstruction manifest binding is invalid"
+            )
+        stage_provenance = _outer_reconstruction_provenance(stage_reconstruction)
         bindings.update(
             {
                 f"{prefix}_revision_authority_file_sha256": stage.spec.file_sha256,
@@ -957,20 +1218,19 @@ def validate_revision_artifact_payloads(
                     stage.activation.selection_report_file_sha256
                 ),
                 f"{prefix}_reconstruction_checkpoint_file_sha256": (
-                    stage.reconstruction.checkpoint_file_sha256
+                    str(stage_reconstruction["checkpoint_file_sha256"])
                 ),
-                f"{prefix}_reconstruction_checkpoint_path": str(
-                    PurePosixPath(revision_stage_paths(prefix).reconstruction_directory)
-                    / stage.reconstruction.checkpoint_path
+                f"{prefix}_reconstruction_checkpoint_path": (
+                    str(stage_reconstruction["checkpoint_path"])
                 ),
                 f"{prefix}_reconstruction_checkpoint_payload_sha256": (
-                    stage.reconstruction.checkpoint_sha256
+                    str(stage_reconstruction["checkpoint_sha256"])
                 ),
                 f"{prefix}_reconstruction_plan_sha256": (
-                    stage.reconstruction.plan_sha256
+                    stage_provenance["plan_sha256"]
                 ),
-                f"{prefix}_reconstruction_input_hashes_sha256": canonical_sha256(
-                    dict(stage.reconstruction.input_hashes)
+                f"{prefix}_reconstruction_input_hashes_sha256": (
+                    stage_provenance["input_hashes_sha256"]
                 ),
                 f"{prefix}_reconstruction_statuses_sha256": status_sha256(
                     stage.reconstruction.records,
@@ -984,14 +1244,10 @@ def validate_revision_artifact_payloads(
                     evaluation["manifest_sha256"]
                 ),
                 f"{prefix}_evaluation_source_sha256": canonical_sha256(
-                    expected_revisions[expected_versions.index(prefix)][
-                        "reconstruction"
-                    ]
+                    dict(stage_reconstruction)
                 ),
-                f"{prefix}_reconstruction_raw_artifacts_sha256": canonical_sha256(
-                    expected_revisions[expected_versions.index(prefix)][
-                        "reconstruction"
-                    ]["raw_artifacts"]
+                f"{prefix}_reconstruction_raw_artifacts_sha256": (
+                    stage_provenance["raw_artifacts_sha256"]
                 ),
                 f"{prefix}_orthogonal_manifest_file_sha256": (
                     stage.orthogonal.manifest_file_sha256
@@ -1102,13 +1358,13 @@ def assemble_revision_evaluation(
         _strict_json,
         build_reconstruction_selection_records,
         evaluate_real_orthogonal_intervals,
-        load_completed_reconstruction_checkpoint,
         load_orthogonal_output_evidence,
         prepare_real_orthogonal_panel,
     )
     from .methods import load_method_registry
     from .runner import (
-        build_competition_plan,
+        _load_required_comparator_smoke_evidence,
+        build_fair_comparator_plan,
         load_activated_v28_revision_authority,
         load_activated_v29_revision_authority,
         load_prepared_development_panel,
@@ -1182,6 +1438,9 @@ def assemble_revision_evaluation(
         comparator_selection_projection_value(comparator_projection),
     ):
         raise RevisionEvaluationError("base comparator selection differs")
+    canonical_comparator_selection = comparator_selection_projection_value(
+        comparator_projection
+    )
     base_evaluation_path = (
         "artifacts/study/development/evaluation/evaluation_manifest.json"
     )
@@ -1250,35 +1509,34 @@ def assemble_revision_evaluation(
             else load_activated_v29_revision_authority()
         )
         _validate_stage_runner_authority(spec, runner_authority)
+        _require_stage_comparator_selection(
+            canonical_comparator_selection,
+            activation,
+            runner_authority,
+        )
         bindings, prepared = load_prepared_development_panel(runner_authority)
         paths = revision_stage_paths(version)
         reconstruction_directory = root / paths.reconstruction_directory
-        checkpoint_payload, _checkpoint_raw = _strict_json(
-            reconstruction_directory / "checkpoint.json",
-            f"{version} reconstruction checkpoint",
+        smoke_receipt, smoke_receipt_bytes = _load_required_comparator_smoke_evidence(
+            runner_authority
         )
-        input_hashes = checkpoint_payload.get("input_hashes")
-        environment_sha = (
-            input_hashes.get("execution_environment_sha256")
-            if isinstance(input_hashes, dict)
-            else None
-        )
-        if not isinstance(environment_sha, str) or not _SHA256.fullmatch(
-            environment_sha
-        ):
-            raise RevisionEvaluationError(
-                f"{version} execution environment binding is absent"
-            )
-        plan = build_competition_plan(
+        plan = build_fair_comparator_plan(
             registry,
             bindings,
             runner_authority,
-            execution_environment_sha256=environment_sha,
+            tuple(prepared[binding.dataset_id] for binding in bindings),
+            _comparator_smoke_receipt=smoke_receipt,
+            _comparator_smoke_receipt_bytes=smoke_receipt_bytes,
         )
-        reconstruction = load_completed_reconstruction_checkpoint(
-            reconstruction_directory,
+        reconstruction = _load_direct_revision_reconstruction(
+            reconstruction_directory / "checkpoint.json",
             plan,
+            repository=root,
+            registry=registry,
             prepared_datasets=prepared,
+            runner_authority=runner_authority,
+            datasets=bindings,
+            comparator_projection=comparator_projection,
         )
         rebuilt = build_reconstruction_selection_records(
             reconstruction,

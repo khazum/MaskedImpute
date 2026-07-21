@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import anndata as ad
 import numpy as np
@@ -1132,6 +1133,48 @@ def test_revision_plan_contains_exactly_one_48_row_maskimpute_candidate(loader) 
     ]
 
 
+def test_activated_revision_runner_carries_complete_base_comparator_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.direct_values import direct_json_value
+    from maskimpute_benchmark.revisions import RevisionActivation, revision_stage_paths
+
+    paths = revision_stage_paths("v28")
+    comparator_selection = {
+        "path": "artifacts/study/development/evaluation/comparator_selection.json",
+        "receipt": {"schema_version": 2},
+        "selected_by_method": {"magic": {"configuration": {"id": "magic-t01"}}},
+        "nonexecution_identity_by_method": {"dca": {"reason": "unavailable"}},
+        "ready_comparison_population_ids": ["observed", "magic"],
+    }
+    activation = RevisionActivation(
+        version="v28",
+        trigger="v28",
+        selection_input_path=paths.activation_selection_input,
+        selection_input_file_sha256="1" * 64,
+        selection_result_sha256="2" * 64,
+        selection_report_path=paths.activation_selection_report,
+        selection_report_file_sha256="3" * 64,
+        base_comparator_selection=comparator_selection,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_validate_v28_activation",
+        lambda *_args: activation,
+    )
+
+    authority = runner_module.load_activated_v28_revision_authority()
+
+    assert (
+        direct_json_value(
+            authority.base_comparator_selection,
+            payload=True,
+        )
+        == comparator_selection
+    )
+    assert authority.plan_scope == "revision_candidate_only"
+
+
 def test_authority_derives_first_twenty_search_configs_and_excludes_budget_overruns() -> (
     None
 ):
@@ -1320,9 +1363,7 @@ def test_direct_plan_rejects_noncanonical_ready_maskimpute_authority() -> None:
         entry.preflight_status == "blocked_authority" for entry in blocked.entries
     )
     with pytest.raises(RunnerContractError, match="fixed authority"):
-        _build_structural_direct_competition_plan(
-            registry, datasets, ready, prepared
-        )
+        _build_structural_direct_competition_plan(registry, datasets, ready, prepared)
 
 
 def test_method_input_hash_binds_only_truth_free_snapshot_and_is_stable() -> None:
@@ -2922,6 +2963,9 @@ def _direct_magic_record(
     assert isinstance(identity, dict)
     reason = {
         "completed": None,
+        "failed": "adapter_exception",
+        "timeout": "timeout",
+        "resource_exceeded": "peak_rss_exceeded",
         "unavailable": "adapter_not_registered",
         "infrastructure_error": "runtime_environment_invalid",
         "blocked_authority": "count_score_authority_pending",
@@ -3416,6 +3460,344 @@ def test_direct_production_boundary_binds_smoke_into_plan_and_checkpoint_chain(
         "authority": authority,
         "datasets": bindings,
     }
+
+
+def test_direct_revision_boundary_executes_public_candidate_only_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    comparator_selection = {
+        "path": "artifacts/study/development/evaluation/comparator_selection.json",
+        "receipt": {"schema_version": 2},
+        "selected_by_method": {},
+        "nonexecution_identity_by_method": {},
+        "ready_comparison_population_ids": ["observed"],
+    }
+    authority = replace(
+        runner_module.load_v28_revision_authority(),
+        base_comparator_selection=comparator_selection,
+    )
+    receipt = {"status": "ready"}
+    receipt_bytes = b'{"status":"ready"}\n'
+    prepared_value = _prepared_truth_dataset()
+    bindings = (prepared_value.binding,)
+    prepared = {prepared_value.binding.dataset_id: prepared_value}
+    registry = load_method_registry(METHODS_PATH)
+    plan = SimpleNamespace(entries=tuple(range(48)))
+    executor = object()
+    sentinel = object()
+    captured = {}
+
+    monkeypatch.setattr(
+        runner_module,
+        "build_fair_comparator_plan",
+        lambda *_args, **_kwargs: plan,
+    )
+
+    class FakeStore:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.fair_comparator_checkpoint.DirectCheckpointStore",
+        FakeStore,
+    )
+
+    def execute(
+        observed_plan,
+        observed_registry,
+        observed_prepared,
+        observed_executor,
+        observed_store,
+        *,
+        authority,
+        datasets,
+    ):
+        captured.update(
+            plan=observed_plan,
+            registry=observed_registry,
+            prepared=observed_prepared,
+            executor=observed_executor,
+            store=observed_store,
+            authority=authority,
+            datasets=datasets,
+        )
+        return sentinel
+
+    monkeypatch.setattr(runner_module, "execute_fair_comparator_plan", execute)
+
+    result = runner_module._run_fair_comparator_base_with_authority(
+        tmp_path / "revision",
+        authority,
+        environment_overrides=None,
+        _comparator_smoke_receipt=receipt,
+        _comparator_smoke_receipt_bytes=receipt_bytes,
+        _datasets=bindings,
+        _prepared_datasets=prepared,
+        _registry=registry,
+        _direct_executor=executor,
+    )
+
+    assert result is sentinel
+    assert captured == {
+        "plan": plan,
+        "registry": registry,
+        "prepared": prepared,
+        "executor": executor,
+        "store": captured["store"],
+        "authority": authority,
+        "datasets": bindings,
+    }
+    assert captured["store"].path == tmp_path / "revision/checkpoint.json"
+
+
+def test_direct_revision_boundary_composes_production_maskimpute_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = replace(
+        runner_module.load_v28_revision_authority(),
+        base_comparator_selection={
+            "path": (
+                "artifacts/study/development/evaluation/comparator_selection.json"
+            ),
+            "receipt": {"schema_version": 2},
+            "selected_by_method": {},
+            "nonexecution_identity_by_method": {},
+            "ready_comparison_population_ids": ["observed"],
+        },
+    )
+    prepared_value = _prepared_truth_dataset()
+    bindings = (prepared_value.binding,)
+    prepared = {prepared_value.binding.dataset_id: prepared_value}
+    registry = load_method_registry(METHODS_PATH)
+    plan = SimpleNamespace(entries=tuple(range(48)))
+    sentinel = object()
+    captured = {}
+
+    monkeypatch.setattr(
+        runner_module,
+        "build_fair_comparator_plan",
+        lambda *_args, **_kwargs: plan,
+    )
+
+    class FakeStore:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.fair_comparator_checkpoint.DirectCheckpointStore",
+        FakeStore,
+    )
+    environments = object()
+    dispatcher = object()
+    monkeypatch.setattr(
+        runner_module.ExecutionEnvironmentRegistry,
+        "fixed",
+        lambda *_args, **_kwargs: environments,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "RepositoryAdapterDispatcher",
+        lambda *_args, **_kwargs: dispatcher,
+    )
+
+    class FakeSpawnedExecutor:
+        def __init__(self, observed_dispatcher: object) -> None:
+            assert observed_dispatcher is dispatcher
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            captured["closed"] = True
+
+        def __call__(self, _request: ExecutionRequest) -> AdapterOutcome:
+            return AdapterOutcome.unavailable("runtime_environment_invalid")
+
+    monkeypatch.setattr(
+        runner_module,
+        "SpawnedRepositoryExecutor",
+        FakeSpawnedExecutor,
+    )
+
+    def execute(*_args, **_kwargs):
+        captured["executor"] = _args[3]
+        return sentinel
+
+    monkeypatch.setattr(runner_module, "execute_fair_comparator_plan", execute)
+
+    result = runner_module._run_fair_comparator_base_with_authority(
+        tmp_path / "revision",
+        authority,
+        environment_overrides=None,
+        _comparator_smoke_receipt={"status": "ready"},
+        _comparator_smoke_receipt_bytes=b'{"status":"ready"}\n',
+        _datasets=bindings,
+        _prepared_datasets=prepared,
+        _registry=registry,
+    )
+
+    assert result is sentinel
+    executor = captured["executor"]
+    assert isinstance(executor, runner_module.RevisionMaskImputeExecutor)
+    assert executor.authority is authority
+    assert executor.registry is registry
+    assert executor.checkpoint_directory == tmp_path / "revision"
+    assert captured["closed"] is True
+
+
+def test_revision_maskimpute_executor_emits_direct_budget_terminal_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.runner import (
+        BudgetDecision,
+        RevisionMaskImputeExecutor,
+    )
+
+    bindings = validate_development_manifest_payload(_manifest_payload())
+    prepared_values = _prepared_plan_inputs(bindings)
+    authority = replace(
+        runner_module.load_v28_revision_authority(),
+        count_score_manifest_status="ready",
+        count_score_manifest_sha256="8" * 64,
+        retained_calibration_status="ready",
+        retained_calibration_sha256="9" * 64,
+        base_comparator_selection={
+            "path": (
+                "artifacts/study/development/evaluation/comparator_selection.json"
+            ),
+            "receipt": {"schema_version": 2},
+            "selected_by_method": {},
+            "nonexecution_identity_by_method": {},
+            "ready_comparison_population_ids": ["observed"],
+        },
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v28_revision_authority",
+        lambda: authority,
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v29_revision_authority",
+        lambda: authority,
+    )
+    plan = _build_structural_direct_competition_plan(
+        load_method_registry(METHODS_PATH),
+        bindings,
+        authority,
+        prepared_values,
+    )
+    entry = plan.entries[0]
+    prepared = prepared_values[0]
+    executor = RevisionMaskImputeExecutor(
+        authority=authority,
+        adapter_executor=lambda _request: pytest.fail(
+            "budget-terminal revision reached the adapter"
+        ),
+        checkpoint_directory=tmp_path,
+        registry=load_method_registry(METHODS_PATH),
+    )
+
+    attempt = executor(
+        entry,
+        prepared,
+        BudgetDecision(
+            authorized=False,
+            reason="configuration_budget_exhausted",
+            remaining_seconds=0.0,
+            timeout_seconds=0.0,
+        ),
+    )
+
+    assert attempt.run.identity == entry.identity
+    assert attempt.run.status == "budget_exhausted"
+    assert attempt.run.reason == "configuration_budget_exhausted"
+    assert attempt.p_pre_zero_evidence.applicable
+    assert attempt.p_pre_zero_evidence.status == "budget_exhausted"
+    assert attempt.p_pre_zero_evidence.path is None
+
+
+def test_revision_maskimpute_executor_dispatches_authorized_candidate_to_direct_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.runner import (
+        BudgetDecision,
+        RevisionMaskImputeExecutor,
+    )
+
+    bindings = validate_development_manifest_payload(_manifest_payload())
+    prepared_values = _prepared_plan_inputs(bindings)
+    authority = replace(
+        runner_module.load_v28_revision_authority(),
+        count_score_manifest_status="ready",
+        count_score_manifest_sha256="8" * 64,
+        retained_calibration_status="ready",
+        retained_calibration_sha256="9" * 64,
+        base_comparator_selection={
+            "path": (
+                "artifacts/study/development/evaluation/comparator_selection.json"
+            ),
+            "receipt": {"schema_version": 2},
+            "selected_by_method": {},
+            "nonexecution_identity_by_method": {},
+            "ready_comparison_population_ids": ["observed"],
+        },
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v28_revision_authority",
+        lambda: authority,
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v29_revision_authority",
+        lambda: authority,
+    )
+    plan = _build_structural_direct_competition_plan(
+        load_method_registry(METHODS_PATH),
+        bindings,
+        authority,
+        prepared_values,
+    )
+    entry = plan.entries[0]
+    prepared = prepared_values[0]
+    captured = {}
+
+    def adapter(request: ExecutionRequest) -> AdapterOutcome:
+        captured["request"] = request
+        return AdapterOutcome.unavailable("runtime_environment_invalid")
+
+    attempt = RevisionMaskImputeExecutor(
+        authority=authority,
+        adapter_executor=adapter,
+        checkpoint_directory=tmp_path,
+        registry=load_method_registry(METHODS_PATH),
+    )(
+        entry,
+        prepared,
+        BudgetDecision(
+            authorized=True,
+            reason=None,
+            remaining_seconds=100.0,
+            timeout_seconds=100.0,
+        ),
+    )
+
+    request = captured["request"]
+    assert request.configuration_id == "v28-c01-nb-parent-c03"
+    assert request.configuration_kind == "candidate_search"
+    assert request.model_seed == entry.identity.model_seed
+    assert attempt.run.identity == entry.identity
+    assert attempt.run.status == "unavailable"
+    assert attempt.run.reason == "runtime_environment_invalid"
+    assert attempt.p_pre_zero_evidence.applicable
+    assert attempt.p_pre_zero_evidence.status == "unavailable"
+    assert attempt.p_pre_zero_evidence.reason == "runtime_environment_invalid"
+    assert all(metric.value is None for metric in attempt.metrics)
 
 
 @pytest.mark.parametrize(

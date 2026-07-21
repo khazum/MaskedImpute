@@ -82,6 +82,7 @@ class RevisionActivation:
     selection_result_sha256: str
     selection_report_path: str
     selection_report_file_sha256: str
+    base_comparator_selection: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.version not in _VERSIONS:
@@ -101,6 +102,35 @@ class RevisionActivation:
         ):
             if not isinstance(value, str) or not _SHA256.fullmatch(value):
                 raise ValueError("revision activation checksum is invalid")
+        if self.base_comparator_selection is not None:
+            from .direct_values import direct_json_value, freeze_direct_mapping
+
+            if not isinstance(self.base_comparator_selection, Mapping) or set(
+                self.base_comparator_selection
+            ) != {
+                "path",
+                "receipt",
+                "selected_by_method",
+                "nonexecution_identity_by_method",
+                "ready_comparison_population_ids",
+            }:
+                raise ValueError(
+                    "revision activation comparator selection is incomplete"
+                )
+            object.__setattr__(
+                self,
+                "base_comparator_selection",
+                MappingProxyType(
+                    dict(
+                        freeze_direct_mapping(
+                            direct_json_value(
+                                self.base_comparator_selection,
+                                payload=True,
+                            )
+                        )
+                    )
+                ),
+            )
 
 
 def _freeze_json(value: object) -> object:
@@ -685,6 +715,44 @@ def validate_revision_activation(
         )
     spec = load_revision_spec(root, version, require_clean=require_clean)
     _validate_activation_denominator(selection_report, spec)
+    from .comparator_tuning import (
+        ComparatorTuningError,
+        comparator_selection_projection_value,
+        validate_comparator_selection_object,
+    )
+    from .direct_values import direct_equal
+
+    try:
+        comparator_projection = validate_comparator_selection_object(
+            root,
+            selection_input.get("comparator_selection"),
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise RevisionAuthorityError(
+            "base comparator selection failed complete validation"
+        ) from error
+    comparator_selection = comparator_selection_projection_value(comparator_projection)
+    if (
+        not direct_equal(
+            selection_input.get("comparator_selection"),
+            comparator_selection,
+        )
+        or not direct_equal(
+            selection_report.get("comparison_population_ids"),
+            comparator_selection["ready_comparison_population_ids"],
+        )
+        or not direct_equal(
+            selection_report.get("selected_comparators"),
+            comparator_selection["selected_by_method"],
+        )
+        or not direct_equal(
+            selection_report.get("comparator_nonexecution_identities"),
+            comparator_selection["nonexecution_identity_by_method"],
+        )
+    ):
+        raise RevisionAuthorityError(
+            "base comparator selection differs across revision activation evidence"
+        )
     result_sha = selection_input.get("result_sha256")
     if not isinstance(result_sha, str) or not _SHA256.fullmatch(result_sha):
         raise RevisionAuthorityError("activation selection result checksum is invalid")
@@ -696,6 +764,7 @@ def validate_revision_activation(
         selection_result_sha256=result_sha,
         selection_report_path=paths.activation_selection_report,
         selection_report_file_sha256=report_sha,
+        base_comparator_selection=comparator_selection,
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from functools import lru_cache
 import hashlib
+import inspect
 import importlib.util
 import json
 from pathlib import Path
@@ -134,6 +135,7 @@ def _interval(configuration: str, endpoint: str = "rna_protein_concordance"):
 def test_combined_rows_keep_stage_provenance_and_reject_identity_collisions() -> None:
     from maskimpute_benchmark.revision_evaluation import (
         RevisionEvaluationError,
+        _require_inherited_rows_unchanged,
         combine_selection_rows,
     )
 
@@ -149,6 +151,22 @@ def test_combined_rows_keep_stage_provenance_and_reject_identity_collisions() ->
     )
     assert records == (base_record, v28_record)
     assert intervals == (base_interval, v28_interval)
+    _require_inherited_rows_unchanged(
+        (base_record,),
+        (base_interval,),
+        records,
+        intervals,
+    )
+
+    mutated = replace_record(base_record)
+    mutated["value"] = 999.0
+    with pytest.raises(RevisionEvaluationError, match="inherited base rows"):
+        _require_inherited_rows_unchanged(
+            (base_record,),
+            (base_interval,),
+            (mutated, v28_record),
+            intervals,
+        )
 
     with pytest.raises(RevisionEvaluationError, match="only its own candidate"):
         combine_selection_rows(
@@ -340,6 +358,7 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
         selection_report_file_sha256=hashlib.sha256(
             base_report_path.read_bytes()
         ).hexdigest(),
+        base_comparator_selection=_comparator_selection(),
     )
     stage = RevisionStageEvaluation(
         spec=spec,
@@ -381,6 +400,9 @@ def test_revision_manifest_binds_distinct_checkpoint_raw_and_orthogonal_bytes(
         {key: value for key, value in result.items() if key != "result_sha256"}
     )
     revision = evaluation["revisions"][0]
+    assert revision["activation"]["base_comparator_selection"] == (
+        _comparator_selection()
+    )
     assert revision["reconstruction"]["checkpoint_path"] == (
         paths.reconstruction_directory + "/checkpoint.json"
     )
@@ -509,9 +531,14 @@ def test_public_revision_validation_normalizes_internal_authority_failures(
 def test_stage_evaluation_rejects_runner_and_revision_configuration_drift() -> None:
     from maskimpute_benchmark.revision_evaluation import (
         RevisionEvaluationError,
+        _require_stage_comparator_selection,
         _validate_stage_runner_authority,
     )
-    from maskimpute_benchmark.revisions import load_revision_spec
+    from maskimpute_benchmark.revisions import (
+        RevisionActivation,
+        load_revision_spec,
+        revision_stage_paths,
+    )
     from maskimpute_benchmark.runner import load_v29_revision_authority
 
     spec = load_revision_spec(Path.cwd(), "v29", require_clean=False)
@@ -523,3 +550,229 @@ def test_stage_evaluation_rejects_runner_and_revision_configuration_drift() -> N
             replace(spec, configuration_sha256="f" * 64),
             authority,
         )
+
+    selection = _comparator_selection()
+    paths = revision_stage_paths("v29")
+    activation = RevisionActivation(
+        version="v29",
+        trigger="v29",
+        selection_input_path=paths.activation_selection_input,
+        selection_input_file_sha256="1" * 64,
+        selection_result_sha256="2" * 64,
+        selection_report_path=paths.activation_selection_report,
+        selection_report_file_sha256="3" * 64,
+        base_comparator_selection=selection,
+    )
+    activated_authority = replace(
+        authority,
+        base_comparator_selection=selection,
+    )
+    _require_stage_comparator_selection(
+        selection,
+        activation,
+        activated_authority,
+    )
+    with pytest.raises(RevisionEvaluationError, match="comparator selection differs"):
+        _require_stage_comparator_selection(
+            selection,
+            activation,
+            replace(
+                activated_authority,
+                base_comparator_selection={
+                    **selection,
+                    "ready_comparison_population_ids": ["observed"],
+                },
+            ),
+        )
+
+
+def test_revision_stage_serializes_candidate_only_direct_reconstruction(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.development_evaluation import (
+        DirectReconstructionEvidence,
+        OrthogonalOutputEvidence,
+    )
+    from maskimpute_benchmark.revision_evaluation import (
+        RevisionStageEvaluation,
+        _outer_reconstruction_provenance,
+        _reconstruction_dict,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.revisions import (
+        RevisionActivation,
+        load_revision_spec,
+        revision_stage_paths,
+    )
+
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    paths = revision_stage_paths("v28")
+    checkpoint = repository / paths.reconstruction_directory / "checkpoint.json"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_bytes(b'{"identity_mode":"direct-v1"}\n')
+    evidence = DirectReconstructionEvidence(
+        checkpoint_path="checkpoint.json",
+        identity_mode="direct-v1",
+        authority_revision="fair-comparator-direct-v1",
+        plan_snapshot={"entries": [{"identity": {"ordinal": 1}}]},
+        input_descriptors=({"dataset_id": "dataset-test"},),
+        records=(
+            {
+                "run": {
+                    "run_id": "run-test",
+                    "identity": {
+                        "configuration_id": "v28-c01-nb-parent-c03",
+                    },
+                    "status": "unavailable",
+                    "reason": "runtime_environment_invalid",
+                },
+                "metrics": [],
+                "p_pre_zero_evidence": {},
+            },
+        ),
+        selected_by_method={},
+        comparator_receipt_bytes=b"{}\n",
+    )
+    orthogonal_path = repository / paths.orthogonal_directory / "outputs.json"
+    stage = RevisionStageEvaluation(
+        spec=load_revision_spec(Path.cwd(), "v28", require_clean=False),
+        activation=RevisionActivation(
+            version="v28",
+            trigger="v28",
+            selection_input_path=paths.activation_selection_input,
+            selection_input_file_sha256="1" * 64,
+            selection_result_sha256="2" * 64,
+            selection_report_path=paths.activation_selection_report,
+            selection_report_file_sha256="3" * 64,
+            base_comparator_selection=_comparator_selection(),
+        ),
+        reconstruction=evidence,
+        records=(),
+        null_de_audits=(),
+        orthogonal=OrthogonalOutputEvidence(
+            output_directory=orthogonal_path.parent,
+            manifest_path=orthogonal_path,
+            manifest_file_sha256="4" * 64,
+            manifest_sha256="5" * 64,
+            records=(),
+        ),
+        intervals=(),
+        orthogonal_audits=(),
+    )
+
+    value = _reconstruction_dict(repository, stage)
+
+    checkpoint_sha = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    assert value == {
+        "checkpoint_path": (paths.reconstruction_directory + "/checkpoint.json"),
+        "checkpoint_file_sha256": checkpoint_sha,
+        "checkpoint_sha256": checkpoint_sha,
+        "identity_mode": "direct-v1",
+        "authority_revision": "fair-comparator-direct-v1",
+        "plan_snapshot": {"entries": [{"identity": {"ordinal": 1}}]},
+        "input_descriptors": [{"dataset_id": "dataset-test"}],
+    }
+    assert _outer_reconstruction_provenance(value) == {
+        "plan_sha256": canonical_sha256(value["plan_snapshot"]),
+        "input_hashes_sha256": canonical_sha256(value["input_descriptors"]),
+        "raw_artifacts_sha256": canonical_sha256([]),
+    }
+
+
+def test_direct_revision_loader_accepts_only_complete_48_candidate_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.revision_evaluation as revision_evaluation
+    from maskimpute_benchmark.development_evaluation import (
+        DirectReconstructionEvidence,
+    )
+
+    configuration_id = "v28-c01-nb-parent-c03"
+    identities = tuple(
+        SimpleNamespace(
+            configuration_id=configuration_id,
+            configuration_kind="candidate_search",
+            method=SimpleNamespace(method_id="maskimpute"),
+        )
+        for _ in range(48)
+    )
+    plan = SimpleNamespace(
+        identity_mode="direct-v1",
+        entries=tuple(SimpleNamespace(identity=value) for value in identities),
+        configurations=(SimpleNamespace(configuration_id=configuration_id),),
+    )
+    records = tuple(
+        {
+            "run": {
+                "identity": {
+                    "configuration_id": configuration_id,
+                    "configuration_kind": "candidate_search",
+                    "method": {"method_id": "maskimpute"},
+                }
+            }
+        }
+        for _ in range(48)
+    )
+    report = SimpleNamespace(
+        status="completed",
+        planned_run_count=48,
+        records=records,
+        identity_mode="direct-v1",
+        authority_revision="fair-comparator-direct-v1",
+        plan_snapshot={"entries": list(range(48))},
+        input_descriptors=tuple(range(16)),
+    )
+    captured = {}
+
+    class FakeStore:
+        def __init__(self, path: Path) -> None:
+            captured["path"] = path
+
+        def load(self, observed_plan: object, **kwargs: object) -> object:
+            captured["plan"] = observed_plan
+            captured["load"] = kwargs
+            return report
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.fair_comparator_checkpoint.DirectCheckpointStore",
+        FakeStore,
+    )
+    monkeypatch.setattr(
+        "maskimpute_benchmark.fair_comparator_plan.validate_direct_competition_plan",
+        lambda *_args, **_kwargs: captured.setdefault("validated", True),
+    )
+    authority = SimpleNamespace(
+        plan_scope="revision_candidate_only",
+        configurations=(SimpleNamespace(configuration_id=configuration_id),),
+    )
+    projection = SimpleNamespace(selected_by_method={}, receipt_bytes=b"{}\n")
+
+    evidence = revision_evaluation._load_direct_revision_reconstruction(
+        tmp_path / "checkpoint.json",
+        plan,
+        repository=tmp_path,
+        registry=object(),
+        prepared_datasets={},
+        runner_authority=authority,
+        datasets=(),
+        comparator_projection=projection,
+    )
+
+    assert isinstance(evidence, DirectReconstructionEvidence)
+    assert len(evidence.records) == 48
+    assert evidence.selected_by_method == {}
+    assert captured["validated"] is True
+    assert captured["path"] == tmp_path / "checkpoint.json"
+
+
+def test_revision_assembly_has_no_legacy_reconstruction_route() -> None:
+    from maskimpute_benchmark.revision_evaluation import (
+        assemble_revision_evaluation,
+    )
+
+    source = inspect.getsource(assemble_revision_evaluation)
+    assert "build_competition_plan" not in source
+    assert "load_completed_reconstruction_checkpoint" not in source
+    assert "_load_direct_revision_reconstruction" in source

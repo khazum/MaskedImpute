@@ -926,6 +926,30 @@ def test_direct_revision_plan_contains_one_48_row_candidate(loader) -> None:
     )
 
 
+def test_production_direct_revision_requires_activated_base_selection() -> None:
+    _base, registry, datasets, prepared = _direct_fixture()
+    authority = load_v28_revision_authority()
+    plan = _build_structural_direct_competition_plan(
+        registry,
+        datasets,
+        authority,
+        prepared,
+    )
+
+    with pytest.raises(
+        RunnerContractError,
+        match="activated base comparator selection",
+    ):
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets={value.binding.dataset_id: value for value in prepared},
+            authority=authority,
+            datasets=datasets,
+            _require_smoke_receipt=False,
+        )
+
+
 def test_runner_fair_comparator_entry_point_delegates_to_direct_plan() -> None:
     direct, registry, datasets, prepared = _direct_fixture()
 

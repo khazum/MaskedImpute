@@ -834,6 +834,7 @@ def validate_direct_competition_plan(
     authority: RunnerAuthority,
     datasets: Sequence[DatasetBinding],
     _require_smoke_receipt: bool = True,
+    _require_activated_revision: bool = True,
 ) -> None:
     """Validate the exact production direct denominator and its authorities."""
 
@@ -845,6 +846,8 @@ def validate_direct_competition_plan(
         raise TypeError("authority must be a RunnerAuthority")
     if type(_require_smoke_receipt) is not bool:
         raise TypeError("_require_smoke_receipt must be a bool")
+    if type(_require_activated_revision) is not bool:
+        raise TypeError("_require_activated_revision must be a bool")
     dataset_values = tuple(datasets)
     if not all(isinstance(value, DatasetBinding) for value in dataset_values):
         raise TypeError("datasets must contain DatasetBinding values")
@@ -854,6 +857,14 @@ def validate_direct_competition_plan(
         registry=registry,
         prepared_datasets=prepared_datasets,
     )
+    if (
+        _require_activated_revision
+        and authority.plan_scope == "revision_candidate_only"
+        and authority.base_comparator_selection is None
+    ):
+        raise RunnerContractError(
+            "production direct revision requires its activated base comparator selection"
+        )
     has_smoke_receipt = bool(plan.comparator_smoke_receipt)
     canonical_authorities = (
         (load_runner_authority(),)
@@ -932,9 +943,7 @@ def validate_direct_competition_plan(
             payload=True,
         )
         if type(payload) is not dict:
-            raise RunnerContractError(
-                "production direct plan smoke receipt is invalid"
-            )
+            raise RunnerContractError("production direct plan smoke receipt is invalid")
         try:
             validate_comparator_smoke_receipt(
                 payload,
@@ -1068,6 +1077,7 @@ def _build_structural_direct_competition_plan(
             authority=authority,
             datasets=dataset_values,
             _require_smoke_receipt=False,
+            _require_activated_revision=False,
         )
     return plan
 
@@ -1083,9 +1093,10 @@ def build_direct_competition_plan(
 ) -> DirectCompetitionPlan:
     """Build a production plan bound to complete validated smoke evidence."""
 
-    if not isinstance(comparator_smoke_receipt, Mapping) or type(
-        comparator_smoke_receipt_bytes
-    ) is not bytes:
+    if (
+        not isinstance(comparator_smoke_receipt, Mapping)
+        or type(comparator_smoke_receipt_bytes) is not bytes
+    ):
         raise RunnerContractError("comparator smoke receipt evidence is incomplete")
     plan = _build_structural_direct_competition_plan(
         registry,

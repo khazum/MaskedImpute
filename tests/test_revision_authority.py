@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,16 @@ import pytest
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
+
+
+def _complete_comparator_selection(repository: Path) -> dict[str, object]:
+    path = Path(__file__).with_name("test_revision_evaluation.py")
+    spec = importlib.util.spec_from_file_location("_task13_revision_factory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module._write_comparator_selection_authority(repository)
+    return json.loads(json.dumps(module._comparator_selection()))
 
 
 def _activation(version: str, trigger: str):
@@ -58,9 +69,7 @@ def test_v28_revision_extends_selection_authority_only_after_exact_trigger() -> 
     assert extended.attempts[:-1] == base.attempts
     assert extended.attempts[-1].configuration_id == "v28-c01-nb-parent-c03"
     assert extended.attempts[-1].version == "v28"
-    assert extended.attempts[-1].parent_configuration_id == (
-        "v27-c03-calibrated-r1-g1"
-    )
+    assert extended.attempts[-1].parent_configuration_id == ("v27-c03-calibrated-r1-g1")
     assert extended.method_bindings["v28-c01-nb-parent-c03"] == (
         v28.configuration_sha256
     )
@@ -97,12 +106,8 @@ def test_v29_revision_requires_the_combined_v28_report_trigger() -> None:
         (_activation("v28", "v28"), _activation("v29", "v29")),
     )
     assert [attempt.version for attempt in extended.attempts[-2:]] == ["v28", "v29"]
-    assert extended.attempts[-1].parent_configuration_id == (
-        "v28-c01-nb-parent-c03"
-    )
-    assert extended.method_bindings[v29.configuration_id] == (
-        v29.configuration_sha256
-    )
+    assert extended.attempts[-1].parent_configuration_id == ("v28-c01-nb-parent-c03")
+    assert extended.method_bindings[v29.configuration_id] == (v29.configuration_sha256)
 
 
 def test_revision_configuration_is_recursively_immutable() -> None:
@@ -182,14 +187,17 @@ def test_revision_stage_paths_are_fixed_and_version_separated() -> None:
     assert v28.activation_selection_input == base.selection_complete_input
     assert v29.activation_selection_input == v28.selection_complete_input
     assert v29.activation_selection_report == v28.selection_report
-    assert len(
-        {
-            v28.reconstruction_directory,
-            v28.orthogonal_directory,
-            v29.reconstruction_directory,
-            v29.orthogonal_directory,
-        }
-    ) == 4
+    assert (
+        len(
+            {
+                v28.reconstruction_directory,
+                v28.orthogonal_directory,
+                v29.reconstruction_directory,
+                v29.orthogonal_directory,
+            }
+        )
+        == 4
+    )
 
 
 def test_revision_activation_fails_closed_when_fixed_evidence_is_absent(
@@ -251,10 +259,12 @@ def test_revision_activation_rejects_incomplete_preceding_denominator(
     (tmp_path / paths.revision_authority).write_bytes(
         Path(paths.revision_authority).read_bytes()
     )
+    comparator_selection = _complete_comparator_selection(tmp_path)
     selection_input = {
         "schema_version": 4,
         "revision_versions": [],
         "result_sha256": SHA_B,
+        "comparator_selection": comparator_selection,
     }
     gates = {
         "candidate_completeness": {"passed": True},
@@ -272,6 +282,13 @@ def test_revision_activation_rejects_incomplete_preceding_denominator(
         ],
         "selected_configuration": None,
         "trigger": "v28",
+        "comparison_population_ids": comparator_selection[
+            "ready_comparison_population_ids"
+        ],
+        "selected_comparators": comparator_selection["selected_by_method"],
+        "comparator_nonexecution_identities": comparator_selection[
+            "nonexecution_identity_by_method"
+        ],
     }
     for relative, payload in (
         (paths.activation_selection_input, selection_input),
@@ -305,6 +322,96 @@ def test_revision_activation_rejects_incomplete_preceding_denominator(
     assert activation.trigger == "v28"
 
 
+def test_revision_activation_embeds_complete_base_comparator_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.selection as selection
+    from maskimpute_benchmark.direct_values import direct_json_value
+    from maskimpute_benchmark.revisions import (
+        RevisionAuthorityError,
+        revision_stage_paths,
+        validate_revision_activation,
+    )
+
+    paths = revision_stage_paths("v28")
+    comparator_selection = _complete_comparator_selection(tmp_path)
+    revision_path = tmp_path / paths.revision_authority
+    revision_path.parent.mkdir(parents=True, exist_ok=True)
+    revision_path.write_bytes(Path(paths.revision_authority).read_bytes())
+    selection_input = {
+        "schema_version": 4,
+        "revision_versions": [],
+        "result_sha256": SHA_B,
+        "comparator_selection": comparator_selection,
+    }
+    report = {
+        "assessments": [
+            {
+                "configuration_id": "v27-c03-calibrated-r1-g1",
+                "efficacy_pass": False,
+                "gates": {
+                    "candidate_completeness": {"passed": True},
+                    "required_comparator_completeness": {"passed": True},
+                },
+                "version": "v27",
+            }
+        ],
+        "selected_configuration": None,
+        "trigger": "v28",
+        "comparison_population_ids": list(
+            comparator_selection["ready_comparison_population_ids"]
+        ),
+        "selected_comparators": comparator_selection["selected_by_method"],
+        "comparator_nonexecution_identities": comparator_selection[
+            "nonexecution_identity_by_method"
+        ],
+    }
+    for relative, payload in (
+        (paths.activation_selection_input, selection_input),
+        (paths.activation_selection_report, report),
+    ):
+        output = tmp_path / relative
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        selection,
+        "_select_for_repository",
+        lambda *args, **kwargs: SimpleNamespace(to_dict=lambda: report),
+    )
+
+    report["comparison_population_ids"] = ["observed"]
+    (tmp_path / paths.activation_selection_report).write_text(
+        json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RevisionAuthorityError, match="comparator selection"):
+        validate_revision_activation(tmp_path, "v28", require_clean=False)
+
+    report["comparison_population_ids"] = list(
+        comparator_selection["ready_comparison_population_ids"]
+    )
+    (tmp_path / paths.activation_selection_report).write_text(
+        json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    activation = validate_revision_activation(
+        tmp_path,
+        "v28",
+        require_clean=False,
+    )
+    assert (
+        direct_json_value(
+            activation.base_comparator_selection,
+            payload=True,
+        )
+        == comparator_selection
+    )
+
+
 def test_v29_activation_requires_structure_failure_in_its_exact_v28_parent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -321,6 +428,7 @@ def test_v29_activation_requires_structure_failure_in_its_exact_v28_parent(
     (tmp_path / paths.revision_authority).write_bytes(
         Path(paths.revision_authority).read_bytes()
     )
+    comparator_selection = _complete_comparator_selection(tmp_path)
     report = {
         "assessments": [
             {
@@ -337,11 +445,19 @@ def test_v29_activation_requires_structure_failure_in_its_exact_v28_parent(
         ],
         "selected_configuration": None,
         "trigger": "v29",
+        "comparison_population_ids": comparator_selection[
+            "ready_comparison_population_ids"
+        ],
+        "selected_comparators": comparator_selection["selected_by_method"],
+        "comparator_nonexecution_identities": comparator_selection[
+            "nonexecution_identity_by_method"
+        ],
     }
     selection_input = {
         "schema_version": 4,
         "revision_versions": ["v28"],
         "result_sha256": SHA_B,
+        "comparator_selection": comparator_selection,
     }
     for relative, payload in (
         (paths.activation_selection_input, selection_input),
@@ -382,9 +498,7 @@ def test_tracked_v29_runner_authority_is_conditional_and_structure_only(
 
     authority = runner.load_v29_revision_authority()
     candidates = tuple(
-        value
-        for value in authority.configurations
-        if value.method_id == "maskimpute"
+        value for value in authority.configurations if value.method_id == "maskimpute"
     )
     assert len(candidates) == 1
     candidate = candidates[0]

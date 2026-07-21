@@ -26,6 +26,7 @@ import tempfile
 import time
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, Protocol
+import zlib
 
 import numpy as np
 
@@ -179,7 +180,9 @@ class DevelopmentStoragePreflight:
 
         encoded = direct_json_value(self)
         if not isinstance(encoded, dict):  # pragma: no cover - dataclass invariant
-            raise AssertionError("development storage preflight must encode as an object")
+            raise AssertionError(
+                "development storage preflight must encode as an object"
+            )
         return encoded
 
 
@@ -1201,6 +1204,7 @@ class RunnerAuthority:
     plan_scope: Literal["base_full_panel", "revision_candidate_only"] = (
         "base_full_panel"
     )
+    base_comparator_selection: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.schema_version != 1 or type(self.schema_version) is not int:
@@ -1253,6 +1257,42 @@ class RunnerAuthority:
             raise RunnerContractError("runner comparator method binding is invalid")
         if self.plan_scope not in {"base_full_panel", "revision_candidate_only"}:
             raise RunnerContractError("runner authority plan scope is invalid")
+        if self.base_comparator_selection is not None:
+            from .direct_values import direct_json_value, freeze_direct_mapping
+
+            if not isinstance(self.base_comparator_selection, Mapping) or set(
+                self.base_comparator_selection
+            ) != {
+                "path",
+                "receipt",
+                "selected_by_method",
+                "nonexecution_identity_by_method",
+                "ready_comparison_population_ids",
+            }:
+                raise RunnerContractError(
+                    "runner base comparator selection is incomplete"
+                )
+            try:
+                normalized_selection = direct_json_value(
+                    self.base_comparator_selection,
+                    payload=True,
+                )
+                if not isinstance(normalized_selection, Mapping):
+                    raise ValueError(
+                        "runner base comparator selection is not an object"
+                    )
+                frozen_selection = MappingProxyType(
+                    dict(freeze_direct_mapping(normalized_selection))
+                )
+            except ValueError as error:
+                raise RunnerContractError(
+                    "runner base comparator selection is invalid"
+                ) from error
+            object.__setattr__(
+                self,
+                "base_comparator_selection",
+                frozen_selection,
+            )
         if not isinstance(self.base_configuration_id, str) or not _SAFE_ID.fullmatch(
             self.base_configuration_id
         ):
@@ -1307,6 +1347,10 @@ class RunnerAuthority:
                 "runner authority configuration identities repeat"
             )
         if self.plan_scope == "base_full_panel":
+            if self.base_comparator_selection is not None:
+                raise RunnerContractError(
+                    "base runner authority cannot carry a later comparator selection"
+                )
             search_count = sum(
                 value.method_id == "maskimpute" and value.kind == "candidate_search"
                 for value in self.configurations
@@ -1633,29 +1677,36 @@ def _secure_canonical_artifact(path: Path, name: str) -> tuple[dict[str, Any], s
     return payload, hashlib.sha256(raw).hexdigest()
 
 
-def _validate_v28_activation() -> tuple[str, str, str]:
+def _validate_v28_activation(
+    repository: Path | None = None,
+):
     """Revalidate the complete fixed base evidence and require its v28 trigger."""
 
     from .revisions import validate_revision_activation
 
-    repository = Path(__file__).resolve().parents[1]
+    from .revisions import RevisionActivation
+
+    root = Path(__file__).resolve().parents[1] if repository is None else repository
     try:
-        activation = validate_revision_activation(repository, "v28")
+        activation = validate_revision_activation(root, "v28")
     except Exception as error:
         raise RunnerContractError(f"v28 activation failed: {error}") from error
-    return (
-        activation.selection_input_file_sha256,
-        activation.selection_result_sha256,
-        activation.selection_report_file_sha256,
-    )
+    if not isinstance(activation, RevisionActivation):  # pragma: no cover
+        raise RunnerContractError("v28 activation returned an invalid authority")
+    return activation
 
 
 def _bind_v28_activation(
     authority: RunnerAuthority,
-    input_sha256: str,
-    result_sha256: str,
-    report_sha256: str,
+    activation: object,
 ) -> RunnerAuthority:
+    from .revisions import RevisionActivation
+
+    if not isinstance(activation, RevisionActivation):
+        raise TypeError("activation must be a RevisionActivation")
+    input_sha256 = activation.selection_input_file_sha256
+    result_sha256 = activation.selection_result_sha256
+    report_sha256 = activation.selection_report_file_sha256
     _require_sha256(input_sha256, "v28 selection input checksum")
     _require_sha256(result_sha256, "v28 selection result checksum")
     _require_sha256(report_sha256, "v28 selection report checksum")
@@ -1670,6 +1721,7 @@ def _bind_v28_activation(
                 "selection_report_sha256": report_sha256,
             }
         ),
+        base_comparator_selection=activation.base_comparator_selection,
     )
 
 
@@ -1851,9 +1903,10 @@ def build_fair_comparator_plan(
         build_direct_competition_plan,
     )
 
-    if not isinstance(_comparator_smoke_receipt, Mapping) or type(
-        _comparator_smoke_receipt_bytes
-    ) is not bytes:
+    if (
+        not isinstance(_comparator_smoke_receipt, Mapping)
+        or type(_comparator_smoke_receipt_bytes) is not bytes
+    ):
         raise RunnerContractError("comparator smoke receipt evidence is incomplete")
     return build_direct_competition_plan(
         registry,
@@ -1917,21 +1970,15 @@ def development_storage_preflight(
     )
     try:
         matrix_bytes = sum(
-            2
-            * prepared_datasets[
-                entry.identity.dataset_id
-            ].method_input.counts.nbytes
+            2 * prepared_datasets[entry.identity.dataset_id].method_input.counts.nbytes
             for entry in executable
         )
         prezero_bytes = sum(
             zlib_compress_bound(
-                prepared_datasets[
-                    entry.identity.dataset_id
-                ].method_input.counts.nbytes
+                prepared_datasets[entry.identity.dataset_id].method_input.counts.nbytes
             )
             for entry in executable
-            if entry.identity.method_id == "maskimpute"
-            and entry.requires_count_score
+            if entry.identity.method_id == "maskimpute" and entry.requires_count_score
         )
     except KeyError as error:
         raise RunnerContractError(
@@ -3289,6 +3336,317 @@ class BudgetDecision:
     reason: str | None
     remaining_seconds: float
     timeout_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionMaskImputeExecutor:
+    """Adapt one authorized revision candidate into direct checkpoint evidence."""
+
+    authority: RunnerAuthority
+    adapter_executor: Callable[[ExecutionRequest], AdapterOutcome]
+    checkpoint_directory: Path
+    registry: MethodRegistry
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.authority, RunnerAuthority):
+            raise TypeError("authority must be a RunnerAuthority")
+        if (
+            self.authority.plan_scope != "revision_candidate_only"
+            or self.authority.base_comparator_selection is None
+        ):
+            raise RunnerContractError(
+                "revision executor requires an activated candidate-only authority"
+            )
+        if not callable(self.adapter_executor):
+            raise TypeError("adapter_executor must be callable")
+        if not isinstance(self.checkpoint_directory, Path):
+            raise TypeError("checkpoint_directory must be a pathlib.Path")
+        if not isinstance(self.registry, MethodRegistry):
+            raise TypeError("registry must be a MethodRegistry")
+
+    def __call__(
+        self,
+        entry: DirectPlanEntry,
+        prepared: PreparedDataset,
+        decision: BudgetDecision,
+    ) -> DirectEvaluatedAttempt:
+        from .direct_values import direct_equal, freeze_direct_mapping
+        from .fair_comparator_execution import (
+            DIRECT_RECONSTRUCTION_METRICS,
+            DirectEvaluatedAttempt,
+            DirectLogReceipt,
+            DirectMetricRow,
+            DirectPreZeroEvidence,
+            DirectRunResult,
+            _canonical_measurement_code,
+            _canonical_metric_reason,
+            _canonical_terminal_reason,
+        )
+        from .fair_comparator_plan import DirectPlanEntry
+
+        if not isinstance(entry, DirectPlanEntry):
+            raise TypeError("entry must be a DirectPlanEntry")
+        if not isinstance(prepared, PreparedDataset):
+            raise TypeError("prepared must be a PreparedDataset")
+        if not isinstance(decision, BudgetDecision):
+            raise TypeError("decision must be a BudgetDecision")
+        configuration = self.authority.configurations[0]
+        if (
+            entry.identity.method.method_id != "maskimpute"
+            or entry.identity.configuration_kind != "candidate_search"
+            or entry.identity.configuration_id != configuration.configuration_id
+            or not direct_equal(
+                entry.identity.configuration_payload,
+                freeze_direct_mapping(configuration.payload),
+            )
+        ):
+            raise RunnerContractError(
+                "revision direct entry differs from its activated candidate"
+            )
+        if entry.preflight_status == "blocked_authority":
+            status = "blocked_authority"
+            reason = entry.preflight_reason
+        elif not decision.authorized:
+            status = "budget_exhausted"
+            reason = decision.reason
+        else:
+            try:
+                spec = self.registry.by_id("maskimpute")
+            except KeyError as error:  # pragma: no cover - registry contract
+                raise RunnerContractError(
+                    "revision registry lacks MaskImpute"
+                ) from error
+            legacy_entry = RunPlanEntry(
+                ordinal=entry.identity.ordinal,
+                run_id=entry.run_id,
+                method_id="maskimpute",
+                dataset_id=entry.identity.dataset_id,
+                source_dataset_sha256=prepared.binding.dataset_sha256,
+                mechanism=entry.identity.mechanism,
+                biological_id=entry.identity.biological_id,
+                technical_view=entry.identity.technical_view,
+                model_seed=entry.identity.model_seed,
+                configuration_id=configuration.configuration_id,
+                configuration_sha256=configuration.configuration_sha256,
+                preflight_status="planned",
+                preflight_reason=None,
+                configuration_kind=configuration.kind,
+                requires_count_score=configuration.requires_count_score,
+                requires_calibration=configuration.requires_calibration,
+            )
+            request = ExecutionRequest.create(
+                spec,
+                prepared.method_input,
+                model_seed=entry.identity.model_seed,
+                configuration=configuration,
+                authority=self.authority,
+                mechanism=entry.identity.mechanism,
+                biological_id=entry.identity.biological_id,
+                technical_view=entry.identity.technical_view,
+                dataset_id=entry.identity.dataset_id,
+                timeout_seconds=decision.timeout_seconds,
+            )
+            request.validate_integrity()
+            outcome = self.adapter_executor(request)
+            if not isinstance(outcome, AdapterOutcome):
+                raise RunnerContractError(
+                    "revision adapter returned a noncanonical outcome"
+                )
+            outcome = enforce_calibration_fold_receipt(request, outcome)
+            evaluated = evaluate_adapter_outcome(
+                legacy_entry,
+                prepared,
+                outcome,
+                dataset_qc_policy_sha256=self.authority.dataset_qc_policy_sha256,
+            )
+            status = evaluated.run.status
+            reason = _canonical_terminal_reason(status, evaluated.run.reason)
+            if status == "completed":
+                raw_p_pre_zero = evaluated.p_pre_zero_evidence.raw_matrix_bytes
+                if raw_p_pre_zero is None:
+                    raise RunnerContractError(
+                        "completed revision candidate lacks p_pre_zero evidence"
+                    )
+                compressed = zlib.compress(raw_p_pre_zero)
+                relative_path = Path("runs") / (f"{entry.run_id}.p-pre-zero-f64.zlib")
+                evidence_path = self.checkpoint_directory / relative_path
+                evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    descriptor = os.open(
+                        evidence_path,
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | getattr(os, "O_CLOEXEC", 0),
+                        0o600,
+                    )
+                except FileExistsError:
+                    try:
+                        existing = evidence_path.read_bytes()
+                    except OSError as error:
+                        raise RunnerContractError(
+                            "revision p_pre_zero evidence is unreadable"
+                        ) from error
+                    if existing != compressed:
+                        raise RunnerContractError(
+                            "revision p_pre_zero evidence differs from storage"
+                        )
+                else:
+                    try:
+                        with os.fdopen(descriptor, "wb") as stream:
+                            stream.write(compressed)
+                            stream.flush()
+                            os.fsync(stream.fileno())
+                    except BaseException:
+                        try:
+                            evidence_path.unlink()
+                        except OSError:
+                            pass
+                        raise
+                p_pre_zero_evidence = DirectPreZeroEvidence(
+                    applicable=True,
+                    status="completed",
+                    reason=None,
+                    shape=prepared.method_input.shape,
+                    dtype="<f8",
+                    encoding="zlib",
+                    path=relative_path.as_posix(),
+                    compressed_byte_count=len(compressed),
+                )
+            else:
+                if reason is None:  # pragma: no cover - outcome contract
+                    raise AssertionError("revision terminal outcome lacks a reason")
+                p_pre_zero_evidence = DirectPreZeroEvidence(
+                    applicable=True,
+                    status=status,
+                    reason=reason,
+                    shape=None,
+                    dtype=None,
+                    encoding=None,
+                    path=None,
+                    compressed_byte_count=0,
+                )
+            run = DirectRunResult(
+                run_id=entry.run_id,
+                identity=entry.identity,
+                status=status,
+                reason=reason,
+                runtime_seconds=evaluated.run.runtime_seconds,
+                peak_rss_bytes=evaluated.run.peak_rss_bytes,
+                peak_gpu_bytes=evaluated.run.peak_gpu_bytes,
+                rss_measurement=_canonical_measurement_code(
+                    evaluated.run.rss_measurement
+                ),
+                gpu_measurement=_canonical_measurement_code(
+                    evaluated.run.gpu_measurement
+                ),
+                excluded_cell_count=prepared.audit.excluded_cell_count,
+                excluded_cell_ids=prepared.audit.excluded_cell_ids,
+                retained_cell_count=prepared.audit.retained_cell_count,
+                retained_cell_ids=prepared.audit.retained_cell_ids,
+                retained_gene_count=prepared.method_input.shape[1],
+                observed_zero_count=int((prepared.method_input.counts == 0).sum()),
+                stdout=DirectLogReceipt(
+                    "stdout", len(evaluated.stdout), "discard_content", reason
+                ),
+                stderr=DirectLogReceipt(
+                    "stderr", len(evaluated.stderr), "discard_content", reason
+                ),
+            )
+            metrics_by_name = {row.metric: row for row in evaluated.metrics}
+            if len(metrics_by_name) != len(evaluated.metrics) or any(
+                name not in metrics_by_name for name in DIRECT_RECONSTRUCTION_METRICS
+            ):
+                raise RunnerContractError(
+                    "revision evaluator metric denominator or order differs"
+                )
+            metrics = tuple(
+                DirectMetricRow(
+                    identity=entry.identity,
+                    metric=name,
+                    value=(
+                        metrics_by_name[name].value if status == "completed" else None
+                    ),
+                    n=metrics_by_name[name].n if status == "completed" else 0,
+                    status=(
+                        metrics_by_name[name].status
+                        if status == "completed"
+                        else status
+                    ),
+                    reason=(
+                        _canonical_metric_reason(
+                            metrics_by_name[name].status,
+                            metrics_by_name[name].reason,
+                        )
+                        if status == "completed"
+                        else reason
+                    ),
+                )
+                for name in DIRECT_RECONSTRUCTION_METRICS
+            )
+            return DirectEvaluatedAttempt(
+                run=run,
+                metrics=metrics,
+                native_output=(
+                    evaluated.native_output if status == "completed" else None
+                ),
+                native_output_scale=(
+                    evaluated.native_output_scale if status == "completed" else None
+                ),
+                evaluator_output=(
+                    evaluated.evaluator_output if status == "completed" else None
+                ),
+                p_pre_zero_evidence=p_pre_zero_evidence,
+            )
+        if not isinstance(reason, str) or not reason:
+            raise RunnerContractError("revision terminal attempt lacks a reason")
+        run = DirectRunResult(
+            run_id=entry.run_id,
+            identity=entry.identity,
+            status=status,
+            reason=reason,
+            runtime_seconds=0.0,
+            peak_rss_bytes=0,
+            peak_gpu_bytes=0,
+            rss_measurement="executor_reported_unverified",
+            gpu_measurement="executor_reported_unverified",
+            excluded_cell_count=prepared.audit.excluded_cell_count,
+            excluded_cell_ids=prepared.audit.excluded_cell_ids,
+            retained_cell_count=prepared.audit.retained_cell_count,
+            retained_cell_ids=prepared.audit.retained_cell_ids,
+            retained_gene_count=prepared.method_input.shape[1],
+            observed_zero_count=int((prepared.method_input.counts == 0).sum()),
+            stdout=DirectLogReceipt("stdout", 0, "discard_content", reason),
+            stderr=DirectLogReceipt("stderr", 0, "discard_content", reason),
+        )
+        metrics = tuple(
+            DirectMetricRow(
+                identity=entry.identity,
+                metric=metric,
+                value=None,
+                n=0,
+                status=status,
+                reason=reason,
+            )
+            for metric in DIRECT_RECONSTRUCTION_METRICS
+        )
+        return DirectEvaluatedAttempt(
+            run=run,
+            metrics=metrics,
+            native_output=None,
+            native_output_scale=None,
+            evaluator_output=None,
+            p_pre_zero_evidence=DirectPreZeroEvidence(
+                applicable=True,
+                status=status,
+                reason=reason,
+                shape=None,
+                dtype=None,
+                encoding=None,
+                path=None,
+                compressed_byte_count=0,
+            ),
+        )
 
 
 class DevelopmentBudget:
@@ -6412,9 +6770,9 @@ def _execute_fair_comparator_plan_validated(
         prepared_datasets,
         completed_records=completed_records,
     )
-    has_checkpoint_state = os.path.lexists(
-        checkpoint_store.path
-    ) or os.path.lexists(checkpoint_store.intent_path)
+    has_checkpoint_state = os.path.lexists(checkpoint_store.path) or os.path.lexists(
+        checkpoint_store.intent_path
+    )
     report = (
         (
             checkpoint_store._load_structural(
@@ -7938,8 +8296,8 @@ def run_development_competition(
     """Run/resume the fixed tracked development competition with no design overrides."""
 
     authority = load_runner_authority()
-    smoke_receipt, smoke_receipt_bytes = (
-        _load_required_comparator_smoke_evidence(authority)
+    smoke_receipt, smoke_receipt_bytes = _load_required_comparator_smoke_evidence(
+        authority
     )
     datasets, prepared_datasets = load_prepared_development_panel(authority)
     repository = Path(__file__).resolve().parents[1]
@@ -7992,6 +8350,11 @@ def _run_fair_comparator_base_with_authority(
     _datasets: Sequence[DatasetBinding],
     _prepared_datasets: Mapping[str, PreparedDataset],
     _registry: MethodRegistry,
+    _direct_executor: Callable[
+        [DirectPlanEntry, PreparedDataset, BudgetDecision],
+        DirectEvaluatedAttempt,
+    ]
+    | None = None,
 ) -> DirectCheckpointReport:
     """Bind smoke evidence through the direct production checkpoint boundary."""
 
@@ -8005,9 +8368,10 @@ def _run_fair_comparator_base_with_authority(
         environment_overrides, Mapping
     ):
         raise TypeError("environment_overrides must be a mapping or None")
-    if not isinstance(_comparator_smoke_receipt, Mapping) or type(
-        _comparator_smoke_receipt_bytes
-    ) is not bytes:
+    if (
+        not isinstance(_comparator_smoke_receipt, Mapping)
+        or type(_comparator_smoke_receipt_bytes) is not bytes
+    ):
         raise TypeError("comparator smoke receipt evidence has invalid types")
     bindings = tuple(_datasets)
     if not bindings or not all(
@@ -8015,8 +8379,7 @@ def _run_fair_comparator_base_with_authority(
     ):
         raise TypeError("_datasets must contain DatasetBinding values")
     if not isinstance(_prepared_datasets, Mapping) or not all(
-        isinstance(value, PreparedDataset)
-        for value in _prepared_datasets.values()
+        isinstance(value, PreparedDataset) for value in _prepared_datasets.values()
     ):
         raise TypeError("_prepared_datasets must map to PreparedDataset values")
     if not isinstance(_registry, MethodRegistry):
@@ -8034,7 +8397,49 @@ def _run_fair_comparator_base_with_authority(
     )
     from .fair_comparator_checkpoint import DirectCheckpointStore
 
-    DirectCheckpointStore(output_dir / "checkpoint.json").inspect_prefix(
+    store = DirectCheckpointStore(output_dir / "checkpoint.json")
+    if authority.plan_scope == "revision_candidate_only":
+        if authority.base_comparator_selection is None:
+            raise RunnerContractError(
+                "activated revision authority lacks base comparator selection"
+            )
+        if _direct_executor is not None:
+            return execute_fair_comparator_plan(
+                plan,
+                _registry,
+                _prepared_datasets,
+                _direct_executor,
+                store,
+                authority=authority,
+                datasets=bindings,
+            )
+        repository = Path(__file__).resolve().parents[1]
+        environments = ExecutionEnvironmentRegistry.fixed(
+            repository,
+            environment_overrides,
+            runtime_lock_path=_DEVELOPMENT_RUNTIME_LOCK_PATH,
+            benchmark_python=Path(sys.executable),
+            r_library_paths={"saver": (repository / "artifacts/envs/saver-r/library",)},
+            lock_only_environment_ids=derive_lock_only_environment_ids(_registry),
+        )
+        dispatcher = RepositoryAdapterDispatcher(repository, environments)
+        with SpawnedRepositoryExecutor(dispatcher) as adapter_executor:
+            revision_executor = RevisionMaskImputeExecutor(
+                authority=authority,
+                adapter_executor=adapter_executor,
+                checkpoint_directory=output_dir,
+                registry=_registry,
+            )
+            return execute_fair_comparator_plan(
+                plan,
+                _registry,
+                _prepared_datasets,
+                revision_executor,
+                store,
+                authority=authority,
+                datasets=bindings,
+            )
+    store.inspect_prefix(
         plan,
         registry=_registry,
         prepared_datasets=_prepared_datasets,
@@ -8054,8 +8459,8 @@ def run_v28_revision_competition(
 
     repository = Path(__file__).resolve().parents[1]
     authority = load_activated_v28_revision_authority()
-    smoke_receipt, smoke_receipt_bytes = (
-        _load_required_comparator_smoke_evidence(authority)
+    smoke_receipt, smoke_receipt_bytes = _load_required_comparator_smoke_evidence(
+        authority
     )
     datasets, prepared_datasets = load_prepared_development_panel(authority)
     registry = load_method_registry(repository / "study/methods.json")
@@ -8071,26 +8476,28 @@ def run_v28_revision_competition(
     )
 
 
-def load_activated_v28_revision_authority() -> RunnerAuthority:
+def load_activated_v28_revision_authority(
+    repository: Path | None = None,
+) -> RunnerAuthority:
     """Return v28 authority bound to the exact recomputed base selection trigger."""
 
-    input_sha256, result_sha256, report_sha256 = _validate_v28_activation()
+    activation = _validate_v28_activation(repository)
     return _bind_v28_activation(
         load_v28_revision_authority(),
-        input_sha256,
-        result_sha256,
-        report_sha256,
+        activation,
     )
 
 
-def load_activated_v29_revision_authority() -> RunnerAuthority:
+def load_activated_v29_revision_authority(
+    repository: Path | None = None,
+) -> RunnerAuthority:
     """Bind the v29 plan to the independently recomputed combined v28 report."""
 
     from .revisions import validate_revision_activation
 
-    repository = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[1] if repository is None else repository
     try:
-        activation = validate_revision_activation(repository, "v29")
+        activation = validate_revision_activation(root, "v29")
     except Exception as error:
         raise RunnerContractError(f"v29 activation failed: {error}") from error
     authority = load_v29_revision_authority()
@@ -8105,6 +8512,7 @@ def load_activated_v29_revision_authority() -> RunnerAuthority:
                 "selection_report_sha256": activation.selection_report_file_sha256,
             }
         ),
+        base_comparator_selection=activation.base_comparator_selection,
     )
 
 
@@ -8116,8 +8524,8 @@ def run_v29_revision_competition(
 
     repository = Path(__file__).resolve().parents[1]
     authority = load_activated_v29_revision_authority()
-    smoke_receipt, smoke_receipt_bytes = (
-        _load_required_comparator_smoke_evidence(authority)
+    smoke_receipt, smoke_receipt_bytes = _load_required_comparator_smoke_evidence(
+        authority
     )
     datasets, prepared_datasets = load_prepared_development_panel(authority)
     registry = load_method_registry(repository / "study/methods.json")

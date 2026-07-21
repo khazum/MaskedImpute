@@ -571,6 +571,7 @@ def _validate_publication_stage_evidence(
         "count_score_manifest_sha256",
         "retained_calibration_artifact_sha256",
         "evaluation_manifest_sha256",
+        "comparator_selection",
         "records",
         "orthogonal_intervals",
         "downstream_evidence",
@@ -776,6 +777,26 @@ def _validate_publication_stage_evidence(
             ):
                 raise PublicationFreezeError(
                     f"{paths.stage} activation hashes differ from retained evidence"
+                )
+            from .direct_values import direct_equal, direct_json_value
+
+            preceding_comparator_selection = _thaw_receipt_json(
+                preceding.complete_input["comparator_selection"]
+            )
+            activated_comparator_selection = direct_json_value(
+                activation.base_comparator_selection,
+                payload=True,
+            )
+            if not direct_equal(
+                source.get("comparator_selection"),
+                preceding_comparator_selection,
+            ) or not direct_equal(
+                activated_comparator_selection,
+                preceding_comparator_selection,
+            ):
+                raise PublicationFreezeError(
+                    f"{paths.stage} base comparator selection differs from retained "
+                    "evidence"
                 )
 
         frozen_source = _freeze_receipt_json(source)

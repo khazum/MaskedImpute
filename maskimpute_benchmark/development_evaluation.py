@@ -138,18 +138,6 @@ def project_direct_comparator_evidence(
         raise DevelopmentEvaluationError(
             "direct comparator authority differs"
         ) from error
-    try:
-        validate_direct_competition_plan(
-            plan,
-            registry=registry,
-            prepared_datasets=prepared_datasets,
-            authority=runner_authority,
-            datasets=dataset_values,
-        )
-    except RunnerContractError as error:
-        raise DevelopmentEvaluationError(
-            f"direct comparator production validation failed: {error}"
-        ) from error
     if (
         runner_authority.plan_scope != "base_full_panel"
         or len(plan.configurations) != 61
@@ -162,6 +150,18 @@ def project_direct_comparator_evidence(
         raise DevelopmentEvaluationError(
             "direct comparator handoff requires the canonical base denominator"
         )
+    try:
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+            authority=runner_authority,
+            datasets=dataset_values,
+        )
+    except RunnerContractError as error:
+        raise DevelopmentEvaluationError(
+            f"direct comparator production validation failed: {error}"
+        ) from error
     try:
         report = DirectCheckpointStore(checkpoint_path).load(
             plan,
