@@ -14,9 +14,9 @@ The implementation:
   `RevisionActivation`, `RunnerAuthority`, evaluation, and freeze-stage replay;
 - builds and validates one direct 48-row MaskImpute-only plan for each revision,
   excluding observed, capacity-control, registry-default, and comparator rows;
-- executes revision plans through the public authority-validated direct runner
-  and `DirectCheckpointStore`, with the existing MaskImpute adapter translated
-  into the closed direct result schema;
+- executes revision plans through the public authority-validated direct runner,
+  a direct MaskImpute numerical adapter, and `DirectCheckpointStore`, without
+  constructing the superseded request/runtime-registry/evaluator bridge;
 - requires exact calibration evidence, projects exactly six direct evaluation
   metrics, and retains bounded output/log receipts without comparator content
   summaries;
@@ -35,6 +35,37 @@ The implementation:
 No comparator, smoke, tuning, evaluator, competition, final, scaling, or other
 real scientific workload ran. All execution evidence used by tests was
 synthetic. The progress ledger was not edited.
+
+## Independent-review fix
+
+The independent review found that the first implementation produced a direct
+record only after traversing the legacy request, runtime registry, spawned
+dispatcher, and evaluator bridge. The fix replaces that reached production
+path completely:
+
+- `DirectRevisionMaskImputeAdapter` consumes the exact
+  `ComparatorRunIdentity`, `PreparedInputDescriptor`, full
+  `DirectAuthorizedConfiguration`, `MethodSpec`, `MethodInput`, and timeout;
+- every supplied value is revalidated directly against the activated candidate
+  and prepared numerical input before the scientific fit begins;
+- `run_revision_maskimpute_direct` reuses the existing MaskImpute fit core but
+  returns only the direct native matrix, aligned `p_pre_zero`, and raw bounded
+  streams;
+- direct evaluator conversion produces the exact six reconstruction metrics,
+  matrices, log receipts, and create-only compressed `p_pre_zero` evidence;
+  and
+- production revision composition no longer constructs an
+  `ExecutionEnvironmentRegistry`, `RepositoryAdapterDispatcher`,
+  `SpawnedRepositoryExecutor`, legacy `ExecutionRequest`, or legacy evaluated
+  outcome.
+
+The completed regression is synthetic but unmocked at the public execution and
+checkpoint layers. It executes all 48 planned revision attempts through
+`execute_fair_comparator_plan` and a real `DirectCheckpointStore`, asserts the
+exact six-metric order and numerical values, checks native/evaluator matrices
+and bounded log receipts, reopens the compressed `p_pre_zero` matrix, and
+replays the same run IDs to prove create-only byte equality. No real scientific
+workload ran.
 
 ## TDD evidence
 
@@ -61,6 +92,12 @@ boundary; its focused GREEN was:
 ```text
 12 passed, 106 deselected in 1.32s
 ```
+
+For the independent-review fix, the completed direct regression was first RED
+because `DirectMaskImputeExecution` did not exist. The scoped source audit also
+reproduced the review finding before implementation (`1 failed, 1 passed`).
+After the direct boundary was implemented, the completed, unavailable, budget,
+and production-composition cases all passed, and both scoped audits passed.
 
 ## Verification evidence
 
@@ -103,14 +140,33 @@ python -m compileall -q [touched production modules]: exit 0
 git diff --check: exit 0
 ```
 
+Final independent-review-fix evidence, all under the required supported
+interpreter with warnings treated as errors, is:
+
+```text
+post-format direct execution plus scoped audits: 7 passed, 233 deselected in 36.61s
+required revision/activation/base-comparator cross-stage suite: 53 passed, 113 deselected in 188.25s
+adjacent MaskImpute adapter/v28/v29 suites: 34 passed in 4.30s
+ruff format: 4 files reformatted, 1 unchanged
+ruff check: All checks passed!
+python -m compileall -q [touched production modules]: exit 0
+git diff --check: exit 0
+```
+
+The adjacent v28 suite exposed one stale test that still invoked the superseded
+legacy full-denominator planner for revision authority. That test now checks
+the accepted v28/v29 candidate-only authority and activation contract directly;
+no production behavior was relaxed.
+
 ## Implementation decisions
 
 1. Revision authorities remain candidate-only. Base comparator evidence is an
    immutable authority input and is never rescheduled or copied into a revision
    checkpoint.
-2. The direct revision executor delegates only the in-tree MaskImpute numerical
-   adapter, then closes the result into the public direct schema. Structural
-   test execution remains separate from the production activation gate.
+2. The direct revision executor passes complete typed values to the in-tree
+   MaskImpute numerical adapter, independently evaluates the returned matrices,
+   and closes them directly into the public schema. Structural test execution
+   remains separate from the production activation gate.
 3. Complete comparator-selection values are normalized through the shared
    direct-value codec before freezing. This keeps nested object/array identity
    stable across construction, replacement, serialization, and equality.
@@ -125,7 +181,8 @@ git diff --check: exit 0
 ## Concerns
 
 No blocking Task 13 concern remains. The broad benchmark-runner suite was not
-rerun in full after the test-helper-only correction; its three previously
-failing cases were rerun and passed, and the required cross-stage acceptance
-command plus all Task 13 focused paths are green. No scientific production run
-was authorized or performed.
+rerun in full; all five affected production-composition, completed,
+unavailable, and budget paths were rerun warning-strict after formatting, the
+required cross-stage acceptance command and both scoped audits are green, and
+the adjacent MaskImpute suites pass. No scientific production run was
+authorized or performed.

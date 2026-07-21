@@ -14,18 +14,14 @@ import torch
 def test_negative_binomial_nll_matches_scipy_mean_size_parameterization() -> None:
     from maskimpute.nb_model import negative_binomial_nll
 
-    counts = torch.tensor(
-        [[0.0, 1.0, 4.0], [2.0, 7.0, 12.0]], dtype=torch.float64
-    )
+    counts = torch.tensor([[0.0, 1.0, 4.0], [2.0, 7.0, 12.0]], dtype=torch.float64)
     mean = torch.tensor(
         [[0.2, 1.5, 3.3], [1.1, 6.4, 10.2]],
         dtype=torch.float64,
         requires_grad=True,
     )
     inverse_dispersion = torch.tensor([0.7, 3.0, 12.0], dtype=torch.float64)
-    mask = torch.tensor(
-        [[True, False, True], [False, True, True]], dtype=torch.bool
-    )
+    mask = torch.tensor([[True, False, True], [False, True, True]], dtype=torch.bool)
 
     observed = negative_binomial_nll(
         counts,
@@ -164,9 +160,14 @@ def test_gene_dispersion_is_robust_bounded_shrunk_and_deterministic() -> None:
     assert np.all(np.isfinite(first.dispersion))
     assert np.all((first.dispersion >= 1e-4) & (first.dispersion <= 100.0))
     assert first.dispersion[0] < unbounded.dispersion[0]
-    assert np.max(
-        np.abs(np.log(strongly_shrunk.dispersion / strongly_shrunk.global_dispersion))
-    ) < 1e-6
+    assert (
+        np.max(
+            np.abs(
+                np.log(strongly_shrunk.dispersion / strongly_shrunk.global_dispersion)
+            )
+        )
+        < 1e-6
+    )
     np.testing.assert_allclose(
         first.inverse_dispersion,
         1.0 / first.dispersion,
@@ -368,7 +369,9 @@ def test_train_v28_is_deterministic_truth_free_and_restores_caller_rng() -> None
         first.training.validation_loss_history
         == second.training.validation_loss_history
     )
-    assert first.training.validation_mask_hashes == second.training.validation_mask_hashes
+    assert (
+        first.training.validation_mask_hashes == second.training.validation_mask_hashes
+    )
     assert (
         first.training.epoch_training_mask_hashes
         == second.training.epoch_training_mask_hashes
@@ -380,8 +383,7 @@ def test_train_v28_is_deterministic_truth_free_and_restores_caller_rng() -> None
         second.dispersion.dispersion,
     )
     expected_effective = np.sum(
-        ~first.training.validation_mask
-        & (first.training.library_sizes[:, None] > 0),
+        ~first.training.validation_mask & (first.training.library_sizes[:, None] > 0),
         axis=0,
     )
     np.testing.assert_array_equal(
@@ -535,12 +537,10 @@ def test_v28_development_candidate_shares_score_gate_and_selective_output() -> N
     ).score_for_counts(counts, method_input.obs_ids)
     expected_probability = np.zeros_like(direct_score)
     observed_zero = counts == 0
-    expected_probability[observed_zero] = (
-        calibration.transform_for_development_holdout(
-            direct_score[observed_zero],
-            mechanism="symsim",
-            biological_id="draw-01",
-        )
+    expected_probability[observed_zero] = calibration.transform_for_development_holdout(
+        direct_score[observed_zero],
+        mechanism="symsim",
+        biological_id="draw-01",
     )
     result = execution.ablation_result
     np.testing.assert_array_equal(result.p_pre_zero, expected_probability)
@@ -626,7 +626,9 @@ def test_candidate_decoder_dispatch_accepts_only_exact_v27_and_v28_pairs() -> No
     assert type(decoder_config) is NegativeBinomialDecoderConfig
     assert decoder_config.to_dict() == v28_payload["decoder_hyperparameters"]
 
-    ablation_payload = json.loads(Path("study/ablations.json").read_text())["variants"][0]
+    ablation_payload = json.loads(Path("study/ablations.json").read_text())["variants"][
+        0
+    ]
     ablation = AuthorizedConfiguration.create(
         method_id="capacity-matched-ae",
         configuration_id="capacity-matched-ae",
@@ -721,25 +723,22 @@ def _development_manifest_payload() -> dict[str, object]:
     }
 
 
-def test_tracked_revision_authorities_keep_full_comparator_denominator(tmp_path) -> None:
-    from maskimpute_benchmark.methods.registry import load_method_registry
+def test_tracked_revision_authorities_are_candidate_only_and_require_activation() -> (
+    None
+):
     from maskimpute_benchmark.runner import (
-        build_competition_plan,
         load_runner_authority,
         load_v28_revision_authority,
         load_v29_revision_authority,
         maskimpute_decoder_for_configuration,
         RunnerContractError,
         run_v28_revision_competition,
-        validate_development_manifest_payload,
     )
 
     base = load_runner_authority()
     revision = load_v28_revision_authority()
     candidates = tuple(
-        value
-        for value in revision.configurations
-        if value.method_id == "maskimpute"
+        value for value in revision.configurations if value.method_id == "maskimpute"
     )
 
     assert len(candidates) == 1
@@ -754,55 +753,19 @@ def test_tracked_revision_authorities_keep_full_comparator_denominator(tmp_path)
             if value.configuration_id == "v27-c03-calibrated-r1-g1"
         ).payload["hyperparameters"]
     )
-    assert maskimpute_decoder_for_configuration(candidate)[0] == (
-        "negative_binomial"
-    )
+    assert maskimpute_decoder_for_configuration(candidate)[0] == ("negative_binomial")
+    assert revision.plan_scope == "revision_candidate_only"
+    assert revision.configurations == (candidate,)
     assert revision.authority_sha256 != base.authority_sha256
     assert callable(run_v28_revision_competition)
     with pytest.raises(RunnerContractError, match="v28.*activation"):
         run_v28_revision_competition()
 
-    bindings = validate_development_manifest_payload(_development_manifest_payload())
-    registry = load_method_registry(Path("study/methods.json"))
-    plan = build_competition_plan(
-        registry,
-        bindings,
-        revision,
+    v29_revision = load_v29_revision_authority()
+    assert v29_revision.plan_scope == "revision_candidate_only"
+    assert tuple(value.configuration_id for value in v29_revision.configurations) == (
+        "v29-c01-structure-parent-v28-c01",
     )
-    v28_rows = tuple(
-        entry
-        for entry in plan.entries
-        if entry.method_id == "maskimpute"
-        and entry.configuration_id == "v28-c01-nb-parent-c03"
-    )
-    assert len(v28_rows) == 16 * 3
-    assert all(entry.preflight_status == "blocked_authority" for entry in v28_rows)
-    assert all(
-        entry.preflight_reason == "count_score_or_calibration_authority_pending"
-        for entry in v28_rows
-    )
-    assert any(
-        value.configuration_id == "v28-c01-nb-parent-c03"
-        for value in plan.configurations
-    )
-    expected_methods = {
-        spec.id
-        for spec in registry.methods
-        if spec.execution_scope == "same_input_required"
-    }
-    assert {entry.method_id for entry in plan.entries} == expected_methods
-
-    v29_plan = build_competition_plan(
-        registry,
-        bindings,
-        load_v29_revision_authority(),
-    )
-    assert {entry.method_id for entry in v29_plan.entries} == expected_methods
-    assert {
-        entry.configuration_id
-        for entry in v29_plan.entries
-        if entry.method_id == "maskimpute"
-    } == {"v29-c01-structure-parent-v28-c01"}
 
 
 def test_selection_cli_and_v28_activation_share_canonical_fixed_paths() -> None:

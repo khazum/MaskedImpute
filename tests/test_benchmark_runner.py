@@ -453,6 +453,44 @@ def _prepared_plan_inputs(bindings) -> tuple[PreparedDataset, ...]:
     return tuple(values)
 
 
+def _identity_calibration_artifact():
+    from maskimpute.calibration import (
+        DEVELOPMENT_PROTOCOL_SHA256,
+        CalibrationRecord,
+        fit_development_calibration,
+    )
+
+    records = []
+    for index, (draw, view) in enumerate(
+        (
+            ("draw-01", "moderate"),
+            ("draw-01", "severe"),
+            ("draw-02", "moderate"),
+            ("draw-02", "severe"),
+        ),
+        start=1,
+    ):
+        records.append(
+            CalibrationRecord(
+                p_pre_zero=(0.1, 0.25, 0.7, 0.9),
+                target=(0, 0, 1, 1),
+                mechanism="symsim",
+                biological_id=draw,
+                manifest_sha256=f"{index:x}" * 64,
+                truth_kind="exact_pre_capture",
+                namespace="dev",
+                data_role="development",
+                technical_view=view,
+                dataset_id=f"dataset-{index:024x}",
+                dataset_sha256=f"{index + 10:064x}",
+                protocol_sha256=DEVELOPMENT_PROTOCOL_SHA256,
+            )
+        )
+    artifact = fit_development_calibration(records)
+    assert artifact.selected_algorithm == "identity"
+    return artifact
+
+
 @pytest.fixture
 def direct_storage_case(monkeypatch: pytest.MonkeyPatch):
     registry = load_method_registry(METHODS_PATH)
@@ -3557,6 +3595,10 @@ def test_direct_revision_boundary_composes_production_maskimpute_adapter(
 ) -> None:
     authority = replace(
         runner_module.load_v28_revision_authority(),
+        count_score_manifest_status="ready",
+        count_score_manifest_sha256="8" * 64,
+        retained_calibration_status="ready",
+        retained_calibration_sha256="9" * 64,
         base_comparator_selection={
             "path": (
                 "artifacts/study/development/evaluation/comparator_selection.json"
@@ -3567,11 +3609,26 @@ def test_direct_revision_boundary_composes_production_maskimpute_adapter(
             "ready_comparison_population_ids": ["observed"],
         },
     )
-    prepared_value = _prepared_truth_dataset()
-    bindings = (prepared_value.binding,)
-    prepared = {prepared_value.binding.dataset_id: prepared_value}
+    bindings = validate_development_manifest_payload(_manifest_payload())
+    prepared_values = _prepared_plan_inputs(bindings)
+    prepared = {value.binding.dataset_id: value for value in prepared_values}
     registry = load_method_registry(METHODS_PATH)
-    plan = SimpleNamespace(entries=tuple(range(48)))
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v28_revision_authority",
+        lambda: authority,
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v29_revision_authority",
+        lambda: authority,
+    )
+    plan = _build_structural_direct_competition_plan(
+        registry,
+        bindings,
+        authority,
+        prepared_values,
+    )
     sentinel = object()
     captured = {}
 
@@ -3589,36 +3646,10 @@ def test_direct_revision_boundary_composes_production_maskimpute_adapter(
         "maskimpute_benchmark.fair_comparator_checkpoint.DirectCheckpointStore",
         FakeStore,
     )
-    environments = object()
-    dispatcher = object()
+    calibration = _identity_calibration_artifact()
     monkeypatch.setattr(
-        runner_module.ExecutionEnvironmentRegistry,
-        "fixed",
-        lambda *_args, **_kwargs: environments,
-    )
-    monkeypatch.setattr(
-        runner_module,
-        "RepositoryAdapterDispatcher",
-        lambda *_args, **_kwargs: dispatcher,
-    )
-
-    class FakeSpawnedExecutor:
-        def __init__(self, observed_dispatcher: object) -> None:
-            assert observed_dispatcher is dispatcher
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc: object) -> None:
-            captured["closed"] = True
-
-        def __call__(self, _request: ExecutionRequest) -> AdapterOutcome:
-            return AdapterOutcome.unavailable("runtime_environment_invalid")
-
-    monkeypatch.setattr(
-        runner_module,
-        "SpawnedRepositoryExecutor",
-        FakeSpawnedExecutor,
+        "maskimpute.calibration.load_calibration_artifact",
+        lambda _path: calibration,
     )
 
     def execute(*_args, **_kwargs):
@@ -3644,7 +3675,14 @@ def test_direct_revision_boundary_composes_production_maskimpute_adapter(
     assert executor.authority is authority
     assert executor.registry is registry
     assert executor.checkpoint_directory == tmp_path / "revision"
-    assert captured["closed"] is True
+    assert isinstance(
+        executor.direct_adapter,
+        runner_module.DirectRevisionMaskImputeAdapter,
+    )
+    assert executor.authorized_configuration == plan.configurations[0]
+    assert executor.input_descriptors == {
+        value.dataset_id: value for value in plan.inputs
+    }
 
 
 def test_revision_maskimpute_executor_emits_direct_budget_terminal_attempt(
@@ -3694,9 +3732,11 @@ def test_revision_maskimpute_executor_emits_direct_budget_terminal_attempt(
     prepared = prepared_values[0]
     executor = RevisionMaskImputeExecutor(
         authority=authority,
-        adapter_executor=lambda _request: pytest.fail(
+        direct_adapter=lambda *_args: pytest.fail(
             "budget-terminal revision reached the adapter"
         ),
+        authorized_configuration=plan.configurations[0],
+        input_descriptors={value.dataset_id: value for value in plan.inputs},
         checkpoint_directory=tmp_path,
         registry=load_method_registry(METHODS_PATH),
     )
@@ -3767,13 +3807,32 @@ def test_revision_maskimpute_executor_dispatches_authorized_candidate_to_direct_
     prepared = prepared_values[0]
     captured = {}
 
-    def adapter(request: ExecutionRequest) -> AdapterOutcome:
-        captured["request"] = request
-        return AdapterOutcome.unavailable("runtime_environment_invalid")
+    def adapter(
+        identity,
+        descriptor,
+        configuration,
+        spec,
+        method_input,
+        timeout_seconds,
+    ):
+        captured.update(
+            identity=identity,
+            descriptor=descriptor,
+            configuration=configuration,
+            spec=spec,
+            method_input=method_input,
+            timeout_seconds=timeout_seconds,
+        )
+        return runner_module.DirectRevisionMaskImputeOutcome.terminal(
+            "unavailable",
+            "runtime_environment_invalid",
+        )
 
     attempt = RevisionMaskImputeExecutor(
         authority=authority,
-        adapter_executor=adapter,
+        direct_adapter=adapter,
+        authorized_configuration=plan.configurations[0],
+        input_descriptors={value.dataset_id: value for value in plan.inputs},
         checkpoint_directory=tmp_path,
         registry=load_method_registry(METHODS_PATH),
     )(
@@ -3787,10 +3846,12 @@ def test_revision_maskimpute_executor_dispatches_authorized_candidate_to_direct_
         ),
     )
 
-    request = captured["request"]
-    assert request.configuration_id == "v28-c01-nb-parent-c03"
-    assert request.configuration_kind == "candidate_search"
-    assert request.model_seed == entry.identity.model_seed
+    assert captured["identity"] == entry.identity
+    assert captured["descriptor"] == plan.inputs[0]
+    assert captured["configuration"] == plan.configurations[0]
+    assert captured["spec"].id == "maskimpute"
+    assert captured["method_input"] is prepared.method_input
+    assert captured["timeout_seconds"] == 100.0
     assert attempt.run.identity == entry.identity
     assert attempt.run.status == "unavailable"
     assert attempt.run.reason == "runtime_environment_invalid"
@@ -3798,6 +3859,194 @@ def test_revision_maskimpute_executor_dispatches_authorized_candidate_to_direct_
     assert attempt.p_pre_zero_evidence.status == "unavailable"
     assert attempt.p_pre_zero_evidence.reason == "runtime_environment_invalid"
     assert all(metric.value is None for metric in attempt.metrics)
+
+
+def test_completed_revision_direct_executor_round_trips_public_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.methods import (
+        DirectMaskImputeExecution,
+        finalize_direct_method_output,
+    )
+    from maskimpute_benchmark.runner import (
+        BudgetDecision,
+        DirectRevisionMaskImputeOutcome,
+        RevisionMaskImputeExecutor,
+        execute_fair_comparator_plan,
+    )
+
+    bindings = validate_development_manifest_payload(_manifest_payload())
+    prepared_values = _prepared_plan_inputs(bindings)
+    prepared_by_id = {value.binding.dataset_id: value for value in prepared_values}
+    authority = replace(
+        runner_module.load_v28_revision_authority(),
+        count_score_manifest_status="ready",
+        count_score_manifest_sha256="8" * 64,
+        retained_calibration_status="ready",
+        retained_calibration_sha256="9" * 64,
+        base_comparator_selection={
+            "path": (
+                "artifacts/study/development/evaluation/comparator_selection.json"
+            ),
+            "receipt": {"schema_version": 2},
+            "selected_by_method": {},
+            "nonexecution_identity_by_method": {},
+            "ready_comparison_population_ids": ["observed"],
+        },
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v28_revision_authority",
+        lambda: authority,
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_v29_revision_authority",
+        lambda: authority,
+    )
+    registry = load_method_registry(METHODS_PATH)
+    plan = _build_structural_direct_competition_plan(
+        registry,
+        bindings,
+        authority,
+        prepared_values,
+    )
+    monkeypatch.setattr(
+        "maskimpute_benchmark.comparator_tuning.validate_comparator_smoke_receipt",
+        lambda payload, raw, **_kwargs: dict(payload),
+    )
+    plan = bind_comparator_smoke_receipt_to_plan(
+        plan,
+        {"status": "ready"},
+        b'{"status":"ready"}\n',
+        authority=authority.comparator_tuning,
+        registry=registry,
+    )
+    probability = np.asarray(
+        [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]],
+        dtype=np.float64,
+    )
+    attempts: list[DirectEvaluatedAttempt] = []
+
+    def adapter(identity, descriptor, configuration, spec, method_input, timeout):
+        assert direct_equal(identity, plan.entries[identity.ordinal - 1].identity)
+        assert direct_equal(descriptor, plan.inputs[(identity.ordinal - 1) // 3])
+        assert direct_equal(configuration, plan.configurations[0])
+        assert spec.id == "maskimpute"
+        assert 0.0 < timeout <= float(spec.resources.timeout_seconds)
+        output = finalize_direct_method_output(
+            spec,
+            method_input,
+            method_input.counts,
+            output_scale="raw_counts",
+            obs_ids=method_input.obs_ids,
+            var_ids=method_input.var_ids,
+        )
+        return DirectRevisionMaskImputeOutcome.completed(
+            DirectMaskImputeExecution(
+                output=output,
+                p_pre_zero=probability,
+                stdout=b"direct-out\n",
+                stderr=b"direct-err\n",
+            ),
+            runtime_seconds=1.25,
+            peak_rss_bytes=2048,
+            peak_gpu_bytes=1024,
+            rss_measurement="linux_proc_process_tree_rss",
+            gpu_measurement="nvidia_smi_process_memory",
+        )
+
+    executor = RevisionMaskImputeExecutor(
+        authority=authority,
+        direct_adapter=adapter,
+        authorized_configuration=plan.configurations[0],
+        input_descriptors={value.dataset_id: value for value in plan.inputs},
+        checkpoint_directory=tmp_path,
+        registry=registry,
+    )
+
+    def capture(entry, prepared, decision):
+        attempt = executor(entry, prepared, decision)
+        attempts.append(attempt)
+        return attempt
+
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    report = execute_fair_comparator_plan(
+        plan,
+        registry,
+        prepared_by_id,
+        capture,
+        store,
+        authority=authority,
+        datasets=bindings,
+    )
+
+    assert report.status == "completed"
+    assert len(report.records) == 48
+    assert len(attempts) == 48
+    first = attempts[0]
+    assert first.run.status == "completed"
+    assert first.run.stdout.original_byte_count == len(b"direct-out\n")
+    assert first.run.stderr.original_byte_count == len(b"direct-err\n")
+    assert first.run.stdout.capture_policy == "discard_content"
+    assert first.run.stderr.capture_policy == "discard_content"
+    assert tuple(metric.metric for metric in first.metrics) == (
+        "mse",
+        "mse_dropout",
+        "gnrmse",
+        "mse_pre_dropout_zero",
+        "corr_err",
+        "mse_non_dropout_nonzero",
+    )
+    assert tuple(metric.value for metric in first.metrics) == (
+        60.3246261510639,
+        120.26424182667834,
+        13.62623486101266,
+        None,
+        0.0,
+        0.38501047544945227,
+    )
+    assert tuple(metric.n for metric in first.metrics) == (6, 3, 3, 0, 3, 3)
+    assert tuple(metric.status for metric in first.metrics) == (
+        "completed",
+        "completed",
+        "completed",
+        "unavailable",
+        "completed",
+        "completed",
+    )
+    assert tuple(metric.reason for metric in first.metrics) == (
+        None,
+        None,
+        None,
+        "no_entries",
+        None,
+        None,
+    )
+    assert np.array_equal(first.native_output, prepared_values[0].method_input.counts)
+    assert np.array_equal(
+        first.evaluator_output,
+        np.asarray(
+            [
+                [12.70296626685573, 0.0, 11.703182622432264],
+                [0.0, 13.287856641840545, 0.0],
+            ]
+        ),
+    )
+    evidence = first.p_pre_zero_evidence
+    assert np.array_equal(evidence.reopen(tmp_path), probability)
+    assert evidence.path is not None
+    evidence_path = tmp_path / evidence.path
+    original_bytes = evidence_path.read_bytes()
+    repeated = executor(
+        plan.entries[0],
+        prepared_values[0],
+        BudgetDecision(True, None, 100.0, 100.0),
+    )
+    assert np.array_equal(repeated.p_pre_zero_evidence.reopen(tmp_path), probability)
+    assert evidence_path.read_bytes() == original_bytes
 
 
 @pytest.mark.parametrize(

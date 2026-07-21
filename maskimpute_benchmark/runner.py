@@ -3339,15 +3339,543 @@ class BudgetDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class DirectRevisionMaskImputeOutcome:
+    """One direct MaskImpute adapter outcome before evaluator-only metrics."""
+
+    status: str
+    execution: object | None
+    reason: str | None
+    runtime_seconds: int | float
+    peak_rss_bytes: int
+    peak_gpu_bytes: int
+    stdout: bytes
+    stderr: bytes
+    rss_measurement: str = "executor_reported_unverified"
+    gpu_measurement: str = "executor_reported_unverified"
+
+    def __post_init__(self) -> None:
+        from .methods import DirectMaskImputeExecution
+
+        if self.status not in _OUTCOME_STATUSES:
+            raise RunnerContractError("direct revision outcome status is invalid")
+        _require_nonnegative_number(self.runtime_seconds, "direct revision runtime")
+        if any(
+            type(value) is not int or value < 0
+            for value in (self.peak_rss_bytes, self.peak_gpu_bytes)
+        ):
+            raise RunnerContractError("direct revision resource value is invalid")
+        if type(self.stdout) is not bytes or type(self.stderr) is not bytes:
+            raise RunnerContractError("direct revision streams must be exact bytes")
+        if not self.rss_measurement or not self.gpu_measurement:
+            raise RunnerContractError("direct revision measurement code is absent")
+        if self.status == "completed":
+            if (
+                not isinstance(self.execution, DirectMaskImputeExecution)
+                or self.reason is not None
+                or self.stdout != self.execution.stdout
+                or self.stderr != self.execution.stderr
+            ):
+                raise RunnerContractError(
+                    "completed direct revision outcome is invalid"
+                )
+        elif (
+            self.execution is not None
+            or not isinstance(self.reason, str)
+            or not self.reason
+        ):
+            raise RunnerContractError("terminal direct revision outcome is invalid")
+
+    @classmethod
+    def completed(
+        cls,
+        execution: object,
+        *,
+        runtime_seconds: int | float,
+        peak_rss_bytes: int,
+        peak_gpu_bytes: int,
+        rss_measurement: str = "executor_reported_unverified",
+        gpu_measurement: str = "executor_reported_unverified",
+    ) -> DirectRevisionMaskImputeOutcome:
+        from .methods import DirectMaskImputeExecution
+
+        if not isinstance(execution, DirectMaskImputeExecution):
+            raise TypeError("execution must be a DirectMaskImputeExecution")
+        return cls(
+            status="completed",
+            execution=execution,
+            reason=None,
+            runtime_seconds=runtime_seconds,
+            peak_rss_bytes=peak_rss_bytes,
+            peak_gpu_bytes=peak_gpu_bytes,
+            stdout=execution.stdout,
+            stderr=execution.stderr,
+            rss_measurement=rss_measurement,
+            gpu_measurement=gpu_measurement,
+        )
+
+    @classmethod
+    def terminal(
+        cls,
+        status: str,
+        reason: str,
+        *,
+        stdout: bytes = b"",
+        stderr: bytes = b"",
+        runtime_seconds: int | float = 0.0,
+        peak_rss_bytes: int = 0,
+        peak_gpu_bytes: int = 0,
+        rss_measurement: str = "executor_reported_unverified",
+        gpu_measurement: str = "executor_reported_unverified",
+    ) -> DirectRevisionMaskImputeOutcome:
+        if status == "completed":
+            raise ValueError("terminal direct revision status cannot be completed")
+        return cls(
+            status=status,
+            execution=None,
+            reason=reason,
+            runtime_seconds=runtime_seconds,
+            peak_rss_bytes=peak_rss_bytes,
+            peak_gpu_bytes=peak_gpu_bytes,
+            stdout=stdout,
+            stderr=stderr,
+            rss_measurement=rss_measurement,
+            gpu_measurement=gpu_measurement,
+        )
+
+
+def _validate_direct_revision_adapter_values(
+    identity: object,
+    descriptor: object,
+    configuration: object,
+    spec: MethodSpec,
+    method_input: MethodInput,
+    timeout_seconds: int | float,
+) -> dict[str, object]:
+    """Revalidate complete direct revision values and return the plain payload."""
+
+    from .direct_values import direct_equal, direct_json_value
+    from .fair_comparator_plan import (
+        ComparatorRunIdentity,
+        DirectAuthorizedConfiguration,
+        PreparedInputDescriptor,
+    )
+
+    if not isinstance(identity, ComparatorRunIdentity):
+        raise TypeError("identity must be a ComparatorRunIdentity")
+    if not isinstance(descriptor, PreparedInputDescriptor):
+        raise TypeError("descriptor must be a PreparedInputDescriptor")
+    if not isinstance(configuration, DirectAuthorizedConfiguration):
+        raise TypeError("configuration must be a DirectAuthorizedConfiguration")
+    if not isinstance(spec, MethodSpec):
+        raise TypeError("spec must be a MethodSpec")
+    if not isinstance(method_input, MethodInput):
+        raise TypeError("method_input must be a MethodInput")
+    payload = direct_json_value(configuration.payload, payload=True)
+    if type(payload) is not dict:
+        raise RunnerContractError("direct revision payload is not an object")
+    counts = method_input.counts
+    if (
+        not direct_equal(identity.method, configuration.method)
+        or not direct_equal(identity.method, comparator_method_binding(spec))
+        or identity.method.method_id != "maskimpute"
+        or configuration.configuration_kind != "candidate_search"
+        or identity.configuration_kind != configuration.configuration_kind
+        or identity.configuration_id != configuration.configuration_id
+        or not direct_equal(identity.configuration_payload, configuration.payload)
+        or identity.dataset_id != descriptor.dataset_id
+        or identity.mechanism != descriptor.mechanism
+        or identity.technical_view != descriptor.technical_view
+        or identity.mask_seed != descriptor.mask_seed
+        or identity.model_seed not in DEVELOPMENT_MODEL_SEEDS
+        or descriptor.shape != method_input.shape
+        or descriptor.cell_ids != method_input.obs_ids
+        or descriptor.gene_ids != method_input.var_ids
+        or descriptor.dtype != "<f8"
+        or descriptor.total_count != float(counts.sum(dtype=np.float64))
+        or descriptor.nonzero_count != int(np.count_nonzero(counts))
+        or descriptor.minimum != float(counts.min())
+        or descriptor.maximum != float(counts.max())
+        or not configuration.requires_count_score
+        or not configuration.requires_calibration
+    ):
+        raise RunnerContractError("direct revision adapter values differ")
+    timeout = _require_nonnegative_number(timeout_seconds, "direct revision timeout")
+    if timeout <= 0 or timeout > spec.resources.timeout_seconds:
+        raise RunnerContractError(
+            "direct revision timeout differs from method authority"
+        )
+    return payload
+
+
+def _direct_revision_components(
+    payload: Mapping[str, object],
+    model_seed: int,
+) -> tuple[object, object, object | None]:
+    """Decode the exact activated v28/v29 payload without legacy summaries."""
+
+    from maskimpute import MaskImputeConfig
+    from maskimpute.nb_model import NegativeBinomialDecoderConfig
+    from maskimpute.structure import StructurePenaltyConfig
+
+    version = payload.get("method_version")
+    expected_fields = {
+        "method_version",
+        "decoder",
+        "encoder_mode",
+        "output_policy",
+        "score_policy",
+        "hyperparameters",
+        "decoder_hyperparameters",
+    }
+    if version == "v29":
+        expected_fields.add("structure_hyperparameters")
+    if (
+        version not in {"v28", "v29"}
+        or set(payload) != expected_fields
+        or payload.get("decoder") != "negative_binomial"
+        or payload.get("encoder_mode") != "explicit_mask"
+        or payload.get("output_policy") != "selective"
+        or payload.get("score_policy") != "retained_development_calibrator"
+    ):
+        raise RunnerContractError("direct revision candidate payload differs")
+    hyperparameters = payload.get("hyperparameters")
+    decoder_values = payload.get("decoder_hyperparameters")
+    if not isinstance(hyperparameters, Mapping) or not isinstance(
+        decoder_values, Mapping
+    ):
+        raise RunnerContractError("direct revision hyperparameters are invalid")
+    if set(decoder_values) != set(NegativeBinomialDecoderConfig().to_dict()):
+        raise RunnerContractError("direct revision decoder fields differ")
+    try:
+        config = MaskImputeConfig(**dict(hyperparameters), seed=model_seed)
+        decoder = NegativeBinomialDecoderConfig(**dict(decoder_values))
+        structure = None
+        if version == "v29":
+            structure_values = payload.get("structure_hyperparameters")
+            if not isinstance(structure_values, Mapping) or set(
+                structure_values
+            ) != set(StructurePenaltyConfig().to_dict()):
+                raise RunnerContractError("direct revision structure fields differ")
+            structure = StructurePenaltyConfig(**dict(structure_values))
+    except (TypeError, ValueError) as error:
+        raise RunnerContractError(
+            "direct revision payload values are invalid"
+        ) from error
+    return config, decoder, structure
+
+
+@dataclass(frozen=True, slots=True)
+class DirectRevisionMaskImputeAdapter:
+    """Invoke the existing MaskImpute fit through only complete direct values."""
+
+    calibration_artifact: object
+    count_model_config: object
+    device: str = "cuda"
+
+    def __post_init__(self) -> None:
+        from maskimpute import PreZeroCountModelConfig
+        from maskimpute.calibration import CalibrationArtifact
+
+        if type(self.calibration_artifact) is not CalibrationArtifact:
+            raise TypeError("calibration_artifact must be a CalibrationArtifact")
+        if type(self.count_model_config) is not PreZeroCountModelConfig:
+            raise TypeError("count_model_config must be a PreZeroCountModelConfig")
+        if not isinstance(self.device, str) or not self.device:
+            raise TypeError("device must be a nonempty string")
+
+    def __call__(
+        self,
+        identity: object,
+        descriptor: object,
+        configuration: object,
+        spec: MethodSpec,
+        method_input: MethodInput,
+        timeout_seconds: int | float,
+    ) -> DirectRevisionMaskImputeOutcome:
+        from .methods import AdapterUnavailableError, run_revision_maskimpute_direct
+
+        payload = _validate_direct_revision_adapter_values(
+            identity,
+            descriptor,
+            configuration,
+            spec,
+            method_input,
+            timeout_seconds,
+        )
+        assert isinstance(identity.model_seed, int)
+        config, decoder, structure = _direct_revision_components(
+            payload,
+            identity.model_seed,
+        )
+        try:
+            execution = run_revision_maskimpute_direct(
+                spec,
+                method_input,
+                calibration_artifact=self.calibration_artifact,
+                seed=identity.model_seed,
+                config=config,
+                count_model_config=self.count_model_config,
+                decoder_config=decoder,
+                structure_config=structure,
+                device=self.device,
+                development_mechanism=identity.mechanism,
+                development_biological_id=identity.biological_id,
+            )
+        except AdapterUnavailableError as error:
+            return DirectRevisionMaskImputeOutcome.terminal(
+                "unavailable",
+                error.reason_code,
+                stdout=error.stdout,
+                stderr=error.stderr,
+            )
+        except TimeoutError:
+            return DirectRevisionMaskImputeOutcome.terminal("timeout", "timeout")
+        except MemoryError:
+            return DirectRevisionMaskImputeOutcome.terminal(
+                "resource_exceeded",
+                "memory_limit_exceeded",
+            )
+        except Exception:
+            return DirectRevisionMaskImputeOutcome.terminal(
+                "failed",
+                "adapter_exception",
+            )
+        return DirectRevisionMaskImputeOutcome.completed(
+            execution,
+            runtime_seconds=0.0,
+            peak_rss_bytes=0,
+            peak_gpu_bytes=0,
+        )
+
+
+def _store_direct_revision_p_pre_zero(
+    checkpoint_directory: Path,
+    run_id: str,
+    probability: np.ndarray,
+) -> object:
+    """Store one probability matrix create-only and compare complete bytes on replay."""
+
+    from .fair_comparator_execution import DirectPreZeroEvidence
+
+    raw = np.asarray(probability, dtype="<f8", order="C").tobytes(order="C")
+    compressed = zlib.compress(raw)
+    relative_path = Path("runs") / f"{run_id}.p-pre-zero-f64.zlib"
+    evidence_path = checkpoint_directory / relative_path
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(
+            evidence_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+    except FileExistsError:
+        try:
+            existing = evidence_path.read_bytes()
+        except OSError as error:
+            raise RunnerContractError(
+                "revision p_pre_zero evidence is unreadable"
+            ) from error
+        if existing != compressed:
+            raise RunnerContractError(
+                "revision p_pre_zero evidence differs from storage"
+            )
+    else:
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(compressed)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            try:
+                evidence_path.unlink()
+            except OSError:
+                pass
+            raise
+    return DirectPreZeroEvidence(
+        applicable=True,
+        status="completed",
+        reason=None,
+        shape=probability.shape,
+        dtype="<f8",
+        encoding="zlib",
+        path=relative_path.as_posix(),
+        compressed_byte_count=len(compressed),
+    )
+
+
+def _evaluate_direct_revision_outcome(
+    entry: object,
+    prepared: PreparedDataset,
+    outcome: DirectRevisionMaskImputeOutcome,
+    checkpoint_directory: Path,
+) -> DirectEvaluatedAttempt:
+    """Evaluate exact direct MaskImpute output without legacy result helpers."""
+
+    from .fair_comparator_execution import (
+        DIRECT_RECONSTRUCTION_METRICS,
+        DirectEvaluatedAttempt,
+        DirectLogReceipt,
+        DirectMetricRow,
+        DirectPreZeroEvidence,
+        DirectRunResult,
+        _canonical_measurement_code,
+        _canonical_metric_reason,
+        _canonical_terminal_reason,
+    )
+    from .fair_comparator_plan import DirectPlanEntry
+    from .methods import (
+        AdapterUnavailableError,
+        DirectMaskImputeExecution,
+        count_equivalent_to_log2_cp10k,
+        maskimpute_to_evaluator_counts,
+    )
+    from .metrics import reconstruction_metrics
+
+    if not isinstance(entry, DirectPlanEntry):
+        raise TypeError("entry must be a DirectPlanEntry")
+    if not isinstance(outcome, DirectRevisionMaskImputeOutcome):
+        raise TypeError("outcome must be a DirectRevisionMaskImputeOutcome")
+    status = outcome.status
+    reason = outcome.reason
+    native: np.ndarray | None = None
+    evaluator: np.ndarray | None = None
+    if status == "completed":
+        assert isinstance(outcome.execution, DirectMaskImputeExecution)
+        output = outcome.execution.output
+        if (
+            output.method_id != "maskimpute"
+            or output.output_scale != entry.identity.method.output_scale
+            or output.obs_ids != prepared.method_input.obs_ids
+            or output.var_ids != prepared.method_input.var_ids
+            or output.shape != prepared.method_input.shape
+        ):
+            raise RunnerContractError("direct revision output differs from request")
+        native = np.array(output.matrix, dtype=np.float64, copy=True, order="C")
+        try:
+            evaluator = np.array(
+                count_equivalent_to_log2_cp10k(
+                    maskimpute_to_evaluator_counts(prepared.method_input, native)
+                ),
+                dtype=np.float64,
+                copy=True,
+                order="C",
+            )
+        except AdapterUnavailableError as error:
+            status = "unavailable"
+            reason = error.reason_code
+        except (TypeError, ValueError, OverflowError):
+            status = "unavailable"
+            reason = "evaluator_conversion_invalid"
+    reason = _canonical_terminal_reason(status, reason)
+    if evaluator is None:
+        if reason is None:  # pragma: no cover - outcome contract
+            raise AssertionError("terminal direct revision lacks a reason")
+        metrics = tuple(
+            DirectMetricRow(
+                identity=entry.identity,
+                metric=name,
+                value=None,
+                n=0,
+                status=status,
+                reason=reason,
+            )
+            for name in DIRECT_RECONSTRUCTION_METRICS
+        )
+        native = None
+        p_pre_zero = DirectPreZeroEvidence(
+            applicable=True,
+            status=status,
+            reason=reason,
+            shape=None,
+            dtype=None,
+            encoding=None,
+            path=None,
+            compressed_byte_count=0,
+        )
+    else:
+        observed, truth, truth_kind, marker_mask = _evaluator_targets(prepared)
+        values = reconstruction_metrics(
+            evaluator,
+            observed,
+            truth,
+            marker_genes=marker_mask,
+            truth_kind=truth_kind,
+        )
+        metrics = tuple(
+            DirectMetricRow(
+                identity=entry.identity,
+                metric=name,
+                value=(
+                    None if values[name].value is None else float(values[name].value)
+                ),
+                n=int(values[name].n),
+                status=("unavailable" if values[name].value is None else "completed"),
+                reason=_canonical_metric_reason(
+                    "unavailable" if values[name].value is None else "completed",
+                    values[name].reason,
+                ),
+            )
+            for name in DIRECT_RECONSTRUCTION_METRICS
+        )
+        assert isinstance(outcome.execution, DirectMaskImputeExecution)
+        p_pre_zero = _store_direct_revision_p_pre_zero(
+            checkpoint_directory,
+            entry.run_id,
+            outcome.execution.p_pre_zero,
+        )
+    run = DirectRunResult(
+        run_id=entry.run_id,
+        identity=entry.identity,
+        status=status,
+        reason=reason,
+        runtime_seconds=outcome.runtime_seconds,
+        peak_rss_bytes=outcome.peak_rss_bytes,
+        peak_gpu_bytes=outcome.peak_gpu_bytes,
+        rss_measurement=_canonical_measurement_code(outcome.rss_measurement),
+        gpu_measurement=_canonical_measurement_code(outcome.gpu_measurement),
+        excluded_cell_count=prepared.audit.excluded_cell_count,
+        excluded_cell_ids=prepared.audit.excluded_cell_ids,
+        retained_cell_count=prepared.audit.retained_cell_count,
+        retained_cell_ids=prepared.audit.retained_cell_ids,
+        retained_gene_count=prepared.method_input.shape[1],
+        observed_zero_count=int((prepared.method_input.counts == 0).sum()),
+        stdout=DirectLogReceipt(
+            "stdout", len(outcome.stdout), "discard_content", reason
+        ),
+        stderr=DirectLogReceipt(
+            "stderr", len(outcome.stderr), "discard_content", reason
+        ),
+    )
+    return DirectEvaluatedAttempt(
+        run=run,
+        metrics=metrics,
+        native_output=native,
+        native_output_scale=(
+            entry.identity.method.output_scale if status == "completed" else None
+        ),
+        evaluator_output=evaluator,
+        p_pre_zero_evidence=p_pre_zero,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class RevisionMaskImputeExecutor:
-    """Adapt one authorized revision candidate into direct checkpoint evidence."""
+    """Execute one activated revision using only complete direct values."""
 
     authority: RunnerAuthority
-    adapter_executor: Callable[[ExecutionRequest], AdapterOutcome]
+    direct_adapter: Callable[..., DirectRevisionMaskImputeOutcome]
+    authorized_configuration: object
+    input_descriptors: Mapping[str, object]
     checkpoint_directory: Path
     registry: MethodRegistry
 
     def __post_init__(self) -> None:
+        from .direct_values import direct_equal, freeze_direct_mapping
+        from .fair_comparator_plan import (
+            DirectAuthorizedConfiguration,
+            PreparedInputDescriptor,
+        )
+
         if not isinstance(self.authority, RunnerAuthority):
             raise TypeError("authority must be a RunnerAuthority")
         if (
@@ -3357,12 +3885,39 @@ class RevisionMaskImputeExecutor:
             raise RunnerContractError(
                 "revision executor requires an activated candidate-only authority"
             )
-        if not callable(self.adapter_executor):
-            raise TypeError("adapter_executor must be callable")
+        if not callable(self.direct_adapter):
+            raise TypeError("direct_adapter must be callable")
+        if not isinstance(self.authorized_configuration, DirectAuthorizedConfiguration):
+            raise TypeError("authorized_configuration must be direct")
+        if not isinstance(self.input_descriptors, Mapping) or any(
+            not isinstance(value, PreparedInputDescriptor)
+            or dataset_id != value.dataset_id
+            for dataset_id, value in self.input_descriptors.items()
+        ):
+            raise TypeError("input_descriptors must contain direct descriptors")
         if not isinstance(self.checkpoint_directory, Path):
             raise TypeError("checkpoint_directory must be a pathlib.Path")
         if not isinstance(self.registry, MethodRegistry):
             raise TypeError("registry must be a MethodRegistry")
+        configuration = self.authority.configurations[0]
+        spec = self.registry.by_id("maskimpute")
+        if (
+            self.authorized_configuration.method != comparator_method_binding(spec)
+            or self.authorized_configuration.configuration_id
+            != configuration.configuration_id
+            or self.authorized_configuration.configuration_kind != configuration.kind
+            or not direct_equal(
+                self.authorized_configuration.payload,
+                freeze_direct_mapping(configuration.payload),
+            )
+            or self.authorized_configuration.requires_count_score
+            != configuration.requires_count_score
+            or self.authorized_configuration.requires_calibration
+            != configuration.requires_calibration
+        ):
+            raise RunnerContractError(
+                "direct revision configuration differs from activated authority"
+            )
 
     def __call__(
         self,
@@ -3370,19 +3925,8 @@ class RevisionMaskImputeExecutor:
         prepared: PreparedDataset,
         decision: BudgetDecision,
     ) -> DirectEvaluatedAttempt:
-        from .direct_values import direct_equal, freeze_direct_mapping
-        from .fair_comparator_execution import (
-            DIRECT_RECONSTRUCTION_METRICS,
-            DirectEvaluatedAttempt,
-            DirectLogReceipt,
-            DirectMetricRow,
-            DirectPreZeroEvidence,
-            DirectRunResult,
-            _canonical_measurement_code,
-            _canonical_metric_reason,
-            _canonical_terminal_reason,
-        )
-        from .fair_comparator_plan import DirectPlanEntry
+        from .direct_values import direct_equal
+        from .fair_comparator_plan import DirectPlanEntry, describe_prepared_input
 
         if not isinstance(entry, DirectPlanEntry):
             raise TypeError("entry must be a DirectPlanEntry")
@@ -3390,262 +3934,57 @@ class RevisionMaskImputeExecutor:
             raise TypeError("prepared must be a PreparedDataset")
         if not isinstance(decision, BudgetDecision):
             raise TypeError("decision must be a BudgetDecision")
-        configuration = self.authority.configurations[0]
-        if (
-            entry.identity.method.method_id != "maskimpute"
-            or entry.identity.configuration_kind != "candidate_search"
-            or entry.identity.configuration_id != configuration.configuration_id
-            or not direct_equal(
-                entry.identity.configuration_payload,
-                freeze_direct_mapping(configuration.payload),
-            )
+        descriptor = self.input_descriptors.get(entry.identity.dataset_id)
+        if descriptor is None or not direct_equal(
+            descriptor,
+            describe_prepared_input(prepared),
         ):
-            raise RunnerContractError(
-                "revision direct entry differs from its activated candidate"
-            )
+            raise RunnerContractError("revision prepared descriptor differs")
+        spec = self.registry.by_id("maskimpute")
+        _validate_direct_revision_adapter_values(
+            entry.identity,
+            descriptor,
+            self.authorized_configuration,
+            spec,
+            prepared.method_input,
+            max(decision.timeout_seconds, 1.0),
+        )
         if entry.preflight_status == "blocked_authority":
-            status = "blocked_authority"
-            reason = entry.preflight_reason
-        elif not decision.authorized:
-            status = "budget_exhausted"
-            reason = decision.reason
-        else:
-            try:
-                spec = self.registry.by_id("maskimpute")
-            except KeyError as error:  # pragma: no cover - registry contract
-                raise RunnerContractError(
-                    "revision registry lacks MaskImpute"
-                ) from error
-            legacy_entry = RunPlanEntry(
-                ordinal=entry.identity.ordinal,
-                run_id=entry.run_id,
-                method_id="maskimpute",
-                dataset_id=entry.identity.dataset_id,
-                source_dataset_sha256=prepared.binding.dataset_sha256,
-                mechanism=entry.identity.mechanism,
-                biological_id=entry.identity.biological_id,
-                technical_view=entry.identity.technical_view,
-                model_seed=entry.identity.model_seed,
-                configuration_id=configuration.configuration_id,
-                configuration_sha256=configuration.configuration_sha256,
-                preflight_status="planned",
-                preflight_reason=None,
-                configuration_kind=configuration.kind,
-                requires_count_score=configuration.requires_count_score,
-                requires_calibration=configuration.requires_calibration,
+            outcome = DirectRevisionMaskImputeOutcome.terminal(
+                "blocked_authority",
+                str(entry.preflight_reason),
             )
-            request = ExecutionRequest.create(
+        elif not decision.authorized:
+            outcome = DirectRevisionMaskImputeOutcome.terminal(
+                "budget_exhausted",
+                str(decision.reason),
+            )
+        else:
+            outcome = self.direct_adapter(
+                entry.identity,
+                descriptor,
+                self.authorized_configuration,
                 spec,
                 prepared.method_input,
-                model_seed=entry.identity.model_seed,
-                configuration=configuration,
-                authority=self.authority,
-                mechanism=entry.identity.mechanism,
-                biological_id=entry.identity.biological_id,
-                technical_view=entry.identity.technical_view,
-                dataset_id=entry.identity.dataset_id,
-                timeout_seconds=decision.timeout_seconds,
+                decision.timeout_seconds,
             )
-            request.validate_integrity()
-            outcome = self.adapter_executor(request)
-            if not isinstance(outcome, AdapterOutcome):
+            if not isinstance(outcome, DirectRevisionMaskImputeOutcome):
                 raise RunnerContractError(
-                    "revision adapter returned a noncanonical outcome"
+                    "direct revision adapter returned a noncanonical outcome"
                 )
-            outcome = enforce_calibration_fold_receipt(request, outcome)
-            evaluated = evaluate_adapter_outcome(
-                legacy_entry,
-                prepared,
-                outcome,
-                dataset_qc_policy_sha256=self.authority.dataset_qc_policy_sha256,
+            _validate_direct_revision_adapter_values(
+                entry.identity,
+                descriptor,
+                self.authorized_configuration,
+                spec,
+                prepared.method_input,
+                decision.timeout_seconds,
             )
-            status = evaluated.run.status
-            reason = _canonical_terminal_reason(status, evaluated.run.reason)
-            if status == "completed":
-                raw_p_pre_zero = evaluated.p_pre_zero_evidence.raw_matrix_bytes
-                if raw_p_pre_zero is None:
-                    raise RunnerContractError(
-                        "completed revision candidate lacks p_pre_zero evidence"
-                    )
-                compressed = zlib.compress(raw_p_pre_zero)
-                relative_path = Path("runs") / (f"{entry.run_id}.p-pre-zero-f64.zlib")
-                evidence_path = self.checkpoint_directory / relative_path
-                evidence_path.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    descriptor = os.open(
-                        evidence_path,
-                        os.O_WRONLY
-                        | os.O_CREAT
-                        | os.O_EXCL
-                        | getattr(os, "O_CLOEXEC", 0),
-                        0o600,
-                    )
-                except FileExistsError:
-                    try:
-                        existing = evidence_path.read_bytes()
-                    except OSError as error:
-                        raise RunnerContractError(
-                            "revision p_pre_zero evidence is unreadable"
-                        ) from error
-                    if existing != compressed:
-                        raise RunnerContractError(
-                            "revision p_pre_zero evidence differs from storage"
-                        )
-                else:
-                    try:
-                        with os.fdopen(descriptor, "wb") as stream:
-                            stream.write(compressed)
-                            stream.flush()
-                            os.fsync(stream.fileno())
-                    except BaseException:
-                        try:
-                            evidence_path.unlink()
-                        except OSError:
-                            pass
-                        raise
-                p_pre_zero_evidence = DirectPreZeroEvidence(
-                    applicable=True,
-                    status="completed",
-                    reason=None,
-                    shape=prepared.method_input.shape,
-                    dtype="<f8",
-                    encoding="zlib",
-                    path=relative_path.as_posix(),
-                    compressed_byte_count=len(compressed),
-                )
-            else:
-                if reason is None:  # pragma: no cover - outcome contract
-                    raise AssertionError("revision terminal outcome lacks a reason")
-                p_pre_zero_evidence = DirectPreZeroEvidence(
-                    applicable=True,
-                    status=status,
-                    reason=reason,
-                    shape=None,
-                    dtype=None,
-                    encoding=None,
-                    path=None,
-                    compressed_byte_count=0,
-                )
-            run = DirectRunResult(
-                run_id=entry.run_id,
-                identity=entry.identity,
-                status=status,
-                reason=reason,
-                runtime_seconds=evaluated.run.runtime_seconds,
-                peak_rss_bytes=evaluated.run.peak_rss_bytes,
-                peak_gpu_bytes=evaluated.run.peak_gpu_bytes,
-                rss_measurement=_canonical_measurement_code(
-                    evaluated.run.rss_measurement
-                ),
-                gpu_measurement=_canonical_measurement_code(
-                    evaluated.run.gpu_measurement
-                ),
-                excluded_cell_count=prepared.audit.excluded_cell_count,
-                excluded_cell_ids=prepared.audit.excluded_cell_ids,
-                retained_cell_count=prepared.audit.retained_cell_count,
-                retained_cell_ids=prepared.audit.retained_cell_ids,
-                retained_gene_count=prepared.method_input.shape[1],
-                observed_zero_count=int((prepared.method_input.counts == 0).sum()),
-                stdout=DirectLogReceipt(
-                    "stdout", len(evaluated.stdout), "discard_content", reason
-                ),
-                stderr=DirectLogReceipt(
-                    "stderr", len(evaluated.stderr), "discard_content", reason
-                ),
-            )
-            metrics_by_name = {row.metric: row for row in evaluated.metrics}
-            if len(metrics_by_name) != len(evaluated.metrics) or any(
-                name not in metrics_by_name for name in DIRECT_RECONSTRUCTION_METRICS
-            ):
-                raise RunnerContractError(
-                    "revision evaluator metric denominator or order differs"
-                )
-            metrics = tuple(
-                DirectMetricRow(
-                    identity=entry.identity,
-                    metric=name,
-                    value=(
-                        metrics_by_name[name].value if status == "completed" else None
-                    ),
-                    n=metrics_by_name[name].n if status == "completed" else 0,
-                    status=(
-                        metrics_by_name[name].status
-                        if status == "completed"
-                        else status
-                    ),
-                    reason=(
-                        _canonical_metric_reason(
-                            metrics_by_name[name].status,
-                            metrics_by_name[name].reason,
-                        )
-                        if status == "completed"
-                        else reason
-                    ),
-                )
-                for name in DIRECT_RECONSTRUCTION_METRICS
-            )
-            return DirectEvaluatedAttempt(
-                run=run,
-                metrics=metrics,
-                native_output=(
-                    evaluated.native_output if status == "completed" else None
-                ),
-                native_output_scale=(
-                    evaluated.native_output_scale if status == "completed" else None
-                ),
-                evaluator_output=(
-                    evaluated.evaluator_output if status == "completed" else None
-                ),
-                p_pre_zero_evidence=p_pre_zero_evidence,
-            )
-        if not isinstance(reason, str) or not reason:
-            raise RunnerContractError("revision terminal attempt lacks a reason")
-        run = DirectRunResult(
-            run_id=entry.run_id,
-            identity=entry.identity,
-            status=status,
-            reason=reason,
-            runtime_seconds=0.0,
-            peak_rss_bytes=0,
-            peak_gpu_bytes=0,
-            rss_measurement="executor_reported_unverified",
-            gpu_measurement="executor_reported_unverified",
-            excluded_cell_count=prepared.audit.excluded_cell_count,
-            excluded_cell_ids=prepared.audit.excluded_cell_ids,
-            retained_cell_count=prepared.audit.retained_cell_count,
-            retained_cell_ids=prepared.audit.retained_cell_ids,
-            retained_gene_count=prepared.method_input.shape[1],
-            observed_zero_count=int((prepared.method_input.counts == 0).sum()),
-            stdout=DirectLogReceipt("stdout", 0, "discard_content", reason),
-            stderr=DirectLogReceipt("stderr", 0, "discard_content", reason),
-        )
-        metrics = tuple(
-            DirectMetricRow(
-                identity=entry.identity,
-                metric=metric,
-                value=None,
-                n=0,
-                status=status,
-                reason=reason,
-            )
-            for metric in DIRECT_RECONSTRUCTION_METRICS
-        )
-        return DirectEvaluatedAttempt(
-            run=run,
-            metrics=metrics,
-            native_output=None,
-            native_output_scale=None,
-            evaluator_output=None,
-            p_pre_zero_evidence=DirectPreZeroEvidence(
-                applicable=True,
-                status=status,
-                reason=reason,
-                shape=None,
-                dtype=None,
-                encoding=None,
-                path=None,
-                compressed_byte_count=0,
-            ),
+        return _evaluate_direct_revision_outcome(
+            entry,
+            prepared,
+            outcome,
+            self.checkpoint_directory,
         )
 
 
@@ -8414,31 +8753,40 @@ def _run_fair_comparator_base_with_authority(
                 datasets=bindings,
             )
         repository = Path(__file__).resolve().parents[1]
-        environments = ExecutionEnvironmentRegistry.fixed(
-            repository,
-            environment_overrides,
-            runtime_lock_path=_DEVELOPMENT_RUNTIME_LOCK_PATH,
-            benchmark_python=Path(sys.executable),
-            r_library_paths={"saver": (repository / "artifacts/envs/saver-r/library",)},
-            lock_only_environment_ids=derive_lock_only_environment_ids(_registry),
+        from maskimpute import PreZeroCountModelConfig
+        from maskimpute.calibration import load_calibration_artifact
+
+        from .direct_values import direct_json_value
+
+        count_model_payload = direct_json_value(
+            authority.count_model_config,
+            payload=True,
         )
-        dispatcher = RepositoryAdapterDispatcher(repository, environments)
-        with SpawnedRepositoryExecutor(dispatcher) as adapter_executor:
-            revision_executor = RevisionMaskImputeExecutor(
-                authority=authority,
-                adapter_executor=adapter_executor,
-                checkpoint_directory=output_dir,
-                registry=_registry,
-            )
-            return execute_fair_comparator_plan(
-                plan,
-                _registry,
-                _prepared_datasets,
-                revision_executor,
-                store,
-                authority=authority,
-                datasets=bindings,
-            )
+        if type(count_model_payload) is not dict:
+            raise RunnerContractError("direct revision count model is not an object")
+        revision_adapter = DirectRevisionMaskImputeAdapter(
+            calibration_artifact=load_calibration_artifact(
+                repository / authority.retained_calibration_path
+            ),
+            count_model_config=PreZeroCountModelConfig(**count_model_payload),
+        )
+        revision_executor = RevisionMaskImputeExecutor(
+            authority=authority,
+            direct_adapter=revision_adapter,
+            authorized_configuration=plan.configurations[0],
+            input_descriptors={value.dataset_id: value for value in plan.inputs},
+            checkpoint_directory=output_dir,
+            registry=_registry,
+        )
+        return execute_fair_comparator_plan(
+            plan,
+            _registry,
+            _prepared_datasets,
+            revision_executor,
+            store,
+            authority=authority,
+            datasets=bindings,
+        )
     store.inspect_prefix(
         plan,
         registry=_registry,

@@ -29,6 +29,7 @@ from .base import (
     MethodSpec,
     snapshot_method_output,
 )
+from .direct import DirectMethodOutput, finalize_direct_method_output
 from .observed import (
     AdapterExecution,
     CompatibilityEvent,
@@ -54,6 +55,41 @@ class MaskImputeAdapterExecution(AdapterExecution):
         """Return the immutable diagnostic policy that produced the matrix."""
 
         return self.ablation_result.diagnostics.get("score")
+
+
+@dataclass(frozen=True, slots=True)
+class DirectMaskImputeExecution:
+    """Digest-free native output, probability matrix, and bounded raw streams."""
+
+    output: DirectMethodOutput
+    p_pre_zero: np.ndarray
+    stdout: bytes
+    stderr: bytes
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.output, DirectMethodOutput):
+            raise TypeError("output must be a DirectMethodOutput")
+        if type(self.p_pre_zero) is not np.ndarray:
+            raise TypeError("p_pre_zero must be an exact ndarray")
+        probability = np.array(
+            self.p_pre_zero,
+            dtype=np.float64,
+            copy=True,
+            order="C",
+            subok=False,
+        )
+        if (
+            probability.shape != self.output.shape
+            or not np.isfinite(probability).all()
+            or bool(((probability < 0.0) | (probability > 1.0)).any())
+        ):
+            raise MethodContractError(
+                "p_pre_zero must be an aligned probability matrix"
+            )
+        probability.setflags(write=False)
+        object.__setattr__(self, "p_pre_zero", probability)
+        if type(self.stdout) is not bytes or type(self.stderr) is not bytes:
+            raise MethodContractError("direct MaskImpute streams must be exact bytes")
 
 
 def maskimpute_to_evaluator_counts(
@@ -119,7 +155,7 @@ def finalize_maskimpute_output(
     )
 
 
-def _run_in_tree(
+def _fit_in_tree_result(
     spec: MethodSpec,
     method_input: MethodInput,
     *,
@@ -135,7 +171,7 @@ def _run_in_tree(
     decoder: str = "scaled_gaussian",
     decoder_config: object | None = None,
     structure_config: object | None = None,
-) -> MaskImputeAdapterExecution:
+) -> AblationRunResult:
     require_method_spec(
         spec,
         spec.id,
@@ -206,7 +242,7 @@ def _run_in_tree(
         method_input.obs_ids,
         count_model_config,
     )
-    result = _fit_ablation_once(
+    return _fit_ablation_once(
         counts,
         score,
         calibration_artifact,
@@ -214,6 +250,41 @@ def _run_in_tree(
         config,
         device,
         cell_ids=method_input.obs_ids,
+        development_mechanism=development_mechanism,
+        development_biological_id=development_biological_id,
+        calibration_usage=calibration_usage,
+        decoder=decoder,
+        decoder_config=decoder_config,
+        structure_config=structure_config,
+    )
+
+
+def _run_in_tree(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    *,
+    variant_id: str,
+    calibration_artifact: CalibrationArtifact,
+    seed: int,
+    config: MaskImputeConfig,
+    count_model_config: PreZeroCountModelConfig,
+    device: str | torch.device,
+    development_mechanism: str,
+    development_biological_id: str,
+    calibration_usage: str = "development_holdout",
+    decoder: str = "scaled_gaussian",
+    decoder_config: object | None = None,
+    structure_config: object | None = None,
+) -> MaskImputeAdapterExecution:
+    result = _fit_in_tree_result(
+        spec,
+        method_input,
+        variant_id=variant_id,
+        calibration_artifact=calibration_artifact,
+        seed=seed,
+        config=config,
+        count_model_config=count_model_config,
+        device=device,
         development_mechanism=development_mechanism,
         development_biological_id=development_biological_id,
         calibration_usage=calibration_usage,
@@ -273,6 +344,52 @@ def _run_in_tree(
         stderr=b"",
         command=None,
         ablation_result=result,
+    )
+
+
+def run_revision_maskimpute_direct(
+    spec: MethodSpec,
+    method_input: MethodInput,
+    *,
+    calibration_artifact: CalibrationArtifact,
+    seed: int,
+    config: MaskImputeConfig,
+    count_model_config: PreZeroCountModelConfig,
+    decoder_config: object,
+    structure_config: object | None,
+    device: str | torch.device,
+    development_mechanism: str,
+    development_biological_id: str,
+) -> DirectMaskImputeExecution:
+    """Run an activated revision without constructing a legacy output snapshot."""
+
+    result = _fit_in_tree_result(
+        spec,
+        method_input,
+        variant_id="maskimpute-reference",
+        calibration_artifact=calibration_artifact,
+        seed=seed,
+        config=config,
+        count_model_config=count_model_config,
+        device=device,
+        development_mechanism=development_mechanism,
+        development_biological_id=development_biological_id,
+        decoder="negative_binomial",
+        decoder_config=decoder_config,
+        structure_config=structure_config,
+    )
+    return DirectMaskImputeExecution(
+        output=finalize_direct_method_output(
+            spec,
+            method_input,
+            result.primary_counts,
+            output_scale=spec.output_scale,
+            obs_ids=method_input.obs_ids,
+            var_ids=method_input.var_ids,
+        ),
+        p_pre_zero=result.p_pre_zero,
+        stdout=b"",
+        stderr=b"",
     )
 
 
@@ -446,12 +563,14 @@ def run_frozen_final_in_tree(
 
 
 __all__ = [
+    "DirectMaskImputeExecution",
     "MaskImputeAdapterExecution",
     "finalize_maskimpute_output",
     "maskimpute_to_evaluator_counts",
     "run_capacity_matched_ae",
     "run_frozen_final_in_tree",
     "run_maskimpute",
+    "run_revision_maskimpute_direct",
     "run_v28_development_candidate",
     "run_v29_development_candidate",
 ]

@@ -374,11 +374,13 @@ def external_reference_output_to_evaluator_log2_cp10k(
 
 _LAZY_MASKIMPUTE_EXPORTS = frozenset(
     {
+        "DirectMaskImputeExecution",
         "MaskImputeAdapterExecution",
         "finalize_maskimpute_output",
         "run_capacity_matched_ae",
         "run_frozen_final_in_tree",
         "run_maskimpute",
+        "run_revision_maskimpute_direct",
     }
 )
 
@@ -407,6 +409,7 @@ __all__ = [
     "DCAConfig",
     "D3ImputeConfig",
     "DirectAdapterExecution",
+    "DirectMaskImputeExecution",
     "DirectMethodOutput",
     "EnvironmentSpec",
     "EXTERNAL_REFERENCE_EVALUATOR_COUNT_CONVERTERS",
@@ -505,6 +508,7 @@ __all__ = [
     "run_capacity_matched_ae",
     "run_frozen_final_in_tree",
     "run_maskimpute",
+    "run_revision_maskimpute_direct",
     "run_observed",
     "run_saver",
     "run_saver_direct",
