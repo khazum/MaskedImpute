@@ -60,7 +60,7 @@ def _direct_schema_keys(value: object) -> tuple[str, ...]:
 
 def _forbidden_direct_key(name: str) -> bool:
     lowered = name.casefold()
-    return lowered not in {"shape", "pythonhashseed"} and any(
+    return lowered != "shape" and any(
         token in lowered for token in FORBIDDEN_DIRECT_IDENTITY_TOKENS
     )
 
@@ -166,11 +166,44 @@ def _scope_aliases(
     return symbols, strings
 
 
-def _audited_direct_scope(node: ast.AST) -> bool:
-    return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
-        "direct" in node.name.casefold().split("_")
-        or "fair_comparator" in node.name.casefold()
+def _audited_direct_scope(
+    qualified_name: str,
+    node: ast.AST,
+) -> bool:
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    lowered = qualified_name.casefold()
+    tokens = lowered.replace(".", "_").split("_")
+    return any(token.startswith("direct") for token in tokens) or (
+        "fair_comparator" in lowered
     )
+
+
+def _indexed_module_functions(
+    tree: ast.Module,
+) -> tuple[
+    dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    dict[str, str],
+]:
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    owners: dict[str, str] = {}
+
+    def index_class(node: ast.ClassDef, prefix: str) -> None:
+        owner = f"{prefix}.{node.name}" if prefix else node.name
+        for child in node.body:
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                qualified = f"{owner}.{child.name}"
+                functions[qualified] = child
+                owners[qualified] = owner
+            elif isinstance(child, ast.ClassDef):
+                index_class(child, owner)
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            functions[node.name] = node
+        elif isinstance(node, ast.ClassDef):
+            index_class(node, "")
+    return functions, owners
 
 
 def _boolean_value(
@@ -281,6 +314,8 @@ def _called_boolean_bindings(
     call: ast.Call,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     caller_bindings: Mapping[str, bool],
+    *,
+    bound_method: bool,
 ) -> dict[str, bool]:
     parameters = (*function.args.posonlyargs, *function.args.args)
     result: dict[str, bool] = {}
@@ -289,7 +324,8 @@ def _called_boolean_bindings(
         value = _boolean_value(default, {})
         if value is not None:
             result[parameters[position].arg] = value
-    for parameter, argument in zip(parameters, call.args, strict=False):
+    call_parameters = parameters[1:] if bound_method else parameters
+    for parameter, argument in zip(call_parameters, call.args, strict=False):
         value = _boolean_value(argument, caller_bindings)
         if value is not None:
             result[parameter.arg] = value
@@ -302,8 +338,28 @@ def _called_boolean_bindings(
     return result
 
 
+def _called_scope(
+    resolved: str | None,
+    current_name: str,
+    functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    owners: Mapping[str, str],
+) -> tuple[str, bool] | None:
+    if resolved is None:
+        return None
+    if resolved in functions:
+        return resolved, False
+    receiver, separator, member = resolved.partition(".")
+    owner = owners.get(current_name)
+    if separator and receiver in {"self", "cls"} and owner is not None:
+        qualified = f"{owner}.{member}"
+        if qualified in functions:
+            return qualified, True
+    return None
+
+
 def _reachable_direct_scopes(
     functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    owners: Mapping[str, str],
     roots: set[str],
     module_aliases: Mapping[str, str],
 ) -> tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, Mapping[str, bool]], ...]:
@@ -326,15 +382,70 @@ def _reachable_direct_scopes(
         symbols, _strings = _scope_aliases_from_nodes(nodes, module_aliases)
         for call in (node for node in nodes if isinstance(node, ast.Call)):
             resolved = _resolve_symbol(call.func, symbols)
-            called = functions.get(resolved) if resolved is not None else None
-            if called is not None:
+            target = _called_scope(resolved, name, functions, owners)
+            if target is not None:
+                called_name, bound_method = target
+                called = functions[called_name]
                 pending.append(
                     (
-                        resolved,
-                        _called_boolean_bindings(call, called, bindings),
+                        called_name,
+                        _called_boolean_bindings(
+                            call,
+                            called,
+                            bindings,
+                            bound_method=bound_method,
+                        ),
                     )
                 )
     return tuple(reachable)
+
+
+def _reviewed_pythonhashseed_environment(
+    dictionary: ast.Dict,
+    nodes: Sequence[ast.AST],
+    symbols: Mapping[str, str],
+    strings: Mapping[str, str],
+) -> bool:
+    keys = tuple(
+        _literal_string(key, strings) for key in dictionary.keys if key is not None
+    )
+    if len(keys) != 4 or set(keys) != {
+        "CUDA_VISIBLE_DEVICES",
+        "MKL_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "PYTHONHASHSEED",
+    }:
+        return False
+    assigned = any(
+        (
+            isinstance(node, ast.Assign)
+            and node.value is dictionary
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "environment"
+        )
+        or (
+            isinstance(node, ast.AnnAssign)
+            and node.value is dictionary
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "environment"
+        )
+        for node in nodes
+    )
+    if not assigned:
+        return False
+    return any(
+        (resolved := _resolve_symbol(call.func, symbols)) is not None
+        and resolved.rsplit(".", 1)[-1] == "execute_pinned_command"
+        and any(
+            keyword.arg == "environment"
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "environment"
+            for keyword in call.keywords
+        )
+        for call in nodes
+        if isinstance(call, ast.Call)
+    )
 
 
 def _direct_source_audit_findings(
@@ -345,16 +456,15 @@ def _direct_source_audit_findings(
     tree = ast.parse(source)
     module_aliases = _module_symbol_aliases(tree)
     if shared:
-        functions = {
-            node.name: node
-            for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+        functions, owners = _indexed_module_functions(tree)
         direct_roots = {
-            name for name, node in functions.items() if _audited_direct_scope(node)
+            name
+            for name, node in functions.items()
+            if _audited_direct_scope(name, node)
         }
         scopes = _reachable_direct_scopes(
             functions,
+            owners,
             direct_roots,
             module_aliases,
         )
@@ -388,11 +498,21 @@ def _direct_source_audit_findings(
             ):
                 findings.add(f"forbidden call {resolved}")
         for dictionary in (node for node in nodes if isinstance(node, ast.Dict)):
+            reviewed_environment = _reviewed_pythonhashseed_environment(
+                dictionary,
+                nodes,
+                symbols,
+                strings,
+            )
             for key in dictionary.keys:
                 if key is None:
                     continue
                 resolved_key = _literal_string(key, strings)
-                if resolved_key is not None and _forbidden_direct_key(resolved_key):
+                if (
+                    resolved_key is not None
+                    and _forbidden_direct_key(resolved_key)
+                    and not (resolved_key == "PYTHONHASHSEED" and reviewed_environment)
+                ):
                     findings.add(f"forbidden generated key {resolved_key}")
 
     if not shared:
@@ -808,6 +928,94 @@ def run_magic_direct(value):
     return hashlib.sha256(value).hexdigest()
 """
     assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_rejects_forbidden_call_in_direct_class_method() -> None:
+    source = """
+from provenance import canonical_sha256
+
+class RepositoryDispatcher:
+    def execute_direct(self, value):
+        return canonical_sha256(value)
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+@pytest.mark.parametrize(
+    ("receiver", "decorator", "mutation"),
+    (
+        ("self", "", "return canonical_sha256(value)"),
+        ("cls", "@classmethod\n    ", 'return {"plan_sha256": value}'),
+    ),
+    ids=("self-forbidden-call", "cls-forbidden-key"),
+)
+def test_direct_source_audit_reaches_shared_class_helpers(
+    receiver: str,
+    decorator: str,
+    mutation: str,
+) -> None:
+    source = f"""
+from provenance import canonical_sha256
+
+class RepositoryDispatcher:
+    {decorator}def _shared({receiver}, value, *, _direct=False):
+        if _direct:
+            {mutation}
+        return value
+
+    {decorator}def execute_direct({receiver}, value):
+        return {receiver}._shared(value, _direct=True)
+
+    {decorator}def execute_legacy({receiver}, value):
+        return {receiver}._shared(value, _direct=False)
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_ignores_legacy_only_class_helper() -> None:
+    source = """
+from provenance import canonical_sha256
+
+class RepositoryDispatcher:
+    def _legacy_receipt(self, value):
+        return canonical_sha256(value)
+
+    def execute_direct(self, value):
+        return value
+
+    def execute_legacy(self, value):
+        return self._legacy_receipt(value)
+"""
+    assert _direct_source_audit_findings(source, shared=True) == ()
+
+
+def test_direct_source_audit_rejects_pythonhashseed_artifact_key() -> None:
+    source = """
+def project_direct_artifact(value):
+    return {"PYTHONHASHSEED": value}
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
+def test_direct_source_audit_allows_reviewed_pythonhashseed_environment() -> None:
+    source = """
+def run_scsdae_direct(spec, source_dir, command, work_dir, seed):
+    environment = {
+        "CUDA_VISIBLE_DEVICES": "0",
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "PYTHONHASHSEED": str(seed),
+    }
+    return execute_pinned_command(
+        spec,
+        source_dir,
+        command,
+        cwd=work_dir,
+        timeout_seconds=30,
+        environment=environment,
+    )
+"""
+    assert _direct_source_audit_findings(source, shared=True) == ()
 
 
 def test_direct_source_audit_ignores_legacy_only_helpers() -> None:
