@@ -250,7 +250,7 @@ def _direct_projection_checkpoint(tmp_path: Path):
     records = []
     for entry, encoded in zip(plan.entries, identity_rows, strict=True):
         assert isinstance(encoded, dict)
-        reason = "synthetic_unavailable"
+        reason = "adapter_not_registered"
         records.append(
             {
                 "run": {
@@ -261,8 +261,8 @@ def _direct_projection_checkpoint(tmp_path: Path):
                     "runtime_seconds": 1.0,
                     "peak_rss_bytes": 1,
                     "peak_gpu_bytes": 0,
-                    "rss_measurement": "synthetic_parent_rss",
-                    "gpu_measurement": "not_applicable_cpu",
+                    "rss_measurement": "linux_proc_process_tree_rss",
+                    "gpu_measurement": "not_applicable_cpu_only_method",
                     "excluded_cell_count": prepared.audit.excluded_cell_count,
                     "excluded_cell_ids": list(prepared.audit.excluded_cell_ids),
                     "retained_cell_count": prepared.audit.retained_cell_count,
@@ -374,7 +374,7 @@ def _direct_projection_checkpoint_with_selected_statuses(
         (*statuses, "unavailable"),
         strict=True,
     ):
-        reason = None if status == "completed" else "synthetic_unavailable"
+        reason = None if status == "completed" else "adapter_not_registered"
         record["run"].update(
             run_id=entry.run_id,
             identity=encoded["identity"],

@@ -17,6 +17,7 @@ import pytest
 
 import maskimpute_benchmark.runner as runner_module
 import maskimpute_benchmark.runtime_environments as runtime_module
+import maskimpute_benchmark.fair_comparator_plan as direct_plan_module
 from maskimpute_benchmark.comparator_tuning import (
     DEVELOPMENT_MAX_CHECKPOINT_BYTES,
     DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
@@ -450,8 +451,8 @@ def _prepared_plan_inputs(bindings) -> tuple[PreparedDataset, ...]:
     return tuple(values)
 
 
-@pytest.fixture(scope="module")
-def direct_storage_case():
+@pytest.fixture
+def direct_storage_case(monkeypatch: pytest.MonkeyPatch):
     registry = load_method_registry(METHODS_PATH)
     bindings = validate_development_manifest_payload(_manifest_payload())
     shared_counts = bytes(900 * 500 * 8)
@@ -470,22 +471,23 @@ def direct_storage_case():
         )
         for value in _prepared_plan_inputs(bindings)
     )
-    blocked_plan = build_fair_comparator_plan(
+    authority = replace(
+        load_runner_authority(),
+        count_score_manifest_status="ready",
+        count_score_manifest_sha256="8" * 64,
+        retained_calibration_status="ready",
+        retained_calibration_sha256="9" * 64,
+    )
+    monkeypatch.setattr(
+        direct_plan_module,
+        "load_runner_authority",
+        lambda: authority,
+    )
+    plan = build_fair_comparator_plan(
         registry,
         bindings,
-        load_runner_authority(),
+        authority,
         prepared,
-    )
-    plan = replace(
-        blocked_plan,
-        entries=tuple(
-            replace(
-                entry,
-                preflight_status="planned",
-                preflight_reason=None,
-            )
-            for entry in blocked_plan.entries
-        ),
     )
     prepared_by_id = {value.binding.dataset_id: value for value in prepared}
     assert len(prepared_by_id) == 16
@@ -495,7 +497,7 @@ def direct_storage_case():
     )
     assert len(plan.entries) == 2_896
     assert all(entry.preflight_status == "planned" for entry in plan.entries)
-    return plan, prepared_by_id
+    return plan, prepared_by_id, registry, bindings, authority
 
 
 def _truth_probe_executor(request: ExecutionRequest) -> AdapterOutcome:
@@ -791,7 +793,7 @@ def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> No
 def test_development_storage_preflight_matches_exact_direct_plan_bound(
     direct_storage_case,
 ) -> None:
-    plan, prepared = direct_storage_case
+    plan, prepared, _registry, _bindings, _authority = direct_storage_case
 
     receipt = runner_module.development_storage_preflight(
         plan,
@@ -841,7 +843,7 @@ def test_storage_failure_occurs_before_output_directory_creation(
     tmp_path: Path,
     direct_storage_case,
 ) -> None:
-    plan, prepared = direct_storage_case
+    plan, prepared, _registry, _bindings, _authority = direct_storage_case
     output = tmp_path / "must-not-exist"
 
     with pytest.raises(RunnerContractError, match="insufficient development storage"):
@@ -855,6 +857,20 @@ def test_storage_failure_occurs_before_output_directory_creation(
 
     assert not output.exists()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_development_storage_fixture_passes_public_plan_validation(
+    direct_storage_case,
+) -> None:
+    plan, prepared, registry, bindings, authority = direct_storage_case
+
+    direct_plan_module.validate_direct_competition_plan(
+        plan,
+        registry=registry,
+        prepared_datasets=prepared,
+        authority=authority,
+        datasets=bindings,
+    )
 
 
 def test_runner_direct_dispatch_route_uses_closed_comparator_mapping(
@@ -2886,7 +2902,13 @@ def _direct_magic_record(
     entry = plan.entries[0]
     identity = plan.to_dict()["entries"][0]["identity"]
     assert isinstance(identity, dict)
-    reason = None if status == "completed" else f"synthetic_{status}"
+    reason = {
+        "completed": None,
+        "unavailable": "adapter_not_registered",
+        "infrastructure_error": "runtime_environment_invalid",
+        "blocked_authority": "count_score_authority_pending",
+        "budget_exhausted": "configuration_budget_exhausted",
+    }[status]
     return {
         "run": {
             "run_id": entry.run_id,
@@ -2896,8 +2918,8 @@ def _direct_magic_record(
             "runtime_seconds": 1,
             "peak_rss_bytes": 1,
             "peak_gpu_bytes": 0,
-            "rss_measurement": "synthetic_parent_rss",
-            "gpu_measurement": "not_applicable_cpu",
+            "rss_measurement": "linux_proc_process_tree_rss",
+            "gpu_measurement": "not_applicable_cpu_only_method",
             "excluded_cell_count": 0,
             "excluded_cell_ids": [],
             "retained_cell_count": 3,
@@ -2943,7 +2965,7 @@ def _direct_magic_record(
 
 def _direct_magic_attempt(plan: DirectCompetitionPlan) -> DirectEvaluatedAttempt:
     entry = plan.entries[0]
-    reason = "synthetic_unavailable"
+    reason = "adapter_not_registered"
     return DirectEvaluatedAttempt(
         run=DirectRunResult(
             run_id=entry.run_id,
@@ -2953,8 +2975,8 @@ def _direct_magic_attempt(plan: DirectCompetitionPlan) -> DirectEvaluatedAttempt
             runtime_seconds=1,
             peak_rss_bytes=1,
             peak_gpu_bytes=0,
-            rss_measurement="synthetic_parent_rss",
-            gpu_measurement="not_applicable_cpu",
+            rss_measurement="linux_proc_process_tree_rss",
+            gpu_measurement="not_applicable_cpu_only_method",
             excluded_cell_count=0,
             excluded_cell_ids=(),
             retained_cell_count=3,

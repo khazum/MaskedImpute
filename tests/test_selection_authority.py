@@ -790,7 +790,7 @@ def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
         max_rss_bytes=1,
         max_gpu_bytes=0,
     )
-    reason = "synthetic_unavailable"
+    reason = "adapter_not_registered"
     attempt = DirectEvaluatedAttempt(
         run=DirectRunResult(
             run_id=entry.run_id,
@@ -800,8 +800,8 @@ def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
             runtime_seconds=1.0,
             peak_rss_bytes=1,
             peak_gpu_bytes=0,
-            rss_measurement="synthetic_parent_rss",
-            gpu_measurement="not_applicable_cpu",
+            rss_measurement="linux_proc_process_tree_rss",
+            gpu_measurement="not_applicable_cpu_only_method",
             excluded_cell_count=0,
             excluded_cell_ids=(),
             retained_cell_count=2,

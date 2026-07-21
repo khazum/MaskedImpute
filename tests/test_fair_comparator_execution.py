@@ -18,7 +18,6 @@ import maskimpute_benchmark.fair_comparator_execution as direct_execution_module
 import maskimpute_benchmark.fair_comparator_plan as direct_plan_module
 from maskimpute_benchmark.comparator_tuning import (
     DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
-    DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
     comparator_method_binding,
     load_comparator_tuning_authority,
 )
@@ -55,6 +54,7 @@ from maskimpute_benchmark.runner import (
     PreparedDataset,
     RunnerContractError,
 )
+from maskimpute_benchmark.runtime_environments import RuntimeEnvironmentError
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -203,13 +203,20 @@ def _completed_outcome(request: DirectExecutionRequest) -> AdapterOutcome:
     )
 
 
-def test_direct_log_receipt_rejects_oversized_terminal_reason() -> None:
+def test_direct_log_receipt_rejects_oversized_canonical_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        direct_execution_module,
+        "DEVELOPMENT_MAX_LOG_RECEIPT_BYTES",
+        1,
+    )
     with pytest.raises(RunnerContractError, match="stream receipt exceeds its bound"):
         DirectLogReceipt(
             stream="stderr",
             original_byte_count=1,
             capture_policy="discard_content",
-            terminal_reason="x" * DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
+            terminal_reason="adapter_exception",
         )
 
 
@@ -238,7 +245,9 @@ def test_direct_executor_receipt_is_bounded_and_discards_stream_content() -> Non
     assert private.decode("utf-8") not in json.dumps(attempt.to_dict())
 
 
-def test_direct_attempt_rejects_oversized_executor_receipt() -> None:
+def test_direct_attempt_rejects_oversized_executor_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     request, _entry, prepared, _descriptor, _spec, _row, authority = _direct_case(
         "magic"
     )
@@ -252,13 +261,15 @@ def test_direct_attempt_rejects_oversized_executor_receipt() -> None:
             )
         },
     )
-    oversized_run = replace(
-        attempt.run,
-        rss_measurement="x" * DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
+    encoded = direct_execution_module._executor_receipt(attempt)
+    monkeypatch.setattr(
+        direct_execution_module,
+        "DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES",
+        len(encoded) - 1,
     )
 
     with pytest.raises(RunnerContractError, match="executor receipt exceeds its bound"):
-        replace(attempt, run=oversized_run)
+        replace(attempt)
 
 
 def test_create_direct_request_accepts_plan_codec_dca_payload() -> None:
@@ -347,9 +358,9 @@ def test_direct_attempt_rejects_matrix_and_scale_incoherence(mutation: str) -> N
         failed_run = replace(
             attempt.run,
             status="failed",
-            reason="synthetic_failed",
-            stdout=replace(attempt.run.stdout, terminal_reason="synthetic_failed"),
-            stderr=replace(attempt.run.stderr, terminal_reason="synthetic_failed"),
+            reason="adapter_exception",
+            stdout=replace(attempt.run.stdout, terminal_reason="adapter_exception"),
+            stderr=replace(attempt.run.stderr, terminal_reason="adapter_exception"),
         )
         failed_metrics = tuple(
             replace(
@@ -357,7 +368,7 @@ def test_direct_attempt_rejects_matrix_and_scale_incoherence(mutation: str) -> N
                 value=None,
                 n=0,
                 status="failed",
-                reason="synthetic_failed",
+                reason="adapter_exception",
             )
             for metric in attempt.metrics
         )
@@ -855,7 +866,7 @@ def test_execute_direct_request_rejects_numeric_type_coercion_after_dispatch(
                 )
             },
             "infrastructure_error",
-            "worker_protocol_error",
+            "noncanonical_adapter_reason",
         ),
         (
             {
@@ -864,7 +875,7 @@ def test_execute_direct_request_rejects_numeric_type_coercion_after_dispatch(
                 )
             },
             "blocked_authority",
-            "authority_blocked",
+            "noncanonical_adapter_reason",
         ),
         (
             {
@@ -873,11 +884,11 @@ def test_execute_direct_request_rejects_numeric_type_coercion_after_dispatch(
                 )
             },
             "budget_exhausted",
-            "budget_spent",
+            "noncanonical_adapter_reason",
         ),
     ),
 )
-def test_execute_direct_request_preserves_terminal_outcomes(
+def test_execute_direct_request_preserves_status_and_normalizes_terminal_reason(
     adapters,
     status: str,
     reason: str,
@@ -893,6 +904,20 @@ def test_execute_direct_request_preserves_terminal_outcomes(
     assert all(
         metric.status == status and metric.reason == reason for metric in result.metrics
     )
+
+
+def test_direct_runtime_environment_error_discards_exception_text() -> None:
+    request, _entry, prepared, _descriptor, _spec, _row, authority = _direct_case()
+    private_path = "/tmp/private-runtime-environment/token"
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeEnvironmentError(private_path)
+
+    result = execute_direct_request(request, prepared, authority, {"magic": fail})
+
+    assert result.run.status == "infrastructure_error"
+    assert result.run.reason == "runtime_environment_invalid"
+    assert private_path.encode() not in json.dumps(result.to_dict()).encode("utf-8")
 
 
 def test_execute_direct_request_enforces_resource_limits_and_request_integrity() -> (

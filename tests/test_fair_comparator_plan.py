@@ -774,7 +774,7 @@ def test_real_plan_all_dca_requests_and_checkpoint_json_round_trip(
     plan_snapshot = plan.to_dict()
     encoded_entries = plan_snapshot["entries"]
     assert isinstance(encoded_entries, list)
-    reason = "synthetic_checkpoint_roundtrip"
+    reason = "count_score_authority_pending"
     last_dca_position = max(
         position
         for position, entry in enumerate(plan.entries)
@@ -819,8 +819,8 @@ def test_real_plan_all_dca_requests_and_checkpoint_json_round_trip(
                     "runtime_seconds": 0,
                     "peak_rss_bytes": 0,
                     "peak_gpu_bytes": 0,
-                    "rss_measurement": "synthetic_parent_rss",
-                    "gpu_measurement": "synthetic_gpu_receipt",
+                    "rss_measurement": "executor_reported_unverified",
+                    "gpu_measurement": "executor_reported_unverified",
                     "excluded_cell_count": current.audit.excluded_cell_count,
                     "excluded_cell_ids": list(current.audit.excluded_cell_ids),
                     "retained_cell_count": current.audit.retained_cell_count,

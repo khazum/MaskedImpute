@@ -33,6 +33,8 @@ from maskimpute_benchmark.fair_comparator_execution import (
     DirectMetricRow,
     DirectPreZeroEvidence,
     DirectRunResult,
+    create_direct_request,
+    evaluate_direct_outcome,
 )
 from maskimpute_benchmark.fair_comparator_plan import (
     ComparatorRunIdentity,
@@ -44,6 +46,7 @@ from maskimpute_benchmark.fair_comparator_plan import (
 )
 from maskimpute_benchmark.methods import load_method_registry, prepare_method_input
 from maskimpute_benchmark.runner import (
+    AdapterOutcome,
     DatasetBinding,
     DatasetQCAudit,
     PreparedDataset,
@@ -312,7 +315,17 @@ def _attempt(
     status: str = "unavailable",
     runtime_seconds: float = 1.0,
 ) -> DirectEvaluatedAttempt:
-    reason = None if status == "completed" else f"synthetic_{status}"
+    reasons = {
+        "completed": None,
+        "unavailable": "adapter_not_registered",
+        "failed": "adapter_exception",
+        "timeout": "timeout",
+        "resource_exceeded": "peak_rss_exceeded",
+        "infrastructure_error": "runtime_environment_invalid",
+        "blocked_authority": "noncanonical_adapter_reason",
+        "budget_exhausted": "noncanonical_adapter_reason",
+    }
+    reason = reasons[status]
     run = DirectRunResult(
         run_id=entry.run_id,
         identity=entry.identity,
@@ -321,8 +334,8 @@ def _attempt(
         runtime_seconds=runtime_seconds,
         peak_rss_bytes=1,
         peak_gpu_bytes=0,
-        rss_measurement="synthetic_parent_rss",
-        gpu_measurement="not_applicable_cpu",
+        rss_measurement="linux_proc_process_tree_rss",
+        gpu_measurement="not_applicable_cpu_only_method",
         excluded_cell_count=0,
         excluded_cell_ids=(),
         retained_cell_count=2,
@@ -383,6 +396,95 @@ def _attempt(
             compressed_byte_count=0,
         ),
     )
+
+
+def test_direct_attempt_intent_and_checkpoint_discard_private_metadata_paths(
+    tmp_path: Path,
+) -> None:
+    plan, registry, prepared_datasets = _direct_checkpoint_fixture()
+    prepared = prepared_datasets[plan.entries[0].identity.dataset_id]
+    authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    request = create_direct_request(
+        plan.entries[0],
+        prepared,
+        plan.inputs[0],
+        registry.by_id("magic"),
+        authority,
+        timeout_seconds=60,
+    )
+    private_paths = (
+        "/tmp/private-reason-928/token=not-for-publication",
+        "/home/private-rss-401/measurement",
+        "/var/private-gpu-773/measurement",
+    )
+    attempt = evaluate_direct_outcome(
+        request,
+        prepared,
+        authority,
+        AdapterOutcome.failed(
+            private_paths[0],
+            stdout=b"/private/raw/stdout",
+            stderr=b"/private/raw/stderr",
+            rss_measurement=private_paths[1],
+            gpu_measurement=private_paths[2],
+        ),
+    )
+    attempt_bytes = json.dumps(attempt.to_dict(), sort_keys=True).encode("utf-8")
+    assert attempt.run.reason == "noncanonical_adapter_reason"
+    assert attempt.run.rss_measurement == "executor_reported_unverified"
+    assert attempt.run.gpu_measurement == "executor_reported_unverified"
+    assert all(path.encode() not in attempt_bytes for path in private_paths)
+
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    store._publish_transaction_intent(plan, 0, plan.entries[0], attempt)
+    intent_bytes = store.intent_path.read_bytes()
+    store._write_structural(
+        plan,
+        (attempt.to_dict(),),
+        registry=registry,
+        prepared_datasets=prepared_datasets,
+    )
+    checkpoint_bytes = store.path.read_bytes()
+    assert all(path.encode() not in intent_bytes for path in private_paths)
+    assert all(path.encode() not in checkpoint_bytes for path in private_paths)
+
+
+@pytest.mark.parametrize("field", ("reason", "rss_measurement", "gpu_measurement"))
+def test_direct_checkpoint_rejects_noncanonical_stored_metadata(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    record = _attempt(plan.entries[0]).to_dict()
+    run = record["run"]
+    run["reason"] = "adapter_not_registered"
+    run["stdout"]["terminal_reason"] = "adapter_not_registered"
+    run["stderr"]["terminal_reason"] = "adapter_not_registered"
+    run["rss_measurement"] = "linux_proc_process_tree_rss"
+    run["gpu_measurement"] = "not_applicable_cpu_only_method"
+    for metric in record["metrics"]:
+        metric["reason"] = "adapter_not_registered"
+    private_path = f"/tmp/private-stored-{field}/token"
+    if field == "reason":
+        run["reason"] = private_path
+        run["stdout"]["terminal_reason"] = private_path
+        run["stderr"]["terminal_reason"] = private_path
+        for metric in record["metrics"]:
+            metric["reason"] = private_path
+    else:
+        run[field] = private_path
+
+    with pytest.raises(RunnerContractError, match="reason|measurement"):
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
+            plan,
+            (record,),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
 
 
 def test_direct_checkpoint_binds_complete_storage_receipts(tmp_path: Path) -> None:

@@ -62,6 +62,105 @@ _RUN_STATUSES = frozenset(
     }
 )
 
+_DIRECT_TERMINAL_REASON_FALLBACK = "noncanonical_adapter_reason"
+_DIRECT_TERMINAL_REASONS = frozenset(
+    {
+        _DIRECT_TERMINAL_REASON_FALLBACK,
+        "adapter_exception",
+        "adapter_not_registered",
+        "adapter_returned_noncanonical_outcome",
+        "comparator_payload_changed_during_adapter_attempt",
+        "configuration_budget_exhausted",
+        "count_score_authority_pending",
+        "count_score_or_calibration_authority_pending",
+        "cpu_time_budget_exhausted",
+        "environment_build_receipt_malformed",
+        "environment_build_receipt_mismatch",
+        "environment_build_receipt_missing",
+        "environment_executable_missing",
+        "environment_executable_unsafe",
+        "environment_execution_failed",
+        "environment_library_digest_mismatch",
+        "environment_library_incomplete",
+        "environment_library_malformed",
+        "environment_library_missing",
+        "environment_lock_malformed",
+        "environment_lock_mismatch",
+        "environment_lock_missing",
+        "environment_qualification_malformed",
+        "environment_qualification_mismatch",
+        "environment_qualification_missing",
+        "evaluator_conversion_invalid",
+        "evaluator_conversion_unavailable",
+        "gpu_time_budget_exhausted",
+        "legacy_environment_mismatch",
+        "legacy_gpu_initialization_timeout",
+        "legacy_gpu_kernel_incompatible",
+        "legacy_gpu_unavailable",
+        "malformed_adapter_process_message",
+        "malformed_environment_receipt",
+        "malformed_upstream_output",
+        "memory_limit_exceeded",
+        "noncanonical_adapter_process_outcome",
+        "peak_gpu_exceeded",
+        "peak_rss_exceeded",
+        "resource_telemetry_unavailable",
+        "runtime_environment_invalid",
+        "source_checkout_missing",
+        "source_checkout_not_pristine",
+        "source_identity_changed",
+        "source_revision_mismatch",
+        "source_tree_mismatch",
+        "source_url_mismatch",
+        "source_verification_failed",
+        "timeout",
+        "unsafe_upstream_output",
+        "unsafe_work_root",
+        "upstream_minimum_dimension",
+        "upstream_negative_native_output",
+        "upstream_output_missing",
+        "upstream_timeout",
+        "zero_library_cell",
+        *(
+            f"environment_executable_unavailable_{method_id}"
+            for method_id in COMPARATOR_METHOD_IDS
+        ),
+        *(
+            f"pinned_source_path_unavailable_{method_id}"
+            for method_id in COMPARATOR_METHOD_IDS
+        ),
+        *(
+            f"stochastic_seed_missing_{method_id}"
+            for method_id in COMPARATOR_METHOD_IDS
+        ),
+    }
+)
+_DIRECT_MEASUREMENT_CODES = frozenset(
+    {
+        "executor_reported_unverified",
+        "gpu_measurement_unavailable",
+        "linux_proc_process_tree_rss",
+        "not_applicable_cpu_only_method",
+        "nvidia_smi_measurement_unavailable",
+        "nvidia_smi_process_tree_used_memory",
+        "rss_measurement_unavailable",
+    }
+)
+
+
+def _canonical_terminal_reason(status: str, reason: str | None) -> str | None:
+    if status == "completed":
+        return None
+    if reason in _DIRECT_TERMINAL_REASONS:
+        return reason
+    return _DIRECT_TERMINAL_REASON_FALLBACK
+
+
+def _canonical_measurement_code(value: object) -> str:
+    if value in _DIRECT_MEASUREMENT_CODES:
+        return value
+    return "executor_reported_unverified"
+
 
 DirectAdapter = Callable[..., AdapterOutcome]
 
@@ -163,7 +262,8 @@ class DirectLogReceipt:
         if self.capture_policy != "discard_content":
             raise RunnerContractError("direct log content must be discarded")
         if self.terminal_reason is not None and (
-            not isinstance(self.terminal_reason, str) or not self.terminal_reason
+            not isinstance(self.terminal_reason, str)
+            or self.terminal_reason not in _DIRECT_TERMINAL_REASONS
         ):
             raise RunnerContractError("direct log terminal reason is invalid")
         if len(_canonical_bytes(self.to_dict()) + b"\n") > (
@@ -225,7 +325,8 @@ class DirectRunResult:
         if (self.status == "completed") != (self.reason is None):
             raise RunnerContractError("direct run status and reason disagree")
         if self.reason is not None and (
-            not isinstance(self.reason, str) or not self.reason
+            not isinstance(self.reason, str)
+            or self.reason not in _DIRECT_TERMINAL_REASONS
         ):
             raise RunnerContractError("direct run reason is invalid")
         _require_nonnegative_number(self.runtime_seconds, "direct run runtime")
@@ -246,8 +347,11 @@ class DirectRunResult:
             or set(self.excluded_cell_ids) & set(self.retained_cell_ids)
         ):
             raise RunnerContractError("direct run cell audit is inconsistent")
-        if not self.rss_measurement or not self.gpu_measurement:
-            raise RunnerContractError("direct run measurement provenance is absent")
+        if (
+            self.rss_measurement not in _DIRECT_MEASUREMENT_CODES
+            or self.gpu_measurement not in _DIRECT_MEASUREMENT_CODES
+        ):
+            raise RunnerContractError("direct run measurement provenance is invalid")
         if (
             not isinstance(self.stdout, DirectLogReceipt)
             or self.stdout.stream != "stdout"
@@ -853,8 +957,8 @@ def _dispatch(
             outcome = AdapterOutcome.timeout("timeout")
         except MemoryError:
             outcome = AdapterOutcome.resource_exceeded("memory_limit_exceeded")
-        except RuntimeEnvironmentError as error:
-            outcome = AdapterOutcome.infrastructure_error(str(error))
+        except RuntimeEnvironmentError:
+            outcome = AdapterOutcome.infrastructure_error("runtime_environment_invalid")
         except Exception:
             outcome = AdapterOutcome.failed("adapter_exception")
     finally:
@@ -1029,6 +1133,9 @@ def _evaluate(
         except (TypeError, ValueError, OverflowError):
             status = "unavailable"
             reason = "evaluator_conversion_invalid"
+    reason = _canonical_terminal_reason(status, reason)
+    rss_measurement = _canonical_measurement_code(outcome.rss_measurement)
+    gpu_measurement = _canonical_measurement_code(outcome.gpu_measurement)
     if evaluator is None:
         if reason is None:  # pragma: no cover - guarded by outcome contract
             raise AssertionError("noncompleted direct attempt lacks a reason")
@@ -1075,8 +1182,8 @@ def _evaluate(
         runtime_seconds=outcome.runtime_seconds,
         peak_rss_bytes=outcome.peak_rss_bytes,
         peak_gpu_bytes=outcome.peak_gpu_bytes,
-        rss_measurement=outcome.rss_measurement,
-        gpu_measurement=outcome.gpu_measurement,
+        rss_measurement=rss_measurement,
+        gpu_measurement=gpu_measurement,
         excluded_cell_count=prepared.audit.excluded_cell_count,
         excluded_cell_ids=prepared.audit.excluded_cell_ids,
         retained_cell_count=prepared.audit.retained_cell_count,
