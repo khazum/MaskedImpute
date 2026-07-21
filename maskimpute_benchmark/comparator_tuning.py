@@ -1400,31 +1400,6 @@ _DIRECT_PREZERO_KEYS = frozenset(
         "compressed_byte_count",
     }
 )
-_ALL_DIRECT_TERMINAL_STATUSES = frozenset(
-    {
-        "completed",
-        *_SELECTION_INTRINSIC_STATUSES,
-        "budget_exhausted",
-        "blocked_authority",
-        "infrastructure_error",
-    }
-)
-_SELECTION_EVALUATOR_METRIC_REASONS = frozenset(
-    {
-        "noncanonical_metric_reason",
-        "constant_cell_profile",
-        "constant_gene_profile",
-        "fewer_than_two_cells",
-        "fewer_than_two_variable_cells",
-        "fewer_than_two_variable_genes",
-        "marker_genes_not_provided",
-        "no_entries",
-        "nonfinite_correlation",
-        "proxy_truth_not_exact",
-        "truth_unavailable",
-        "undefined_for_continuous_truth",
-    }
-)
 _BLOCKING_DIRECT_STATUSES = frozenset(
     {"budget_exhausted", "blocked_authority", "infrastructure_error"}
 )
@@ -1557,8 +1532,45 @@ def _validate_receipt_input_descriptor(value: object) -> Mapping[str, object]:
     ):
         raise ComparatorTuningError("comparator selection input descriptor differs")
     for name in ("total_count", "minimum", "maximum"):
-        _require_selection_number(value.get(name), f"input descriptor {name}")
-    return value
+        observed = value.get(name)
+        if (
+            type(observed) is not float
+            or not math.isfinite(observed)
+            or observed < 0.0
+            or (observed == 0.0 and math.copysign(1.0, observed) < 0.0)
+        ):
+            raise ComparatorTuningError(
+                f"comparator selection input descriptor {name} differs"
+            )
+
+    from .fair_comparator_plan import PreparedInputDescriptor
+
+    try:
+        descriptor = PreparedInputDescriptor(
+            dataset_id=value["dataset_id"],
+            source_reference=value["source_reference"],
+            preprocessing_revision=value["preprocessing_revision"],
+            shape=tuple(value["shape"]),
+            dtype=value["dtype"],
+            cell_ids=tuple(value["cell_ids"]),
+            gene_ids=tuple(value["gene_ids"]),
+            batch_labels=tuple(value["batch_labels"]),
+            total_count=value["total_count"],
+            nonzero_count=value["nonzero_count"],
+            minimum=value["minimum"],
+            maximum=value["maximum"],
+            mechanism=value["mechanism"],
+            mask_seed=value["mask_seed"],
+            technical_view=value["technical_view"],
+        )
+    except (TypeError, ValueError) as error:
+        raise ComparatorTuningError(
+            "comparator selection input descriptor differs"
+        ) from error
+    encoded = direct_json_value(descriptor)
+    if not isinstance(encoded, Mapping) or not direct_equal(encoded, value):
+        raise ComparatorTuningError("comparator selection input descriptor differs")
+    return encoded
 
 
 def _validate_selection_plan_snapshot(
@@ -1731,26 +1743,6 @@ def _validate_selection_plan_snapshot(
     return input_values, tuple(entries)
 
 
-def _validate_checkpoint_log(
-    value: object,
-    *,
-    stream: str,
-    reason: object,
-) -> None:
-    if (
-        not isinstance(value, Mapping)
-        or set(value) != _DIRECT_LOG_KEYS
-        or value.get("stream") != stream
-        or value.get("capture_policy") != "discard_content"
-        or value.get("terminal_reason") != reason
-        or type(value.get("original_byte_count")) is not int
-        or int(value["original_byte_count"]) < 0
-    ):
-        raise ComparatorTuningError(
-            "comparator selection checkpoint log receipt differs"
-        )
-
-
 def _validate_selection_checkpoint_record(
     value: object,
     entry: Mapping[str, object],
@@ -1759,189 +1751,140 @@ def _validate_selection_checkpoint_record(
         raise ComparatorTuningError(
             "comparator selection checkpoint record schema differs"
         )
-    run = value.get("run")
     expected_identity = entry.get("identity")
-    if (
-        not isinstance(run, Mapping)
-        or set(run) != _DIRECT_RUN_KEYS
-        or not isinstance(expected_identity, Mapping)
-        or not direct_equal(run.get("identity"), expected_identity)
-        or run.get("run_id") != entry.get("run_id")
-    ):
-        raise ComparatorTuningError(
-            "comparator selection checkpoint record identity differs"
-        )
-    status = run.get("status")
-    reason = run.get("reason")
-    if (
-        status not in _ALL_DIRECT_TERMINAL_STATUSES
-        or (status == "completed") != (reason is None)
-        or (reason is not None and (not isinstance(reason, str) or not reason))
-    ):
-        raise ComparatorTuningError("comparator selection checkpoint status differs")
-    _require_selection_number(
-        run.get("runtime_seconds"),
-        "comparator selection checkpoint runtime",
-    )
-    for name in (
-        "peak_rss_bytes",
-        "peak_gpu_bytes",
-        "excluded_cell_count",
-        "retained_cell_count",
-        "retained_gene_count",
-        "observed_zero_count",
-    ):
-        if type(run.get(name)) is not int or int(run[name]) < 0:
-            raise ComparatorTuningError(
-                "comparator selection checkpoint run audit differs"
-            )
-    for count, name in (
-        ("excluded_cell_count", "excluded_cell_ids"),
-        ("retained_cell_count", "retained_cell_ids"),
-    ):
-        observed = run.get(name)
-        if (
-            not isinstance(observed, list)
-            or any(not isinstance(item, str) for item in observed)
-            or len(observed) != run[count]
-            or len(observed) != len(set(observed))
-        ):
-            raise ComparatorTuningError(
-                "comparator selection checkpoint run audit differs"
-            )
-    for name in ("rss_measurement", "gpu_measurement"):
-        if not isinstance(run.get(name), str) or not run.get(name):
-            raise ComparatorTuningError(
-                "comparator selection checkpoint run audit differs"
-            )
-    _validate_checkpoint_log(run.get("stdout"), stream="stdout", reason=reason)
-    _validate_checkpoint_log(run.get("stderr"), stream="stderr", reason=reason)
-
+    run = value.get("run")
     metrics = value.get("metrics")
+    evidence_value = value.get("p_pre_zero_evidence")
     if (
-        not isinstance(metrics, list)
+        not isinstance(expected_identity, Mapping)
+        or not isinstance(run, Mapping)
+        or set(run) != _DIRECT_RUN_KEYS
+        or not isinstance(metrics, list)
         or tuple(
             row.get("metric") if isinstance(row, Mapping) else None for row in metrics
         )
         != SELECTION_METRICS
+        or any(
+            not isinstance(row, Mapping) or set(row) != _SELECTION_METRIC_KEYS
+            for row in metrics
+        )
+        or not isinstance(evidence_value, Mapping)
+        or set(evidence_value) != _DIRECT_PREZERO_KEYS
     ):
         raise ComparatorTuningError(
-            "comparator selection checkpoint metric denominator differs"
+            "comparator selection checkpoint accepted direct record differs"
         )
-    for row in metrics:
-        if (
-            not isinstance(row, Mapping)
-            or set(row) != _SELECTION_METRIC_KEYS
-            or not direct_equal(row.get("identity"), expected_identity)
-            or row.get("status") not in _ALL_DIRECT_TERMINAL_STATUSES
-            or type(row.get("n")) is not int
-            or int(row["n"]) < 0
+
+    from .fair_comparator_execution import (
+        DirectLogReceipt,
+        DirectMetricRow,
+        DirectPreZeroEvidence,
+        DirectRunResult,
+        _executor_receipt_for_run,
+        validate_direct_evidence_semantics,
+    )
+    from .fair_comparator_plan import ComparatorRunIdentity
+    from .runner import RunnerContractError
+
+    try:
+        method_value = expected_identity.get("method")
+        payload_value = expected_identity.get("configuration_payload")
+        if not isinstance(method_value, Mapping) or not isinstance(
+            payload_value, Mapping
         ):
-            raise ComparatorTuningError(
-                "comparator selection checkpoint metric differs"
+            raise TypeError("direct identity projection is invalid")
+        identity = ComparatorRunIdentity(
+            workflow_schema=expected_identity["workflow_schema"],
+            authority_revision=expected_identity["authority_revision"],
+            ordinal=expected_identity["ordinal"],
+            method=ComparatorMethodBinding(**dict(method_value)),
+            configuration_id=expected_identity["configuration_id"],
+            configuration_kind=expected_identity["configuration_kind"],
+            configuration_payload=freeze_direct_mapping(payload_value),
+            dataset_id=expected_identity["dataset_id"],
+            mechanism=expected_identity["mechanism"],
+            biological_id=expected_identity["biological_id"],
+            technical_view=expected_identity["technical_view"],
+            mask_seed=expected_identity["mask_seed"],
+            model_seed=expected_identity["model_seed"],
+            draw_index=expected_identity["draw_index"],
+        )
+        stdout_value = run.get("stdout")
+        stderr_value = run.get("stderr")
+        if (
+            not isinstance(stdout_value, Mapping)
+            or set(stdout_value) != _DIRECT_LOG_KEYS
+            or not isinstance(stderr_value, Mapping)
+            or set(stderr_value) != _DIRECT_LOG_KEYS
+        ):
+            raise TypeError("direct log projection is invalid")
+        run_result = DirectRunResult(
+            run_id=run["run_id"],
+            identity=identity,
+            status=run["status"],
+            reason=run["reason"],
+            runtime_seconds=run["runtime_seconds"],
+            peak_rss_bytes=run["peak_rss_bytes"],
+            peak_gpu_bytes=run["peak_gpu_bytes"],
+            rss_measurement=run["rss_measurement"],
+            gpu_measurement=run["gpu_measurement"],
+            excluded_cell_count=run["excluded_cell_count"],
+            excluded_cell_ids=tuple(run["excluded_cell_ids"]),
+            retained_cell_count=run["retained_cell_count"],
+            retained_cell_ids=tuple(run["retained_cell_ids"]),
+            retained_gene_count=run["retained_gene_count"],
+            observed_zero_count=run["observed_zero_count"],
+            stdout=DirectLogReceipt(**dict(stdout_value)),
+            stderr=DirectLogReceipt(**dict(stderr_value)),
+        )
+        metric_rows = tuple(
+            DirectMetricRow(
+                identity=identity,
+                metric=row["metric"],
+                value=row["value"],
+                n=row["n"],
+                status=row["status"],
+                reason=row["reason"],
             )
-        metric_value = row.get("value")
-        metric_reason = row.get("reason")
-        if metric_value is None:
+            for row in metrics
+        )
+        shape_value = evidence_value.get("shape")
+        if shape_value is not None and not isinstance(shape_value, list):
+            raise TypeError("direct p_pre_zero shape is invalid")
+        evidence = DirectPreZeroEvidence(
+            applicable=evidence_value["applicable"],
+            status=evidence_value["status"],
+            reason=evidence_value["reason"],
+            shape=(None if shape_value is None else tuple(shape_value)),
+            dtype=evidence_value["dtype"],
+            encoding=evidence_value["encoding"],
+            path=evidence_value["path"],
+            compressed_byte_count=evidence_value["compressed_byte_count"],
+        )
+        if evidence.path is not None:
+            relative = PurePosixPath(evidence.path)
             if (
-                row.get("status") == "completed"
-                or not isinstance(metric_reason, str)
-                or not metric_reason
-                or row.get("n") != 0
+                relative.is_absolute()
+                or not relative.parts
+                or ".." in relative.parts
+                or relative.as_posix() != evidence.path
             ):
-                raise ComparatorTuningError(
-                    "comparator selection checkpoint metric differs"
-                )
-        elif (
-            type(metric_value) is not float
-            or not math.isfinite(metric_value)
-            or (metric_value == 0.0 and math.copysign(1.0, metric_value) < 0.0)
-            or row.get("status") != "completed"
-            or metric_reason is not None
-        ):
-            raise ComparatorTuningError(
-                "comparator selection checkpoint metric differs"
-            )
-        if status != "completed" and (
-            row.get("status") != status
-            or row.get("reason") != reason
-            or row.get("value") is not None
-        ):
-            raise ComparatorTuningError(
-                "comparator selection checkpoint metric status differs"
-            )
-        if (
-            status == "completed"
-            and row.get("status") == "unavailable"
-            and (row.get("reason") not in _SELECTION_EVALUATOR_METRIC_REASONS)
-        ):
-            raise ComparatorTuningError(
-                "comparator selection checkpoint metric reason differs"
-            )
-        if status == "completed" and row.get("status") not in {
-            "completed",
-            "unavailable",
-        }:
-            raise ComparatorTuningError(
-                "comparator selection checkpoint metric status differs"
-            )
-    evidence = value.get("p_pre_zero_evidence")
-    if (
-        not isinstance(evidence, Mapping)
-        or set(evidence) != _DIRECT_PREZERO_KEYS
-        or type(evidence.get("applicable")) is not bool
-        or not isinstance(evidence.get("status"), str)
-        or type(evidence.get("compressed_byte_count")) is not int
-        or int(evidence["compressed_byte_count"]) < 0
-    ):
+                raise RunnerContractError("direct p_pre_zero evidence path is unsafe")
+        _executor_receipt_for_run(run_result)
+        validate_direct_evidence_semantics(run_result, metric_rows, evidence)
+        encoded = {
+            "run": run_result.to_dict(),
+            "metrics": [row.to_dict() for row in metric_rows],
+            "p_pre_zero_evidence": evidence.to_dict(),
+        }
+        if not direct_equal(encoded, value):
+            raise RunnerContractError("direct record re-encoding differs")
+        if len(_canonical_bytes(encoded) + b"\n") > DEVELOPMENT_MAX_RECORD_BYTES:
+            raise RunnerContractError("development record exceeds its byte bound")
+    except (KeyError, RunnerContractError, TypeError, ValueError) as error:
         raise ComparatorTuningError(
-            "comparator selection checkpoint prezero evidence differs"
-        )
-    method = expected_identity.get("method")
-    method_id = method.get("method_id") if isinstance(method, Mapping) else None
-    if method_id == "maskimpute":
-        if (
-            evidence.get("applicable") is not True
-            or evidence.get("status") != status
-            or evidence.get("reason") != reason
-        ):
-            raise ComparatorTuningError(
-                "comparator selection checkpoint prezero evidence differs"
-            )
-        if status == "completed":
-            relative = evidence.get("path")
-            shape = evidence.get("shape")
-            if (
-                evidence.get("reason") is not None
-                or not isinstance(shape, list)
-                or len(shape) != 2
-                or any(type(item) is not int or item <= 0 for item in shape)
-                or evidence.get("dtype") != "<f8"
-                or evidence.get("encoding") != "zlib"
-                or not isinstance(relative, str)
-                or not relative
-                or PurePosixPath(relative).is_absolute()
-                or ".." in PurePosixPath(relative).parts
-                or evidence.get("compressed_byte_count", 0) <= 0
-            ):
-                raise ComparatorTuningError(
-                    "comparator selection checkpoint prezero evidence differs"
-                )
-    elif evidence != {
-        "applicable": False,
-        "status": "not_applicable",
-        "reason": "method_does_not_emit_p_pre_zero",
-        "shape": None,
-        "dtype": None,
-        "encoding": None,
-        "path": None,
-        "compressed_byte_count": 0,
-    }:
-        raise ComparatorTuningError(
-            "comparator selection checkpoint prezero evidence differs"
-        )
-    encoded = direct_json_value(value)
-    assert isinstance(encoded, Mapping)
+            "comparator selection checkpoint accepted direct record differs"
+        ) from error
     return encoded
 
 

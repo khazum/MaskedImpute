@@ -265,3 +265,104 @@ parametrizations whose unchanged `_direct_magic_record` test helper lacks
 test-helper `KeyError` before production code runs. The file is byte-unchanged
 from accepted base `160ca2f`, while the prescribed comparator, adjacent
 plan/checkpoint, audit, and static gates above all pass.
+
+## Controller independent-review fixes
+
+The controller's independent review of
+`160ca2f03075e610ed944c69b821c26b912884fb..e644dd4a0d0e992ce704cc0ac45f4cde5aae7526`
+reported two Important trust-boundary gaps. Both were reproduced with focused
+synthetic regressions before production changes.
+
+### Focused RED
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest \
+  tests/test_comparator_tuning.py -q -W error -p no:cacheprovider \
+  -k 'outside_accepted_direct_contract or integer_coercion_of_input_float'
+```
+
+Result: `7 failed, 107 deselected in 46.77s`.
+
+The five parameterized record probes proved that the builder accepted an
+invented intrinsic terminal reason, an invented measurement code, overlapping
+excluded/retained cell IDs, completed-only pre-zero fields on a noncompleted
+MaskImpute record, and completed pre-zero path `.`. The remaining two failures
+proved integer-coerced `total_count` was accepted by both the builder and
+loader.
+
+### Implementation
+
+The Task 11 record boundary no longer maintains parallel terminal semantics.
+For every one of the 2,896 records it reconstructs the accepted
+`ComparatorRunIdentity`, `DirectLogReceipt`, `DirectRunResult`,
+`DirectMetricRow`, and `DirectPreZeroEvidence` types; runs the accepted executor
+receipt bound and `validate_direct_evidence_semantics`; applies the accepted
+canonical safe-path rule; requires complete direct re-encoding equality; and
+enforces the per-record byte bound. The former duplicate terminal-status and
+evaluator-reason vocabularies were removed.
+
+Prepared inputs now restore list fields to the exact descriptor tuples,
+instantiate `PreparedInputDescriptor`, require exact primitive types including
+`float` for `total_count`, `minimum`, and `maximum`, and require complete direct
+re-encoding equality with the supplied mapping.
+
+### Focused GREEN
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest \
+  tests/test_comparator_tuning.py -q -W error -p no:cacheprovider \
+  -k 'outside_accepted_direct_contract or integer_coercion_of_input_float or noncanonical_completed_run_metric_reason'
+```
+
+Result: `8 passed, 106 deselected in 47.36s`.
+
+Candidate-value independence remained green:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest \
+  tests/test_comparator_tuning.py -q -W error -p no:cacheprovider \
+  -k 'candidate_values_cannot_change_complete_comparator_receipt'
+```
+
+Result: `1 passed, 113 deselected in 20.98s`.
+
+### Fresh complete and adjacent verification
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest \
+  tests/test_comparator_tuning.py -q -W error -p no:cacheprovider
+```
+
+Result: `114 passed in 219.26s (0:03:39)`.
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest \
+  tests/test_fair_comparator_plan.py tests/test_fair_comparator_checkpoint.py \
+  -q -W error -p no:cacheprovider
+```
+
+Result: `132 passed in 73.07s (0:01:13)`.
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest \
+  tests/test_selection_authority.py -q -W error -p no:cacheprovider \
+  -k 'scoped_direct_source_and_schema_migration_audit or scoped_direct_schema_audit_covers_every_synthetic_artifact or direct_closed_metadata_vocabularies_are_forbidden_token_free'
+```
+
+Result: `3 passed, 96 deselected in 2.96s`.
+
+### Fresh static verification
+
+```text
+ruff check maskimpute_benchmark/comparator_tuning.py \
+  scripts/select_comparator_configurations.py tests/test_comparator_tuning.py
+ruff format --check maskimpute_benchmark/comparator_tuning.py \
+  scripts/select_comparator_configurations.py tests/test_comparator_tuning.py
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m compileall -q \
+  maskimpute_benchmark scripts/select_comparator_configurations.py
+git diff --check
+```
+
+Output: `All checks passed!`, `3 files already formatted`; compilation and
+`git diff --check` exited zero without output. No real workload ran, and
+`.superpowers/sdd/progress.md` remained unchanged.

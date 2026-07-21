@@ -1136,7 +1136,90 @@ def test_selection_builder_rejects_noncanonical_completed_run_metric_reason(
     metric["status"] = "unavailable"
     metric["reason"] = "invented_reason"
 
-    with pytest.raises(ComparatorTuningError, match="metric reason"):
+    with pytest.raises(ComparatorTuningError, match="accepted direct record"):
+        comparator_tuning_module.build_comparator_selection_receipt(**malformed)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "invented_intrinsic_terminal_reason",
+        "invented_measurement_code",
+        "overlapping_cell_audit_ids",
+        "noncompleted_maskimpute_retains_completed_prezero_fields",
+        "noncanonical_completed_prezero_path",
+    ),
+)
+def test_selection_builder_rejects_record_outside_accepted_direct_contract(
+    complete_selection_fixture,
+    mutation: str,
+) -> None:
+    malformed = copy.deepcopy(complete_selection_fixture)
+    records = malformed["checkpoint"]["records"]
+    comparator_record = next(
+        record
+        for record in records
+        if record["run"]["identity"]["method"]["method_id"] == "magic"
+        and record["run"]["identity"]["configuration_kind"] == "comparator_tuning"
+    )
+    maskimpute_record = next(
+        record
+        for record in records
+        if record["run"]["identity"]["method"]["method_id"] == "maskimpute"
+    )
+
+    if mutation == "invented_intrinsic_terminal_reason":
+        run = comparator_record["run"]
+        run["status"] = "unavailable"
+        run["reason"] = "invented_terminal_reason"
+        run["stdout"]["terminal_reason"] = run["reason"]
+        run["stderr"]["terminal_reason"] = run["reason"]
+        for metric in comparator_record["metrics"]:
+            metric["value"] = None
+            metric["n"] = 0
+            metric["status"] = run["status"]
+            metric["reason"] = run["reason"]
+    elif mutation == "invented_measurement_code":
+        comparator_record["run"]["rss_measurement"] = "invented_measurement_code"
+    elif mutation == "overlapping_cell_audit_ids":
+        run = comparator_record["run"]
+        shared = run["retained_cell_ids"][0]
+        run["excluded_cell_count"] = 1
+        run["excluded_cell_ids"] = [shared]
+    elif mutation == "noncompleted_maskimpute_retains_completed_prezero_fields":
+        run = maskimpute_record["run"]
+        run["status"] = "unavailable"
+        run["reason"] = "adapter_not_registered"
+        run["stdout"]["terminal_reason"] = run["reason"]
+        run["stderr"]["terminal_reason"] = run["reason"]
+        for metric in maskimpute_record["metrics"]:
+            metric["value"] = None
+            metric["n"] = 0
+            metric["status"] = run["status"]
+            metric["reason"] = run["reason"]
+        evidence = maskimpute_record["p_pre_zero_evidence"]
+        evidence["status"] = run["status"]
+        evidence["reason"] = run["reason"]
+    else:
+        maskimpute_record["p_pre_zero_evidence"]["path"] = "."
+
+    with pytest.raises(ComparatorTuningError, match="accepted direct record"):
+        comparator_tuning_module.build_comparator_selection_receipt(**malformed)
+
+
+def test_selection_builder_rejects_integer_coercion_of_input_float(
+    complete_selection_fixture,
+) -> None:
+    malformed = copy.deepcopy(complete_selection_fixture)
+    plan_input = malformed["checkpoint"]["plan_snapshot"]["inputs"][0]
+    descriptor_input = malformed["checkpoint"]["input_descriptors"][0]
+    assert type(plan_input["total_count"]) is float
+    assert plan_input["total_count"].is_integer()
+    coerced = int(plan_input["total_count"])
+    plan_input["total_count"] = coerced
+    descriptor_input["total_count"] = coerced
+
+    with pytest.raises(ComparatorTuningError, match="input descriptor"):
         comparator_tuning_module.build_comparator_selection_receipt(**malformed)
 
 
@@ -1389,6 +1472,37 @@ def test_comparator_selection_loader_recomputes_and_rejects_tamper(
         )
     target.write_bytes(baseline + b" ")
     with pytest.raises(ComparatorTuningError, match="canonical"):
+        comparator_tuning_module.load_comparator_selection_receipt(
+            complete_checkpoint_tree
+        )
+
+
+def test_comparator_selection_loader_rejects_integer_coercion_of_input_float(
+    complete_checkpoint_tree: Path,
+) -> None:
+    comparator_tuning_module.publish_comparator_selection(complete_checkpoint_tree)
+    target = complete_checkpoint_tree / COMPARATOR_SELECTION_RELATIVE_PATH
+    receipt = json.loads(target.read_bytes())
+    plan_input = receipt["plan_snapshot"]["inputs"][0]
+    descriptor_input = receipt["input_descriptors"][0]
+    assert type(plan_input["total_count"]) is float
+    assert plan_input["total_count"].is_integer()
+    coerced = int(plan_input["total_count"])
+    plan_input["total_count"] = coerced
+    descriptor_input["total_count"] = coerced
+    target.write_text(
+        json.dumps(
+            receipt,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ComparatorTuningError, match="input descriptor"):
         comparator_tuning_module.load_comparator_selection_receipt(
             complete_checkpoint_tree
         )
