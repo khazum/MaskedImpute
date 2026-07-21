@@ -812,6 +812,8 @@ def _validate_plan(plan: DirectCompetitionPlan) -> dict[str, object]:
         "inputs",
         "entries",
         "configurations",
+        "comparator_smoke_receipt",
+        "comparator_smoke_receipt_bytes",
     }:
         raise RunnerContractError("direct checkpoint plan snapshot is invalid")
     return snapshot

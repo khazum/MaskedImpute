@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import json
 from typing import Literal
 
 import numpy as np
@@ -132,9 +133,49 @@ class DirectCompetitionPlan:
     inputs: tuple[PreparedInputDescriptor, ...]
     entries: tuple[DirectPlanEntry, ...]
     configurations: tuple[DirectAuthorizedConfiguration, ...]
+    comparator_smoke_receipt: tuple[tuple[str, object], ...] = ()
+    comparator_smoke_receipt_bytes: bytes = b""
 
     def to_dict(self) -> dict[str, object]:
         return _direct_plan_to_json(self)
+
+
+def bind_comparator_smoke_receipt_to_plan(
+    plan: DirectCompetitionPlan,
+    receipt: Mapping[str, object],
+    receipt_bytes: bytes,
+    *,
+    authority: object,
+    registry: MethodRegistry,
+) -> DirectCompetitionPlan:
+    """Bind complete validated smoke evidence into one immutable direct plan."""
+
+    from .comparator_tuning import (
+        ComparatorTuningAuthority,
+        validate_comparator_smoke_receipt,
+    )
+
+    if not isinstance(plan, DirectCompetitionPlan):
+        raise TypeError("plan must be a DirectCompetitionPlan")
+    if not isinstance(authority, ComparatorTuningAuthority):
+        raise TypeError("authority must be a ComparatorTuningAuthority")
+    validated = validate_comparator_smoke_receipt(
+        receipt,
+        receipt_bytes,
+        authority=authority,
+        registry=registry,
+    )
+    try:
+        frozen = freeze_direct_mapping(validated)
+    except ValueError as error:
+        raise RunnerContractError(
+            "comparator smoke receipt is not a complete direct value"
+        ) from error
+    return replace(
+        plan,
+        comparator_smoke_receipt=frozen,
+        comparator_smoke_receipt_bytes=receipt_bytes,
+    )
 
 
 def _evaluator_seed_and_draw(prepared: PreparedDataset) -> tuple[int, int]:
@@ -464,6 +505,34 @@ def _validate_direct_competition_plan_structure(
         raise RunnerContractError("direct plan schema, mode, or revision differs")
     if not plan.inputs or not plan.configurations or not plan.entries:
         raise RunnerContractError("direct plan denominator must not be empty")
+    has_smoke_receipt = bool(plan.comparator_smoke_receipt)
+    has_smoke_bytes = bool(plan.comparator_smoke_receipt_bytes)
+    if has_smoke_receipt is not has_smoke_bytes:
+        raise RunnerContractError("direct plan smoke receipt evidence is incomplete")
+    if has_smoke_receipt:
+        smoke_value = direct_json_value(
+            plan.comparator_smoke_receipt,
+            payload=True,
+        )
+        try:
+            expected_smoke_bytes = (
+                json.dumps(
+                    smoke_value,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+                + b"\n"
+            )
+        except (TypeError, ValueError) as error:
+            raise RunnerContractError(
+                "direct plan smoke receipt is not canonical JSON"
+            ) from error
+        if plan.comparator_smoke_receipt_bytes != expected_smoke_bytes:
+            raise RunnerContractError(
+                "direct plan smoke receipt bytes differ from its complete value"
+            )
     input_ids = tuple(descriptor.dataset_id for descriptor in plan.inputs)
     if (
         any(
@@ -764,6 +833,7 @@ def validate_direct_competition_plan(
     prepared_datasets: Mapping[str, PreparedDataset],
     authority: RunnerAuthority,
     datasets: Sequence[DatasetBinding],
+    _require_smoke_receipt: bool = True,
 ) -> None:
     """Validate the exact production direct denominator and its authorities."""
 
@@ -773,6 +843,8 @@ def validate_direct_competition_plan(
         raise RunnerContractError("production direct plan requires exactly 16 inputs")
     if not isinstance(authority, RunnerAuthority):
         raise TypeError("authority must be a RunnerAuthority")
+    if type(_require_smoke_receipt) is not bool:
+        raise TypeError("_require_smoke_receipt must be a bool")
     dataset_values = tuple(datasets)
     if not all(isinstance(value, DatasetBinding) for value in dataset_values):
         raise TypeError("datasets must contain DatasetBinding values")
@@ -782,12 +854,34 @@ def validate_direct_competition_plan(
         registry=registry,
         prepared_datasets=prepared_datasets,
     )
+    has_smoke_receipt = bool(plan.comparator_smoke_receipt)
     canonical_authorities = (
         (load_runner_authority(),)
         if authority.plan_scope == "base_full_panel"
         else (load_v28_revision_authority(), load_v29_revision_authority())
     )
-    if not any(direct_equal(authority, value) for value in canonical_authorities):
+    authority_is_canonical = any(
+        direct_equal(authority, value) for value in canonical_authorities
+    )
+    if not authority_is_canonical and authority.plan_scope == "revision_candidate_only":
+        from .runner import (
+            load_activated_v28_revision_authority,
+            load_activated_v29_revision_authority,
+        )
+
+        activated_authorities = []
+        for loader in (
+            load_activated_v28_revision_authority,
+            load_activated_v29_revision_authority,
+        ):
+            try:
+                activated_authorities.append(loader())
+            except RunnerContractError:
+                continue
+        authority_is_canonical = any(
+            direct_equal(authority, value) for value in activated_authorities
+        )
+    if not authority_is_canonical:
         raise RunnerContractError(
             "production direct runner authority differs from the fixed authority"
         )
@@ -813,10 +907,45 @@ def validate_direct_competition_plan(
         tuple(prepared_datasets[value.dataset_id] for value in dataset_values),
         _validate=False,
     )
+    if has_smoke_receipt:
+        expected_plan = replace(
+            expected_plan,
+            comparator_smoke_receipt=plan.comparator_smoke_receipt,
+            comparator_smoke_receipt_bytes=plan.comparator_smoke_receipt_bytes,
+        )
     if not direct_equal(plan, expected_plan):
         raise RunnerContractError(
             "production direct plan differs from canonical authority"
         )
+    if _require_smoke_receipt and not has_smoke_receipt:
+        raise RunnerContractError(
+            "production direct plan requires the comparator smoke receipt"
+        )
+    if has_smoke_receipt:
+        from .comparator_tuning import (
+            ComparatorTuningError,
+            validate_comparator_smoke_receipt,
+        )
+
+        payload = direct_json_value(
+            plan.comparator_smoke_receipt,
+            payload=True,
+        )
+        if type(payload) is not dict:
+            raise RunnerContractError(
+                "production direct plan smoke receipt is invalid"
+            )
+        try:
+            validate_comparator_smoke_receipt(
+                payload,
+                plan.comparator_smoke_receipt_bytes,
+                authority=authority.comparator_tuning,
+                registry=registry,
+            )
+        except (ComparatorTuningError, TypeError, ValueError) as error:
+            raise RunnerContractError(
+                "production direct plan smoke receipt is invalid"
+            ) from error
 
 
 def _build_direct_competition_plan(
@@ -936,6 +1065,7 @@ def _build_direct_competition_plan(
             },
             authority=authority,
             datasets=dataset_values,
+            _require_smoke_receipt=False,
         )
     return plan
 
@@ -961,6 +1091,13 @@ def _direct_plan_to_json(plan: DirectCompetitionPlan) -> dict[str, object]:
     encoded = direct_json_value(plan)
     if not isinstance(encoded, dict):
         raise AssertionError("direct plan encoding must produce an object")
+    encoded["comparator_smoke_receipt"] = direct_json_value(
+        plan.comparator_smoke_receipt,
+        payload=True,
+    )
+    encoded["comparator_smoke_receipt_bytes"] = list(
+        plan.comparator_smoke_receipt_bytes
+    )
     return encoded
 
 
@@ -970,6 +1107,7 @@ __all__ = [
     "DirectCompetitionPlan",
     "DirectPlanEntry",
     "PreparedInputDescriptor",
+    "bind_comparator_smoke_receipt_to_plan",
     "build_direct_competition_plan",
     "describe_prepared_input",
     "direct_json_value",

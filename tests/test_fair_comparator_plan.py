@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import maskimpute_benchmark.fair_comparator_checkpoint as direct_checkpoint_module
+import maskimpute_benchmark.fair_comparator_plan as direct_plan_module
 from maskimpute_benchmark.comparator_tuning import (
     comparator_method_binding,
     load_comparator_tuning_authority,
@@ -45,6 +47,27 @@ METHODS_PATH = ROOT / "study/methods.json"
 MECHANISMS = ("symsim", "sergio", "sparsim", "semisynthetic")
 VIEWS = ("moderate", "severe")
 FORBIDDEN_IDENTITY_TOKENS = ("hash", "digest", "checksum", "fingerprint", "sha")
+
+
+def _allow_unbound_smoke_only_for_unrelated_structural_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_validate = direct_plan_module.validate_direct_competition_plan
+
+    def validate_without_smoke(plan, **kwargs):
+        kwargs["_require_smoke_receipt"] = False
+        return real_validate(plan, **kwargs)
+
+    monkeypatch.setattr(
+        direct_plan_module,
+        "validate_direct_competition_plan",
+        validate_without_smoke,
+    )
+    monkeypatch.setattr(
+        direct_checkpoint_module,
+        "validate_direct_competition_plan",
+        validate_without_smoke,
+    )
 
 
 def _manifest_payload() -> dict[str, object]:
@@ -520,6 +543,7 @@ def test_public_direct_boundaries_reject_coherent_15_input_plan(
 def test_public_direct_handoff_never_accepts_caller_selected_rows(
     tmp_path: Path,
     selection: tuple[int, ...],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
     from maskimpute_benchmark.development_evaluation import (
@@ -527,6 +551,7 @@ def test_public_direct_handoff_never_accepts_caller_selected_rows(
         project_direct_comparator_evidence,
     )
 
+    _allow_unbound_smoke_only_for_unrelated_structural_test(monkeypatch)
     plan, registry, datasets, prepared = _direct_fixture()
     authority = load_runner_authority()
     comparator_authority = load_comparator_tuning_authority(
@@ -564,13 +589,17 @@ def test_public_direct_handoff_never_accepts_caller_selected_rows(
         )
 
 
-def test_public_direct_handoff_rejects_candidate_only_plan(tmp_path: Path) -> None:
+def test_public_direct_handoff_rejects_candidate_only_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
     from maskimpute_benchmark.development_evaluation import (
         DevelopmentEvaluationError,
         project_direct_comparator_evidence,
     )
 
+    _allow_unbound_smoke_only_for_unrelated_structural_test(monkeypatch)
     _base, registry, datasets, prepared = _direct_fixture()
     authority = load_v28_revision_authority()
     plan = build_direct_competition_plan(registry, datasets, authority, prepared)
@@ -675,6 +704,8 @@ def test_direct_plan_has_exact_denominator_and_no_summary_fields() -> None:
         "inputs",
         "entries",
         "configurations",
+        "comparator_smoke_receipt",
+        "comparator_smoke_receipt_bytes",
     }
     assert not _contains_forbidden_identity_key(encoded)
 
@@ -743,7 +774,9 @@ def test_direct_plan_carries_full_frozen_methods_payloads_and_prepared_inputs() 
 
 def test_real_plan_all_dca_requests_and_checkpoint_json_round_trip(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _allow_unbound_smoke_only_for_unrelated_structural_test(monkeypatch)
     plan, registry, datasets, prepared = _direct_fixture()
     runner_authority = load_runner_authority()
     comparator_authority = load_comparator_tuning_authority(
@@ -943,14 +976,49 @@ def test_direct_revision_plan_contains_one_48_row_candidate(loader) -> None:
 def test_runner_fair_comparator_entry_point_delegates_to_direct_plan() -> None:
     direct, registry, datasets, prepared = _direct_fixture()
 
-    delegated = build_fair_comparator_plan(
+    with pytest.raises(TypeError, match="smoke_receipt"):
+        build_fair_comparator_plan(
+            registry,
+            datasets,
+            load_runner_authority(),
+            prepared,
+        )
+    assert direct == build_direct_competition_plan(
         registry,
         datasets,
         load_runner_authority(),
         prepared,
     )
 
-    assert delegated == direct
+
+def test_production_plan_and_checkpoint_reject_unbound_smoke_evidence(
+    tmp_path: Path,
+) -> None:
+    plan, registry, datasets, prepared = _direct_fixture()
+    prepared_by_id = {
+        value.binding.dataset_id: value for value in prepared
+    }
+    authority = load_runner_authority()
+
+    with pytest.raises(RunnerContractError, match="smoke receipt"):
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_by_id,
+            authority=authority,
+            datasets=datasets,
+        )
+    checkpoint = tmp_path / "checkpoint.json"
+    with pytest.raises(RunnerContractError, match="smoke receipt"):
+        DirectCheckpointStore(checkpoint).write(
+            plan,
+            (),
+            registry=registry,
+            prepared_datasets=prepared_by_id,
+            authority=authority,
+            datasets=datasets,
+        )
+    assert not checkpoint.exists()
 
 
 def test_prepared_descriptor_normalizes_real_h5ad_mask_seed(tmp_path: Path) -> None:

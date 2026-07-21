@@ -19,9 +19,11 @@ from .comparator_tuning import (
     DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
     DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
     ComparatorConfiguration,
+    ComparatorSmokeInputDescriptor,
     ComparatorTuningAuthority,
     ComparatorTuningError,
     comparator_method_binding,
+    comparator_smoke_input_descriptor,
     encode_comparator_configuration,
     validate_comparator_tuning_authority,
 )
@@ -242,6 +244,7 @@ class DirectExecutionRequest:
     timeout_seconds: float
     max_rss_bytes: int
     max_gpu_bytes: int
+    smoke_fixture: ComparatorSmokeInputDescriptor | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, ComparatorRunIdentity):
@@ -255,11 +258,31 @@ class DirectExecutionRequest:
             raise RunnerContractError("timeout_seconds must be positive")
         _require_nonnegative_integer(self.max_rss_bytes, "max_rss_bytes")
         _require_nonnegative_integer(self.max_gpu_bytes, "max_gpu_bytes")
+        if self.smoke_fixture is not None:
+            if not isinstance(
+                self.smoke_fixture,
+                ComparatorSmokeInputDescriptor,
+            ):
+                raise TypeError(
+                    "smoke_fixture must be a ComparatorSmokeInputDescriptor or None"
+                )
+            try:
+                observed_fixture = comparator_smoke_input_descriptor(
+                    self.method_input
+                )
+            except ComparatorTuningError as error:
+                raise RunnerContractError(
+                    "direct smoke request fixture differs from the fixed input"
+                ) from error
+            if not _direct_equal(self.smoke_fixture, observed_fixture):
+                raise RunnerContractError(
+                    "direct smoke request fixture descriptor differs"
+                )
 
     def to_dict(self) -> dict[str, object]:
         """Serialize only direct identity and non-content execution bounds."""
 
-        return {
+        encoded = {
             "identity": _identity_dict(self.identity),
             "method": direct_json_value(self.identity.method),
             "input": {
@@ -272,6 +295,9 @@ class DirectExecutionRequest:
             "max_rss_bytes": self.max_rss_bytes,
             "max_gpu_bytes": self.max_gpu_bytes,
         }
+        if self.smoke_fixture is not None:
+            encoded["smoke_fixture"] = direct_json_value(self.smoke_fixture)
+        return encoded
 
 
 @dataclass(frozen=True, slots=True)

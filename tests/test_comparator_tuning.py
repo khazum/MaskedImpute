@@ -1,25 +1,40 @@
 import copy
 from dataclasses import asdict, replace
+import importlib.util
 import inspect
 import json
 from pathlib import Path
+import shutil
+import sys
 
 import pytest
 
 from maskimpute_benchmark.comparator_tuning import (
     AUTHORITY_REVISION,
+    ComparatorSmokeOutcome,
     ComparatorTuningError,
     DEVELOPMENT_MAX_CHECKPOINT_BYTES,
     DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
     DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
     DEVELOPMENT_MAX_RECORD_BYTES,
     DEVELOPMENT_STORAGE_RESERVE_BYTES,
+    bind_comparator_configuration_identity,
+    build_comparator_smoke_input,
+    build_comparator_smoke_receipt,
     decode_comparator_configuration,
     encode_comparator_configuration,
+    load_comparator_smoke_receipt,
     load_comparator_tuning_authority,
     parse_comparator_tuning_authority,
+    run_comparator_tuning_smoke,
 )
+import maskimpute_benchmark.comparator_tuning as comparator_tuning_module
 from maskimpute_benchmark.methods import load_method_registry
+from maskimpute_benchmark.runner import (
+    AdapterOutcome,
+    ExecutionEnvironmentRegistry,
+    RepositoryAdapterDispatcher,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +107,404 @@ def _write_authority(repository: Path, raw: bytes) -> None:
     authority_path = repository / "study/comparator_tuning.json"
     authority_path.parent.mkdir()
     authority_path.write_bytes(raw)
+
+
+@pytest.fixture(scope="module")
+def smoke_registry():
+    return load_method_registry(ROOT / "study/methods.json")
+
+
+@pytest.fixture(scope="module")
+def smoke_authority(smoke_registry):
+    return load_comparator_tuning_authority(
+        ROOT,
+        registry=smoke_registry,
+        require_clean=False,
+    )
+
+
+@pytest.fixture(scope="module")
+def smoke_bound_rows(smoke_registry, smoke_authority):
+    rows = tuple(
+        bind_comparator_configuration_identity(
+            row,
+            smoke_registry.by_id(row.method_id),
+            smoke_authority,
+        )
+        for row in smoke_authority.configurations
+    )
+    assert tuple(
+        (
+            row.configuration.method_id,
+            row.configuration.configuration_id,
+        )
+        for row in rows
+    ) == tuple(
+        (row.method_id, row.configuration_id)
+        for row in smoke_authority.configurations
+    )
+    assert tuple(row.configuration for row in rows) == smoke_authority.configurations
+    return rows
+
+
+@pytest.fixture(scope="module")
+def complete_smoke_outcomes(smoke_bound_rows):
+    return tuple(
+        ComparatorSmokeOutcome(
+            configuration=row,
+            status="completed",
+            reason=None,
+            runtime_seconds=1.0,
+            peak_rss_bytes=1024,
+            peak_gpu_bytes=0,
+            rss_measurement="fixed_test_sampler",
+            gpu_measurement="fixed_test_sampler",
+        )
+        for row in smoke_bound_rows
+    )
+
+
+def test_smoke_input_is_exact_truth_free_900_by_500() -> None:
+    method_input = build_comparator_smoke_input()
+    assert method_input.shape == (900, 500)
+    assert method_input.counts[0, 0] == 0
+    assert method_input.counts[17, 31] == (
+        17 * 17 + 31 * 31 + 7 * (17 ^ 31)
+    ) % 6
+    assert len(method_input.obs_covariates) == 1
+    batch = method_input.obs_covariates[0]
+    assert batch.name == "batch"
+    assert batch.categories == ("batch-0", "batch-1")
+    assert batch.values == tuple(f"batch-{index % 2}" for index in range(900))
+    assert not hasattr(method_input, "truth")
+
+
+def test_smoke_receipt_requires_all_34_completed_and_projected_budget(
+    complete_smoke_outcomes,
+    smoke_authority,
+    smoke_registry,
+    smoke_bound_rows,
+) -> None:
+    receipt = build_comparator_smoke_receipt(
+        complete_smoke_outcomes,
+        authority=smoke_authority,
+        registry=smoke_registry,
+        bound_configurations=smoke_bound_rows,
+    )
+    assert receipt["planned_configuration_count"] == 34
+    assert receipt["completed_configuration_count"] == 34
+    assert receipt["projection_multiplier"] == 48
+    assert receipt["status"] == "ready"
+    broken = list(complete_smoke_outcomes)
+    broken[0] = replace(
+        broken[0],
+        status="unavailable",
+        reason="smoke_unavailable",
+    )
+    with pytest.raises(
+        ComparatorTuningError,
+        match="all configurations must complete",
+    ):
+        build_comparator_smoke_receipt(
+            broken,
+            authority=smoke_authority,
+            registry=smoke_registry,
+            bound_configurations=smoke_bound_rows,
+        )
+
+
+def _write_smoke_repository(repository: Path) -> None:
+    (repository / "study").mkdir(parents=True)
+    shutil.copy2(ROOT / "study/methods.json", repository / "study/methods.json")
+    shutil.copy2(
+        ROOT / "study/comparator_tuning.json",
+        repository / "study/comparator_tuning.json",
+    )
+
+
+def test_smoke_run_uses_all_bound_rows_and_create_only_complete_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    _write_smoke_repository(repository)
+    calls = []
+    real_loader = load_comparator_tuning_authority
+
+    def load_untracked_fixture(selected_repository, *, registry, require_clean=True):
+        return real_loader(
+            selected_repository,
+            registry=registry,
+            require_clean=False,
+        )
+
+    monkeypatch.setattr(
+        comparator_tuning_module,
+        "load_comparator_tuning_authority",
+        load_untracked_fixture,
+    )
+
+    def fake_executor(request, _dispatcher, _authority):
+        calls.append(request)
+        assert request.model_seed == 42
+        assert request.fixture.shape == (900, 500)
+        assert request.method_input.shape == (900, 500)
+        return ComparatorSmokeOutcome(
+            configuration=request.configuration,
+            status="completed",
+            reason=None,
+            runtime_seconds=1.0,
+            peak_rss_bytes=1024,
+            peak_gpu_bytes=0,
+            rss_measurement="fixed_test_sampler",
+            gpu_measurement="fixed_test_sampler",
+        )
+
+    receipt = run_comparator_tuning_smoke(
+        repository,
+        _executor=fake_executor,
+    )
+    registry = load_method_registry(repository / "study/methods.json")
+    authority = load_comparator_tuning_authority(
+        repository,
+        registry=registry,
+        require_clean=False,
+    )
+    assert tuple(
+        (
+            request.configuration.configuration.method_id,
+            request.configuration.configuration.configuration_id,
+        )
+        for request in calls
+    ) == tuple(
+        (row.method_id, row.configuration_id) for row in authority.configurations
+    )
+    assert len(calls) == 34
+    assert load_comparator_smoke_receipt(repository, authority, registry) == receipt
+    path = repository / authority.smoke_receipt_path
+    first_bytes = path.read_bytes()
+    assert run_comparator_tuning_smoke(
+        repository,
+        _executor=fake_executor,
+    ) == receipt
+    assert path.read_bytes() == first_bytes
+
+    def changed_executor(request, _dispatcher, _authority):
+        outcome = fake_executor(request, _dispatcher, _authority)
+        return replace(outcome, runtime_seconds=2.0)
+
+    with pytest.raises(ComparatorTuningError, match="conflicts"):
+        run_comparator_tuning_smoke(
+            repository,
+            _executor=changed_executor,
+        )
+    assert path.read_bytes() == first_bytes
+
+    def failing_executor(_request, _dispatcher, _authority):
+        raise RuntimeError("private executor detail")
+
+    with pytest.raises(ComparatorTuningError, match="adapter boundary failed"):
+        run_comparator_tuning_smoke(
+            repository,
+            _executor=failing_executor,
+        )
+    assert path.read_bytes() == first_bytes
+
+
+def test_spawned_smoke_request_retains_complete_fixed_fixture_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+    smoke_authority,
+    smoke_bound_rows,
+    smoke_registry,
+) -> None:
+    method_input = build_comparator_smoke_input()
+    descriptor = comparator_tuning_module.comparator_smoke_input_descriptor(
+        method_input
+    )
+    request = comparator_tuning_module._ComparatorSmokeRequest(
+        configuration=smoke_bound_rows[0],
+        fixture=descriptor,
+        method_input=method_input,
+        method_spec=smoke_registry.by_id(
+            smoke_bound_rows[0].configuration.method_id
+        ),
+        model_seed=42,
+        ordinal=1,
+    )
+    environments = ExecutionEnvironmentRegistry(
+        repository_root=ROOT.resolve(),
+        executable_paths=(),
+        lock_only_environment_ids=(),
+        registry_sha256="a" * 64,
+        runtime_lock_sha256=None,
+        runtime_lock_path=None,
+        benchmark_python=Path(sys.executable),
+        r_library_paths=(),
+        execution_environment_sha256="b" * 64,
+        python_spawn_search_path=(str(ROOT.resolve()),),
+        runtime_identity_snapshots=(),
+        runtime_closure_paths_sha256s=(),
+        runtime_snapshot=None,
+    )
+    dispatcher = RepositoryAdapterDispatcher(
+        ROOT,
+        environments,
+        comparator_tuning_authority=smoke_authority,
+    )
+    captured = {}
+
+    def fake_spawn(direct_request, _executor, **_kwargs):
+        captured["request"] = direct_request
+        return AdapterOutcome.failed(
+            "adapter_exception",
+            runtime_seconds=1.0,
+            peak_rss_bytes=1024,
+            peak_gpu_bytes=0,
+            rss_measurement="linux_proc_process_tree_rss",
+            gpu_measurement="not_applicable_cpu_only_method",
+        )
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.runner.execute_direct_adapter_in_spawned_process",
+        fake_spawn,
+    )
+    comparator_tuning_module._execute_smoke_request_in_spawned_dispatcher(
+        request,
+        dispatcher,
+        smoke_authority,
+    )
+
+    inner = captured["request"]
+    assert inner.smoke_fixture == descriptor
+    assert inner.to_dict()["smoke_fixture"] == json.loads(
+        json.dumps(asdict(descriptor))
+    )
+
+
+def test_smoke_loader_recomputes_complete_receipt(
+    tmp_path: Path,
+    complete_smoke_outcomes,
+    smoke_authority,
+    smoke_registry,
+    smoke_bound_rows,
+) -> None:
+    repository = tmp_path / "repository"
+    _write_smoke_repository(repository)
+    receipt = build_comparator_smoke_receipt(
+        complete_smoke_outcomes,
+        authority=smoke_authority,
+        registry=smoke_registry,
+        bound_configurations=smoke_bound_rows,
+    )
+    path = repository / smoke_authority.smoke_receipt_path
+    path.parent.mkdir(parents=True)
+    path.write_bytes(
+        json.dumps(
+            receipt,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    local_registry = load_method_registry(repository / "study/methods.json")
+    local_authority = load_comparator_tuning_authority(
+        repository,
+        registry=local_registry,
+        require_clean=False,
+    )
+    loaded = load_comparator_smoke_receipt(
+        repository,
+        local_authority,
+        local_registry,
+    )
+    assert loaded == receipt
+    changed = copy.deepcopy(receipt)
+    changed["fixture"]["maximum"] = 3.0
+    path.write_bytes(
+        json.dumps(
+            changed,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    with pytest.raises(ComparatorTuningError, match="differs"):
+        load_comparator_smoke_receipt(
+            repository,
+            local_authority,
+            local_registry,
+        )
+    changed = copy.deepcopy(receipt)
+    changed["outcomes"][0]["runtime_seconds"] = 1
+    path.write_bytes(
+        json.dumps(
+            changed,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    with pytest.raises(ComparatorTuningError, match="measurement is invalid"):
+        load_comparator_smoke_receipt(
+            repository,
+            local_authority,
+            local_registry,
+        )
+    changed = copy.deepcopy(receipt)
+    changed["outcomes"][0]["runtime_seconds"] = -0.0
+    path.write_bytes(
+        json.dumps(
+            changed,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        + b"\n"
+    )
+    with pytest.raises(ComparatorTuningError, match="measurement is invalid"):
+        load_comparator_smoke_receipt(
+            repository,
+            local_authority,
+            local_registry,
+        )
+
+
+def test_smoke_cli_has_no_override_and_never_runs_real_workload(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    script = ROOT / "scripts/run_comparator_tuning_smoke.py"
+    spec = importlib.util.spec_from_file_location("task9_smoke_cli", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module,
+        "run_comparator_tuning_smoke",
+        lambda repository: {
+            "status": "ready",
+            "planned_configuration_count": 34,
+            "completed_configuration_count": 34,
+        },
+    )
+    monkeypatch.setattr(sys, "argv", [str(script)])
+    assert module.main() == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "path": "artifacts/study/development/evaluation/comparator_smoke.json",
+        "status": "ready",
+        "planned_configuration_count": 34,
+        "completed_configuration_count": 34,
+    }
+    monkeypatch.setattr(sys, "argv", [str(script), "--repository", str(ROOT)])
+    with pytest.raises(SystemExit, match="2"):
+        module.main()
 
 
 def test_tracked_comparator_authority_uses_only_direct_identity() -> None:

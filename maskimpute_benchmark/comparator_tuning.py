@@ -5,11 +5,16 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 import math
-from pathlib import Path
+import os
+from pathlib import Path, PurePosixPath
 import re
 import stat
+import sys
+import tempfile
 from types import MappingProxyType
-from typing import Any, Mapping, TypeAlias
+from typing import Any, Callable, Mapping, Sequence, TypeAlias
+
+import numpy as np
 
 from .methods import (
     AFMFConfig,
@@ -22,9 +27,13 @@ from .methods import (
     SCSDaeConfig,
     SCVIConfig,
     SCZivaConfig,
+    CovariateColumn,
+    MethodInput,
+    load_method_registry,
 )
 from .methods import MethodRegistry
 from .methods.base import MethodSpec
+from .direct_values import direct_equal, direct_json_value, freeze_direct_mapping
 
 
 DEVELOPMENT_MAX_LOG_RECEIPT_BYTES = 64 * 1024
@@ -432,6 +441,51 @@ class BoundComparatorConfiguration:
     method: ComparatorMethodBinding
 
 
+@dataclass(frozen=True, slots=True)
+class ComparatorSmokeInputDescriptor:
+    """Complete readable description of the fixed truth-free smoke fixture."""
+
+    schema_version: int
+    source_reference: str
+    preprocessing_revision: str
+    shape: tuple[int, int]
+    dtype: str
+    cell_ids: tuple[str, ...]
+    gene_ids: tuple[str, ...]
+    batch_labels: tuple[str, ...]
+    total_count: float
+    nonzero_count: int
+    minimum: float
+    maximum: float
+    count_formula: str
+    batch_rule: str
+    normalization: object
+
+
+@dataclass(frozen=True, slots=True)
+class ComparatorSmokeOutcome:
+    """Resource-only terminal evidence for one fixed smoke configuration."""
+
+    configuration: BoundComparatorConfiguration
+    status: str
+    reason: str | None
+    runtime_seconds: float
+    peak_rss_bytes: int
+    peak_gpu_bytes: int
+    rss_measurement: str
+    gpu_measurement: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ComparatorSmokeRequest:
+    configuration: BoundComparatorConfiguration
+    fixture: ComparatorSmokeInputDescriptor
+    method_input: MethodInput
+    method_spec: MethodSpec
+    model_seed: int
+    ordinal: int
+
+
 def comparator_method_binding(method_spec: MethodSpec) -> ComparatorMethodBinding:
     """Project exactly the registry fields required for comparator execution."""
 
@@ -507,6 +561,643 @@ def bind_comparator_configuration_identity(
         ),
         method=comparator_method_binding(method_spec),
     )
+
+
+def build_comparator_smoke_input() -> MethodInput:
+    """Build the exact fixed 900-by-500 truth-free adapter input."""
+
+    counts = np.fromfunction(
+        lambda cell, gene: (
+            17 * cell.astype(np.int64)
+            + 31 * gene.astype(np.int64)
+            + 7
+            * np.bitwise_xor(
+                cell.astype(np.int64),
+                gene.astype(np.int64),
+            )
+        )
+        % 6,
+        (900, 500),
+        dtype=np.int64,
+    )
+    count_bytes = np.asarray(counts, dtype="<f8", order="C").tobytes(order="C")
+    batch_values = tuple(f"batch-{index % 2}" for index in range(900))
+    return MethodInput(
+        "0" * 64,
+        tuple(f"smoke-cell-{index:04d}" for index in range(900)),
+        tuple(f"smoke-gene-{index:04d}" for index in range(500)),
+        (900, 500),
+        (
+            CovariateColumn(
+                name="batch",
+                kind="categorical",
+                dtype="category",
+                values=batch_values,
+                categories=("batch-0", "batch-1"),
+                ordered=False,
+                codes=tuple(index % 2 for index in range(900)),
+            ),
+        ),
+        (),
+        count_bytes,
+        b'"raw_counts"',
+    )
+
+
+def comparator_smoke_input_descriptor(
+    method_input: MethodInput,
+) -> ComparatorSmokeInputDescriptor:
+    """Return the full fixed fixture description without a content summary."""
+
+    if not isinstance(method_input, MethodInput):
+        raise TypeError("method_input must be a MethodInput")
+    expected = build_comparator_smoke_input()
+    if (
+        not direct_equal(method_input.obs_ids, expected.obs_ids)
+        or not direct_equal(method_input.var_ids, expected.var_ids)
+        or not direct_equal(method_input.shape, expected.shape)
+        or not direct_equal(method_input.obs_covariates, expected.obs_covariates)
+        or not direct_equal(method_input.var_covariates, expected.var_covariates)
+        or not direct_equal(method_input.normalization, expected.normalization)
+        or method_input.counts.dtype.str != "<f8"
+        or not np.array_equal(method_input.counts, expected.counts)
+    ):
+        raise ComparatorTuningError("comparator smoke fixture differs from the fixed input")
+    counts = method_input.counts
+    batch = method_input.obs_covariates[0]
+    return ComparatorSmokeInputDescriptor(
+        schema_version=1,
+        source_reference="tracked-fixed-truth-free-comparator-smoke",
+        preprocessing_revision="raw-counts-v1",
+        shape=(900, 500),
+        dtype=counts.dtype.str,
+        cell_ids=method_input.obs_ids,
+        gene_ids=method_input.var_ids,
+        batch_labels=tuple(str(value) for value in batch.values),
+        total_count=float(np.sum(counts, dtype=np.float64)),
+        nonzero_count=int(np.count_nonzero(counts)),
+        minimum=float(np.min(counts)),
+        maximum=float(np.max(counts)),
+        count_formula="(17*cell+31*gene+7*(cell^gene))%6",
+        batch_rule="alternating_batch-0_batch-1",
+        normalization=method_input.normalization,
+    )
+
+
+def _bound_smoke_configurations(
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+) -> tuple[BoundComparatorConfiguration, ...]:
+    validate_comparator_tuning_authority(authority)
+    return tuple(
+        bind_comparator_configuration_identity(
+            row,
+            registry.by_id(row.method_id),
+            authority,
+        )
+        for row in authority.configurations
+    )
+
+
+def build_comparator_smoke_receipt(
+    outcomes: Sequence[ComparatorSmokeOutcome],
+    *,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+    bound_configurations: Sequence[BoundComparatorConfiguration],
+) -> dict[str, object]:
+    """Build the complete ready receipt from all 34 measured outcomes."""
+
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    if isinstance(outcomes, (str, bytes)) or not isinstance(outcomes, Sequence):
+        raise TypeError("outcomes must be a sequence")
+    if isinstance(bound_configurations, (str, bytes)) or not isinstance(
+        bound_configurations, Sequence
+    ):
+        raise TypeError("bound_configurations must be a sequence")
+    rows = tuple(outcomes)
+    expected = tuple(bound_configurations)
+    authoritative = _bound_smoke_configurations(authority, registry)
+    if (
+        len(expected) != 34
+        or not direct_equal(expected, authoritative)
+        or any(not isinstance(row, BoundComparatorConfiguration) for row in expected)
+    ):
+        raise ComparatorTuningError(
+            "smoke denominator differs from bound authority order"
+        )
+    if (
+        len(rows) != len(expected)
+        or any(not isinstance(row, ComparatorSmokeOutcome) for row in rows)
+        or not direct_equal(
+            tuple(row.configuration for row in rows),
+            expected,
+        )
+    ):
+        raise ComparatorTuningError(
+            "smoke denominator differs from bound authority order"
+        )
+    if any(row.status != "completed" or row.reason is not None for row in rows):
+        raise ComparatorTuningError(
+            "all configurations must complete before scientific execution"
+        )
+    if any(
+        type(row.runtime_seconds) is not float
+        or not math.isfinite(row.runtime_seconds)
+        or row.runtime_seconds < 0
+        or (
+            row.runtime_seconds == 0.0
+            and math.copysign(1.0, row.runtime_seconds) < 0.0
+        )
+        or type(row.peak_rss_bytes) is not int
+        or row.peak_rss_bytes < 0
+        or type(row.peak_gpu_bytes) is not int
+        or row.peak_gpu_bytes < 0
+        or type(row.rss_measurement) is not str
+        or not row.rss_measurement
+        or type(row.gpu_measurement) is not str
+        or not row.gpu_measurement
+        for row in rows
+    ):
+        raise ComparatorTuningError("smoke measurement is invalid")
+    projected: dict[str, float] = {}
+    for row in rows:
+        method_id = row.configuration.configuration.method_id
+        projected[method_id] = (
+            projected.get(method_id, 0.0) + 48.0 * row.runtime_seconds
+        )
+        if (
+            row.peak_rss_bytes > 48 * 1024**3
+            or row.peak_gpu_bytes > 14 * 1024**3
+        ):
+            raise ComparatorTuningError("smoke resource cap is exceeded")
+    if any(
+        seconds
+        > (8 * 3600 if registry.by_id(method).resources.gpu_required else 24 * 3600)
+        for method, seconds in projected.items()
+    ):
+        raise ComparatorTuningError(
+            "projected comparator grid exceeds its method budget"
+        )
+    return {
+        "schema_version": 1,
+        "artifact_type": "maskimpute-comparator-smoke-receipt-v1",
+        "scope": "fixed_nonstudy_truth_free_operational_feasibility",
+        "authority_revision": authority.authority_revision,
+        "configurations": [direct_json_value(row) for row in expected],
+        "fixture": direct_json_value(
+            comparator_smoke_input_descriptor(build_comparator_smoke_input())
+        ),
+        "model_seed": 42,
+        "projection_multiplier": 48,
+        "planned_configuration_count": 34,
+        "completed_configuration_count": 34,
+        "status": "ready",
+        "projected_method_runtime_seconds": dict(sorted(projected.items())),
+        "outcomes": [direct_json_value(row) for row in rows],
+        "output_retention": "discarded_without_evaluator_or_metrics",
+    }
+
+
+_SMOKE_RECEIPT_KEYS = frozenset(
+    {
+        "schema_version",
+        "artifact_type",
+        "scope",
+        "authority_revision",
+        "configurations",
+        "fixture",
+        "model_seed",
+        "projection_multiplier",
+        "planned_configuration_count",
+        "completed_configuration_count",
+        "status",
+        "projected_method_runtime_seconds",
+        "outcomes",
+        "output_retention",
+    }
+)
+_SMOKE_OUTCOME_KEYS = frozenset(
+    {
+        "configuration",
+        "status",
+        "reason",
+        "runtime_seconds",
+        "peak_rss_bytes",
+        "peak_gpu_bytes",
+        "rss_measurement",
+        "gpu_measurement",
+    }
+)
+
+
+def _canonical_smoke_receipt_bytes(value: object) -> bytes:
+    try:
+        return _canonical_bytes(value) + b"\n"
+    except (TypeError, ValueError) as error:
+        raise ComparatorTuningError(
+            "comparator smoke receipt is not canonical JSON"
+        ) from error
+
+
+def _parse_smoke_receipt(raw: bytes) -> dict[str, object]:
+    try:
+        payload = json.loads(
+            raw.decode("utf-8"),
+            parse_constant=_reject_constant,
+            object_pairs_hook=_unique_object,
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise ComparatorTuningError("comparator smoke receipt is invalid") from error
+    if type(payload) is not dict or raw != _canonical_smoke_receipt_bytes(payload):
+        raise ComparatorTuningError(
+            "comparator smoke receipt is not canonical JSON"
+        )
+    return payload
+
+
+def validate_comparator_smoke_receipt(
+    payload: Mapping[str, object],
+    raw: bytes,
+    *,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+) -> dict[str, object]:
+    """Recompute every fixed smoke identity and derived readiness value."""
+
+    if type(payload) is not dict or type(raw) is not bytes:
+        raise TypeError("smoke receipt payload and bytes have invalid types")
+    if set(payload) != _SMOKE_RECEIPT_KEYS:
+        raise ComparatorTuningError(
+            "comparator smoke receipt has missing or extra fields"
+        )
+    if raw != _canonical_smoke_receipt_bytes(payload):
+        raise ComparatorTuningError(
+            "comparator smoke receipt is not canonical JSON"
+        )
+    expected_configurations = _bound_smoke_configurations(authority, registry)
+    encoded_configurations = [
+        direct_json_value(row) for row in expected_configurations
+    ]
+    if not direct_equal(payload.get("configurations"), encoded_configurations):
+        raise ComparatorTuningError(
+            "comparator smoke receipt configurations differ from authority"
+        )
+    raw_outcomes = payload.get("outcomes")
+    if type(raw_outcomes) is not list or len(raw_outcomes) != 34:
+        raise ComparatorTuningError(
+            "comparator smoke receipt outcome denominator differs"
+        )
+    outcomes: list[ComparatorSmokeOutcome] = []
+    for index, (value, configuration) in enumerate(
+        zip(raw_outcomes, expected_configurations, strict=True)
+    ):
+        if type(value) is not dict or set(value) != _SMOKE_OUTCOME_KEYS:
+            raise ComparatorTuningError(
+                "comparator smoke receipt outcome schema differs"
+            )
+        if not direct_equal(
+            value["configuration"],
+            encoded_configurations[index],
+        ):
+            raise ComparatorTuningError(
+                "comparator smoke receipt outcome identity differs"
+            )
+        outcome = ComparatorSmokeOutcome(
+            configuration=configuration,
+            status=value["status"],
+            reason=value["reason"],
+            runtime_seconds=value["runtime_seconds"],
+            peak_rss_bytes=value["peak_rss_bytes"],
+            peak_gpu_bytes=value["peak_gpu_bytes"],
+            rss_measurement=value["rss_measurement"],
+            gpu_measurement=value["gpu_measurement"],
+        )
+        outcomes.append(outcome)
+    recomputed = build_comparator_smoke_receipt(
+        outcomes,
+        authority=authority,
+        registry=registry,
+        bound_configurations=expected_configurations,
+    )
+    if not direct_equal(payload, recomputed):
+        raise ComparatorTuningError(
+            "comparator smoke receipt differs from recomputed fixed evidence"
+        )
+    return recomputed
+
+
+def _smoke_receipt_path(
+    repository: Path,
+    authority: ComparatorTuningAuthority,
+) -> Path:
+    relative = PurePosixPath(authority.smoke_receipt_path)
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise ComparatorTuningError("comparator smoke receipt path is unsafe")
+    return repository.joinpath(*relative.parts)
+
+
+def _reject_smoke_symlinks(path: Path, repository: Path) -> None:
+    current = repository
+    relative = path.absolute().relative_to(repository.absolute())
+    for component in relative.parts:
+        current = current / component
+        if os.path.lexists(current) and stat.S_ISLNK(current.lstat().st_mode):
+            raise ComparatorTuningError("comparator smoke receipt path is not owned")
+
+
+def _read_owned_smoke_receipt(path: Path, repository: Path) -> bytes:
+    _reject_smoke_symlinks(path, repository)
+    try:
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_uid != os.geteuid()
+        ):
+            raise ComparatorTuningError(
+                "comparator smoke receipt must be an owned regular file"
+            )
+        raw = path.read_bytes()
+        after = path.lstat()
+    except ComparatorTuningError:
+        raise
+    except OSError as error:
+        raise ComparatorTuningError(
+            "comparator smoke receipt is unavailable"
+        ) from error
+    def identity(value: os.stat_result) -> tuple[int, ...]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_uid,
+            value.st_nlink,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+    if identity(before) != identity(after) or before.st_size != len(raw):
+        raise ComparatorTuningError(
+            "comparator smoke receipt changed while being read"
+        )
+    return raw
+
+
+def _load_comparator_smoke_receipt_evidence(
+    repository: Path,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+) -> tuple[dict[str, object], bytes]:
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    if not isinstance(authority, ComparatorTuningAuthority):
+        raise TypeError("authority must be a ComparatorTuningAuthority")
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    root = repository.resolve(strict=True)
+    reloaded = load_comparator_tuning_authority(
+        root,
+        registry=registry,
+        require_clean=False,
+    )
+    if not direct_equal(reloaded, authority):
+        raise ComparatorTuningError(
+            "comparator smoke receipt authority differs from tracked authority"
+        )
+    path = _smoke_receipt_path(root, reloaded)
+    raw = _read_owned_smoke_receipt(path, root)
+    payload = _parse_smoke_receipt(raw)
+    return (
+        validate_comparator_smoke_receipt(
+            payload,
+            raw,
+            authority=reloaded,
+            registry=registry,
+        ),
+        raw,
+    )
+
+
+def load_comparator_smoke_receipt(
+    repository: Path,
+    authority: ComparatorTuningAuthority,
+    registry: MethodRegistry,
+) -> Mapping[str, object]:
+    """Load and fully recompute the fixed canonical smoke receipt."""
+
+    receipt, _raw = _load_comparator_smoke_receipt_evidence(
+        repository,
+        authority,
+        registry,
+    )
+    return receipt
+
+
+def _publish_comparator_smoke_receipt(
+    repository: Path,
+    authority: ComparatorTuningAuthority,
+    receipt: Mapping[str, object],
+) -> None:
+    path = _smoke_receipt_path(repository, authority)
+    data = _canonical_smoke_receipt_bytes(receipt)
+    _reject_smoke_symlinks(path.parent, repository)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _reject_smoke_symlinks(path.parent, repository)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if _read_owned_smoke_receipt(path, repository) != data:
+                raise ComparatorTuningError(
+                    "existing comparator smoke receipt conflicts with new evidence"
+                )
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _execute_smoke_request_in_spawned_dispatcher(
+    request: _ComparatorSmokeRequest,
+    dispatcher: object,
+    authority: ComparatorTuningAuthority,
+) -> ComparatorSmokeOutcome:
+    from dataclasses import replace
+
+    from .fair_comparator_execution import DirectExecutionRequest
+    from .fair_comparator_plan import ComparatorRunIdentity
+    from .runner import (
+        DirectRepositoryComparatorExecutor,
+        LinuxProcessTreeResourceSampler,
+        RepositoryAdapterDispatcher,
+        execute_direct_adapter_in_spawned_process,
+    )
+
+    if not isinstance(request, _ComparatorSmokeRequest):
+        raise TypeError("request must be a comparator smoke request")
+    if not isinstance(dispatcher, RepositoryAdapterDispatcher):
+        raise TypeError("dispatcher must be a RepositoryAdapterDispatcher")
+    identity = ComparatorRunIdentity(
+        workflow_schema="maskimpute-fair-comparator-run-v1",
+        authority_revision=authority.authority_revision,
+        ordinal=request.ordinal,
+        method=request.configuration.method,
+        configuration_id=request.configuration.configuration.configuration_id,
+        configuration_kind="comparator_tuning",
+        configuration_payload=freeze_direct_mapping(
+            request.configuration.configuration.payload
+        ),
+        dataset_id="comparator-smoke-fixed",
+        mechanism="fixed_nonstudy_truth_free_operational_feasibility",
+        biological_id="fixed-smoke",
+        technical_view="truth-free",
+        mask_seed=0,
+        model_seed=request.model_seed,
+        draw_index=1,
+    )
+    direct_request = DirectExecutionRequest(
+        identity=identity,
+        method_spec=request.method_spec,
+        method_input=request.method_input,
+        timeout_seconds=float(EXPECTED_BUDGETS["per_run_timeout_seconds"]),
+        max_rss_bytes=EXPECTED_BUDGETS["max_rss_bytes"],
+        max_gpu_bytes=EXPECTED_BUDGETS["max_gpu_bytes"],
+        smoke_fixture=request.fixture,
+    )
+    child_dispatcher = replace(
+        dispatcher,
+        environments=replace(dispatcher.environments, runtime_snapshot=None),
+        monitor_runtime_changes=False,
+    )
+    snapshot = dispatcher.environments.runtime_snapshot
+    sampler = (
+        LinuxProcessTreeResourceSampler()
+        if snapshot is None
+        else LinuxProcessTreeResourceSampler(
+            None if snapshot.nvidia_smi_path is None else Path(snapshot.nvidia_smi_path)
+        )
+    )
+    outcome = execute_direct_adapter_in_spawned_process(
+        direct_request,
+        DirectRepositoryComparatorExecutor(child_dispatcher, authority),
+        resource_sampler=sampler,
+        expected_spawn_executable=dispatcher.environments.benchmark_python,
+        spawn_search_path=dispatcher.environments.python_spawn_search_path,
+    )
+    return ComparatorSmokeOutcome(
+        configuration=request.configuration,
+        status=outcome.status,
+        reason=outcome.reason,
+        runtime_seconds=float(outcome.runtime_seconds),
+        peak_rss_bytes=outcome.peak_rss_bytes,
+        peak_gpu_bytes=outcome.peak_gpu_bytes,
+        rss_measurement=outcome.rss_measurement,
+        gpu_measurement=outcome.gpu_measurement,
+    )
+
+
+def run_comparator_tuning_smoke(
+    repository: Path,
+    *,
+    _executor: Callable[
+        [_ComparatorSmokeRequest, object, ComparatorTuningAuthority],
+        ComparatorSmokeOutcome,
+    ] = _execute_smoke_request_in_spawned_dispatcher,
+) -> Mapping[str, object]:
+    """Run only the fixed 34-row adapter smoke boundary and publish its receipt."""
+
+    if not isinstance(repository, Path):
+        raise TypeError("repository must be a pathlib.Path")
+    if not callable(_executor):
+        raise TypeError("_executor must be callable")
+    root = repository.resolve(strict=True)
+    registry = load_method_registry(root / "study/methods.json")
+    authority = load_comparator_tuning_authority(
+        root,
+        registry=registry,
+        require_clean=True,
+    )
+    configurations = _bound_smoke_configurations(authority, registry)
+    method_input = build_comparator_smoke_input()
+    fixture = comparator_smoke_input_descriptor(method_input)
+    dispatcher: object = None
+    try:
+        if _executor is _execute_smoke_request_in_spawned_dispatcher:
+            from .runner import (
+                ExecutionEnvironmentRegistry,
+                RepositoryAdapterDispatcher,
+                derive_lock_only_environment_ids,
+            )
+
+            environments = ExecutionEnvironmentRegistry.fixed(
+                root,
+                runtime_lock_path=(
+                    root / "environments/development-runtime.lock.json"
+                ),
+                benchmark_python=Path(sys.executable),
+                r_library_paths={"saver": (root / "artifacts/envs/saver-r/library",)},
+                lock_only_environment_ids=derive_lock_only_environment_ids(registry),
+            )
+            dispatcher = RepositoryAdapterDispatcher(
+                root,
+                environments,
+                comparator_tuning_authority=authority,
+            )
+    except ComparatorTuningError:
+        raise
+    except (OSError, TypeError, ValueError, RuntimeError) as error:
+        raise ComparatorTuningError(
+            "comparator smoke adapter boundary failed"
+        ) from error
+    outcomes = []
+    for ordinal, configuration in enumerate(configurations, start=1):
+        request = _ComparatorSmokeRequest(
+            configuration=configuration,
+            fixture=fixture,
+            method_input=method_input,
+            method_spec=registry.by_id(configuration.configuration.method_id),
+            model_seed=42,
+            ordinal=ordinal,
+        )
+        try:
+            outcome = _executor(request, dispatcher, authority)
+        except ComparatorTuningError:
+            raise
+        except (OSError, TypeError, ValueError, RuntimeError) as error:
+            raise ComparatorTuningError(
+                "comparator smoke adapter boundary failed"
+            ) from error
+        if (
+            not isinstance(outcome, ComparatorSmokeOutcome)
+            or not direct_equal(outcome.configuration, configuration)
+        ):
+            raise ComparatorTuningError(
+                "comparator smoke executor returned a noncanonical outcome"
+            )
+        outcomes.append(outcome)
+    receipt = build_comparator_smoke_receipt(
+        outcomes,
+        authority=authority,
+        registry=registry,
+        bound_configurations=configurations,
+    )
+    _publish_comparator_smoke_receipt(root, authority, receipt)
+    return load_comparator_smoke_receipt(root, authority, registry)
 
 
 def _require_exact_mapping(

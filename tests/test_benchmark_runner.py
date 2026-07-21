@@ -45,6 +45,8 @@ from maskimpute_benchmark.fair_comparator_plan import (
     DirectAuthorizedConfiguration,
     DirectCompetitionPlan,
     DirectPlanEntry,
+    bind_comparator_smoke_receipt_to_plan,
+    build_direct_competition_plan,
     describe_prepared_input,
     direct_run_id,
 )
@@ -79,7 +81,6 @@ from maskimpute_benchmark.runner import (
     prepare_dataset_pair_for_execution,
     prepare_dataset_for_execution,
     build_competition_plan,
-    build_fair_comparator_plan,
     execute_adapter_in_spawned_process,
     evaluate_adapter_outcome,
     execute_fair_comparator_request,
@@ -483,11 +484,24 @@ def direct_storage_case(monkeypatch: pytest.MonkeyPatch):
         "load_runner_authority",
         lambda: authority,
     )
-    plan = build_fair_comparator_plan(
+    plan = build_direct_competition_plan(
         registry,
         bindings,
         authority,
         prepared,
+    )
+    receipt = {"status": "ready"}
+    receipt_bytes = b'{"status":"ready"}\n'
+    monkeypatch.setattr(
+        "maskimpute_benchmark.comparator_tuning.validate_comparator_smoke_receipt",
+        lambda payload, raw, **_kwargs: dict(payload),
+    )
+    plan = bind_comparator_smoke_receipt_to_plan(
+        plan,
+        receipt,
+        receipt_bytes,
+        authority=authority.comparator_tuning,
+        registry=registry,
     )
     prepared_by_id = {value.binding.dataset_id: value for value in prepared}
     assert len(prepared_by_id) == 16
@@ -655,7 +669,7 @@ def test_direct_plan_is_full_denominator_with_fixed_seed_policy() -> None:
     registry = load_method_registry(METHODS_PATH)
     datasets = validate_development_manifest_payload(_manifest_payload())
 
-    plan = build_fair_comparator_plan(
+    plan = build_direct_competition_plan(
         registry,
         datasets,
         load_runner_authority(),
@@ -712,7 +726,7 @@ def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> No
     authority = load_runner_authority()
     registry = load_method_registry(ROOT / "study/methods.json")
     bindings = validate_development_manifest_payload(_manifest_payload())
-    plan = build_fair_comparator_plan(
+    plan = build_direct_competition_plan(
         registry,
         bindings,
         authority,
@@ -1288,7 +1302,7 @@ def test_direct_plan_rejects_noncanonical_ready_maskimpute_authority() -> None:
 
     prepared = _prepared_plan_inputs(datasets)
     authority = load_runner_authority()
-    blocked = build_fair_comparator_plan(
+    blocked = build_direct_competition_plan(
         registry,
         datasets,
         authority,
@@ -1306,7 +1320,7 @@ def test_direct_plan_rejects_noncanonical_ready_maskimpute_authority() -> None:
         entry.preflight_status == "blocked_authority" for entry in blocked.entries
     )
     with pytest.raises(RunnerContractError, match="fixed authority"):
-        build_fair_comparator_plan(registry, datasets, ready, prepared)
+        build_direct_competition_plan(registry, datasets, ready, prepared)
 
 
 def test_method_input_hash_binds_only_truth_free_snapshot_and_is_stable() -> None:
@@ -3056,6 +3070,49 @@ def test_fair_comparator_plan_execution_uses_only_direct_checkpoint_and_fake_att
     assert len(calls) == 1
 
 
+def test_direct_plan_and_checkpoint_carry_complete_smoke_receipt_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    receipt = {
+        "configurations": [{"configuration_id": "fixed"}],
+        "status": "ready",
+    }
+    receipt_bytes = (
+        json.dumps(receipt, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        + b"\n"
+    )
+    monkeypatch.setattr(
+        "maskimpute_benchmark.comparator_tuning.validate_comparator_smoke_receipt",
+        lambda payload, raw, **_kwargs: dict(payload),
+    )
+    bound = bind_comparator_smoke_receipt_to_plan(
+        plan,
+        receipt,
+        receipt_bytes,
+        authority=load_runner_authority().comparator_tuning,
+        registry=registry,
+    )
+    encoded = bound.to_dict()
+    assert encoded["comparator_smoke_receipt"] == receipt
+    assert encoded["comparator_smoke_receipt_bytes"] == list(receipt_bytes)
+
+    store = DirectCheckpointStore(tmp_path / "direct-checkpoint.json")
+    store._write_structural(
+        bound,
+        (),
+        registry=registry,
+        prepared_datasets=prepared_datasets,
+    )
+    checkpoint = json.loads(store.path.read_text())
+    assert checkpoint["plan_snapshot"]["comparator_smoke_receipt"] == receipt
+    assert checkpoint["plan_snapshot"]["comparator_smoke_receipt_bytes"] == list(
+        receipt_bytes
+    )
+
+
 def test_fair_comparator_resume_fails_storage_before_transaction_recovery(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3110,11 +3167,33 @@ def test_development_base_entry_routes_to_fair_comparator_boundary(
     sentinel = object()
     captured = {}
 
-    def direct_base(output_dir, authority, *, environment_overrides):
+    receipt = {"status": "ready"}
+    receipt_bytes = b'{"status":"ready"}\n'
+    prepared_value = _prepared_truth_dataset()
+    datasets = (prepared_value.binding,)
+    prepared_datasets = {prepared_value.binding.dataset_id: prepared_value}
+    registry = load_method_registry(METHODS_PATH)
+
+    def direct_base(
+        output_dir,
+        authority,
+        *,
+        environment_overrides,
+        _comparator_smoke_receipt,
+        _comparator_smoke_receipt_bytes,
+        _datasets,
+        _prepared_datasets,
+        _registry,
+    ):
         captured.update(
             output_dir=output_dir,
             authority=authority,
             environment_overrides=environment_overrides,
+            receipt=_comparator_smoke_receipt,
+            receipt_bytes=_comparator_smoke_receipt_bytes,
+            datasets=_datasets,
+            prepared_datasets=_prepared_datasets,
+            registry=_registry,
         )
         return sentinel
 
@@ -3128,12 +3207,269 @@ def test_development_base_entry_routes_to_fair_comparator_boundary(
         "_run_competition_with_authority",
         lambda *_args, **_kwargs: pytest.fail("legacy base route used"),
     )
+    monkeypatch.setattr(
+        runner_module,
+        "_load_required_comparator_smoke_evidence",
+        lambda _authority: (receipt, receipt_bytes),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "load_prepared_development_panel",
+        lambda _authority: (datasets, prepared_datasets),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "load_method_registry",
+        lambda _path: registry,
+    )
     result = runner_module.run_development_competition(tmp_path / "competition")
 
     assert result is sentinel
     assert captured["output_dir"] == tmp_path / "competition"
     assert captured["authority"].plan_scope == "base_full_panel"
     assert captured["environment_overrides"] is None
+    assert captured["receipt"] is receipt
+    assert captured["receipt_bytes"] is receipt_bytes
+    assert captured["datasets"] is datasets
+    assert captured["prepared_datasets"] is prepared_datasets
+    assert captured["registry"] is registry
+
+
+def test_scientific_execution_requires_smoke_before_storage_or_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_dir = tmp_path / "competition"
+    monkeypatch.setattr(
+        runner_module,
+        "require_development_storage_capacity",
+        lambda *_args, **_kwargs: pytest.fail(
+            "storage preflight ran before the smoke gate"
+        ),
+    )
+    with pytest.raises(RunnerContractError, match="smoke receipt"):
+        runner_module.run_development_competition(output_dir)
+    assert not output_dir.exists()
+
+
+def test_development_base_forwards_complete_smoke_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    receipt = {"status": "ready", "planned_configuration_count": 34}
+    receipt_bytes = b'{"planned_configuration_count":34,"status":"ready"}\n'
+    prepared_value = _prepared_truth_dataset()
+    datasets = (prepared_value.binding,)
+    prepared_datasets = {prepared_value.binding.dataset_id: prepared_value}
+    registry = load_method_registry(METHODS_PATH)
+    captured = {}
+
+    monkeypatch.setattr(
+        runner_module,
+        "_load_required_comparator_smoke_evidence",
+        lambda _authority: (receipt, receipt_bytes),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "load_prepared_development_panel",
+        lambda _authority: (datasets, prepared_datasets),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "load_method_registry",
+        lambda _path: registry,
+    )
+
+    def direct_base(
+        output_dir,
+        authority,
+        *,
+        environment_overrides,
+        _comparator_smoke_receipt,
+        _comparator_smoke_receipt_bytes,
+        _datasets,
+        _prepared_datasets,
+        _registry,
+    ):
+        captured.update(
+            output_dir=output_dir,
+            authority=authority,
+            environment_overrides=environment_overrides,
+            receipt=_comparator_smoke_receipt,
+            receipt_bytes=_comparator_smoke_receipt_bytes,
+            datasets=_datasets,
+            prepared_datasets=_prepared_datasets,
+            registry=_registry,
+        )
+        return object()
+
+    monkeypatch.setattr(
+        runner_module,
+        "_run_fair_comparator_base_with_authority",
+        direct_base,
+    )
+    runner_module.run_development_competition(tmp_path / "competition")
+
+    assert captured["receipt"] is receipt
+    assert captured["receipt_bytes"] is receipt_bytes
+    assert captured["datasets"] is datasets
+    assert captured["prepared_datasets"] is prepared_datasets
+    assert captured["registry"] is registry
+
+
+def test_direct_production_boundary_binds_smoke_into_plan_and_checkpoint_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = load_runner_authority()
+    receipt = {"status": "ready", "planned_configuration_count": 34}
+    receipt_bytes = b'{"planned_configuration_count":34,"status":"ready"}\n'
+    prepared_value = _prepared_truth_dataset()
+    bindings = (prepared_value.binding,)
+    prepared = {prepared_value.binding.dataset_id: prepared_value}
+    registry = load_method_registry(METHODS_PATH)
+    plan = object()
+    captured = {}
+
+    def bind_plan(
+        observed_registry,
+        observed_bindings,
+        observed_authority,
+        observed_prepared,
+        *,
+        _comparator_smoke_receipt,
+        _comparator_smoke_receipt_bytes,
+    ):
+        captured.update(
+            registry=observed_registry,
+            bindings=observed_bindings,
+            authority=observed_authority,
+            prepared=observed_prepared,
+            receipt=_comparator_smoke_receipt,
+            receipt_bytes=_comparator_smoke_receipt_bytes,
+        )
+        return plan
+
+    monkeypatch.setattr(runner_module, "build_fair_comparator_plan", bind_plan)
+
+    class FakeStore:
+        def __init__(self, path):
+            captured["checkpoint_path"] = path
+
+        def inspect_prefix(self, observed_plan, **kwargs):
+            captured["checkpoint_plan"] = observed_plan
+            captured["checkpoint_kwargs"] = kwargs
+            return 0
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.fair_comparator_checkpoint.DirectCheckpointStore",
+        FakeStore,
+    )
+
+    with pytest.raises(RunnerContractError, match="execution awaits"):
+        runner_module._run_fair_comparator_base_with_authority(
+            tmp_path / "competition",
+            authority,
+            environment_overrides=None,
+            _comparator_smoke_receipt=receipt,
+            _comparator_smoke_receipt_bytes=receipt_bytes,
+            _datasets=bindings,
+            _prepared_datasets=prepared,
+            _registry=registry,
+        )
+
+    assert captured["receipt"] is receipt
+    assert captured["receipt_bytes"] is receipt_bytes
+    assert captured["checkpoint_plan"] is plan
+    assert captured["checkpoint_path"] == (tmp_path / "competition/checkpoint.json")
+    assert captured["checkpoint_kwargs"] == {
+        "registry": registry,
+        "prepared_datasets": prepared,
+        "authority": authority,
+        "datasets": bindings,
+    }
+
+
+@pytest.mark.parametrize(
+    ("entry_name", "authority_loader"),
+    (
+        ("run_v28_revision_competition", "load_activated_v28_revision_authority"),
+        ("run_v29_revision_competition", "load_activated_v29_revision_authority"),
+    ),
+)
+def test_revision_runners_inherit_complete_smoke_evidence(
+    entry_name: str,
+    authority_loader: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = load_runner_authority()
+    receipt = {"status": "ready"}
+    receipt_bytes = b'{"status":"ready"}\n'
+    prepared_value = _prepared_truth_dataset()
+    datasets = (prepared_value.binding,)
+    prepared_datasets = {prepared_value.binding.dataset_id: prepared_value}
+    registry = load_method_registry(METHODS_PATH)
+    captured = {}
+
+    monkeypatch.setattr(runner_module, authority_loader, lambda: authority)
+    monkeypatch.setattr(
+        runner_module,
+        "_load_required_comparator_smoke_evidence",
+        lambda observed: (receipt, receipt_bytes)
+        if observed is authority
+        else pytest.fail("revision smoke used the wrong authority"),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "load_prepared_development_panel",
+        lambda observed: (datasets, prepared_datasets)
+        if observed is authority
+        else pytest.fail("revision panel used the wrong authority"),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "load_method_registry",
+        lambda _path: registry,
+    )
+
+    def direct_boundary(
+        output_dir,
+        observed_authority,
+        *,
+        environment_overrides,
+        _comparator_smoke_receipt,
+        _comparator_smoke_receipt_bytes,
+        _datasets,
+        _prepared_datasets,
+        _registry,
+    ):
+        captured.update(
+            output_dir=output_dir,
+            authority=observed_authority,
+            environment_overrides=environment_overrides,
+            receipt=_comparator_smoke_receipt,
+            receipt_bytes=_comparator_smoke_receipt_bytes,
+            datasets=_datasets,
+            prepared_datasets=_prepared_datasets,
+            registry=_registry,
+        )
+        return object()
+
+    monkeypatch.setattr(
+        runner_module,
+        "_run_fair_comparator_base_with_authority",
+        direct_boundary,
+    )
+    getattr(runner_module, entry_name)()
+
+    assert captured["authority"] is authority
+    assert captured["environment_overrides"] is None
+    assert captured["receipt"] is receipt
+    assert captured["receipt_bytes"] is receipt_bytes
+    assert captured["datasets"] is datasets
+    assert captured["prepared_datasets"] is prepared_datasets
+    assert captured["registry"] is registry
 
 
 def _entry_for(prepared, method_id: str, *, seed: int | None) -> RunPlanEntry:

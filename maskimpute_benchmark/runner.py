@@ -1841,17 +1841,45 @@ def build_fair_comparator_plan(
     datasets: Sequence[DatasetBinding],
     authority: RunnerAuthority,
     prepared_datasets: Sequence[PreparedDataset],
+    *,
+    _comparator_smoke_receipt: Mapping[str, object],
+    _comparator_smoke_receipt_bytes: bytes,
 ) -> DirectCompetitionPlan:
     """Build the direct-identity fair-comparator development plan."""
 
-    from .fair_comparator_plan import build_direct_competition_plan
+    from .fair_comparator_plan import (
+        bind_comparator_smoke_receipt_to_plan,
+        build_direct_competition_plan,
+        validate_direct_competition_plan,
+    )
 
-    return build_direct_competition_plan(
+    plan = build_direct_competition_plan(
         registry,
         datasets,
         authority,
         prepared_datasets,
     )
+    if not isinstance(_comparator_smoke_receipt, Mapping) or type(
+        _comparator_smoke_receipt_bytes
+    ) is not bytes:
+        raise RunnerContractError("comparator smoke receipt evidence is incomplete")
+    plan = bind_comparator_smoke_receipt_to_plan(
+        plan,
+        _comparator_smoke_receipt,
+        _comparator_smoke_receipt_bytes,
+        authority=authority.comparator_tuning,
+        registry=registry,
+    )
+    validate_direct_competition_plan(
+        plan,
+        registry=registry,
+        prepared_datasets={
+            value.binding.dataset_id: value for value in prepared_datasets
+        },
+        authority=authority,
+        datasets=datasets,
+    )
+    return plan
 
 
 def development_storage_preflight(
@@ -7926,11 +7954,49 @@ def run_development_competition(
 ) -> DirectCheckpointReport:
     """Run/resume the fixed tracked development competition with no design overrides."""
 
+    authority = load_runner_authority()
+    smoke_receipt, smoke_receipt_bytes = (
+        _load_required_comparator_smoke_evidence(authority)
+    )
+    datasets, prepared_datasets = load_prepared_development_panel(authority)
+    repository = Path(__file__).resolve().parents[1]
+    registry = load_method_registry(repository / "study/methods.json")
     return _run_fair_comparator_base_with_authority(
         output_dir,
-        load_runner_authority(),
+        authority,
         environment_overrides=environment_overrides,
+        _comparator_smoke_receipt=smoke_receipt,
+        _comparator_smoke_receipt_bytes=smoke_receipt_bytes,
+        _datasets=datasets,
+        _prepared_datasets=prepared_datasets,
+        _registry=registry,
     )
+
+
+def _load_required_comparator_smoke_evidence(
+    authority: RunnerAuthority,
+) -> tuple[Mapping[str, object], bytes]:
+    """Load complete fixed smoke evidence before any production write boundary."""
+
+    if not isinstance(authority, RunnerAuthority):
+        raise TypeError("authority must be a RunnerAuthority")
+    from .comparator_tuning import (
+        ComparatorTuningError,
+        _load_comparator_smoke_receipt_evidence,
+    )
+
+    repository = Path(__file__).resolve().parents[1]
+    registry = load_method_registry(repository / "study/methods.json")
+    try:
+        return _load_comparator_smoke_receipt_evidence(
+            repository,
+            authority.comparator_tuning,
+            registry,
+        )
+    except (ComparatorTuningError, OSError, TypeError, ValueError) as error:
+        raise RunnerContractError(
+            "required comparator smoke receipt is absent or invalid"
+        ) from error
 
 
 def _run_fair_comparator_base_with_authority(
@@ -7938,35 +8004,87 @@ def _run_fair_comparator_base_with_authority(
     authority: RunnerAuthority,
     *,
     environment_overrides: Mapping[str, Path] | None,
+    _comparator_smoke_receipt: Mapping[str, object],
+    _comparator_smoke_receipt_bytes: bytes,
+    _datasets: Sequence[DatasetBinding],
+    _prepared_datasets: Mapping[str, PreparedDataset],
+    _registry: MethodRegistry,
 ) -> DirectCheckpointReport:
-    """Keep the base command on the direct path until storage preflight lands."""
+    """Bind smoke evidence through the direct production checkpoint boundary."""
 
     if not isinstance(output_dir, Path):
         raise TypeError("output_dir must be a pathlib.Path")
     if not isinstance(authority, RunnerAuthority):
         raise TypeError("authority must be a RunnerAuthority")
-    if authority.plan_scope != "base_full_panel":
-        raise RunnerContractError("fair-comparator base authority scope differs")
+    if authority.plan_scope not in {"base_full_panel", "revision_candidate_only"}:
+        raise RunnerContractError("fair-comparator authority scope differs")
     if environment_overrides is not None and not isinstance(
         environment_overrides, Mapping
     ):
         raise TypeError("environment_overrides must be a mapping or None")
+    if not isinstance(_comparator_smoke_receipt, Mapping) or type(
+        _comparator_smoke_receipt_bytes
+    ) is not bytes:
+        raise TypeError("comparator smoke receipt evidence has invalid types")
+    bindings = tuple(_datasets)
+    if not bindings or not all(
+        isinstance(binding, DatasetBinding) for binding in bindings
+    ):
+        raise TypeError("_datasets must contain DatasetBinding values")
+    if not isinstance(_prepared_datasets, Mapping) or not all(
+        isinstance(value, PreparedDataset)
+        for value in _prepared_datasets.values()
+    ):
+        raise TypeError("_prepared_datasets must map to PreparedDataset values")
+    if not isinstance(_registry, MethodRegistry):
+        raise TypeError("_registry must be a MethodRegistry")
+    ordered_prepared = tuple(
+        _prepared_datasets[binding.dataset_id] for binding in bindings
+    )
+    plan = build_fair_comparator_plan(
+        _registry,
+        bindings,
+        authority,
+        ordered_prepared,
+        _comparator_smoke_receipt=_comparator_smoke_receipt,
+        _comparator_smoke_receipt_bytes=_comparator_smoke_receipt_bytes,
+    )
+    from .fair_comparator_checkpoint import DirectCheckpointStore
+
+    DirectCheckpointStore(output_dir / "checkpoint.json").inspect_prefix(
+        plan,
+        registry=_registry,
+        prepared_datasets=_prepared_datasets,
+        authority=authority,
+        datasets=bindings,
+    )
     raise RunnerContractError(
-        "direct fair-comparator execution awaits the Task 8 storage preflight"
+        "direct fair-comparator execution awaits production adapter composition"
     )
 
 
 def run_v28_revision_competition(
     *,
     environment_overrides: Mapping[str, Path] | None = None,
-) -> CheckpointReport:
+) -> DirectCheckpointReport:
     """Run/resume v28 only at its fixed path after the base selection trigger."""
 
     repository = Path(__file__).resolve().parents[1]
-    return _run_competition_with_authority(
+    authority = load_activated_v28_revision_authority()
+    smoke_receipt, smoke_receipt_bytes = (
+        _load_required_comparator_smoke_evidence(authority)
+    )
+    datasets, prepared_datasets = load_prepared_development_panel(authority)
+    registry = load_method_registry(repository / "study/methods.json")
+    return _run_fair_comparator_base_with_authority(
         repository / "artifacts/study/development/competition-v28-revision",
-        load_activated_v28_revision_authority(),
+        authority,
         environment_overrides=environment_overrides,
+        _comparator_smoke_receipt=smoke_receipt,
+        _comparator_smoke_receipt_bytes=smoke_receipt_bytes,
+        _datasets=datasets,
+        _prepared_datasets=prepared_datasets,
+        _registry=registry,
     )
 
 
@@ -8010,14 +8128,25 @@ def load_activated_v29_revision_authority() -> RunnerAuthority:
 def run_v29_revision_competition(
     *,
     environment_overrides: Mapping[str, Path] | None = None,
-) -> CheckpointReport:
+) -> DirectCheckpointReport:
     """Run/resume v29 only at its fixed path after the combined v28 trigger."""
 
     repository = Path(__file__).resolve().parents[1]
-    return _run_competition_with_authority(
+    authority = load_activated_v29_revision_authority()
+    smoke_receipt, smoke_receipt_bytes = (
+        _load_required_comparator_smoke_evidence(authority)
+    )
+    datasets, prepared_datasets = load_prepared_development_panel(authority)
+    registry = load_method_registry(repository / "study/methods.json")
+    return _run_fair_comparator_base_with_authority(
         repository / "artifacts/study/development/competition-v29-revision",
-        load_activated_v29_revision_authority(),
+        authority,
         environment_overrides=environment_overrides,
+        _comparator_smoke_receipt=smoke_receipt,
+        _comparator_smoke_receipt_bytes=smoke_receipt_bytes,
+        _datasets=datasets,
+        _prepared_datasets=prepared_datasets,
+        _registry=registry,
     )
 
 
