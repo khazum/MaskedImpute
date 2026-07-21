@@ -6086,10 +6086,78 @@ def execute_fair_comparator_plan(
     ],
     checkpoint_store: DirectCheckpointStore,
     *,
-    authority: RunnerAuthority | None = None,
-    datasets: Sequence[DatasetBinding] | None = None,
+    authority: RunnerAuthority,
+    datasets: Sequence[DatasetBinding],
 ) -> DirectCheckpointReport:
-    """Execute/resume one direct plan through injected evaluated attempts."""
+    """Execute/resume the production direct plan through evaluated attempts."""
+
+    from .fair_comparator_plan import validate_direct_competition_plan
+
+    validate_direct_competition_plan(
+        plan,
+        registry=registry,
+        prepared_datasets=prepared_datasets,
+        authority=authority,
+        datasets=datasets,
+    )
+    return _execute_fair_comparator_plan_validated(
+        plan,
+        registry,
+        prepared_datasets,
+        executor,
+        checkpoint_store,
+        authority=authority,
+        datasets=datasets,
+        structural=False,
+    )
+
+
+def _execute_fair_comparator_plan_structural(
+    plan: DirectCompetitionPlan,
+    registry: MethodRegistry,
+    prepared_datasets: Mapping[str, PreparedDataset],
+    executor: Callable[
+        [DirectPlanEntry, PreparedDataset, BudgetDecision],
+        DirectEvaluatedAttempt,
+    ],
+    checkpoint_store: DirectCheckpointStore,
+) -> DirectCheckpointReport:
+    """Execute a private, in-memory structural fixture."""
+
+    from .fair_comparator_plan import _validate_direct_competition_plan_structure
+
+    _validate_direct_competition_plan_structure(
+        plan,
+        registry=registry,
+        prepared_datasets=prepared_datasets,
+    )
+    return _execute_fair_comparator_plan_validated(
+        plan,
+        registry,
+        prepared_datasets,
+        executor,
+        checkpoint_store,
+        authority=None,
+        datasets=None,
+        structural=True,
+    )
+
+
+def _execute_fair_comparator_plan_validated(
+    plan: DirectCompetitionPlan,
+    registry: MethodRegistry,
+    prepared_datasets: Mapping[str, PreparedDataset],
+    executor: Callable[
+        [DirectPlanEntry, PreparedDataset, BudgetDecision],
+        DirectEvaluatedAttempt,
+    ],
+    checkpoint_store: DirectCheckpointStore,
+    *,
+    authority: RunnerAuthority | None,
+    datasets: Sequence[DatasetBinding] | None,
+    structural: bool,
+) -> DirectCheckpointReport:
+    """Execute a direct plan whose public or private gate already validated it."""
 
     from .fair_comparator_checkpoint import (
         DirectCheckpointStore,
@@ -6100,10 +6168,7 @@ def execute_fair_comparator_plan(
         replay_direct_development_budget,
     )
     from .fair_comparator_execution import DirectEvaluatedAttempt
-    from .fair_comparator_plan import (
-        DirectCompetitionPlan,
-        validate_direct_competition_plan,
-    )
+    from .fair_comparator_plan import DirectCompetitionPlan
 
     if not isinstance(plan, DirectCompetitionPlan):
         raise TypeError("plan must be a DirectCompetitionPlan")
@@ -6117,20 +6182,21 @@ def execute_fair_comparator_plan(
         raise TypeError("executor must be callable")
     if not isinstance(checkpoint_store, DirectCheckpointStore):
         raise TypeError("checkpoint_store must be a DirectCheckpointStore")
-    validate_direct_competition_plan(
-        plan,
-        registry=registry,
-        prepared_datasets=prepared_datasets,
-        authority=authority,
-        datasets=datasets,
-    )
     report = (
-        checkpoint_store.load(
-            plan,
-            registry=registry,
-            prepared_datasets=prepared_datasets,
-            authority=authority,
-            datasets=datasets,
+        (
+            checkpoint_store._load_structural(
+                plan,
+                registry=registry,
+                prepared_datasets=prepared_datasets,
+            )
+            if structural
+            else checkpoint_store.load(
+                plan,
+                registry=registry,
+                prepared_datasets=prepared_datasets,
+                authority=authority,
+                datasets=datasets,
+            )
         )
         if os.path.lexists(checkpoint_store.path)
         else None
@@ -6216,24 +6282,41 @@ def execute_fair_comparator_plan(
                 ),
                 budget_scope=budget_scope(entry),
             )
-        report = checkpoint_store.append(
-            plan,
-            report,
-            attempt,
-            registry=registry,
-            prepared_datasets=prepared_datasets,
-            authority=authority,
-            datasets=datasets,
-        )
+        if structural:
+            report = checkpoint_store._append_structural(
+                plan,
+                report,
+                attempt,
+                registry=registry,
+                prepared_datasets=prepared_datasets,
+            )
+        else:
+            report = checkpoint_store.append(
+                plan,
+                report,
+                attempt,
+                registry=registry,
+                prepared_datasets=prepared_datasets,
+                authority=authority,
+                datasets=datasets,
+            )
     if report is None:
-        report = checkpoint_store.write(
-            plan,
-            (),
-            registry=registry,
-            prepared_datasets=prepared_datasets,
-            authority=authority,
-            datasets=datasets,
-        )
+        if structural:
+            report = checkpoint_store._write_structural(
+                plan,
+                (),
+                registry=registry,
+                prepared_datasets=prepared_datasets,
+            )
+        else:
+            report = checkpoint_store.write(
+                plan,
+                (),
+                registry=registry,
+                prepared_datasets=prepared_datasets,
+                authority=authority,
+                datasets=datasets,
+            )
     return report
 
 

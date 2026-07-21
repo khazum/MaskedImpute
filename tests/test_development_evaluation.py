@@ -308,7 +308,7 @@ def _direct_projection_checkpoint(tmp_path: Path):
             }
         )
     store = DirectCheckpointStore(tmp_path / "direct-checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         records,
         registry=registry,
@@ -430,6 +430,15 @@ def _contains_forbidden_identity_key(value: object) -> bool:
     )
 
 
+def _direct_production_arguments(prepared: dict[str, object]) -> dict[str, object]:
+    from maskimpute_benchmark.runner import load_runner_authority
+
+    return {
+        "runner_authority": load_runner_authority(),
+        "datasets": tuple(value.binding for value in prepared.values()),
+    }
+
+
 def test_direct_checkpoint_projects_full_selected_comparator_payloads(
     tmp_path: Path,
 ) -> None:
@@ -447,7 +456,7 @@ def test_direct_checkpoint_projects_full_selected_comparator_payloads(
         authority,
         selected_rows,
     ) = _direct_projection_checkpoint(tmp_path)
-    with pytest.raises(DevelopmentEvaluationError, match="selection receipt|later"):
+    with pytest.raises(DevelopmentEvaluationError, match="production"):
         project_direct_comparator_evidence(
             checkpoint_path,
             plan,
@@ -460,6 +469,7 @@ def test_direct_checkpoint_projects_full_selected_comparator_payloads(
             ),
             comparator_authority=authority,
             selected_rows=selected_rows,
+            **_direct_production_arguments(prepared),
         )
 
 
@@ -484,7 +494,7 @@ def test_public_direct_handoff_requires_later_validated_selection_receipt(
     else:
         rows = authority.configurations_for("magic")[1:2]
 
-    with pytest.raises(DevelopmentEvaluationError, match="selection receipt|later"):
+    with pytest.raises(DevelopmentEvaluationError, match="production"):
         project_direct_comparator_evidence(
             checkpoint_path,
             plan,
@@ -497,6 +507,7 @@ def test_public_direct_handoff_requires_later_validated_selection_receipt(
             ),
             comparator_authority=authority,
             selected_rows=rows,
+            **_direct_production_arguments(prepared),
         )
 
 
@@ -519,7 +530,7 @@ def test_direct_projection_accepts_completed_selected_configuration(
         _direct_projection_checkpoint_with_selected_statuses(tmp_path, statuses)
     )
 
-    with pytest.raises(DevelopmentEvaluationError, match="selection receipt|later"):
+    with pytest.raises(DevelopmentEvaluationError, match="production"):
         project_direct_comparator_evidence(
             checkpoint_path,
             plan,
@@ -532,6 +543,7 @@ def test_direct_projection_accepts_completed_selected_configuration(
             ),
             comparator_authority=authority,
             selected_rows=selected,
+            **_direct_production_arguments(prepared),
         )
 
 
@@ -575,7 +587,7 @@ def test_direct_projection_rejects_mixed_or_caller_selection_claims(
         schema_version=authority.schema_version,
         authority_revision=authority.authority_revision,
     )
-    with pytest.raises(DevelopmentEvaluationError, match="checkpoint validation"):
+    with pytest.raises(DevelopmentEvaluationError, match="production"):
         project_direct_comparator_evidence(
             checkpoint_path,
             plan,
@@ -584,6 +596,7 @@ def test_direct_projection_rejects_mixed_or_caller_selection_claims(
             comparator_reference=reference,
             comparator_authority=authority,
             selected_rows=selected,
+            **_direct_production_arguments(prepared),
         )
 
 
@@ -600,13 +613,13 @@ def test_direct_projection_rejects_incomplete_comparator_denominator(
     checkpoint_path, plan, registry, prepared, authority, selected = (
         _direct_projection_checkpoint(tmp_path)
     )
-    DirectCheckpointStore(checkpoint_path).write(
+    DirectCheckpointStore(checkpoint_path)._write_structural(
         plan,
         (),
         registry=registry,
         prepared_datasets=prepared,
     )
-    with pytest.raises(DevelopmentEvaluationError, match="denominator is not terminal"):
+    with pytest.raises(DevelopmentEvaluationError, match="production"):
         project_direct_comparator_evidence(
             checkpoint_path,
             plan,
@@ -619,6 +632,7 @@ def test_direct_projection_rejects_incomplete_comparator_denominator(
             ),
             comparator_authority=authority,
             selected_rows=selected,
+            **_direct_production_arguments(prepared),
         )
 
 
@@ -662,7 +676,7 @@ def test_direct_projection_requires_selected_row_in_terminal_comparator_entries(
         encoding="utf-8",
     )
 
-    with pytest.raises(DevelopmentEvaluationError, match="checkpoint validation"):
+    with pytest.raises(DevelopmentEvaluationError, match="production"):
         project_direct_comparator_evidence(
             checkpoint_path,
             changed_plan,
@@ -675,6 +689,7 @@ def test_direct_projection_requires_selected_row_in_terminal_comparator_entries(
             ),
             comparator_authority=authority,
             selected_rows=selected,
+            **_direct_production_arguments(prepared),
         )
 
 
@@ -710,7 +725,7 @@ def test_direct_projection_rejects_payload_plan_record_and_authority_drift(
         configurations=(changed_configuration, *plan.configurations[1:]),
         entries=(changed_entry, *plan.entries[1:]),
     )
-    with pytest.raises(DevelopmentEvaluationError, match="configuration differs"):
+    with pytest.raises(DevelopmentEvaluationError, match="production"):
         project_direct_comparator_evidence(
             checkpoint_path,
             changed_plan,
@@ -719,6 +734,7 @@ def test_direct_projection_rejects_payload_plan_record_and_authority_drift(
             comparator_reference=reference,
             comparator_authority=authority,
             selected_rows=selected,
+            **_direct_production_arguments(prepared),
         )
 
     checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
@@ -734,7 +750,7 @@ def test_direct_projection_rejects_payload_plan_record_and_authority_drift(
         + "\n",
         encoding="utf-8",
     )
-    with pytest.raises(DevelopmentEvaluationError, match="checkpoint validation"):
+    with pytest.raises(DevelopmentEvaluationError, match="production"):
         project_direct_comparator_evidence(
             checkpoint_path,
             plan,
@@ -743,6 +759,7 @@ def test_direct_projection_rejects_payload_plan_record_and_authority_drift(
             comparator_reference=reference,
             comparator_authority=authority,
             selected_rows=selected,
+            **_direct_production_arguments(prepared),
         )
 
     mismatched_reference = replace(
@@ -758,6 +775,7 @@ def test_direct_projection_rejects_payload_plan_record_and_authority_drift(
             comparator_reference=mismatched_reference,
             comparator_authority=authority,
             selected_rows=selected,
+            **_direct_production_arguments(prepared),
         )
 
 
@@ -791,6 +809,7 @@ def test_direct_projection_does_not_reinterpret_legacy_checkpoint_routes(
             ),
             comparator_authority=authority,
             selected_rows=(),
+            **_direct_production_arguments({prepared.binding.dataset_id: prepared}),
         )
 
 

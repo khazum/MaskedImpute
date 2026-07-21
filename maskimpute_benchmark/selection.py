@@ -98,14 +98,14 @@ class SelectionAuthorityError(RuntimeError):
     """Raised when tracked authority or bound development artifacts are invalid."""
 
 
-def project_direct_selected_comparators(
+def _project_direct_selected_comparators_for_schema_fixture(
     comparator_reference: ComparatorAuthorityReference,
     comparator_authority: ComparatorTuningAuthority,
     selected_rows: Sequence[ComparatorConfiguration],
     *,
-    expected_method_ids: Sequence[str] | None = None,
+    represented_method_ids: Sequence[str],
 ) -> dict[str, object]:
-    """Return the closed direct comparator handoff for authoritative rows."""
+    """Encode a private schema fixture with an explicit represented-method set."""
 
     if not isinstance(comparator_reference, ComparatorAuthorityReference):
         raise TypeError("comparator_reference must be a ComparatorAuthorityReference")
@@ -114,11 +114,7 @@ def project_direct_selected_comparators(
     rows = tuple(selected_rows)
     if not all(isinstance(row, ComparatorConfiguration) for row in rows):
         raise TypeError("selected_rows must contain ComparatorConfiguration values")
-    expected_methods = (
-        tuple(dict.fromkeys(row.method_id for row in rows))
-        if expected_method_ids is None
-        else tuple(expected_method_ids)
-    )
+    expected_methods = tuple(represented_method_ids)
     if (
         not expected_methods
         or len(expected_methods) != len(set(expected_methods))
@@ -4278,7 +4274,6 @@ __all__ = [
     "attach_downstream_evidence_to_selection_result",
     "finalize_development_artifact_bindings",
     "load_publication_execution_authority",
-    "project_direct_selected_comparators",
     "select_development_candidate",
     "validate_downstream_selection_completeness",
 ]

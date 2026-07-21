@@ -57,10 +57,10 @@ def project_direct_comparator_evidence(
     comparator_reference: object,
     comparator_authority: object,
     selected_rows: Sequence[object],
-    runner_authority: object | None = None,
-    datasets: Sequence[object] | None = None,
+    runner_authority: object,
+    datasets: Sequence[object],
 ) -> dict[str, object]:
-    """Validate terminal direct evidence and emit the plain comparator handoff."""
+    """Validate the production denominator and require a later selection receipt."""
 
     from .comparator_tuning import (
         AUTHORITY_REVISION,
@@ -97,14 +97,10 @@ def project_direct_comparator_evidence(
         raise TypeError("comparator_reference must be a ComparatorAuthorityReference")
     if not isinstance(comparator_authority, ComparatorTuningAuthority):
         raise TypeError("comparator_authority must be a ComparatorTuningAuthority")
-    if runner_authority is not None and not isinstance(
-        runner_authority, RunnerAuthority
-    ):
+    if not isinstance(runner_authority, RunnerAuthority):
         raise TypeError("runner_authority must be a RunnerAuthority")
-    dataset_values = None if datasets is None else tuple(datasets)
-    if dataset_values is not None and not all(
-        isinstance(value, DatasetBinding) for value in dataset_values
-    ):
+    dataset_values = tuple(datasets)
+    if not all(isinstance(value, DatasetBinding) for value in dataset_values):
         raise TypeError("datasets must contain DatasetBinding values")
     rows = tuple(selected_rows)
     if not all(isinstance(row, ComparatorConfiguration) for row in rows):
@@ -135,6 +131,23 @@ def project_direct_comparator_evidence(
             authority=runner_authority,
             datasets=dataset_values,
         )
+    except RunnerContractError as error:
+        raise DevelopmentEvaluationError(
+            f"direct comparator production validation failed: {error}"
+        ) from error
+    if (
+        runner_authority.plan_scope != "base_full_panel"
+        or len(plan.configurations) != 61
+        or len(plan.entries) != 2_896
+        or not any(
+            configuration.configuration_kind == "comparator_tuning"
+            for configuration in plan.configurations
+        )
+    ):
+        raise DevelopmentEvaluationError(
+            "direct comparator handoff requires the canonical base denominator"
+        )
+    try:
         report = DirectCheckpointStore(checkpoint_path).load(
             plan,
             registry=registry,

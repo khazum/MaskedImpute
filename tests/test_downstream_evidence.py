@@ -60,6 +60,8 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
         comparator_reference=object(),
         comparator_authority=object(),
         selected_rows=(),
+        runner_authority=object(),
+        datasets=(),
     )
     assert validated == expected
     assert len(calls) == 1
@@ -76,6 +78,8 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
             comparator_reference=object(),
             comparator_authority=object(),
             selected_rows=(),
+            runner_authority=object(),
+            datasets=(),
         )
 
     mixed = copy.deepcopy(expected)
@@ -90,6 +94,8 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
             comparator_reference=object(),
             comparator_authority=object(),
             selected_rows=(),
+            runner_authority=object(),
+            datasets=(),
         )
 
     with pytest.raises(DownstreamEvidenceError, match="identity mode"):
@@ -102,6 +108,8 @@ def test_direct_downstream_projection_routes_only_closed_direct_schema(
             comparator_reference=object(),
             comparator_authority=object(),
             selected_rows=(),
+            runner_authority=object(),
+            datasets=(),
         )
 
 

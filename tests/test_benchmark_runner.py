@@ -77,7 +77,7 @@ from maskimpute_benchmark.runner import (
     execute_adapter_in_spawned_process,
     evaluate_adapter_outcome,
     execute_fair_comparator_request,
-    execute_fair_comparator_plan,
+    _execute_fair_comparator_plan_structural,
     enforce_calibration_fold_receipt,
     execute_competition_plan,
     derive_authorized_configurations,
@@ -2896,7 +2896,7 @@ def test_fair_comparator_plan_execution_uses_only_direct_checkpoint_and_fake_att
         "CheckpointStore",
         lambda *_args, **_kwargs: pytest.fail("legacy checkpoint route used"),
     )
-    report = execute_fair_comparator_plan(
+    report = _execute_fair_comparator_plan_structural(
         plan,
         registry,
         prepared_datasets,
@@ -3382,7 +3382,7 @@ def completed_checkpoint_fixture(tmp_path: Path):
     prepared = _prepared_truth_dataset()
     plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         (_direct_magic_record(plan, "unavailable"),),
         registry=registry,
@@ -3409,7 +3409,7 @@ def test_direct_checkpoint_rejects_coherent_budget_tamper(
         encoding="utf-8",
     )
     with pytest.raises(RunnerContractError, match="budget ledger differs from replay"):
-        DirectCheckpointStore(checkpoint_path).load(
+        DirectCheckpointStore(checkpoint_path)._load_structural(
             plan,
             registry=load_method_registry(METHODS_PATH),
             prepared_datasets=prepared,
@@ -3422,7 +3422,7 @@ def test_incomplete_grid_is_unselectable_until_comparator_is_terminal(
     prepared = _prepared_truth_dataset()
     plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    incomplete = store.write(
+    incomplete = store._write_structural(
         plan,
         (),
         registry=registry,
@@ -3430,7 +3430,7 @@ def test_incomplete_grid_is_unselectable_until_comparator_is_terminal(
     )
     assert incomplete.comparator_selection_status == "blocked_incomplete_denominator"
 
-    complete = store.write(
+    complete = store._write_structural(
         plan,
         (_direct_magic_record(plan, "unavailable"),),
         registry=registry,
@@ -3453,7 +3453,9 @@ def test_incomplete_grid_blocking_statuses_remain_unselectable(
 ) -> None:
     prepared = _prepared_truth_dataset()
     plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
-    report = DirectCheckpointStore(tmp_path / f"{outcome.status}.json").write(
+    report = DirectCheckpointStore(
+        tmp_path / f"{outcome.status}.json"
+    )._write_structural(
         plan,
         (_direct_magic_record(plan, outcome.status),),
         registry=registry,
@@ -3477,7 +3479,9 @@ def test_comparator_selection_intrinsic_terminal_statuses_complete_grid(
 ) -> None:
     prepared = _prepared_truth_dataset()
     plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
-    report = DirectCheckpointStore(tmp_path / f"{outcome.status}.json").write(
+    report = DirectCheckpointStore(
+        tmp_path / f"{outcome.status}.json"
+    )._write_structural(
         plan,
         (_direct_magic_record(plan, outcome.status),),
         registry=registry,
@@ -3492,14 +3496,14 @@ def test_persisted_infrastructure_error_is_not_selectively_retried(
     prepared = _prepared_truth_dataset()
     plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    first = store.write(
+    first = store._write_structural(
         plan,
         (_direct_magic_record(plan, "infrastructure_error"),),
         registry=registry,
         prepared_datasets=prepared_datasets,
     )
     assert first.comparator_selection_status == "blocked_incomplete_denominator"
-    resumed = store.load(
+    resumed = store._load_structural(
         plan,
         registry=registry,
         prepared_datasets=prepared_datasets,
@@ -3544,7 +3548,7 @@ def test_execute_fair_comparator_plan_rejects_replaced_direct_run_identity(
         raise AssertionError("executor called before direct plan validation")
 
     with pytest.raises(RunnerContractError, match="direct checkpoint plan run ID"):
-        execute_fair_comparator_plan(
+        _execute_fair_comparator_plan_structural(
             stale,
             registry,
             prepared_datasets,
@@ -3572,7 +3576,7 @@ def test_execute_fair_comparator_plan_rejects_substituted_method_projection(
         raise AssertionError("executor called before direct plan validation")
 
     with pytest.raises(RunnerContractError, match="method projection differs"):
-        execute_fair_comparator_plan(
+        _execute_fair_comparator_plan_structural(
             changed_plan,
             registry,
             prepared_datasets,

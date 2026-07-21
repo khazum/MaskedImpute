@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 import inspect
 import hashlib
@@ -60,7 +60,7 @@ def _direct_schema_keys(value: object) -> tuple[str, ...]:
 
 def _forbidden_direct_key(name: str) -> bool:
     lowered = name.casefold()
-    return lowered != "shape" and any(
+    return lowered not in {"shape", "pythonhashseed"} and any(
         token in lowered for token in FORBIDDEN_DIRECT_IDENTITY_TOKENS
     )
 
@@ -173,27 +173,168 @@ def _audited_direct_scope(node: ast.AST) -> bool:
     )
 
 
-def _reachable_module_functions(
-    functions: Mapping[str, ast.AST],
+def _boolean_value(
+    node: ast.AST,
+    bindings: Mapping[str, bool],
+) -> bool | None:
+    if isinstance(node, ast.Constant) and type(node.value) is bool:
+        return node.value
+    if isinstance(node, ast.Name):
+        return bindings.get(node.id)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        value = _boolean_value(node.operand, bindings)
+        return None if value is None else not value
+    return None
+
+
+def _path_nodes(
+    scope: ast.AST,
+    bindings: Mapping[str, bool],
+) -> tuple[ast.AST, ...]:
+    nodes: list[ast.AST] = []
+
+    def visit(node: ast.AST, *, root: bool = False) -> None:
+        nodes.append(node)
+        if not root and isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda),
+        ):
+            return
+        if isinstance(node, ast.If):
+            visit(node.test)
+            condition = _boolean_value(node.test, bindings)
+            branches = (
+                node.body
+                if condition is True
+                else node.orelse
+                if condition is False
+                else (*node.body, *node.orelse)
+            )
+            for child in branches:
+                visit(child)
+            return
+        if isinstance(node, ast.IfExp):
+            visit(node.test)
+            condition = _boolean_value(node.test, bindings)
+            if condition is True:
+                visit(node.body)
+            elif condition is False:
+                visit(node.orelse)
+            else:
+                visit(node.body)
+                visit(node.orelse)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(scope, root=True)
+    return tuple(nodes)
+
+
+def _scope_aliases_from_nodes(
+    nodes: Sequence[ast.AST],
+    module_aliases: Mapping[str, str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    symbols = dict(module_aliases)
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            for imported in node.names:
+                local = imported.asname or imported.name.split(".")[0]
+                symbols[local] = imported.name
+        elif isinstance(node, ast.ImportFrom):
+            prefix = "" if node.module is None else f"{node.module}."
+            for imported in node.names:
+                local = imported.asname or imported.name
+                symbols[local] = f"{prefix}{imported.name}"
+    strings: dict[str, str] = {}
+    assignments = tuple(
+        node for node in nodes if isinstance(node, (ast.Assign, ast.AnnAssign))
+    )
+    for _pass in range(len(assignments) + 1):
+        changed = False
+        for assignment in assignments:
+            targets = (
+                assignment.targets
+                if isinstance(assignment, ast.Assign)
+                else (assignment.target,)
+            )
+            value = assignment.value
+            if value is None:
+                continue
+            symbol = _resolve_symbol(value, symbols)
+            string = _literal_string(value, strings)
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if symbol is not None and symbols.get(target.id) != symbol:
+                    symbols[target.id] = symbol
+                    changed = True
+                if string is not None and strings.get(target.id) != string:
+                    strings[target.id] = string
+                    changed = True
+        if not changed:
+            break
+    return symbols, strings
+
+
+def _called_boolean_bindings(
+    call: ast.Call,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    caller_bindings: Mapping[str, bool],
+) -> dict[str, bool]:
+    parameters = (*function.args.posonlyargs, *function.args.args)
+    result: dict[str, bool] = {}
+    default_start = len(parameters) - len(function.args.defaults)
+    for position, default in enumerate(function.args.defaults, start=default_start):
+        value = _boolean_value(default, {})
+        if value is not None:
+            result[parameters[position].arg] = value
+    for parameter, argument in zip(parameters, call.args, strict=False):
+        value = _boolean_value(argument, caller_bindings)
+        if value is not None:
+            result[parameter.arg] = value
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            continue
+        value = _boolean_value(keyword.value, caller_bindings)
+        if value is not None:
+            result[keyword.arg] = value
+    return result
+
+
+def _reachable_direct_scopes(
+    functions: Mapping[str, ast.FunctionDef | ast.AsyncFunctionDef],
     roots: set[str],
     module_aliases: Mapping[str, str],
-) -> set[str]:
-    reachable: set[str] = set()
-    pending = list(roots)
+) -> tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, Mapping[str, bool]], ...]:
+    reachable: list[
+        tuple[ast.FunctionDef | ast.AsyncFunctionDef, Mapping[str, bool]]
+    ] = []
+    pending = [(name, {}) for name in sorted(roots)]
+    seen: set[tuple[str, tuple[tuple[str, bool], ...]]] = set()
     while pending:
-        name = pending.pop()
-        if name in reachable:
+        name, bindings = pending.pop()
+        state = (name, tuple(sorted(bindings.items())))
+        if state in seen:
             continue
+        seen.add(state)
         scope = functions.get(name)
         if scope is None:
             continue
-        reachable.add(name)
-        symbols, _strings = _scope_aliases(scope, module_aliases)
-        for call in (node for node in ast.walk(scope) if isinstance(node, ast.Call)):
+        reachable.append((scope, bindings))
+        nodes = _path_nodes(scope, bindings)
+        symbols, _strings = _scope_aliases_from_nodes(nodes, module_aliases)
+        for call in (node for node in nodes if isinstance(node, ast.Call)):
             resolved = _resolve_symbol(call.func, symbols)
-            if resolved in functions and resolved not in reachable:
-                pending.append(resolved)
-    return reachable
+            called = functions.get(resolved) if resolved is not None else None
+            if called is not None:
+                pending.append(
+                    (
+                        resolved,
+                        _called_boolean_bindings(call, called, bindings),
+                    )
+                )
+    return tuple(reachable)
 
 
 def _direct_source_audit_findings(
@@ -212,36 +353,33 @@ def _direct_source_audit_findings(
         direct_roots = {
             name for name, node in functions.items() if _audited_direct_scope(node)
         }
-        legacy_roots = {
-            name
-            for name, node in functions.items()
-            if not name.startswith("_") and not _audited_direct_scope(node)
-        }
-        direct_reachable = _reachable_module_functions(
-            functions, direct_roots, module_aliases
-        )
-        legacy_reachable = _reachable_module_functions(
-            functions, legacy_roots, module_aliases
-        )
-        audited_names = direct_roots | (direct_reachable - legacy_reachable)
-        scopes: tuple[ast.AST, ...] = tuple(
-            functions[name] for name in functions if name in audited_names
+        scopes = _reachable_direct_scopes(
+            functions,
+            direct_roots,
+            module_aliases,
         )
     else:
-        scopes = (tree,)
+        scopes = ((tree, {}),)
     findings: set[str] = set()
     if not shared:
         for local, imported in module_aliases.items():
             leaf = imported.rsplit(".", 1)[-1]
             if imported == "hashlib" or leaf in FORBIDDEN_DIRECT_HELPERS:
                 findings.add(f"forbidden import {local}={imported}")
-    for scope in scopes:
-        symbols, strings = _scope_aliases(scope, module_aliases)
-        for local, imported in _scope_import_aliases(scope).items():
+    for scope, bindings in scopes:
+        nodes = _path_nodes(scope, bindings) if shared else tuple(ast.walk(scope))
+        symbols, strings = _scope_aliases_from_nodes(nodes, module_aliases)
+        path_imports = {
+            local: imported
+            for node in nodes
+            for local, imported in _scope_import_aliases(node).items()
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+        }
+        for local, imported in path_imports.items():
             leaf = imported.rsplit(".", 1)[-1]
             if imported == "hashlib" or leaf in FORBIDDEN_DIRECT_HELPERS:
                 findings.add(f"forbidden import {local}={imported}")
-        for call in (node for node in ast.walk(scope) if isinstance(node, ast.Call)):
+        for call in (node for node in nodes if isinstance(node, ast.Call)):
             resolved = _resolve_symbol(call.func, symbols)
             if resolved is not None and (
                 resolved == "hashlib"
@@ -249,9 +387,7 @@ def _direct_source_audit_findings(
                 or resolved.rsplit(".", 1)[-1] in FORBIDDEN_DIRECT_HELPERS
             ):
                 findings.add(f"forbidden call {resolved}")
-        for dictionary in (
-            node for node in ast.walk(scope) if isinstance(node, ast.Dict)
-        ):
+        for dictionary in (node for node in nodes if isinstance(node, ast.Dict)):
             for key in dictionary.keys:
                 if key is None:
                     continue
@@ -319,7 +455,9 @@ def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
         prepare_method_input,
     )
     from maskimpute_benchmark.runner import SELECTION_COMPLETENESS_BLOCKERS
-    from maskimpute_benchmark.selection import project_direct_selected_comparators
+    from maskimpute_benchmark.selection import (
+        _project_direct_selected_comparators_for_schema_fixture,
+    )
 
     registry = load_method_registry(ROOT / "study/methods.json")
     authority = load_comparator_tuning_authority(
@@ -485,7 +623,7 @@ def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
         records=(attempt.to_dict(),),
         budget={},
     )
-    projection = project_direct_selected_comparators(
+    projection = _project_direct_selected_comparators_for_schema_fixture(
         ComparatorAuthorityReference(
             path="study/comparator_tuning.json",
             schema_version=2,
@@ -493,6 +631,7 @@ def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
         ),
         authority,
         (row,),
+        represented_method_ids=(row.method_id,),
     )
     return {
         "request": request.to_dict(),
@@ -631,6 +770,36 @@ def project_direct_payload(value):
     assert _direct_source_audit_findings(source, shared=True)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "return canonical_sha256(value)",
+        'return {"plan_sha256": value}',
+    ),
+)
+@pytest.mark.parametrize("shared_with_legacy", (False, True))
+def test_direct_source_audit_reaches_direct_executed_helpers(
+    mutation: str,
+    shared_with_legacy: bool,
+) -> None:
+    legacy = (
+        "\ndef run_magic(value):\n    return _serialize_receipt(value)\n"
+        if shared_with_legacy
+        else ""
+    )
+    source = f"""
+from provenance import canonical_sha256
+
+def _serialize_receipt(value):
+    {mutation}
+
+def run_magic_direct(value):
+    return _serialize_receipt(value)
+{legacy}
+"""
+    assert _direct_source_audit_findings(source, shared=True)
+
+
 def test_direct_source_audit_rejects_forbidden_calls_in_adapter_wrapper() -> None:
     source = """
 import hashlib
@@ -655,6 +824,38 @@ def run_magic_direct(value):
     return value
 """
     assert _direct_source_audit_findings(source, shared=True) == ()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "return canonical_sha256(value)",
+        'return {"plan_sha256": value}',
+    ),
+)
+def test_direct_source_audit_ignores_legacy_only_helper_mutations(
+    mutation: str,
+) -> None:
+    source = f"""
+from provenance import canonical_sha256
+
+def _serialize_receipt(value):
+    {mutation}
+
+def run_magic(value):
+    return _serialize_receipt(value)
+
+def run_magic_direct(value):
+    return value
+"""
+    assert _direct_source_audit_findings(source, shared=True) == ()
+
+
+def test_direct_selection_fixture_encoder_is_not_public() -> None:
+    import maskimpute_benchmark.selection as selection
+
+    assert not hasattr(selection, "project_direct_selected_comparators")
+    assert "project_direct_selected_comparators" not in selection.__all__
 
 
 def test_scoped_direct_source_and_schema_migration_audit() -> None:
@@ -834,7 +1035,7 @@ def test_direct_selected_projection_rejects_duplicate_or_drifted_authority_rows(
     from maskimpute_benchmark.methods import load_method_registry
     from maskimpute_benchmark.selection import (
         SelectionAuthorityError,
-        project_direct_selected_comparators,
+        _project_direct_selected_comparators_for_schema_fixture,
     )
 
     registry = load_method_registry(ROOT / "study/methods.json")
@@ -850,29 +1051,33 @@ def test_direct_selected_projection_rejects_duplicate_or_drifted_authority_rows(
     )
     row = authority.configurations_for("magic")[0]
     with pytest.raises(SelectionAuthorityError, match="methods must be unique"):
-        project_direct_selected_comparators(
+        _project_direct_selected_comparators_for_schema_fixture(
             reference,
             authority,
             (row, row),
+            represented_method_ids=(row.method_id, row.method_id),
         )
     drifted = replace(row, payload_json=row.payload_json.replace('"knn":5', '"knn":7'))
     with pytest.raises(SelectionAuthorityError, match="exact authority evidence"):
-        project_direct_selected_comparators(
+        _project_direct_selected_comparators_for_schema_fixture(
             reference,
             authority,
             (drifted,),
+            represented_method_ids=(row.method_id,),
         )
     with pytest.raises(SelectionAuthorityError, match="authority reference differs"):
-        project_direct_selected_comparators(
+        _project_direct_selected_comparators_for_schema_fixture(
             replace(reference, schema_version=3),
             authority,
             (row,),
+            represented_method_ids=(row.method_id,),
         )
     with pytest.raises(SelectionAuthorityError, match="authority reference differs"):
-        project_direct_selected_comparators(
+        _project_direct_selected_comparators_for_schema_fixture(
             replace(reference, schema_version=2.0),
             authority,
             (row,),
+            represented_method_ids=(row.method_id,),
         )
 
 
@@ -890,7 +1095,7 @@ def test_direct_selected_projection_rejects_coherently_forged_authority(
     from maskimpute_benchmark.methods import load_method_registry
     from maskimpute_benchmark.selection import (
         SelectionAuthorityError,
-        project_direct_selected_comparators,
+        _project_direct_selected_comparators_for_schema_fixture,
     )
 
     registry = load_method_registry(ROOT / "study/methods.json")
@@ -912,10 +1117,11 @@ def test_direct_selected_projection_rejects_coherently_forged_authority(
     )
 
     with pytest.raises(SelectionAuthorityError, match="authority"):
-        project_direct_selected_comparators(
+        _project_direct_selected_comparators_for_schema_fixture(
             reference,
             forged,
             forged.configurations_for("magic")[:1],
+            represented_method_ids=("magic",),
         )
 
 

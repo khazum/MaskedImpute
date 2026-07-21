@@ -228,7 +228,7 @@ def test_direct_plan_binding_validator_rejects_missing_duplicate_or_relabelled_b
         )
 
     with pytest.raises(RunnerContractError):
-        direct_plan_module.validate_direct_competition_plan(
+        direct_plan_module._validate_direct_competition_plan_structure(
             changed,
             registry=registry,
             prepared_datasets=prepared_datasets,
@@ -270,7 +270,7 @@ def test_direct_plan_binding_validator_rejects_contract_and_input_drift(
         changed = replace(plan, inputs=(changed_descriptor,))
 
     with pytest.raises(RunnerContractError):
-        direct_plan_module.validate_direct_competition_plan(
+        direct_plan_module._validate_direct_competition_plan_structure(
             changed,
             registry=registry,
             prepared_datasets=prepared_datasets,
@@ -295,7 +295,7 @@ def test_direct_plan_binding_validator_rejects_numeric_payload_type_coercion(
     )
 
     with pytest.raises(RunnerContractError):
-        direct_plan_module.validate_direct_competition_plan(
+        direct_plan_module._validate_direct_competition_plan_structure(
             changed,
             registry=registry,
             prepared_datasets=prepared_datasets,
@@ -416,7 +416,7 @@ def test_direct_attempt_and_checkpoint_require_exact_ordered_metric_denominator(
             record["metrics"][0],
         )
     with pytest.raises(RunnerContractError, match="metric|denominator|order"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             (record,),
             registry=registry,
@@ -470,7 +470,7 @@ def test_direct_checkpoint_rebinds_qc_fields_to_prepared_input(
         run["observed_zero_count"] = 2
 
     with pytest.raises(RunnerContractError, match="audit|prepared|gene|zero"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             (record,),
             registry=registry,
@@ -507,7 +507,7 @@ def test_direct_attempt_and_checkpoint_bind_non_score_prezero_receipt(
     record = attempt.to_dict()
     record["p_pre_zero_evidence"] = evidence.to_dict()
     with pytest.raises(RunnerContractError, match="p_pre_zero|applicability|receipt"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             (record,),
             registry=registry,
@@ -520,7 +520,7 @@ def test_direct_checkpoint_load_reopens_applicable_prezero_receipt(
 ) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         (_attempt(plan.entries[0], status="completed").to_dict(),),
         registry=registry,
@@ -541,7 +541,7 @@ def test_direct_checkpoint_load_reopens_applicable_prezero_receipt(
 
     _rewrite(store.path, mutate)
     with pytest.raises(RunnerContractError, match="p_pre_zero|unavailable|path"):
-        store.load(plan, registry=registry, prepared_datasets=prepared)
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)
 
 
 def _terminal_prefix(
@@ -621,7 +621,7 @@ def _registry_with_method(registry, method_id: str, replacement):
 def test_direct_checkpoint_replays_exact_prefix_and_budget(tmp_path: Path) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    report = store.write(
+    report = store._write_structural(
         plan,
         _terminal_prefix(plan, 3),
         registry=registry,
@@ -660,7 +660,7 @@ def test_direct_checkpoint_rejects_complete_plan_identity_drift(
 ) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         _terminal_prefix(plan, 1),
         registry=registry,
@@ -691,13 +691,13 @@ def test_direct_checkpoint_rejects_complete_plan_identity_drift(
         RunnerContractError,
         match="plan snapshot|ordinals|configuration|method projection",
     ):
-        store.load(changed, registry=registry, prepared_datasets=prepared)
+        store._load_structural(changed, registry=registry, prepared_datasets=prepared)
 
 
 def test_direct_checkpoint_rejects_input_descriptor_drift(tmp_path: Path) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         _terminal_prefix(plan, 1),
         registry=registry,
@@ -711,7 +711,7 @@ def test_direct_checkpoint_rejects_input_descriptor_drift(tmp_path: Path) -> Non
     )
 
     with pytest.raises(RunnerContractError, match="input descriptors"):
-        store.load(plan, registry=registry, prepared_datasets=prepared)
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)
 
 
 @pytest.mark.parametrize("mutation", ("extra", "skipped", "configuration_id"))
@@ -721,7 +721,7 @@ def test_direct_checkpoint_rejects_nonprefix_records(
 ) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         _terminal_prefix(plan, 2),
         registry=registry,
@@ -739,13 +739,13 @@ def test_direct_checkpoint_rejects_nonprefix_records(
 
     _rewrite(store.path, mutate)
     with pytest.raises(RunnerContractError, match="prefix|identity"):
-        store.load(plan, registry=registry, prepared_datasets=prepared)
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)
 
 
 def test_direct_checkpoint_rejects_budget_drift(tmp_path: Path) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         _terminal_prefix(plan, 1),
         registry=registry,
@@ -756,7 +756,7 @@ def test_direct_checkpoint_rejects_budget_drift(tmp_path: Path) -> None:
         lambda payload: payload["budget"]["magic"].__setitem__("consumed_seconds", 99),
     )
     with pytest.raises(RunnerContractError, match="budget ledger differs"):
-        store.load(plan, registry=registry, prepared_datasets=prepared)
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)
 
 
 @pytest.mark.parametrize(
@@ -775,7 +775,7 @@ def test_direct_checkpoint_rejects_caller_supplied_completeness(
 ) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         _terminal_prefix(plan, 1),
         registry=registry,
@@ -784,7 +784,7 @@ def test_direct_checkpoint_rejects_caller_supplied_completeness(
     _rewrite(store.path, lambda payload: payload.__setitem__(field, value))
 
     with pytest.raises(RunnerContractError, match="status|completeness|selection"):
-        store.load(plan, registry=registry, prepared_datasets=prepared)
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)
 
     assert "selection_complete" not in inspect.signature(store.write).parameters
     assert "budget" not in inspect.signature(store.write).parameters
@@ -873,7 +873,7 @@ def test_direct_checkpoint_replay_rejects_coherent_time_ledger_over_ceiling(
     record = _attempt(plan.entries[0], runtime_seconds=limit + 1.0).to_dict()
 
     with pytest.raises(RunnerContractError, match="time|budget|ceiling"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             (record,),
             registry=registry,
@@ -906,7 +906,7 @@ def test_direct_comparator_selection_status_preserves_task7_partition(
 def test_direct_checkpoint_recovers_only_exact_next_transaction(tmp_path: Path) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    report = store.write(
+    report = store._write_structural(
         plan,
         _terminal_prefix(plan, 1),
         registry=registry,
@@ -915,14 +915,19 @@ def test_direct_checkpoint_recovers_only_exact_next_transaction(tmp_path: Path) 
     attempt = _attempt(plan.entries[1], status="infrastructure_error")
     store._publish_transaction_intent(plan, 1, plan.entries[1], attempt)
 
-    recovered = store.load(plan, registry=registry, prepared_datasets=prepared)
+    recovered = store._load_structural(
+        plan, registry=registry, prepared_datasets=prepared
+    )
     assert len(recovered.records) == 2
     assert recovered.records[1]["run"]["status"] == "infrastructure_error"
     assert not store.intent_path.exists()
 
-    assert store.load(plan, registry=registry, prepared_datasets=prepared) == recovered
+    assert (
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)
+        == recovered
+    )
     with pytest.raises(RunnerContractError, match="identity"):
-        store.append(
+        store._append_structural(
             plan,
             recovered,
             attempt,
@@ -937,14 +942,14 @@ def test_direct_checkpoint_append_derives_record_budget_and_completeness(
 ) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    running = store.write(
+    running = store._write_structural(
         plan,
         (),
         registry=registry,
         prepared_datasets=prepared,
     )
 
-    appended = store.append(
+    appended = store._append_structural(
         plan,
         running,
         _attempt(plan.entries[0]),
@@ -971,7 +976,7 @@ def test_direct_checkpoint_rejects_transaction_that_skips_next_ordinal(
 ) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         _terminal_prefix(plan, 1),
         registry=registry,
@@ -984,7 +989,7 @@ def test_direct_checkpoint_rejects_transaction_that_skips_next_ordinal(
         _attempt(plan.entries[2]),
     )
     with pytest.raises(RunnerContractError, match="next|position"):
-        store.load(plan, registry=registry, prepared_datasets=prepared)
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)
 
 
 def test_direct_checkpoint_write_rejects_symlink_replacement(tmp_path: Path) -> None:
@@ -995,7 +1000,7 @@ def test_direct_checkpoint_write_rejects_symlink_replacement(tmp_path: Path) -> 
     store.path.symlink_to(target)
 
     with pytest.raises(RunnerContractError, match="owned regular file|symlink"):
-        store.write(
+        store._write_structural(
             plan,
             (),
             registry=registry,
@@ -1012,7 +1017,7 @@ def test_direct_checkpoint_rejects_inconsistent_metric_record(tmp_path: Path) ->
     records[0]["metrics"][0]["reason"] = None
 
     with pytest.raises(RunnerContractError, match="metric"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             records,
             registry=registry,
@@ -1033,7 +1038,7 @@ def test_direct_checkpoint_rejects_noncontiguous_plan_ordinals(tmp_path: Path) -
     )
 
     with pytest.raises(RunnerContractError, match="ordinal"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             changed,
             (),
             registry=registry,
@@ -1070,7 +1075,7 @@ def test_review_direct_checkpoint_rejects_list_object_identity_collision(
         identity["configuration_payload"]["nested"] = {"a": 1}
 
     with pytest.raises(RunnerContractError, match="identity"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             (record,),
             registry=registry,
@@ -1085,7 +1090,7 @@ def test_review_direct_checkpoint_rejects_bool_report_integer(
 ) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         _terminal_prefix(plan, 1),
         registry=registry,
@@ -1094,7 +1099,7 @@ def test_review_direct_checkpoint_rejects_bool_report_integer(
     _rewrite(store.path, lambda payload: payload.__setitem__(field, True))
 
     with pytest.raises(RunnerContractError, match="schema|denominator|integer"):
-        store.load(plan, registry=registry, prepared_datasets=prepared)
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)
 
 
 def test_review_direct_checkpoint_rejects_bool_intent_schema_version(
@@ -1102,7 +1107,7 @@ def test_review_direct_checkpoint_rejects_bool_intent_schema_version(
 ) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         _terminal_prefix(plan, 1),
         registry=registry,
@@ -1120,7 +1125,7 @@ def test_review_direct_checkpoint_rejects_bool_intent_schema_version(
     )
 
     with pytest.raises(RunnerContractError, match="schema|plan snapshot"):
-        store.load(plan, registry=registry, prepared_datasets=prepared)
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)
 
 
 def test_review_direct_checkpoint_rejects_signed_negative_zero_runtime(
@@ -1131,7 +1136,7 @@ def test_review_direct_checkpoint_rejects_signed_negative_zero_runtime(
     record["run"]["runtime_seconds"] = -0.0
 
     with pytest.raises(RunnerContractError, match="runtime|negative"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             (record,),
             registry=registry,
@@ -1157,7 +1162,7 @@ def test_direct_checkpoint_rejects_signed_negative_zero_metric(tmp_path: Path) -
     record["metrics"][0]["value"] = -0.0
 
     with pytest.raises(RunnerContractError, match="metric value"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             (record,),
             registry=registry,
@@ -1170,7 +1175,7 @@ def test_direct_checkpoint_accepts_nonzero_negative_metric(tmp_path: Path) -> No
     record = _attempt(plan.entries[0], status="completed").to_dict()
     record["metrics"][0]["value"] = -0.25
 
-    report = DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+    report = DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
         plan,
         (record,),
         registry=registry,
@@ -1216,7 +1221,7 @@ def test_review_direct_checkpoint_rejects_malformed_prezero_evidence(
     mutation(record["p_pre_zero_evidence"])
 
     with pytest.raises(RunnerContractError, match=message):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             (record,),
             registry=registry,
@@ -1273,7 +1278,7 @@ def test_review_direct_checkpoint_rejects_registry_method_projection_drift(
     changed_registry = _registry_with_method(registry, "magic", changed)
 
     with pytest.raises(RunnerContractError, match="method projection|registry"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             _terminal_prefix(plan, 1),
             registry=changed_registry,
@@ -1294,7 +1299,7 @@ def test_review_direct_checkpoint_rejects_missing_or_duplicate_registry_method(
     changed_registry = replace(registry, methods=methods)
 
     with pytest.raises(RunnerContractError, match="method|registry"):
-        DirectCheckpointStore(tmp_path / "checkpoint.json").write(
+        DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
             plan,
             _terminal_prefix(plan, 1),
             registry=changed_registry,
@@ -1307,7 +1312,7 @@ def test_review_direct_checkpoint_rejects_stale_historical_transaction(
 ) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
     store = DirectCheckpointStore(tmp_path / "checkpoint.json")
-    store.write(
+    store._write_structural(
         plan,
         _terminal_prefix(plan, 3),
         registry=registry,
@@ -1321,4 +1326,4 @@ def test_review_direct_checkpoint_rejects_stale_historical_transaction(
     )
 
     with pytest.raises(RunnerContractError, match="stale|position"):
-        store.load(plan, registry=registry, prepared_datasets=prepared)
+        store._load_structural(plan, registry=registry, prepared_datasets=prepared)

@@ -437,15 +437,13 @@ def _direct_configuration_payload(
     return dict(encoded)
 
 
-def validate_direct_competition_plan(
+def _validate_direct_competition_plan_structure(
     plan: DirectCompetitionPlan,
     *,
     registry: MethodRegistry,
     prepared_datasets: Mapping[str, PreparedDataset],
-    authority: RunnerAuthority | None = None,
-    datasets: Sequence[DatasetBinding] | None = None,
 ) -> None:
-    """Validate every direct plan/configuration/entry/input binding."""
+    """Validate a direct plan shape for private, in-memory fixture use."""
 
     if not isinstance(plan, DirectCompetitionPlan):
         raise TypeError("plan must be a DirectCompetitionPlan")
@@ -466,12 +464,6 @@ def validate_direct_competition_plan(
         raise RunnerContractError("direct plan schema, mode, or revision differs")
     if not plan.inputs or not plan.configurations or not plan.entries:
         raise RunnerContractError("direct plan denominator must not be empty")
-    production = len(plan.inputs) == 16
-    if production and (not isinstance(authority, RunnerAuthority) or datasets is None):
-        raise RunnerContractError(
-            "production direct plan requires runner authority and dataset bindings"
-        )
-
     input_ids = tuple(descriptor.dataset_id for descriptor in plan.inputs)
     if (
         any(
@@ -764,44 +756,67 @@ def validate_direct_competition_plan(
         ):
             raise RunnerContractError("direct revision candidate denominator differs")
 
-        assert authority is not None and datasets is not None
-        canonical_authorities = (
-            (load_runner_authority(),)
-            if authority.plan_scope == "base_full_panel"
-            else (load_v28_revision_authority(), load_v29_revision_authority())
+
+def validate_direct_competition_plan(
+    plan: DirectCompetitionPlan,
+    *,
+    registry: MethodRegistry,
+    prepared_datasets: Mapping[str, PreparedDataset],
+    authority: RunnerAuthority,
+    datasets: Sequence[DatasetBinding],
+) -> None:
+    """Validate the exact production direct denominator and its authorities."""
+
+    if not isinstance(plan, DirectCompetitionPlan):
+        raise TypeError("plan must be a DirectCompetitionPlan")
+    if len(plan.inputs) != 16:
+        raise RunnerContractError("production direct plan requires exactly 16 inputs")
+    if not isinstance(authority, RunnerAuthority):
+        raise TypeError("authority must be a RunnerAuthority")
+    dataset_values = tuple(datasets)
+    if not all(isinstance(value, DatasetBinding) for value in dataset_values):
+        raise TypeError("datasets must contain DatasetBinding values")
+
+    _validate_direct_competition_plan_structure(
+        plan,
+        registry=registry,
+        prepared_datasets=prepared_datasets,
+    )
+    canonical_authorities = (
+        (load_runner_authority(),)
+        if authority.plan_scope == "base_full_panel"
+        else (load_v28_revision_authority(), load_v29_revision_authority())
+    )
+    if not any(direct_equal(authority, value) for value in canonical_authorities):
+        raise RunnerContractError(
+            "production direct runner authority differs from the fixed authority"
         )
-        if not any(direct_equal(authority, value) for value in canonical_authorities):
-            raise RunnerContractError(
-                "production direct runner authority differs from the fixed authority"
+    input_ids = tuple(descriptor.dataset_id for descriptor in plan.inputs)
+    if (
+        len(dataset_values) != 16
+        or tuple(prepared_datasets)
+        != tuple(value.dataset_id for value in dataset_values)
+        or input_ids != tuple(value.dataset_id for value in dataset_values)
+        or any(
+            not direct_equal(
+                prepared_datasets[binding.dataset_id].binding,
+                binding,
             )
-        dataset_values = tuple(datasets)
-        if (
-            len(dataset_values) != 16
-            or not all(isinstance(value, DatasetBinding) for value in dataset_values)
-            or tuple(prepared_by_id)
-            != tuple(value.dataset_id for value in dataset_values)
-            or any(
-                not direct_equal(
-                    prepared_by_id[binding.dataset_id].binding,
-                    binding,
-                )
-                for binding in dataset_values
-            )
-        ):
-            raise RunnerContractError(
-                "production direct dataset binding authority differs"
-            )
-        expected_plan = _build_direct_competition_plan(
-            registry,
-            dataset_values,
-            authority,
-            tuple(prepared_by_id[value.dataset_id] for value in dataset_values),
-            _validate=False,
+            for binding in dataset_values
         )
-        if not direct_equal(plan, expected_plan):
-            raise RunnerContractError(
-                "production direct plan differs from canonical authority"
-            )
+    ):
+        raise RunnerContractError("production direct dataset binding authority differs")
+    expected_plan = _build_direct_competition_plan(
+        registry,
+        dataset_values,
+        authority,
+        tuple(prepared_datasets[value.dataset_id] for value in dataset_values),
+        _validate=False,
+    )
+    if not direct_equal(plan, expected_plan):
+        raise RunnerContractError(
+            "production direct plan differs from canonical authority"
+        )
 
 
 def _build_direct_competition_plan(

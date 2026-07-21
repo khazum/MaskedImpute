@@ -26,6 +26,7 @@ from .fair_comparator_plan import (
     DirectCompetitionPlan,
     DirectPlanEntry,
     PreparedInputDescriptor,
+    _validate_direct_competition_plan_structure,
     describe_prepared_input,
     direct_run_id,
     validate_direct_competition_plan,
@@ -916,8 +917,8 @@ class DirectCheckpointStore:
         *,
         registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
-        authority: RunnerAuthority | None = None,
-        datasets: Sequence[DatasetBinding] | None = None,
+        authority: RunnerAuthority,
+        datasets: Sequence[DatasetBinding],
     ) -> DirectCheckpointReport:
         validate_direct_competition_plan(
             plan,
@@ -926,6 +927,41 @@ class DirectCheckpointStore:
             authority=authority,
             datasets=datasets,
         )
+        return self._write_validated(
+            plan,
+            records,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+    def _write_structural(
+        self,
+        plan: DirectCompetitionPlan,
+        records: Sequence[Mapping[str, object]],
+        *,
+        registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> DirectCheckpointReport:
+        _validate_direct_competition_plan_structure(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+        return self._write_validated(
+            plan,
+            records,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+    def _write_validated(
+        self,
+        plan: DirectCompetitionPlan,
+        records: Sequence[Mapping[str, object]],
+        *,
+        registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> DirectCheckpointReport:
         snapshot = _validate_plan(plan)
         descriptors = _prepared_descriptors(plan, prepared_datasets)
         record_values = tuple(
@@ -942,12 +978,10 @@ class DirectCheckpointStore:
         if len(records) > len(plan.entries):
             raise RunnerContractError("direct checkpoint records are not a plan prefix")
         self._publish(self.path, self._body(plan, descriptors, record_values, registry))
-        return self.load(
+        return self._load_validated(
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
-            authority=authority,
-            datasets=datasets,
         )
 
     def append(
@@ -958,11 +992,9 @@ class DirectCheckpointStore:
         *,
         registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
-        authority: RunnerAuthority | None = None,
-        datasets: Sequence[DatasetBinding] | None = None,
+        authority: RunnerAuthority,
+        datasets: Sequence[DatasetBinding],
     ) -> DirectCheckpointReport:
-        if not isinstance(attempt, DirectEvaluatedAttempt):
-            raise TypeError("attempt must be a DirectEvaluatedAttempt")
         validate_direct_competition_plan(
             plan,
             registry=registry,
@@ -970,13 +1002,54 @@ class DirectCheckpointStore:
             authority=authority,
             datasets=datasets,
         )
+        if not isinstance(attempt, DirectEvaluatedAttempt):
+            raise TypeError("attempt must be a DirectEvaluatedAttempt")
+        return self._append_validated(
+            plan,
+            report,
+            attempt,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+    def _append_structural(
+        self,
+        plan: DirectCompetitionPlan,
+        report: DirectCheckpointReport | None,
+        attempt: DirectEvaluatedAttempt,
+        *,
+        registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> DirectCheckpointReport:
+        if not isinstance(attempt, DirectEvaluatedAttempt):
+            raise TypeError("attempt must be a DirectEvaluatedAttempt")
+        _validate_direct_competition_plan_structure(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+        return self._append_validated(
+            plan,
+            report,
+            attempt,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+    def _append_validated(
+        self,
+        plan: DirectCompetitionPlan,
+        report: DirectCheckpointReport | None,
+        attempt: DirectEvaluatedAttempt,
+        *,
+        registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> DirectCheckpointReport:
         if os.path.lexists(self.path):
-            current = self.load(
+            current = self._load_validated(
                 plan,
                 registry=registry,
                 prepared_datasets=prepared_datasets,
-                authority=authority,
-                datasets=datasets,
             )
             if report is not None and not _direct_equal(
                 report.to_dict(), current.to_dict()
@@ -1009,12 +1082,10 @@ class DirectCheckpointStore:
             self.path,
             self._body(plan, descriptors, (*records, record), registry),
         )
-        return self.load(
+        return self._load_validated(
             plan,
             registry=registry,
             prepared_datasets=prepared_datasets,
-            authority=authority,
-            datasets=datasets,
         )
 
     def _publish_transaction_intent(
@@ -1228,8 +1299,8 @@ class DirectCheckpointStore:
         *,
         registry: MethodRegistry,
         prepared_datasets: Mapping[str, PreparedDataset],
-        authority: RunnerAuthority | None = None,
-        datasets: Sequence[DatasetBinding] | None = None,
+        authority: RunnerAuthority,
+        datasets: Sequence[DatasetBinding],
     ) -> DirectCheckpointReport:
         validate_direct_competition_plan(
             plan,
@@ -1238,6 +1309,37 @@ class DirectCheckpointStore:
             authority=authority,
             datasets=datasets,
         )
+        return self._load_validated(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+    def _load_structural(
+        self,
+        plan: DirectCompetitionPlan,
+        *,
+        registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> DirectCheckpointReport:
+        _validate_direct_competition_plan_structure(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+        return self._load_validated(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+    def _load_validated(
+        self,
+        plan: DirectCompetitionPlan,
+        *,
+        registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> DirectCheckpointReport:
         self._recover_interrupted_transaction(
             plan,
             registry=registry,

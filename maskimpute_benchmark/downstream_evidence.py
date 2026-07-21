@@ -548,6 +548,8 @@ def validate_direct_comparator_projection(
     comparator_reference: object,
     comparator_authority: object,
     selected_rows: Sequence[object],
+    runner_authority: object,
+    datasets: Sequence[object],
 ) -> dict[str, object]:
     """Revalidate the complete direct source before downstream handoff."""
 
@@ -589,6 +591,8 @@ def validate_direct_comparator_projection(
         comparator_reference=comparator_reference,
         comparator_authority=comparator_authority,
         selected_rows=selected_rows,
+        runner_authority=runner_authority,
+        datasets=datasets,
     )
     if not _direct_projection_equal(projection, expected):
         raise DownstreamEvidenceError("direct comparator projection differs")

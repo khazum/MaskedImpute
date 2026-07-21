@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+import inspect
 import json
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from maskimpute_benchmark.fair_comparator_execution import (
 )
 from maskimpute_benchmark.fair_comparator_plan import (
     DirectCompetitionPlan,
+    _validate_direct_competition_plan_structure,
     build_direct_competition_plan,
     describe_prepared_input,
     direct_run_id,
@@ -158,6 +160,35 @@ def _renumber_direct_entries(entries: tuple[object, ...]) -> tuple[object, ...]:
         identity = replace(entry.identity, ordinal=ordinal)
         result.append(replace(entry, run_id=direct_run_id(identity), identity=identity))
     return tuple(result)
+
+
+def _truncate_direct_plan(
+    plan: DirectCompetitionPlan,
+    prepared: tuple[PreparedDataset, ...],
+) -> tuple[DirectCompetitionPlan, dict[str, PreparedDataset]]:
+    """Build one coherent non-production structural fixture."""
+
+    removed_id = plan.inputs[-1].dataset_id
+    changed = replace(
+        plan,
+        inputs=plan.inputs[:-1],
+        entries=_renumber_direct_entries(
+            tuple(
+                entry
+                for entry in plan.entries
+                if entry.identity.dataset_id != removed_id
+            )
+        ),
+    )
+    prepared_by_id = {
+        value.binding.dataset_id: value
+        for value in prepared
+        if value.binding.dataset_id != removed_id
+    }
+    assert len(changed.inputs) == 15
+    assert len(changed.configurations) == 61
+    assert len(changed.entries) == 2_715
+    return changed, prepared_by_id
 
 
 def _configuration_positions(plan, configuration) -> list[int]:
@@ -308,12 +339,19 @@ def test_direct_plan_rejects_noncanonical_configuration_cells(
                 ),
                 "datasets": datasets,
             }
-        validate_direct_competition_plan(
-            changed,
-            registry=registry,
-            prepared_datasets=prepared,
-            **keywords,
-        )
+        if scope == "synthetic":
+            _validate_direct_competition_plan_structure(
+                changed,
+                registry=registry,
+                prepared_datasets=prepared,
+            )
+        else:
+            validate_direct_competition_plan(
+                changed,
+                registry=registry,
+                prepared_datasets=prepared,
+                **keywords,
+            )
 
 
 def test_production_direct_plan_requires_complete_runner_and_dataset_authority() -> (
@@ -322,7 +360,7 @@ def test_production_direct_plan_requires_complete_runner_and_dataset_authority()
     plan, registry, datasets, prepared = _direct_fixture()
     prepared_map = {value.binding.dataset_id: value for value in prepared}
 
-    with pytest.raises(RunnerContractError, match="authority|dataset bindings"):
+    with pytest.raises(TypeError, match="required keyword-only argument"):
         validate_direct_competition_plan(
             plan,
             registry=registry,
@@ -342,6 +380,219 @@ def test_production_direct_plan_requires_complete_runner_and_dataset_authority()
             registry=registry,
             prepared_datasets=prepared_map,
             authority=authority,
+            datasets=datasets,
+        )
+
+
+def test_public_direct_boundaries_require_production_authority_arguments() -> None:
+    from maskimpute_benchmark.development_evaluation import (
+        project_direct_comparator_evidence,
+    )
+    from maskimpute_benchmark.downstream_evidence import (
+        validate_direct_comparator_projection,
+    )
+    from maskimpute_benchmark.runner import execute_fair_comparator_plan
+
+    boundaries = (
+        (validate_direct_competition_plan, ("authority", "datasets")),
+        (DirectCheckpointStore.write, ("authority", "datasets")),
+        (DirectCheckpointStore.load, ("authority", "datasets")),
+        (DirectCheckpointStore.append, ("authority", "datasets")),
+        (execute_fair_comparator_plan, ("authority", "datasets")),
+        (
+            project_direct_comparator_evidence,
+            ("runner_authority", "datasets"),
+        ),
+        (
+            validate_direct_comparator_projection,
+            ("runner_authority", "datasets"),
+        ),
+    )
+
+    for boundary, names in boundaries:
+        signature = inspect.signature(boundary)
+        assert all(
+            signature.parameters[name].default is inspect.Parameter.empty
+            for name in names
+        ), boundary.__qualname__
+
+
+def test_public_direct_boundaries_reject_coherent_15_input_plan(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
+        project_direct_comparator_evidence,
+    )
+    from maskimpute_benchmark.runner import execute_fair_comparator_plan
+
+    plan, registry, datasets, prepared = _direct_fixture()
+    changed, prepared_by_id = _truncate_direct_plan(plan, prepared)
+    authority = load_runner_authority()
+
+    with pytest.raises(RunnerContractError, match="production|canonical|16"):
+        validate_direct_competition_plan(
+            changed,
+            registry=registry,
+            prepared_datasets=prepared_by_id,
+            authority=authority,
+            datasets=datasets,
+        )
+    with pytest.raises(RunnerContractError, match="production|canonical|16"):
+        DirectCheckpointStore(tmp_path / "write.json").write(
+            changed,
+            (),
+            registry=registry,
+            prepared_datasets=prepared_by_id,
+            authority=authority,
+            datasets=datasets,
+        )
+    recovery_store = DirectCheckpointStore(tmp_path / "load.json")
+    recovery_marker = b"must-not-be-read-or-recovered"
+    recovery_store.intent_path.write_bytes(recovery_marker)
+    with pytest.raises(RunnerContractError, match="production|canonical|16"):
+        recovery_store.load(
+            changed,
+            registry=registry,
+            prepared_datasets=prepared_by_id,
+            authority=authority,
+            datasets=datasets,
+        )
+    assert recovery_store.intent_path.read_bytes() == recovery_marker
+    with pytest.raises(RunnerContractError, match="production|canonical|16"):
+        DirectCheckpointStore(tmp_path / "append.json").append(
+            changed,
+            None,
+            object(),  # type: ignore[arg-type]
+            registry=registry,
+            prepared_datasets=prepared_by_id,
+            authority=authority,
+            datasets=datasets,
+        )
+
+    def forbidden_executor(*_args: object) -> object:
+        raise AssertionError("non-production plan reached the executor")
+
+    with pytest.raises(RunnerContractError, match="production|canonical|16"):
+        execute_fair_comparator_plan(
+            changed,
+            registry,
+            prepared_by_id,
+            forbidden_executor,
+            DirectCheckpointStore(tmp_path / "runner.json"),
+            authority=authority,
+            datasets=datasets,
+        )
+
+    comparator_authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    with pytest.raises(
+        DevelopmentEvaluationError,
+        match="production|canonical|16",
+    ):
+        project_direct_comparator_evidence(
+            tmp_path / "downstream.json",
+            changed,
+            registry=registry,
+            prepared_datasets=prepared_by_id,
+            comparator_reference=ComparatorAuthorityReference(
+                path="study/comparator_tuning.json",
+                schema_version=2,
+                authority_revision="fair-comparator-direct-v1",
+            ),
+            comparator_authority=comparator_authority,
+            selected_rows=(comparator_authority.configurations[0],),
+            runner_authority=authority,
+            datasets=datasets,
+        )
+
+
+@pytest.mark.parametrize(
+    "selection",
+    ((), (0,), (2, 7, 11)),
+    ids=("empty", "one-row-nonwinning", "arbitrary-subset"),
+)
+def test_public_direct_handoff_never_accepts_caller_selected_rows(
+    tmp_path: Path,
+    selection: tuple[int, ...],
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
+        project_direct_comparator_evidence,
+    )
+
+    plan, registry, datasets, prepared = _direct_fixture()
+    authority = load_runner_authority()
+    comparator_authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    checkpoint_path = tmp_path / "incomplete.json"
+    DirectCheckpointStore(checkpoint_path).write(
+        plan,
+        (),
+        registry=registry,
+        prepared_datasets={value.binding.dataset_id: value for value in prepared},
+        authority=authority,
+        datasets=datasets,
+    )
+
+    with pytest.raises(DevelopmentEvaluationError, match="denominator is not terminal"):
+        project_direct_comparator_evidence(
+            checkpoint_path,
+            plan,
+            registry=registry,
+            prepared_datasets={value.binding.dataset_id: value for value in prepared},
+            comparator_reference=ComparatorAuthorityReference(
+                path="study/comparator_tuning.json",
+                schema_version=2,
+                authority_revision="fair-comparator-direct-v1",
+            ),
+            comparator_authority=comparator_authority,
+            selected_rows=tuple(
+                comparator_authority.configurations[index] for index in selection
+            ),
+            runner_authority=authority,
+            datasets=datasets,
+        )
+
+
+def test_public_direct_handoff_rejects_candidate_only_plan(tmp_path: Path) -> None:
+    from maskimpute_benchmark.comparator_tuning import ComparatorAuthorityReference
+    from maskimpute_benchmark.development_evaluation import (
+        DevelopmentEvaluationError,
+        project_direct_comparator_evidence,
+    )
+
+    _base, registry, datasets, prepared = _direct_fixture()
+    authority = load_v28_revision_authority()
+    plan = build_direct_competition_plan(registry, datasets, authority, prepared)
+    comparator_authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+
+    with pytest.raises(DevelopmentEvaluationError, match="base.*denominator"):
+        project_direct_comparator_evidence(
+            tmp_path / "candidate.json",
+            plan,
+            registry=registry,
+            prepared_datasets={value.binding.dataset_id: value for value in prepared},
+            comparator_reference=ComparatorAuthorityReference(
+                path="study/comparator_tuning.json",
+                schema_version=2,
+                authority_revision="fair-comparator-direct-v1",
+            ),
+            comparator_authority=comparator_authority,
+            selected_rows=(),
+            runner_authority=authority,
             datasets=datasets,
         )
 
