@@ -22,14 +22,20 @@ from maskimpute_benchmark.comparator_tuning import (
     bind_comparator_configuration_identity,
     build_comparator_smoke_input,
     build_comparator_smoke_receipt,
+    collapse_comparator_configuration,
     decode_comparator_configuration,
     encode_comparator_configuration,
     load_comparator_smoke_receipt,
     load_comparator_tuning_authority,
+    metric_rank_quarters,
+    pareto_configuration_ids,
     parse_comparator_tuning_authority,
     run_comparator_tuning_smoke,
+    select_one_comparator_method,
 )
 import maskimpute_benchmark.comparator_tuning as comparator_tuning_module
+from maskimpute_benchmark.direct_values import direct_json_value, freeze_direct_mapping
+from maskimpute_benchmark.fair_comparator_plan import ComparatorRunIdentity
 from maskimpute_benchmark.methods import load_method_registry
 from maskimpute_benchmark.runner import (
     AdapterOutcome,
@@ -164,6 +170,331 @@ def complete_smoke_outcomes(smoke_bound_rows):
         )
         for row in smoke_bound_rows
     )
+
+
+def golden_authority():
+    registry = load_method_registry(ROOT / "study/methods.json")
+    return load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+
+
+def golden_comparator_records(
+    *,
+    method_id: str,
+    configuration_values: dict[str, tuple[float, float, float, float, float, float]],
+    duplicate_each_seed_value: bool,
+) -> tuple[dict[str, object], ...]:
+    registry = load_method_registry(ROOT / "study/methods.json")
+    authority = load_comparator_tuning_authority(
+        ROOT,
+        registry=registry,
+        require_clean=False,
+    )
+    authority_by_id = {
+        row.configuration_id: row
+        for row in authority.configurations_for(method_id)
+    }
+    metrics = authority.selection_metrics
+    records: list[dict[str, object]] = []
+    ordinal = 0
+    for configuration_id, configured_values in configuration_values.items():
+        row = authority_by_id[configuration_id]
+        bound = bind_comparator_configuration_identity(
+            row,
+            registry.by_id(method_id),
+            authority,
+        )
+        configuration_records: list[dict[str, object]] = []
+        for mechanism_index, mechanism in enumerate(
+            ("symsim", "sergio", "sparsim", "semisynthetic")
+        ):
+            for draw_index, biological_id in enumerate(
+                ("draw-01", "draw-02"),
+                start=1,
+            ):
+                for view_index, technical_view in enumerate(
+                    ("moderate", "severe")
+                ):
+                    dataset_id = (
+                        f"dataset-{mechanism}-{biological_id}-{technical_view}"
+                    )
+                    for model_seed in (42, 43, 44):
+                        ordinal += 1
+                        identity = ComparatorRunIdentity(
+                            workflow_schema="maskimpute-fair-comparator-run-v1",
+                            authority_revision=authority.authority_revision,
+                            ordinal=ordinal,
+                            method=bound.method,
+                            configuration_id=configuration_id,
+                            configuration_kind="comparator_tuning",
+                            configuration_payload=freeze_direct_mapping(row.payload),
+                            dataset_id=dataset_id,
+                            mechanism=mechanism,
+                            biological_id=biological_id,
+                            technical_view=technical_view,
+                            mask_seed=1_000 + 10 * mechanism_index + draw_index,
+                            model_seed=model_seed,
+                            draw_index=draw_index,
+                        )
+                        identity_json = direct_json_value(identity)
+                        assert isinstance(identity_json, dict)
+                        applicable_metrics = (
+                            metrics
+                            if mechanism == "symsim"
+                            else tuple(
+                                metric
+                                for metric in metrics
+                                if metric != "mse_pre_dropout_zero"
+                            )
+                        )
+                        metric_rows = []
+                        for metric in applicable_metrics:
+                            position = metrics.index(metric)
+                            seed_offset = (
+                                0.0
+                                if duplicate_each_seed_value
+                                else 0.0001 * (model_seed - 42)
+                            )
+                            value = float(
+                                configured_values[position]
+                                + 0.01 * draw_index
+                                + 0.001 * view_index
+                                + seed_offset
+                            )
+                            metric_rows.append(
+                                {
+                                    "identity": copy.deepcopy(identity_json),
+                                    "metric": metric,
+                                    "value": value,
+                                    "n": 10,
+                                    "status": "completed",
+                                    "reason": None,
+                                }
+                            )
+                        configuration_records.append(
+                            {
+                                "run": {
+                                    "run_id": f"run-{ordinal:04d}-{configuration_id}",
+                                    "identity": identity_json,
+                                    "status": "completed",
+                                    "reason": None,
+                                },
+                                "metrics": metric_rows,
+                                "p_pre_zero_evidence": {
+                                    "applicable": False,
+                                    "status": "not_applicable",
+                                },
+                            }
+                        )
+        assert len(configuration_records) == 48
+        assert sum(len(record["metrics"]) for record in configuration_records) == 252
+        records.extend(configuration_records)
+    return tuple(records)
+
+
+def _magic_golden_records() -> tuple[dict[str, object], ...]:
+    return golden_comparator_records(
+        method_id="magic",
+        configuration_values={
+            "magic-t03": (1.0, 4.0, 2.0, 3.0, 2.0, 4.0),
+            "magic-t01": (2.0, 2.0, 2.0, 2.0, 3.0, 2.0),
+            "magic-t05": (3.0, 1.0, 3.0, 1.0, 1.0, 3.0),
+            "magic-t07": (4.0, 5.0, 4.0, 5.0, 4.0, 5.0),
+        },
+        duplicate_each_seed_value=True,
+    )
+
+
+def test_seed_view_draw_collapse_and_quarter_rank_golden() -> None:
+    result = select_one_comparator_method(
+        "magic",
+        _magic_golden_records(),
+        golden_authority(),
+    )
+    assert result.configuration_ids == (
+        "magic-t03",
+        "magic-t01",
+        "magic-t05",
+        "magic-t07",
+    )
+    assert result.eligible_configuration_ids == result.configuration_ids
+    assert result.pareto_configuration_ids == (
+        "magic-t03",
+        "magic-t01",
+        "magic-t05",
+    )
+    assert result.configuration("magic-t03").unit_counts == {
+        "mse": 8,
+        "mse_dropout": 8,
+        "gnrmse": 8,
+        "mse_pre_dropout_zero": 2,
+        "corr_err": 8,
+        "mse_non_dropout_nonzero": 8,
+    }
+    assert all(
+        type(value) is int
+        for row in result.pareto_rows
+        for value in row.metric_rank_quarters.values()
+    )
+    assert result.selected_configuration_id == min(
+        result.pareto_rows,
+        key=lambda row: row.selection_tuple,
+    ).configuration_id
+    for row in (*result.collapsed_rows, *result.pareto_rows):
+        assert row.configuration.configuration in golden_authority().configurations
+        assert row.configuration.method == result.configuration(
+            row.configuration_id
+        ).configuration.method
+
+
+def test_average_ties_encode_exact_quarter_rank_integer() -> None:
+    assert metric_rank_quarters(
+        {
+            "a": (1.0, 1.0),
+            "b": (1.0, 2.0),
+            "c": (3.0, 2.0),
+        }
+    ) == {"a": 5, "b": 8, "c": 11}
+
+
+def test_pareto_filter_requires_weak_all_and_strict_one() -> None:
+    result = select_one_comparator_method(
+        "magic",
+        _magic_golden_records(),
+        golden_authority(),
+    )
+    assert pareto_configuration_ids(result.collapsed_rows) == (
+        "magic-t03",
+        "magic-t01",
+        "magic-t05",
+    )
+
+
+def test_selection_tuple_uses_default_penalty_then_configuration_id() -> None:
+    records = golden_comparator_records(
+        method_id="magic",
+        configuration_values={
+            "magic-t03": (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            "magic-t01": (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            "magic-t05": (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+            "magic-t07": (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        },
+        duplicate_each_seed_value=True,
+    )
+    result = select_one_comparator_method("magic", records, golden_authority())
+    assert result.selected_configuration_id == "magic-t03"
+    assert result.pareto_rows[0].selection_tuple == (
+        10,
+        60,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        0,
+        "magic-t03",
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("identity", "identity"),
+        ("missing_metric", "metric"),
+        ("duplicate_metric", "metric"),
+        ("wrong_applicability", "applicability"),
+        ("nonfinite", "nonfinite"),
+        ("unit_grid", "unit grid"),
+    ),
+)
+def test_collapse_fails_closed_on_malformed_direct_records(
+    mutation: str,
+    message: str,
+) -> None:
+    records = [copy.deepcopy(record) for record in _magic_golden_records()[:48]]
+    if mutation == "identity":
+        records[0]["metrics"][0]["identity"]["configuration_id"] = "magic-t01"
+    elif mutation == "missing_metric":
+        records[0]["metrics"].pop()
+    elif mutation == "duplicate_metric":
+        records[0]["metrics"].append(copy.deepcopy(records[0]["metrics"][0]))
+    elif mutation == "wrong_applicability":
+        records[12]["metrics"].append(
+            {
+                **copy.deepcopy(records[12]["metrics"][0]),
+                "metric": "mse_pre_dropout_zero",
+            }
+        )
+    elif mutation == "nonfinite":
+        records[0]["metrics"][0]["value"] = float("inf")
+    else:
+        for record in records:
+            if record["run"]["identity"]["model_seed"] == 44:
+                record["run"]["identity"]["model_seed"] = 43
+                for metric in record["metrics"]:
+                    metric["identity"]["model_seed"] = 43
+                break
+    authority = golden_authority()
+    registry = load_method_registry(ROOT / "study/methods.json")
+    bound = bind_comparator_configuration_identity(
+        authority.configurations_for("magic")[0],
+        registry.by_id("magic"),
+        authority,
+    )
+    with pytest.raises(ComparatorTuningError, match=message):
+        collapse_comparator_configuration(bound, records)
+
+
+def test_collapse_intrinsic_terminal_row_is_ineligible_without_aborting_method() -> None:
+    records = [copy.deepcopy(record) for record in _magic_golden_records()]
+    broken = records[0]
+    broken["run"]["status"] = "unavailable"
+    broken["run"]["reason"] = "adapter_not_registered"
+    for metric in broken["metrics"]:
+        metric["value"] = None
+        metric["n"] = 0
+        metric["status"] = "unavailable"
+        metric["reason"] = "adapter_not_registered"
+    result = select_one_comparator_method("magic", records, golden_authority())
+    assert result.configuration_ids == (
+        "magic-t03",
+        "magic-t01",
+        "magic-t05",
+        "magic-t07",
+    )
+    assert result.eligible_configuration_ids == (
+        "magic-t01",
+        "magic-t05",
+        "magic-t07",
+    )
+    assert result.configuration("magic-t03").eligible is False
+    assert result.configuration("magic-t03").status_counts == {
+        "completed": 47,
+        "unavailable": 1,
+    }
+
+
+def test_collapse_rejects_bound_authority_reference_drift() -> None:
+    authority = golden_authority()
+    registry = load_method_registry(ROOT / "study/methods.json")
+    bound = bind_comparator_configuration_identity(
+        authority.configurations_for("magic")[0],
+        registry.by_id("magic"),
+        authority,
+    )
+    drifted = replace(
+        bound,
+        authority_reference=replace(bound.authority_reference, schema_version=1),
+    )
+    with pytest.raises(ComparatorTuningError, match="bound comparator identity"):
+        collapse_comparator_configuration(
+            drifted,
+            _magic_golden_records()[:48],
+        )
 
 
 def test_smoke_input_is_exact_truth_free_900_by_500() -> None:

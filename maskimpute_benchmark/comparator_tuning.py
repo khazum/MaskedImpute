@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from collections import Counter
+from dataclasses import asdict, dataclass, fields
 import json
 import math
 import os
@@ -439,6 +440,790 @@ class BoundComparatorConfiguration:
     configuration: ComparatorConfiguration
     authority_reference: ComparatorAuthorityReference
     method: ComparatorMethodBinding
+
+
+SELECTION_METRICS = (
+    "mse",
+    "mse_dropout",
+    "gnrmse",
+    "mse_pre_dropout_zero",
+    "corr_err",
+    "mse_non_dropout_nonzero",
+)
+_SELECTION_MECHANISMS = ("symsim", "sergio", "sparsim", "semisynthetic")
+_SELECTION_VIEWS = ("moderate", "severe")
+_SELECTION_INTRINSIC_STATUSES = frozenset(
+    {"failed", "timeout", "resource_exceeded", "unavailable"}
+)
+_SELECTION_IDENTITY_KEYS = frozenset(
+    {
+        "workflow_schema",
+        "authority_revision",
+        "ordinal",
+        "method",
+        "configuration_id",
+        "configuration_kind",
+        "configuration_payload",
+        "dataset_id",
+        "mechanism",
+        "biological_id",
+        "technical_view",
+        "mask_seed",
+        "model_seed",
+        "draw_index",
+    }
+)
+_SELECTION_METRIC_KEYS = frozenset(
+    {"identity", "metric", "value", "n", "status", "reason"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CollapsedComparatorConfiguration:
+    configuration: BoundComparatorConfiguration
+    eligible: bool
+    eligibility_reason: str | None
+    status_counts: Mapping[str, int]
+    reason_histogram: Mapping[str, int]
+    unit_ids: Mapping[str, tuple[str, ...]]
+    unit_values: Mapping[str, tuple[float, ...]]
+    unit_counts: Mapping[str, int]
+    metric_medians: Mapping[str, float]
+
+    @property
+    def method_id(self) -> str:
+        return self.configuration.configuration.method_id
+
+    @property
+    def configuration_id(self) -> str:
+        return self.configuration.configuration.configuration_id
+
+
+@dataclass(frozen=True, slots=True)
+class RankedComparatorConfiguration:
+    configuration: BoundComparatorConfiguration
+    metric_rank_quarters: Mapping[str, int]
+    selection_tuple: tuple[int, int, int, int, int, int, int, int, int, str]
+
+    @property
+    def configuration_id(self) -> str:
+        return self.configuration.configuration.configuration_id
+
+
+@dataclass(frozen=True, slots=True)
+class ComparatorMethodSelection:
+    method_id: str
+    collapsed_rows: tuple[CollapsedComparatorConfiguration, ...]
+    pareto_rows: tuple[RankedComparatorConfiguration, ...]
+    selected_configuration_id: str | None
+
+    @property
+    def configuration_ids(self) -> tuple[str, ...]:
+        return tuple(row.configuration_id for row in self.collapsed_rows)
+
+    @property
+    def eligible_configuration_ids(self) -> tuple[str, ...]:
+        return tuple(
+            row.configuration_id for row in self.collapsed_rows if row.eligible
+        )
+
+    @property
+    def pareto_configuration_ids(self) -> tuple[str, ...]:
+        return tuple(row.configuration_id for row in self.pareto_rows)
+
+    def configuration(
+        self,
+        configuration_id: str,
+    ) -> CollapsedComparatorConfiguration:
+        matches = tuple(
+            row
+            for row in self.collapsed_rows
+            if row.configuration_id == configuration_id
+        )
+        if len(matches) != 1:
+            raise ComparatorTuningError(
+                "selected comparator configuration does not resolve exactly"
+            )
+        return matches[0]
+
+
+def _selection_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
+    return MappingProxyType(dict(value))
+
+
+def _validate_bound_selection_configuration(
+    bound: BoundComparatorConfiguration,
+) -> None:
+    if not isinstance(bound, BoundComparatorConfiguration):
+        raise TypeError("configuration must be a BoundComparatorConfiguration")
+    configuration = bound.configuration
+    reference = bound.authority_reference
+    method = bound.method
+    canonical_authority = _canonical_comparator_tuning_authority()
+    if (
+        not isinstance(configuration, ComparatorConfiguration)
+        or not isinstance(reference, ComparatorAuthorityReference)
+        or not isinstance(method, ComparatorMethodBinding)
+        or configuration.method_id != method.method_id
+        or reference.path != "study/comparator_tuning.json"
+        or reference.schema_version != canonical_authority.schema_version
+        or reference.authority_revision != canonical_authority.authority_revision
+        or sum(
+            direct_equal(configuration, row)
+            for row in canonical_authority.configurations
+        )
+        != 1
+    ):
+        raise ComparatorTuningError("bound comparator identity is invalid")
+    try:
+        payload = dict(configuration.payload)
+        decoded = configuration.decode()
+    except (ComparatorTuningError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ComparatorTuningError("bound comparator payload is invalid") from error
+    if (
+        configuration.payload_json
+        != _canonical_bytes(payload).decode("utf-8")
+        or encode_comparator_configuration(decoded) != payload
+    ):
+        raise ComparatorTuningError("bound comparator payload differs")
+
+
+def _selection_record_identity(record: object) -> Mapping[str, object]:
+    if not isinstance(record, Mapping) or set(record) != {
+        "run",
+        "metrics",
+        "p_pre_zero_evidence",
+    }:
+        raise ComparatorTuningError("comparator selection record schema differs")
+    run = record.get("run")
+    if not isinstance(run, Mapping):
+        raise ComparatorTuningError("comparator selection run is invalid")
+    identity = run.get("identity")
+    if not isinstance(identity, Mapping) or set(identity) != _SELECTION_IDENTITY_KEYS:
+        raise ComparatorTuningError("comparator selection identity schema differs")
+    method = identity.get("method")
+    if not isinstance(method, Mapping) or not isinstance(method.get("method_id"), str):
+        raise ComparatorTuningError("comparator selection method identity is invalid")
+    return identity
+
+
+def _selection_method_binding(value: object) -> ComparatorMethodBinding:
+    expected_keys = {item.name for item in fields(ComparatorMethodBinding)}
+    if not isinstance(value, Mapping) or set(value) != expected_keys:
+        raise ComparatorTuningError("comparator selection method identity differs")
+    try:
+        method = ComparatorMethodBinding(**dict(value))
+    except TypeError as error:
+        raise ComparatorTuningError(
+            "comparator selection method identity differs"
+        ) from error
+    required_strings = (
+        method.method_id,
+        method.execution_scope,
+        method.integration_status,
+        method.adapter_key,
+        method.environment_id,
+        method.environment_status,
+        method.source_kind,
+        method.input_scale,
+        method.output_scale,
+        method.seed_policy,
+        method.gpu_mode,
+    )
+    optional_strings = (
+        method.source_url,
+        method.source_revision,
+        method.source_tree,
+        method.source_cache_path,
+        method.source_freeze_binding,
+    )
+    resource_numbers = (
+        method.max_rss_gib,
+        method.max_gpu_gib,
+    )
+    if (
+        any(not isinstance(item, str) or not item for item in required_strings)
+        or any(item is not None and not isinstance(item, str) for item in optional_strings)
+        or type(method.stochastic) is not bool
+        or type(method.preserves_observed_positives) is not bool
+        or type(method.cpu_cores) is not int
+        or method.cpu_cores <= 0
+        or type(method.timeout_seconds) is not int
+        or method.timeout_seconds <= 0
+        or any(
+            isinstance(item, bool)
+            or type(item) not in {int, float}
+            or not math.isfinite(float(item))
+            or item < 0
+            for item in resource_numbers
+        )
+        or not direct_equal(direct_json_value(method), value)
+    ):
+        raise ComparatorTuningError("comparator selection method identity differs")
+    return method
+
+
+def _validate_selection_identity(
+    identity: Mapping[str, object],
+    bound: BoundComparatorConfiguration,
+) -> ComparatorMethodBinding:
+    method = _selection_method_binding(identity.get("method"))
+    configuration = bound.configuration
+    integers = ("ordinal", "mask_seed", "model_seed", "draw_index")
+    if (
+        identity.get("workflow_schema") != "maskimpute-fair-comparator-run-v1"
+        or identity.get("authority_revision")
+        != bound.authority_reference.authority_revision
+        or identity.get("configuration_id") != configuration.configuration_id
+        or identity.get("configuration_kind") != "comparator_tuning"
+        or not direct_equal(identity.get("configuration_payload"), configuration.payload)
+        or not direct_equal(method, bound.method)
+        or any(type(identity.get(name)) is not int for name in integers)
+        or int(identity["ordinal"]) <= 0
+        or int(identity["mask_seed"]) < 0
+        or identity.get("model_seed") not in EXPECTED_MODEL_SEEDS
+        or int(identity["draw_index"]) < 0
+        or identity.get("mechanism") not in _SELECTION_MECHANISMS
+        or identity.get("technical_view") not in _SELECTION_VIEWS
+        or any(
+            not isinstance(identity.get(name), str) or not identity.get(name)
+            for name in ("dataset_id", "biological_id")
+        )
+    ):
+        raise ComparatorTuningError("comparator selection identity differs")
+    return method
+
+
+def _selection_metric_rows(
+    record: Mapping[str, object],
+    identity: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
+    metrics = record.get("metrics")
+    if not isinstance(metrics, (list, tuple)):
+        raise ComparatorTuningError("comparator selection metric rows are invalid")
+    rows: list[Mapping[str, object]] = []
+    for value in metrics:
+        if not isinstance(value, Mapping) or set(value) != _SELECTION_METRIC_KEYS:
+            raise ComparatorTuningError("comparator selection metric schema differs")
+        if not direct_equal(value.get("identity"), identity):
+            raise ComparatorTuningError("comparator selection metric identity differs")
+        metric = value.get("metric")
+        status = value.get("status")
+        reason = value.get("reason")
+        number = value.get("value")
+        denominator = value.get("n")
+        if (
+            metric not in SELECTION_METRICS
+            or status not in {"completed", *_SELECTION_INTRINSIC_STATUSES}
+            or type(denominator) is not int
+            or denominator < 0
+        ):
+            raise ComparatorTuningError("comparator selection metric row is invalid")
+        if number is not None and (
+            type(number) is not float or not math.isfinite(number)
+        ):
+            if type(number) is float and not math.isfinite(number):
+                raise ComparatorTuningError(
+                    "comparator selection metric value is nonfinite"
+                )
+            raise ComparatorTuningError("comparator selection metric value is invalid")
+        if number is None:
+            if status == "completed" or not isinstance(reason, str) or not reason:
+                raise ComparatorTuningError(
+                    "comparator selection metric status is inconsistent"
+                )
+        elif status != "completed" or reason is not None:
+            raise ComparatorTuningError(
+                "comparator selection metric status is inconsistent"
+            )
+        rows.append(value)
+    names = tuple(row["metric"] for row in rows)
+    if len(names) != len(set(names)):
+        raise ComparatorTuningError("comparator selection metric is duplicated")
+    expected = (
+        SELECTION_METRICS
+        if identity["mechanism"] == "symsim"
+        else tuple(
+            metric
+            for metric in SELECTION_METRICS
+            if metric != "mse_pre_dropout_zero"
+        )
+    )
+    if names != expected:
+        if set(names) == set(expected):
+            raise ComparatorTuningError("comparator selection metric order differs")
+        extra_or_missing_prezero = (
+            "mse_pre_dropout_zero" in names
+        ) != (identity["mechanism"] == "symsim")
+        if extra_or_missing_prezero:
+            raise ComparatorTuningError(
+                "comparator selection metric applicability differs"
+            )
+        raise ComparatorTuningError("comparator selection metric denominator differs")
+    evidence = record.get("p_pre_zero_evidence")
+    if (
+        not isinstance(evidence, Mapping)
+        or type(evidence.get("applicable")) is not bool
+    ):
+        raise ComparatorTuningError("comparator selection prezero evidence is invalid")
+    return tuple(rows)
+
+
+def _average_rank_twice(target: float, values: Sequence[float]) -> int:
+    below = sum(value < target for value in values)
+    tied = sum(value == target for value in values)
+    return 2 * below + tied + 1
+
+
+def metric_rank_quarters(
+    unit_values: Mapping[str, Sequence[float]],
+) -> dict[str, int]:
+    if not isinstance(unit_values, Mapping):
+        raise TypeError("unit_values must be a mapping")
+    ids = tuple(unit_values)
+    if (
+        not ids
+        or any(not isinstance(item, str) or not item for item in ids)
+        or any(
+            isinstance(unit_values[item], (str, bytes))
+            or not isinstance(unit_values[item], Sequence)
+            for item in ids
+        )
+    ):
+        raise ComparatorTuningError("rank unit denominator differs")
+    sequences = {item: tuple(unit_values[item]) for item in ids}
+    counts = {len(values) for values in sequences.values()}
+    if len(counts) != 1 or next(iter(counts)) == 0:
+        raise ComparatorTuningError("rank unit denominator differs")
+    ranks_twice: dict[str, list[int]] = {item: [] for item in ids}
+    unit_count = len(sequences[ids[0]])
+    for unit in range(unit_count):
+        raw_values = [sequences[item][unit] for item in ids]
+        if any(
+            isinstance(value, bool) or type(value) not in {int, float}
+            for value in raw_values
+        ):
+            raise ComparatorTuningError("rank value is invalid")
+        values = [float(value) for value in raw_values]
+        if not all(math.isfinite(value) for value in values):
+            raise ComparatorTuningError("rank value is nonfinite")
+        for item, value in zip(ids, values, strict=True):
+            ranks_twice[item].append(_average_rank_twice(value, values))
+    result: dict[str, int] = {}
+    for item, ranks in ranks_twice.items():
+        ordered = sorted(ranks)
+        middle = len(ordered) // 2
+        result[item] = (
+            2 * ordered[middle]
+            if len(ordered) % 2
+            else ordered[middle - 1] + ordered[middle]
+        )
+    return result
+
+
+def _median(values: Sequence[float]) -> float:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    return (
+        ordered[middle]
+        if len(ordered) % 2
+        else (ordered[middle - 1] + ordered[middle]) / 2.0
+    )
+
+
+def collapse_comparator_configuration(
+    configuration: BoundComparatorConfiguration,
+    records: Sequence[Mapping[str, object]],
+) -> CollapsedComparatorConfiguration:
+    _validate_bound_selection_configuration(configuration)
+    if isinstance(records, (str, bytes)) or not isinstance(records, Sequence):
+        raise TypeError("records must be a sequence")
+    values = tuple(records)
+    if len(values) != 48:
+        raise ComparatorTuningError(
+            "comparator selection unit grid must contain exactly 48 records"
+        )
+
+    parsed: list[
+        tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]
+    ] = []
+    status_counts: Counter[str] = Counter()
+    reason_counts: Counter[str] = Counter()
+    ordinal_values: set[int] = set()
+    cell_values: set[tuple[str, int]] = set()
+    metric_row_count = 0
+    for record in values:
+        identity = _selection_record_identity(record)
+        _validate_selection_identity(identity, configuration)
+        ordinal = int(identity["ordinal"])
+        cell = (str(identity["dataset_id"]), int(identity["model_seed"]))
+        if ordinal in ordinal_values or cell in cell_values:
+            raise ComparatorTuningError(
+                "comparator selection unit grid contains a duplicate cell"
+            )
+        ordinal_values.add(ordinal)
+        cell_values.add(cell)
+        run = record["run"]
+        assert isinstance(run, Mapping)
+        status = run.get("status")
+        reason = run.get("reason")
+        if status not in {"completed", *_SELECTION_INTRINSIC_STATUSES}:
+            raise ComparatorTuningError(
+                "comparator selection contains a blocking run status"
+            )
+        if (status == "completed") != (reason is None) or (
+            reason is not None and (not isinstance(reason, str) or not reason)
+        ):
+            raise ComparatorTuningError(
+                "comparator selection run status is inconsistent"
+            )
+        metric_rows = _selection_metric_rows(record, identity)
+        if status == "completed":
+            if any(
+                row["status"] not in {"completed", "unavailable"}
+                for row in metric_rows
+            ):
+                raise ComparatorTuningError(
+                    "comparator selection metric status differs from run"
+                )
+        elif any(
+            row["status"] != status
+            or row["reason"] != reason
+            or row["value"] is not None
+            for row in metric_rows
+        ):
+            raise ComparatorTuningError(
+                "comparator selection metric status differs from run"
+            )
+        status_counts[str(status)] += 1
+        if reason is not None:
+            reason_counts[reason] += 1
+        for row in metric_rows:
+            metric_reason = row["reason"]
+            if metric_reason is not None:
+                reason_counts[str(metric_reason)] += 1
+        metric_row_count += len(metric_rows)
+        parsed.append((identity, metric_rows))
+    if len(cell_values) != 48:
+        raise ComparatorTuningError(
+            "comparator selection unit grid differs from 48 unique cells"
+        )
+    if metric_row_count != 252:
+        raise ComparatorTuningError(
+            "comparator selection metric denominator differs from 252 rows"
+        )
+
+    by_dataset: dict[
+        str,
+        list[tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]],
+    ] = {}
+    for item in parsed:
+        by_dataset.setdefault(str(item[0]["dataset_id"]), []).append(item)
+    if len(by_dataset) != 16:
+        raise ComparatorTuningError(
+            "comparator selection unit grid must contain 16 datasets"
+        )
+    dataset_meta: dict[str, tuple[str, str, str, int, int]] = {}
+    dataset_metric_values: dict[tuple[str, str], float] = {}
+    for dataset_id, dataset_rows in by_dataset.items():
+        if (
+            len(dataset_rows) != 3
+            or {item[0]["model_seed"] for item in dataset_rows}
+            != set(EXPECTED_MODEL_SEEDS)
+        ):
+            raise ComparatorTuningError(
+                "comparator selection unit grid must contain three model seeds"
+            )
+        first = dataset_rows[0][0]
+        metadata = (
+            str(first["mechanism"]),
+            str(first["biological_id"]),
+            str(first["technical_view"]),
+            int(first["mask_seed"]),
+            int(first["draw_index"]),
+        )
+        if any(
+            (
+                str(item[0]["mechanism"]),
+                str(item[0]["biological_id"]),
+                str(item[0]["technical_view"]),
+                int(item[0]["mask_seed"]),
+                int(item[0]["draw_index"]),
+            )
+            != metadata
+            for item in dataset_rows
+        ):
+            raise ComparatorTuningError(
+                "comparator selection unit grid dataset identity differs"
+            )
+        dataset_meta[dataset_id] = metadata
+        for metric in SELECTION_METRICS:
+            matching = tuple(
+                row
+                for _identity, metric_rows in dataset_rows
+                for row in metric_rows
+                if row["metric"] == metric
+            )
+            if not matching:
+                continue
+            if len(matching) != 3:
+                raise ComparatorTuningError(
+                    "comparator selection metric seed denominator differs"
+                )
+            if all(row["status"] == "completed" for row in matching):
+                numeric = tuple(float(row["value"]) for row in matching)
+                dataset_metric_values[(dataset_id, metric)] = math.fsum(numeric) / 3.0
+
+    unit_views: dict[tuple[str, str], dict[str, str]] = {}
+    unit_draw_indexes: dict[tuple[str, str], int] = {}
+    for dataset_id, metadata in dataset_meta.items():
+        mechanism, biological_id, technical_view, _mask_seed, draw_index = metadata
+        unit = (mechanism, biological_id)
+        views = unit_views.setdefault(unit, {})
+        if technical_view in views:
+            raise ComparatorTuningError(
+                "comparator selection unit grid has duplicate technical views"
+            )
+        views[technical_view] = dataset_id
+        previous_draw = unit_draw_indexes.setdefault(unit, draw_index)
+        if previous_draw != draw_index:
+            raise ComparatorTuningError(
+                "comparator selection unit grid draw identity differs"
+            )
+    if (
+        len(unit_views) != 8
+        or {unit[0] for unit in unit_views} != set(_SELECTION_MECHANISMS)
+        or any(set(views) != set(_SELECTION_VIEWS) for views in unit_views.values())
+        or any(
+            sum(unit[0] == mechanism for unit in unit_views) != 2
+            for mechanism in _SELECTION_MECHANISMS
+        )
+    ):
+        raise ComparatorTuningError(
+            "comparator selection unit grid differs from eight paired draws"
+        )
+    ordered_units = tuple(
+        sorted(
+            unit_views,
+            key=lambda unit: (
+                _SELECTION_MECHANISMS.index(unit[0]),
+                unit_draw_indexes[unit],
+                unit[1],
+            ),
+        )
+    )
+
+    unit_ids: dict[str, tuple[str, ...]] = {}
+    unit_values: dict[str, tuple[float, ...]] = {}
+    unit_counts: dict[str, int] = {}
+    metric_medians: dict[str, float] = {}
+    for metric in SELECTION_METRICS:
+        metric_units = (
+            tuple(unit for unit in ordered_units if unit[0] == "symsim")
+            if metric == "mse_pre_dropout_zero"
+            else ordered_units
+        )
+        collapsed: list[tuple[str, float]] = []
+        for unit in metric_units:
+            views = unit_views[unit]
+            moderate = dataset_metric_values.get((views["moderate"], metric))
+            severe = dataset_metric_values.get((views["severe"], metric))
+            if moderate is not None and severe is not None:
+                collapsed.append(
+                    (f"{unit[0]}:{unit[1]}", (moderate + severe) / 2.0)
+                )
+        unit_ids[metric] = tuple(item[0] for item in collapsed)
+        unit_values[metric] = tuple(item[1] for item in collapsed)
+        unit_counts[metric] = len(collapsed)
+        if len(collapsed) == len(metric_units):
+            metric_medians[metric] = _median(tuple(item[1] for item in collapsed))
+    expected_counts = {
+        metric: 2 if metric == "mse_pre_dropout_zero" else 8
+        for metric in SELECTION_METRICS
+    }
+    eligible = (
+        status_counts == Counter({"completed": 48})
+        and all(unit_counts[metric] == expected_counts[metric] for metric in SELECTION_METRICS)
+        and set(metric_medians) == set(SELECTION_METRICS)
+    )
+    return CollapsedComparatorConfiguration(
+        configuration=configuration,
+        eligible=eligible,
+        eligibility_reason=None if eligible else "intrinsic_terminal_evidence",
+        status_counts=_selection_mapping(dict(status_counts)),
+        reason_histogram=_selection_mapping(dict(sorted(reason_counts.items()))),
+        unit_ids=_selection_mapping(unit_ids),
+        unit_values=_selection_mapping(unit_values),
+        unit_counts=_selection_mapping(unit_counts),
+        metric_medians=_selection_mapping(metric_medians),
+    )
+
+
+def pareto_configuration_ids(
+    rows: Sequence[CollapsedComparatorConfiguration],
+) -> tuple[str, ...]:
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+        raise TypeError("rows must be a sequence")
+    values = tuple(rows)
+    if any(not isinstance(row, CollapsedComparatorConfiguration) for row in values):
+        raise TypeError("rows must contain CollapsedComparatorConfiguration values")
+    ids = tuple(row.configuration_id for row in values)
+    if len(ids) != len(set(ids)):
+        raise ComparatorTuningError("collapsed comparator configuration is duplicated")
+    eligible = tuple(row for row in values if row.eligible)
+    for row in eligible:
+        if set(row.metric_medians) != set(SELECTION_METRICS) or any(
+            type(row.metric_medians[name]) is not float
+            or not math.isfinite(row.metric_medians[name])
+            for name in SELECTION_METRICS
+        ):
+            raise ComparatorTuningError("eligible comparator metric median is invalid")
+    retained: list[str] = []
+    for target in eligible:
+        dominated = any(
+            other.configuration_id != target.configuration_id
+            and all(
+                other.metric_medians[name] <= target.metric_medians[name]
+                for name in SELECTION_METRICS
+            )
+            and any(
+                other.metric_medians[name] < target.metric_medians[name]
+                for name in SELECTION_METRICS
+            )
+            for other in eligible
+        )
+        if not dominated:
+            retained.append(target.configuration_id)
+    return tuple(retained)
+
+
+def _ranked_pareto_rows(
+    rows: Sequence[CollapsedComparatorConfiguration],
+    defaults: Mapping[str, bool],
+) -> tuple[RankedComparatorConfiguration, ...]:
+    pareto_ids = pareto_configuration_ids(rows)
+    if set(defaults) != {row.configuration_id for row in rows} or any(
+        type(value) is not bool for value in defaults.values()
+    ):
+        raise ComparatorTuningError("comparator default mapping differs")
+    if not pareto_ids:
+        return ()
+    by_id = {row.configuration_id: row for row in rows}
+    for metric in SELECTION_METRICS:
+        expected_ids = by_id[pareto_ids[0]].unit_ids[metric]
+        if any(
+            by_id[item].unit_ids[metric] != expected_ids
+            or len(by_id[item].unit_values[metric]) != len(expected_ids)
+            for item in pareto_ids
+        ):
+            raise ComparatorTuningError(
+                "Pareto comparator unit-ID grid differs before ranking"
+            )
+    metric_ranks = {
+        metric: metric_rank_quarters(
+            {item: by_id[item].unit_values[metric] for item in pareto_ids}
+        )
+        for metric in SELECTION_METRICS
+    }
+    result: list[RankedComparatorConfiguration] = []
+    for item in pareto_ids:
+        ranks = tuple(metric_ranks[metric][item] for metric in SELECTION_METRICS)
+        result.append(
+            RankedComparatorConfiguration(
+                configuration=by_id[item].configuration,
+                metric_rank_quarters=_selection_mapping(
+                    dict(zip(SELECTION_METRICS, ranks, strict=True))
+                ),
+                selection_tuple=(
+                    max(ranks),
+                    sum(ranks),
+                    *ranks,
+                    0 if defaults[item] else 1,
+                    item,
+                ),
+            )
+        )
+    return tuple(result)
+
+
+def select_one_comparator_method(
+    method_id: str,
+    records: Sequence[Mapping[str, object]],
+    authority: ComparatorTuningAuthority,
+) -> ComparatorMethodSelection:
+    if not isinstance(method_id, str) or not method_id:
+        raise TypeError("method_id must be a nonempty string")
+    if isinstance(records, (str, bytes)) or not isinstance(records, Sequence):
+        raise TypeError("records must be a sequence")
+    validate_comparator_tuning_authority(authority)
+    authority_rows = authority.configurations_for(method_id)
+    if not authority_rows:
+        raise ComparatorTuningError("comparator method is not in the tuning authority")
+    expected_ids = {row.configuration_id for row in authority_rows}
+    grouped: dict[str, list[Mapping[str, object]]] = {
+        row.configuration_id: [] for row in authority_rows
+    }
+    for record in records:
+        identity = _selection_record_identity(record)
+        method = identity["method"]
+        assert isinstance(method, Mapping)
+        if method.get("method_id") != method_id:
+            continue
+        if identity.get("configuration_kind") != "comparator_tuning":
+            raise ComparatorTuningError("comparator selection identity kind differs")
+        configuration_id = identity.get("configuration_id")
+        if configuration_id not in expected_ids:
+            raise ComparatorTuningError(
+                "comparator selection configuration identity differs"
+            )
+        assert isinstance(configuration_id, str)
+        grouped[configuration_id].append(record)
+
+    collapsed: list[CollapsedComparatorConfiguration] = []
+    common_method: ComparatorMethodBinding | None = None
+    reference = ComparatorAuthorityReference(
+        path="study/comparator_tuning.json",
+        schema_version=authority.schema_version,
+        authority_revision=authority.authority_revision,
+    )
+    for row in authority_rows:
+        configuration_records = grouped[row.configuration_id]
+        if not configuration_records:
+            raise ComparatorTuningError(
+                "comparator selection unit grid lacks an authority configuration"
+            )
+        identity = _selection_record_identity(configuration_records[0])
+        method = _selection_method_binding(identity["method"])
+        if common_method is None:
+            common_method = method
+        elif not direct_equal(method, common_method):
+            raise ComparatorTuningError(
+                "comparator selection method identity differs across configurations"
+            )
+        bound = BoundComparatorConfiguration(
+            configuration=row,
+            authority_reference=reference,
+            method=method,
+        )
+        collapsed.append(
+            collapse_comparator_configuration(bound, configuration_records)
+        )
+    defaults = {
+        row.configuration_id: row.is_upstream_default for row in authority_rows
+    }
+    collapsed_rows = tuple(collapsed)
+    ranked_rows = _ranked_pareto_rows(collapsed_rows, defaults)
+    selected = (
+        None
+        if not ranked_rows
+        else min(ranked_rows, key=lambda row: row.selection_tuple).configuration_id
+    )
+    return ComparatorMethodSelection(
+        method_id=method_id,
+        collapsed_rows=collapsed_rows,
+        pareto_rows=ranked_rows,
+        selected_configuration_id=selected,
+    )
 
 
 @dataclass(frozen=True, slots=True)
