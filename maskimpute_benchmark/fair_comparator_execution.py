@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import json
 import math
 import os
 from pathlib import Path, PurePosixPath
@@ -15,6 +16,8 @@ import numpy as np
 
 from .comparator_tuning import (
     COMPARATOR_METHOD_IDS,
+    DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
+    DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
     ComparatorConfiguration,
     ComparatorTuningAuthority,
     ComparatorTuningError,
@@ -64,6 +67,19 @@ DirectAdapter = Callable[..., AdapterOutcome]
 
 
 _direct_equal = direct_equal
+
+
+def _canonical_bytes(value: object) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise RunnerContractError("direct execution receipt is not canonical JSON") from error
 
 
 def _identity_dict(identity: ComparatorRunIdentity) -> dict[str, object]:
@@ -150,6 +166,10 @@ class DirectLogReceipt:
             not isinstance(self.terminal_reason, str) or not self.terminal_reason
         ):
             raise RunnerContractError("direct log terminal reason is invalid")
+        if len(_canonical_bytes(self.to_dict()) + b"\n") > (
+            DEVELOPMENT_MAX_LOG_RECEIPT_BYTES
+        ):
+            raise RunnerContractError("execution stream receipt exceeds its bound")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -158,6 +178,21 @@ class DirectLogReceipt:
             "capture_policy": self.capture_policy,
             "terminal_reason": self.terminal_reason,
         }
+
+
+def _stream_receipt(
+    stream: str,
+    raw: bytes,
+    terminal_reason: str | None,
+) -> DirectLogReceipt:
+    if stream not in {"stdout", "stderr"} or type(raw) is not bytes:
+        raise RunnerContractError("execution stream receipt input is invalid")
+    return DirectLogReceipt(
+        stream=stream,
+        original_byte_count=len(raw),
+        capture_policy="discard_content",
+        terminal_reason=terminal_reason,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,6 +479,7 @@ class DirectEvaluatedAttempt:
             raise RunnerContractError(
                 "noncompleted direct attempt retains an output matrix"
             )
+        _executor_receipt(self)
 
     def to_dict(self) -> dict[str, object]:
         """Return the checkpoint-safe record without in-memory matrices."""
@@ -453,6 +489,34 @@ class DirectEvaluatedAttempt:
             "metrics": [metric.to_dict() for metric in self.metrics],
             "p_pre_zero_evidence": self.p_pre_zero_evidence.to_dict(),
         }
+
+
+def _executor_receipt_for_run(run: DirectRunResult) -> bytes:
+    if not isinstance(run, DirectRunResult):
+        raise TypeError("run must be a DirectRunResult")
+    value = {
+        "schema": "maskimpute-development-executor-receipt-v1",
+        "run_id": run.run_id,
+        "status": run.status,
+        "reason": run.reason,
+        "runtime_seconds": run.runtime_seconds,
+        "peak_rss_bytes": run.peak_rss_bytes,
+        "peak_gpu_bytes": run.peak_gpu_bytes,
+        "rss_measurement": run.rss_measurement,
+        "gpu_measurement": run.gpu_measurement,
+        "stdout": run.stdout.to_dict(),
+        "stderr": run.stderr.to_dict(),
+    }
+    encoded = _canonical_bytes(value) + b"\n"
+    if len(encoded) > DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES:
+        raise RunnerContractError("executor receipt exceeds its bound")
+    return encoded
+
+
+def _executor_receipt(attempt: DirectEvaluatedAttempt) -> bytes:
+    if not isinstance(attempt, DirectEvaluatedAttempt):
+        raise TypeError("attempt must be a DirectEvaluatedAttempt")
+    return _executor_receipt_for_run(attempt.run)
 
 
 DIRECT_RECONSTRUCTION_METRICS = (
@@ -1001,18 +1065,8 @@ def _evaluate(
             )
             for name in DIRECT_RECONSTRUCTION_METRICS
         )
-    stdout = DirectLogReceipt(
-        stream="stdout",
-        original_byte_count=len(outcome.stdout),
-        capture_policy="discard_content",
-        terminal_reason=reason,
-    )
-    stderr = DirectLogReceipt(
-        stream="stderr",
-        original_byte_count=len(outcome.stderr),
-        capture_policy="discard_content",
-        terminal_reason=reason,
-    )
+    stdout = _stream_receipt("stdout", outcome.stdout, reason)
+    stderr = _stream_receipt("stderr", outcome.stderr, reason)
     run = DirectRunResult(
         run_id=direct_run_id(request.identity),
         identity=request.identity,

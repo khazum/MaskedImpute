@@ -18,6 +18,11 @@ import pytest
 import maskimpute_benchmark.runner as runner_module
 import maskimpute_benchmark.runtime_environments as runtime_module
 from maskimpute_benchmark.comparator_tuning import (
+    DEVELOPMENT_MAX_CHECKPOINT_BYTES,
+    DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
+    DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
+    DEVELOPMENT_MAX_RECORD_BYTES,
+    DEVELOPMENT_STORAGE_RESERVE_BYTES,
     bind_comparator_configuration_identity,
     comparator_method_binding,
     load_comparator_tuning_authority,
@@ -95,6 +100,7 @@ from maskimpute_benchmark.runtime_environments import (
     build_runtime_environment_lock,
 )
 from maskimpute_benchmark.protocol import canonical_sha256
+from maskimpute_benchmark.prezero_evidence import zlib_compress_bound
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -444,6 +450,54 @@ def _prepared_plan_inputs(bindings) -> tuple[PreparedDataset, ...]:
     return tuple(values)
 
 
+@pytest.fixture(scope="module")
+def direct_storage_case():
+    registry = load_method_registry(METHODS_PATH)
+    bindings = validate_development_manifest_payload(_manifest_payload())
+    shared_counts = bytes(900 * 500 * 8)
+    obs_ids = tuple(f"cell-{index:04d}" for index in range(900))
+    var_ids = tuple(f"gene-{index:04d}" for index in range(500))
+    prepared = tuple(
+        replace(
+            value,
+            method_input=replace(
+                value.method_input,
+                obs_ids=obs_ids,
+                var_ids=var_ids,
+                shape=(900, 500),
+                _count_bytes=shared_counts,
+            ),
+        )
+        for value in _prepared_plan_inputs(bindings)
+    )
+    blocked_plan = build_fair_comparator_plan(
+        registry,
+        bindings,
+        load_runner_authority(),
+        prepared,
+    )
+    plan = replace(
+        blocked_plan,
+        entries=tuple(
+            replace(
+                entry,
+                preflight_status="planned",
+                preflight_reason=None,
+            )
+            for entry in blocked_plan.entries
+        ),
+    )
+    prepared_by_id = {value.binding.dataset_id: value for value in prepared}
+    assert len(prepared_by_id) == 16
+    assert all(
+        value.method_input.counts.shape == (900, 500)
+        for value in prepared_by_id.values()
+    )
+    assert len(plan.entries) == 2_896
+    assert all(entry.preflight_status == "planned" for entry in plan.entries)
+    return plan, prepared_by_id
+
+
 def _truth_probe_executor(request: ExecutionRequest) -> AdapterOutcome:
     try:
         getattr(request.method_input, "layers")
@@ -732,6 +786,75 @@ def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> No
     for method_id in tuning.method_order:
         configured = tuning.configurations_for(method_id)
         assert configured[0].is_upstream_default
+
+
+def test_development_storage_preflight_matches_exact_direct_plan_bound(
+    direct_storage_case,
+) -> None:
+    plan, prepared = direct_storage_case
+
+    receipt = runner_module.development_storage_preflight(
+        plan,
+        prepared,
+        completed_records=0,
+    )
+
+    matrix_bytes = sum(
+        2 * prepared[entry.identity.dataset_id].method_input.counts.nbytes
+        for entry in plan.entries
+        if entry.preflight_status == "planned"
+    )
+    score_bytes = sum(
+        zlib_compress_bound(
+            prepared[entry.identity.dataset_id].method_input.counts.nbytes
+        )
+        for entry in plan.entries
+        if entry.preflight_status == "planned"
+        and entry.identity.method_id == "maskimpute"
+        and entry.requires_count_score
+    )
+    executable_count = sum(
+        entry.preflight_status == "planned" for entry in plan.entries
+    )
+    expected = (
+        matrix_bytes
+        + score_bytes
+        + executable_count
+        * (
+            2 * DEVELOPMENT_MAX_LOG_RECEIPT_BYTES
+            + DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES
+        )
+        + len(plan.entries) * DEVELOPMENT_MAX_RECORD_BYTES
+        + DEVELOPMENT_MAX_CHECKPOINT_BYTES
+        + DEVELOPMENT_STORAGE_RESERVE_BYTES
+    )
+
+    assert receipt.required_free_bytes == expected
+    assert receipt.plan_snapshot == plan.to_dict()
+    assert receipt.retained_dimensions == tuple(
+        (descriptor.dataset_id, descriptor.shape) for descriptor in plan.inputs
+    )
+    assert 20 * 1024**3 <= expected <= 27 * 1024**3
+
+
+def test_storage_failure_occurs_before_output_directory_creation(
+    tmp_path: Path,
+    direct_storage_case,
+) -> None:
+    plan, prepared = direct_storage_case
+    output = tmp_path / "must-not-exist"
+
+    with pytest.raises(RunnerContractError, match="insufficient development storage"):
+        runner_module.require_development_storage_capacity(
+            output,
+            plan,
+            prepared,
+            completed_records=0,
+            available_bytes=1,
+        )
+
+    assert not output.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_runner_direct_dispatch_route_uses_closed_comparator_mapping(
@@ -2909,6 +3032,53 @@ def test_fair_comparator_plan_execution_uses_only_direct_checkpoint_and_fake_att
     assert report.plan_snapshot == plan.to_dict()
     assert len(report.records) == 1
     assert len(calls) == 1
+
+
+def test_fair_comparator_resume_fails_storage_before_transaction_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepared_truth_dataset()
+    plan, registry, prepared_datasets = _direct_magic_checkpoint_case(prepared)
+    store = DirectCheckpointStore(tmp_path / "direct-checkpoint.json")
+    store._write_structural(
+        plan,
+        (),
+        registry=registry,
+        prepared_datasets=prepared_datasets,
+    )
+    store._publish_transaction_intent(
+        plan,
+        0,
+        plan.entries[0],
+        _direct_magic_attempt(plan),
+    )
+    checkpoint_before = store.path.read_bytes()
+    intent_before = store.intent_path.read_bytes()
+
+    def insufficient(*_args, **_kwargs):
+        raise RunnerContractError(
+            "insufficient development storage before scientific write"
+        )
+
+    monkeypatch.setattr(
+        runner_module,
+        "require_development_storage_capacity",
+        insufficient,
+        raising=False,
+    )
+
+    with pytest.raises(RunnerContractError, match="insufficient development storage"):
+        _execute_fair_comparator_plan_structural(
+            plan,
+            registry,
+            prepared_datasets,
+            lambda *_args: pytest.fail("executor ran before storage preflight"),
+            store,
+        )
+
+    assert store.path.read_bytes() == checkpoint_before
+    assert store.intent_path.read_bytes() == intent_before
 
 
 def test_development_base_entry_routes_to_fair_comparator_boundary(

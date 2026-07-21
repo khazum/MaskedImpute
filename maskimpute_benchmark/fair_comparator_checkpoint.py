@@ -12,7 +12,11 @@ import stat
 import tempfile
 from typing import Any, Literal
 
-from .comparator_tuning import comparator_method_binding
+from .comparator_tuning import (
+    DEVELOPMENT_MAX_CHECKPOINT_BYTES,
+    DEVELOPMENT_MAX_RECORD_BYTES,
+    comparator_method_binding,
+)
 from .direct_values import direct_equal, direct_json_value
 from .fair_comparator_execution import (
     DirectEvaluatedAttempt,
@@ -20,6 +24,7 @@ from .fair_comparator_execution import (
     DirectMetricRow,
     DirectPreZeroEvidence,
     DirectRunResult,
+    _executor_receipt_for_run,
     validate_direct_evidence_semantics,
 )
 from .fair_comparator_plan import (
@@ -44,6 +49,7 @@ from .runner import (
     PreparedDataset,
     RunnerAuthority,
     RunnerContractError,
+    development_storage_preflight,
 )
 
 
@@ -62,6 +68,8 @@ _REPORT_KEYS = frozenset(
         "selection_blockers",
         "records",
         "budget",
+        "storage_preflight",
+        "remaining_storage_preflight",
     }
 )
 _INTENT_KEYS = frozenset(
@@ -590,6 +598,7 @@ def _validate_record(
         stdout=DirectLogReceipt(**run["stdout"]),
         stderr=DirectLogReceipt(**run["stderr"]),
     )
+    _executor_receipt_for_run(run_result)
     validate_direct_evidence_semantics(run_result, tuple(metric_rows), evidence)
     if (
         evidence.applicable
@@ -605,7 +614,10 @@ def _validate_record(
             raise RunnerContractError(
                 "direct checkpoint p_pre_zero evidence differs from prepared input"
             )
-    return json.loads(_canonical_bytes(record).decode("utf-8"))
+    record_raw = _canonical_bytes(record) + b"\n"
+    if len(record_raw) > DEVELOPMENT_MAX_RECORD_BYTES:
+        raise RunnerContractError("development record exceeds its byte bound")
+    return json.loads(record_raw[:-1].decode("utf-8"))
 
 
 def _resolve_direct_method_specs(
@@ -717,6 +729,8 @@ class DirectCheckpointReport:
     selection_blockers: tuple[str, ...]
     records: tuple[Mapping[str, object], ...]
     budget: Mapping[str, object]
+    storage_preflight: Mapping[str, object]
+    remaining_storage_preflight: Mapping[str, object]
 
     def to_dict(self) -> dict[str, object]:
         encoded = direct_json_value(self)
@@ -842,12 +856,22 @@ class DirectCheckpointStore:
             or metadata.st_uid != os.geteuid()
         ):
             raise RunnerContractError(f"{name} must be an owned regular file")
+        if metadata.st_size > DEVELOPMENT_MAX_CHECKPOINT_BYTES:
+            raise RunnerContractError(f"{name} exceeds its byte bound")
         try:
             return path.read_bytes()
         except OSError as error:
             raise RunnerContractError(f"{name} is unavailable") from error
 
     def _publish(self, path: Path, payload: Mapping[str, object]) -> None:
+        data = _canonical_bytes(payload) + b"\n"
+        name = (
+            "direct checkpoint"
+            if path == self.path
+            else "direct transaction intent"
+        )
+        if len(data) > DEVELOPMENT_MAX_CHECKPOINT_BYTES:
+            raise RunnerContractError(f"{name} exceeds its byte bound")
         path.parent.mkdir(parents=True, exist_ok=True)
         if os.path.lexists(path):
             metadata = path.lstat()
@@ -859,7 +883,6 @@ class DirectCheckpointStore:
                 raise RunnerContractError(
                     "direct checkpoint destination must be an owned regular file"
                 )
-        data = _canonical_bytes(payload) + b"\n"
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{path.name}.",
             suffix=".tmp",
@@ -887,9 +910,20 @@ class DirectCheckpointStore:
         descriptors: Sequence[PreparedInputDescriptor],
         records: Sequence[Mapping[str, object]],
         registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
     ) -> dict[str, object]:
         record_values = tuple(records)
         status = "completed" if len(record_values) == len(plan.entries) else "running"
+        storage_preflight = development_storage_preflight(
+            plan,
+            prepared_datasets,
+            completed_records=0,
+        ).to_dict()
+        remaining_storage_preflight = development_storage_preflight(
+            plan,
+            prepared_datasets,
+            completed_records=len(record_values),
+        ).to_dict()
         return {
             "schema_version": 1,
             "identity_mode": "direct-v1",
@@ -908,6 +942,8 @@ class DirectCheckpointStore:
             "budget": replay_direct_development_budget(
                 registry, plan.entries, record_values
             ).to_dict(),
+            "storage_preflight": storage_preflight,
+            "remaining_storage_preflight": remaining_storage_preflight,
         }
 
     def write(
@@ -977,7 +1013,16 @@ class DirectCheckpointStore:
         )
         if len(records) > len(plan.entries):
             raise RunnerContractError("direct checkpoint records are not a plan prefix")
-        self._publish(self.path, self._body(plan, descriptors, record_values, registry))
+        self._publish(
+            self.path,
+            self._body(
+                plan,
+                descriptors,
+                record_values,
+                registry,
+                prepared_datasets,
+            ),
+        )
         return self._load_validated(
             plan,
             registry=registry,
@@ -1080,7 +1125,13 @@ class DirectCheckpointStore:
         descriptors = _prepared_descriptors(plan, prepared_datasets)
         self._publish(
             self.path,
-            self._body(plan, descriptors, (*records, record), registry),
+            self._body(
+                plan,
+                descriptors,
+                (*records, record),
+                registry,
+                prepared_datasets,
+            ),
         )
         return self._load_validated(
             plan,
@@ -1120,11 +1171,11 @@ class DirectCheckpointStore:
             "record": record,
         }
         if os.path.lexists(self.intent_path):
-            existing = _parse_json(
-                self._read_owned(self.intent_path, "direct transaction intent"),
+            existing = self._read_owned(
+                self.intent_path,
                 "direct transaction intent",
             )
-            if not _direct_equal(existing, body):
+            if existing != _canonical_bytes(body) + b"\n":
                 raise RunnerContractError("direct transaction intent already differs")
             return
         self._publish(self.intent_path, body)
@@ -1138,6 +1189,46 @@ class DirectCheckpointStore:
     ) -> None:
         if not os.path.lexists(self.intent_path):
             return
+        if os.path.lexists(self.path):
+            report = self._load_current(
+                plan,
+                registry=registry,
+                prepared_datasets=prepared_datasets,
+            )
+            records = list(report.records)
+        else:
+            records = []
+        inspected = self._inspect_transaction_intent(
+            plan,
+            records=records,
+            prepared_datasets=prepared_datasets,
+        )
+        if inspected is None:  # pragma: no cover - guarded above
+            return
+        position, record = inspected
+        descriptors = _prepared_descriptors(plan, prepared_datasets)
+        if position == len(records):
+            self._publish(
+                self.path,
+                self._body(
+                    plan,
+                    descriptors,
+                    (*records, record),
+                    registry,
+                    prepared_datasets,
+                ),
+            )
+        self.intent_path.unlink()
+
+    def _inspect_transaction_intent(
+        self,
+        plan: DirectCompetitionPlan,
+        *,
+        records: Sequence[Mapping[str, object]],
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> tuple[int, dict[str, object]] | None:
+        if not os.path.lexists(self.intent_path):
+            return None
         intent = _parse_json(
             self._read_owned(self.intent_path, "direct transaction intent"),
             "direct transaction intent",
@@ -1171,21 +1262,8 @@ class DirectCheckpointStore:
             prepared=prepared_datasets[entry.identity.dataset_id],
             expected_identity=identity,
         )
-        descriptors = _prepared_descriptors(plan, prepared_datasets)
-        if os.path.lexists(self.path):
-            report = self._load_current(
-                plan,
-                registry=registry,
-                prepared_datasets=prepared_datasets,
-            )
-            records = list(report.records)
-        else:
-            records = []
         if position == len(records):
-            self._publish(
-                self.path,
-                self._body(plan, descriptors, (*records, record), registry),
-            )
+            pass
         elif records and position == len(records) - 1:
             if not _direct_equal(records[position], record):
                 raise RunnerContractError(
@@ -1195,7 +1273,7 @@ class DirectCheckpointStore:
             raise RunnerContractError(
                 "direct transaction position is stale or is not the next position"
             )
-        self.intent_path.unlink()
+        return position, record
 
     def _load_current(
         self,
@@ -1277,6 +1355,35 @@ class DirectCheckpointStore:
             raise RunnerContractError(
                 "direct checkpoint budget ledger differs from replay"
             )
+        storage_preflight = payload.get("storage_preflight")
+        expected_storage_preflight = development_storage_preflight(
+            plan,
+            prepared_datasets,
+            completed_records=0,
+        ).to_dict()
+        if not isinstance(storage_preflight, Mapping) or not _direct_equal(
+            storage_preflight,
+            expected_storage_preflight,
+        ):
+            raise RunnerContractError(
+                "direct checkpoint storage preflight differs from its full plan"
+            )
+        remaining_storage_preflight = payload.get("remaining_storage_preflight")
+        expected_remaining_storage_preflight = development_storage_preflight(
+            plan,
+            prepared_datasets,
+            completed_records=len(records),
+        ).to_dict()
+        if not isinstance(
+            remaining_storage_preflight,
+            Mapping,
+        ) or not _direct_equal(
+            remaining_storage_preflight,
+            expected_remaining_storage_preflight,
+        ):
+            raise RunnerContractError(
+                "direct checkpoint remaining storage preflight differs from its prefix"
+            )
         return DirectCheckpointReport(
             schema_version=1,
             identity_mode="direct-v1",
@@ -1291,7 +1398,74 @@ class DirectCheckpointStore:
             selection_blockers=SELECTION_COMPLETENESS_BLOCKERS,
             records=records,
             budget=budget,
+            storage_preflight=storage_preflight,
+            remaining_storage_preflight=remaining_storage_preflight,
         )
+
+    def inspect_prefix(
+        self,
+        plan: DirectCompetitionPlan,
+        *,
+        registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
+        authority: RunnerAuthority,
+        datasets: Sequence[DatasetBinding],
+    ) -> int:
+        """Validate the durable prefix and intent without recovery or writes."""
+
+        validate_direct_competition_plan(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
+        )
+        return self._inspect_prefix_validated(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+    def _inspect_prefix_structural(
+        self,
+        plan: DirectCompetitionPlan,
+        *,
+        registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> int:
+        _validate_direct_competition_plan_structure(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+        return self._inspect_prefix_validated(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+
+    def _inspect_prefix_validated(
+        self,
+        plan: DirectCompetitionPlan,
+        *,
+        registry: MethodRegistry,
+        prepared_datasets: Mapping[str, PreparedDataset],
+    ) -> int:
+        if os.path.lexists(self.path):
+            report = self._load_current(
+                plan,
+                registry=registry,
+                prepared_datasets=prepared_datasets,
+            )
+            records = report.records
+        else:
+            records = ()
+        self._inspect_transaction_intent(
+            plan,
+            records=records,
+            prepared_datasets=prepared_datasets,
+        )
+        return len(records)
 
     def load(
         self,

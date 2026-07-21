@@ -398,6 +398,7 @@ def test_public_direct_boundaries_require_production_authority_arguments() -> No
         (DirectCheckpointStore.write, ("authority", "datasets")),
         (DirectCheckpointStore.load, ("authority", "datasets")),
         (DirectCheckpointStore.append, ("authority", "datasets")),
+        (DirectCheckpointStore.inspect_prefix, ("authority", "datasets")),
         (execute_fair_comparator_plan, ("authority", "datasets")),
         (
             project_direct_comparator_evidence,

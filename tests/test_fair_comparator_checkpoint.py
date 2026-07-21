@@ -11,11 +11,15 @@ import pandas as pd
 import pytest
 
 from maskimpute_benchmark.comparator_tuning import (
+    DEVELOPMENT_MAX_CHECKPOINT_BYTES,
+    DEVELOPMENT_MAX_RECORD_BYTES,
     comparator_method_binding,
     load_comparator_tuning_authority,
 )
 from maskimpute_benchmark.direct_values import freeze_direct_mapping
+import maskimpute_benchmark.fair_comparator_checkpoint as direct_checkpoint_module
 import maskimpute_benchmark.fair_comparator_plan as direct_plan_module
+import maskimpute_benchmark.runner as runner_module
 from maskimpute_benchmark.fair_comparator_checkpoint import (
     DirectCheckpointStore,
     DirectDevelopmentBudget,
@@ -381,6 +385,152 @@ def _attempt(
     )
 
 
+def test_direct_checkpoint_binds_complete_storage_receipts(tmp_path: Path) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+
+    report = DirectCheckpointStore(
+        tmp_path / "checkpoint.json"
+    )._write_structural(
+        plan,
+        (),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+
+    expected = runner_module.development_storage_preflight(
+        plan,
+        prepared,
+        completed_records=0,
+    ).to_dict()
+    assert report.storage_preflight == expected
+    assert report.remaining_storage_preflight == expected
+    assert report.to_dict()["storage_preflight"] == expected
+
+
+def test_direct_prefix_inspection_is_read_only_before_storage_failure(
+    tmp_path: Path,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    store._write_structural(
+        plan,
+        (_attempt(plan.entries[0]).to_dict(),),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+    store._publish_transaction_intent(
+        plan,
+        1,
+        plan.entries[1],
+        _attempt(plan.entries[1]),
+    )
+    checkpoint_before = store.path.read_bytes()
+    intent_before = store.intent_path.read_bytes()
+    names_before = tuple(sorted(path.name for path in tmp_path.iterdir()))
+
+    completed = store._inspect_prefix_structural(
+        plan,
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+    with pytest.raises(RunnerContractError, match="insufficient development storage"):
+        runner_module.require_development_storage_capacity(
+            store.path.parent,
+            plan,
+            prepared,
+            completed_records=completed,
+            available_bytes=1,
+        )
+
+    assert completed == 1
+    assert store.path.read_bytes() == checkpoint_before
+    assert store.intent_path.read_bytes() == intent_before
+    assert tuple(sorted(path.name for path in tmp_path.iterdir())) == names_before
+
+
+def test_direct_transaction_rejects_oversized_record_before_write(
+    tmp_path: Path,
+) -> None:
+    plan, _registry, _prepared = _direct_checkpoint_fixture()
+    attempt = _attempt(plan.entries[0])
+    retained_ids = tuple(
+        f"cell-{index:04d}-{'x' * 100}"
+        for index in range(DEVELOPMENT_MAX_RECORD_BYTES // 100 + 100)
+    )
+    oversized = replace(
+        attempt,
+        run=replace(
+            attempt.run,
+            retained_cell_count=len(retained_ids),
+            retained_cell_ids=retained_ids,
+        ),
+    )
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+
+    with pytest.raises(RunnerContractError, match="record exceeds its byte bound"):
+        store._publish_transaction_intent(
+            plan,
+            0,
+            plan.entries[0],
+            oversized,
+        )
+
+    assert not store.intent_path.exists()
+
+
+def test_direct_checkpoint_rejects_oversized_payload_before_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    path = tmp_path / "checkpoint.json"
+    monkeypatch.setattr(
+        direct_checkpoint_module,
+        "DEVELOPMENT_MAX_CHECKPOINT_BYTES",
+        1,
+        raising=False,
+    )
+
+    with pytest.raises(RunnerContractError, match="checkpoint exceeds its byte bound"):
+        DirectCheckpointStore(path)._write_structural(
+            plan,
+            (),
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+    assert not path.exists()
+
+
+def test_direct_checkpoint_rejects_oversized_file_before_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan, registry, prepared = _direct_checkpoint_fixture()
+    store = DirectCheckpointStore(tmp_path / "checkpoint.json")
+    store._write_structural(
+        plan,
+        (),
+        registry=registry,
+        prepared_datasets=prepared,
+    )
+    observed_size = store.path.stat().st_size
+    assert observed_size < DEVELOPMENT_MAX_CHECKPOINT_BYTES
+    monkeypatch.setattr(
+        direct_checkpoint_module,
+        "DEVELOPMENT_MAX_CHECKPOINT_BYTES",
+        observed_size - 1,
+        raising=False,
+    )
+
+    with pytest.raises(RunnerContractError, match="checkpoint exceeds its byte bound"):
+        store._inspect_prefix_structural(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared,
+        )
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("empty", "duplicate", "renamed", "reordered"),
@@ -650,6 +800,8 @@ def test_direct_checkpoint_replays_exact_prefix_and_budget(tmp_path: Path) -> No
         "selection_blockers",
         "records",
         "budget",
+        "storage_preflight",
+        "remaining_storage_preflight",
     }
 
 

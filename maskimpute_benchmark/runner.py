@@ -44,6 +44,11 @@ if TYPE_CHECKING:
 
 from .comparator_tuning import (
     COMPARATOR_METHOD_IDS,
+    DEVELOPMENT_MAX_CHECKPOINT_BYTES,
+    DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
+    DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
+    DEVELOPMENT_MAX_RECORD_BYTES,
+    DEVELOPMENT_STORAGE_RESERVE_BYTES,
     ComparatorAdapterConfig,
     ComparatorAuthorityReference,
     ComparatorMethodBinding,
@@ -144,6 +149,38 @@ _OUTCOME_STATUSES = frozenset(
 
 class RunnerContractError(RuntimeError):
     """Raised when runner authority, planning, or execution fails closed."""
+
+
+@dataclass(frozen=True, slots=True)
+class DevelopmentStoragePreflight:
+    """Pure direct-path worst-case retained-storage receipt."""
+
+    schema: str
+    identity_mode: Literal["direct-v1"]
+    authority_revision: str
+    plan_snapshot: Mapping[str, object]
+    prepared_input_descriptors: tuple[Mapping[str, object], ...]
+    retained_dimensions: tuple[tuple[str, tuple[int, int]], ...]
+    policy: Mapping[str, object]
+    planned_run_count: int
+    completed_record_count: int
+    remaining_executable_count: int
+    matrix_bytes: int
+    prezero_zlib_bound_bytes: int
+    log_receipt_bytes: int
+    executor_receipt_bytes: int
+    record_bytes: int
+    checkpoint_bytes: int
+    reserve_bytes: int
+    required_free_bytes: int
+
+    def to_dict(self) -> dict[str, object]:
+        from .direct_values import direct_json_value
+
+        encoded = direct_json_value(self)
+        if not isinstance(encoded, dict):  # pragma: no cover - dataclass invariant
+            raise AssertionError("development storage preflight must encode as an object")
+        return encoded
 
 
 def _stable_stat_identity(value: os.stat_result) -> tuple[int, ...]:
@@ -1815,6 +1852,167 @@ def build_fair_comparator_plan(
         authority,
         prepared_datasets,
     )
+
+
+def development_storage_preflight(
+    plan: DirectCompetitionPlan,
+    prepared_datasets: Mapping[str, PreparedDataset],
+    *,
+    completed_records: int,
+) -> DevelopmentStoragePreflight:
+    """Calculate the exact direct retained-storage ceiling without filesystem I/O."""
+
+    from .direct_values import direct_equal, direct_json_value
+    from .fair_comparator_plan import (
+        DirectCompetitionPlan,
+        PreparedInputDescriptor,
+        describe_prepared_input,
+    )
+
+    if not isinstance(plan, DirectCompetitionPlan):
+        raise TypeError("plan must be a DirectCompetitionPlan")
+    if not isinstance(prepared_datasets, Mapping):
+        raise TypeError("prepared_datasets must be a mapping")
+    if (
+        isinstance(completed_records, bool)
+        or type(completed_records) is not int
+        or not 0 <= completed_records <= len(plan.entries)
+    ):
+        raise RunnerContractError("completed storage record count is invalid")
+    expected_ids = tuple(descriptor.dataset_id for descriptor in plan.inputs)
+    if len(expected_ids) != len(set(expected_ids)) or set(prepared_datasets) != set(
+        expected_ids
+    ):
+        raise RunnerContractError(
+            "prepared dataset authority does not exactly cover the direct plan"
+        )
+    descriptor_values: list[Mapping[str, object]] = []
+    for descriptor in plan.inputs:
+        if not isinstance(descriptor, PreparedInputDescriptor):
+            raise RunnerContractError("direct prepared input descriptor is invalid")
+        prepared = prepared_datasets.get(descriptor.dataset_id)
+        if not isinstance(prepared, PreparedDataset):
+            raise RunnerContractError("direct prepared dataset authority is invalid")
+        observed = describe_prepared_input(prepared)
+        if not direct_equal(observed, descriptor):
+            raise RunnerContractError("direct prepared input descriptor differs")
+        encoded = direct_json_value(observed)
+        if not isinstance(encoded, Mapping):  # pragma: no cover - dataclass invariant
+            raise AssertionError("prepared input descriptor must encode as an object")
+        descriptor_values.append(encoded)
+    remaining = plan.entries[completed_records:]
+    executable = tuple(
+        entry for entry in remaining if entry.preflight_status == "planned"
+    )
+    try:
+        matrix_bytes = sum(
+            2
+            * prepared_datasets[
+                entry.identity.dataset_id
+            ].method_input.counts.nbytes
+            for entry in executable
+        )
+        prezero_bytes = sum(
+            zlib_compress_bound(
+                prepared_datasets[
+                    entry.identity.dataset_id
+                ].method_input.counts.nbytes
+            )
+            for entry in executable
+            if entry.identity.method_id == "maskimpute"
+            and entry.requires_count_score
+        )
+    except KeyError as error:
+        raise RunnerContractError(
+            "direct storage entry references an unknown prepared input"
+        ) from error
+    log_bytes = 2 * len(executable) * DEVELOPMENT_MAX_LOG_RECEIPT_BYTES
+    executor_bytes = len(executable) * DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES
+    record_bytes = len(remaining) * DEVELOPMENT_MAX_RECORD_BYTES
+    required = (
+        matrix_bytes
+        + prezero_bytes
+        + log_bytes
+        + executor_bytes
+        + record_bytes
+        + DEVELOPMENT_MAX_CHECKPOINT_BYTES
+        + DEVELOPMENT_STORAGE_RESERVE_BYTES
+    )
+    return DevelopmentStoragePreflight(
+        schema="maskimpute-development-storage-preflight-v1",
+        identity_mode="direct-v1",
+        authority_revision=plan.authority_revision,
+        plan_snapshot=plan.to_dict(),
+        prepared_input_descriptors=tuple(descriptor_values),
+        retained_dimensions=tuple(
+            (descriptor.dataset_id, descriptor.shape) for descriptor in plan.inputs
+        ),
+        policy={
+            "matrix_copies_per_executable": 2,
+            "stream_receipts_per_executable": 2,
+            "max_log_receipt_bytes": DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
+            "max_executor_receipt_bytes": DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
+            "max_record_bytes": DEVELOPMENT_MAX_RECORD_BYTES,
+            "max_checkpoint_bytes": DEVELOPMENT_MAX_CHECKPOINT_BYTES,
+            "reserve_bytes": DEVELOPMENT_STORAGE_RESERVE_BYTES,
+        },
+        planned_run_count=len(plan.entries),
+        completed_record_count=completed_records,
+        remaining_executable_count=len(executable),
+        matrix_bytes=matrix_bytes,
+        prezero_zlib_bound_bytes=prezero_bytes,
+        log_receipt_bytes=log_bytes,
+        executor_receipt_bytes=executor_bytes,
+        record_bytes=record_bytes,
+        checkpoint_bytes=DEVELOPMENT_MAX_CHECKPOINT_BYTES,
+        reserve_bytes=DEVELOPMENT_STORAGE_RESERVE_BYTES,
+        required_free_bytes=required,
+    )
+
+
+def require_development_storage_capacity(
+    output_dir: Path,
+    plan: DirectCompetitionPlan,
+    prepared_datasets: Mapping[str, PreparedDataset],
+    *,
+    completed_records: int,
+    available_bytes: int | None = None,
+) -> DevelopmentStoragePreflight:
+    """Require the direct retained bound before creating or changing output."""
+
+    if not isinstance(output_dir, Path):
+        raise TypeError("output_dir must be a pathlib.Path")
+    if available_bytes is not None and (
+        isinstance(available_bytes, bool)
+        or type(available_bytes) is not int
+        or available_bytes < 0
+    ):
+        raise RunnerContractError("available development storage is invalid")
+    receipt = development_storage_preflight(
+        plan,
+        prepared_datasets,
+        completed_records=completed_records,
+    )
+    probe = output_dir.absolute()
+    while not probe.exists():
+        if probe.parent == probe:
+            raise RunnerContractError("development storage filesystem is unavailable")
+        probe = probe.parent
+    if available_bytes is None:
+        try:
+            filesystem = os.statvfs(probe)
+        except OSError as error:
+            raise RunnerContractError(
+                "development storage filesystem is unavailable"
+            ) from error
+        observed = int(filesystem.f_bavail * filesystem.f_frsize)
+    else:
+        observed = available_bytes
+    if observed < receipt.required_free_bytes:
+        raise RunnerContractError(
+            "insufficient development storage before scientific write"
+        )
+    return receipt
 
 
 def build_competition_plan(
@@ -6182,6 +6380,30 @@ def _execute_fair_comparator_plan_validated(
         raise TypeError("executor must be callable")
     if not isinstance(checkpoint_store, DirectCheckpointStore):
         raise TypeError("checkpoint_store must be a DirectCheckpointStore")
+    completed_records = (
+        checkpoint_store._inspect_prefix_structural(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+        )
+        if structural
+        else checkpoint_store.inspect_prefix(
+            plan,
+            registry=registry,
+            prepared_datasets=prepared_datasets,
+            authority=authority,
+            datasets=datasets,
+        )
+    )
+    require_development_storage_capacity(
+        checkpoint_store.path.parent,
+        plan,
+        prepared_datasets,
+        completed_records=completed_records,
+    )
+    has_checkpoint_state = os.path.lexists(
+        checkpoint_store.path
+    ) or os.path.lexists(checkpoint_store.intent_path)
     report = (
         (
             checkpoint_store._load_structural(
@@ -6198,7 +6420,7 @@ def _execute_fair_comparator_plan_validated(
                 datasets=datasets,
             )
         )
-        if os.path.lexists(checkpoint_store.path)
+        if has_checkpoint_state
         else None
     )
     budget = (
@@ -8220,6 +8442,7 @@ __all__ = [
     "DatasetQCPolicy",
     "DatasetBinding",
     "DevelopmentBudget",
+    "DevelopmentStoragePreflight",
     "DirectRepositoryComparatorExecutor",
     "EvaluatedAttempt",
     "ExecutionEnvironmentRegistry",
@@ -8240,6 +8463,7 @@ __all__ = [
     "build_fair_comparator_plan",
     "derive_lock_only_environment_ids",
     "derive_authorized_configurations",
+    "development_storage_preflight",
     "execute_adapter_in_spawned_process",
     "execute_direct_adapter_in_spawned_process",
     "execute_competition_plan",
@@ -8259,6 +8483,7 @@ __all__ = [
     "load_v29_revision_authority",
     "prepare_dataset_for_execution",
     "prepare_dataset_pair_for_execution",
+    "require_development_storage_capacity",
     "run_development_competition",
     "run_v28_revision_competition",
     "run_v29_revision_competition",

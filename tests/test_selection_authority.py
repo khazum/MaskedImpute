@@ -860,6 +860,8 @@ def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
         selection_blockers=SELECTION_COMPLETENESS_BLOCKERS,
         records=(attempt.to_dict(),),
         budget={},
+        storage_preflight={},
+        remaining_storage_preflight={},
     )
     projection = _project_direct_selected_comparators_for_schema_fixture(
         ComparatorAuthorityReference(

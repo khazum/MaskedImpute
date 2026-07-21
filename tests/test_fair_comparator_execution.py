@@ -14,14 +14,18 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import maskimpute_benchmark.fair_comparator_execution as direct_execution_module
 import maskimpute_benchmark.fair_comparator_plan as direct_plan_module
 from maskimpute_benchmark.comparator_tuning import (
+    DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
+    DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
     comparator_method_binding,
     load_comparator_tuning_authority,
 )
 from maskimpute_benchmark.fair_comparator_execution import (
     DIRECT_RECONSTRUCTION_METRICS,
     DirectExecutionRequest,
+    DirectLogReceipt,
     DirectMetricRow,
     DirectPreZeroEvidence,
     create_direct_request,
@@ -197,6 +201,64 @@ def _completed_outcome(request: DirectExecutionRequest) -> AdapterOutcome:
         peak_rss_bytes=128,
         peak_gpu_bytes=0,
     )
+
+
+def test_direct_log_receipt_rejects_oversized_terminal_reason() -> None:
+    with pytest.raises(RunnerContractError, match="stream receipt exceeds its bound"):
+        DirectLogReceipt(
+            stream="stderr",
+            original_byte_count=1,
+            capture_policy="discard_content",
+            terminal_reason="x" * DEVELOPMENT_MAX_LOG_RECEIPT_BYTES,
+        )
+
+
+def test_direct_executor_receipt_is_bounded_and_discards_stream_content() -> None:
+    request, _entry, prepared, _descriptor, _spec, _row, authority = _direct_case(
+        "magic"
+    )
+    private = b"private /tmp/worker-928/token=not-for-publication"
+    attempt = execute_direct_request(
+        request,
+        prepared,
+        authority,
+        {
+            "magic": lambda *_args, **_kwargs: AdapterOutcome.failed(
+                "synthetic_failure",
+                stdout=private,
+                stderr=private,
+            )
+        },
+    )
+
+    encoded = direct_execution_module._executor_receipt(attempt)
+
+    assert len(encoded) <= DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES
+    assert private not in encoded
+    assert private.decode("utf-8") not in json.dumps(attempt.to_dict())
+
+
+def test_direct_attempt_rejects_oversized_executor_receipt() -> None:
+    request, _entry, prepared, _descriptor, _spec, _row, authority = _direct_case(
+        "magic"
+    )
+    attempt = execute_direct_request(
+        request,
+        prepared,
+        authority,
+        {
+            "magic": lambda *_args, **_kwargs: AdapterOutcome.failed(
+                "synthetic_failure"
+            )
+        },
+    )
+    oversized_run = replace(
+        attempt.run,
+        rss_measurement="x" * DEVELOPMENT_MAX_EXECUTOR_RECEIPT_BYTES,
+    )
+
+    with pytest.raises(RunnerContractError, match="executor receipt exceeds its bound"):
+        replace(attempt, run=oversized_run)
 
 
 def test_create_direct_request_accepts_plan_codec_dca_payload() -> None:
