@@ -620,7 +620,8 @@ def comparator_smoke_input_descriptor(
         or not direct_equal(method_input.var_covariates, expected.var_covariates)
         or not direct_equal(method_input.normalization, expected.normalization)
         or method_input.counts.dtype.str != "<f8"
-        or not np.array_equal(method_input.counts, expected.counts)
+        or type(method_input._count_bytes) is not bytes
+        or method_input._count_bytes != expected._count_bytes
     ):
         raise ComparatorTuningError("comparator smoke fixture differs from the fixed input")
     counts = method_input.counts

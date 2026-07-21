@@ -838,6 +838,8 @@ def _synthetic_direct_artifacts() -> dict[str, dict[str, object]]:
         inputs=(descriptor,),
         entries=(entry,),
         configurations=(configuration,),
+        comparator_smoke_receipt=(),
+        comparator_smoke_receipt_bytes=b"",
     )
     counts = np.asarray([[1, 0], [0, 2]], dtype=np.int64)
     view = ad.AnnData(

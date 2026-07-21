@@ -195,6 +195,8 @@ def _direct_checkpoint_fixture(method_id: str = "magic"):
         inputs=(descriptor,),
         entries=tuple(entries),
         configurations=configurations,
+        comparator_smoke_receipt=(),
+        comparator_smoke_receipt_bytes=b"",
     )
     return plan, registry, {prepared.binding.dataset_id: prepared}
 

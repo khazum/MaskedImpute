@@ -133,8 +133,8 @@ class DirectCompetitionPlan:
     inputs: tuple[PreparedInputDescriptor, ...]
     entries: tuple[DirectPlanEntry, ...]
     configurations: tuple[DirectAuthorizedConfiguration, ...]
-    comparator_smoke_receipt: tuple[tuple[str, object], ...] = ()
-    comparator_smoke_receipt_bytes: bytes = b""
+    comparator_smoke_receipt: tuple[tuple[str, object], ...]
+    comparator_smoke_receipt_bytes: bytes
 
     def to_dict(self) -> dict[str, object]:
         return _direct_plan_to_json(self)
@@ -900,7 +900,7 @@ def validate_direct_competition_plan(
         )
     ):
         raise RunnerContractError("production direct dataset binding authority differs")
-    expected_plan = _build_direct_competition_plan(
+    expected_plan = _build_structural_direct_competition_plan(
         registry,
         dataset_values,
         authority,
@@ -948,7 +948,7 @@ def validate_direct_competition_plan(
             ) from error
 
 
-def _build_direct_competition_plan(
+def _build_structural_direct_competition_plan(
     registry: MethodRegistry,
     datasets: Sequence[DatasetBinding],
     authority: RunnerAuthority,
@@ -956,7 +956,7 @@ def _build_direct_competition_plan(
     *,
     _validate: bool = True,
 ) -> DirectCompetitionPlan:
-    """Build the complete direct-identity development denominator."""
+    """Build an explicitly receipt-free structural plan for internal use."""
 
     if not isinstance(registry, MethodRegistry):
         raise TypeError("registry must be a MethodRegistry")
@@ -1054,6 +1054,8 @@ def _build_direct_competition_plan(
         inputs=descriptors,
         entries=tuple(entries),
         configurations=configurations,
+        comparator_smoke_receipt=(),
+        comparator_smoke_receipt_bytes=b"",
     )
     _validate_direct_plan(plan, authority)
     if _validate:
@@ -1075,16 +1077,40 @@ def build_direct_competition_plan(
     datasets: Sequence[DatasetBinding],
     authority: RunnerAuthority,
     prepared_datasets: Sequence[PreparedDataset],
+    *,
+    comparator_smoke_receipt: Mapping[str, object],
+    comparator_smoke_receipt_bytes: bytes,
 ) -> DirectCompetitionPlan:
-    """Build and centrally validate the direct development denominator."""
+    """Build a production plan bound to complete validated smoke evidence."""
 
-    return _build_direct_competition_plan(
+    if not isinstance(comparator_smoke_receipt, Mapping) or type(
+        comparator_smoke_receipt_bytes
+    ) is not bytes:
+        raise RunnerContractError("comparator smoke receipt evidence is incomplete")
+    plan = _build_structural_direct_competition_plan(
         registry,
         datasets,
         authority,
         prepared_datasets,
         _validate=True,
     )
+    plan = bind_comparator_smoke_receipt_to_plan(
+        plan,
+        comparator_smoke_receipt,
+        comparator_smoke_receipt_bytes,
+        authority=authority.comparator_tuning,
+        registry=registry,
+    )
+    validate_direct_competition_plan(
+        plan,
+        registry=registry,
+        prepared_datasets={
+            value.binding.dataset_id: value for value in prepared_datasets
+        },
+        authority=authority,
+        datasets=datasets,
+    )
+    return plan
 
 
 def _direct_plan_to_json(plan: DirectCompetitionPlan) -> dict[str, object]:

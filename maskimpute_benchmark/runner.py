@@ -1848,38 +1848,21 @@ def build_fair_comparator_plan(
     """Build the direct-identity fair-comparator development plan."""
 
     from .fair_comparator_plan import (
-        bind_comparator_smoke_receipt_to_plan,
         build_direct_competition_plan,
-        validate_direct_competition_plan,
     )
 
-    plan = build_direct_competition_plan(
-        registry,
-        datasets,
-        authority,
-        prepared_datasets,
-    )
     if not isinstance(_comparator_smoke_receipt, Mapping) or type(
         _comparator_smoke_receipt_bytes
     ) is not bytes:
         raise RunnerContractError("comparator smoke receipt evidence is incomplete")
-    plan = bind_comparator_smoke_receipt_to_plan(
-        plan,
-        _comparator_smoke_receipt,
-        _comparator_smoke_receipt_bytes,
-        authority=authority.comparator_tuning,
-        registry=registry,
+    return build_direct_competition_plan(
+        registry,
+        datasets,
+        authority,
+        prepared_datasets,
+        comparator_smoke_receipt=_comparator_smoke_receipt,
+        comparator_smoke_receipt_bytes=_comparator_smoke_receipt_bytes,
     )
-    validate_direct_competition_plan(
-        plan,
-        registry=registry,
-        prepared_datasets={
-            value.binding.dataset_id: value for value in prepared_datasets
-        },
-        authority=authority,
-        datasets=datasets,
-    )
-    return plan
 
 
 def development_storage_preflight(

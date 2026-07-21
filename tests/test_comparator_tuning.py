@@ -5,6 +5,7 @@ import inspect
 import json
 from pathlib import Path
 import shutil
+import struct
 import sys
 
 import pytest
@@ -34,6 +35,7 @@ from maskimpute_benchmark.runner import (
     AdapterOutcome,
     ExecutionEnvironmentRegistry,
     RepositoryAdapterDispatcher,
+    RunnerContractError,
 )
 
 
@@ -179,6 +181,29 @@ def test_smoke_input_is_exact_truth_free_900_by_500() -> None:
     assert not hasattr(method_input, "truth")
 
 
+def _with_negative_first_formula_zero(method_input):
+    canonical_bytes = method_input._count_bytes
+    positive_zero = struct.pack("<d", 0.0)
+    negative_zero = struct.pack("<d", -0.0)
+    assert positive_zero == b"\x00\x00\x00\x00\x00\x00\x00\x00"
+    assert negative_zero == b"\x00\x00\x00\x00\x00\x00\x00\x80"
+    assert canonical_bytes[:8] == positive_zero
+    changed_bytes = negative_zero + canonical_bytes[8:]
+    assert changed_bytes != canonical_bytes
+    return replace(method_input, _count_bytes=changed_bytes)
+
+
+def test_smoke_input_rejects_byte_distinct_negative_formula_zero() -> None:
+    method_input = build_comparator_smoke_input()
+    changed = _with_negative_first_formula_zero(method_input)
+
+    assert changed.counts[0, 0] == method_input.counts[0, 0] == 0.0
+    assert changed.counts.tobytes(order="C")[:8] == struct.pack("<d", -0.0)
+    assert method_input.counts.tobytes(order="C")[:8] == struct.pack("<d", 0.0)
+    with pytest.raises(ComparatorTuningError, match="fixed input"):
+        comparator_tuning_module.comparator_smoke_input_descriptor(changed)
+
+
 def test_smoke_receipt_requires_all_34_completed_and_projected_budget(
     complete_smoke_outcomes,
     smoke_authority,
@@ -207,6 +232,67 @@ def test_smoke_receipt_requires_all_34_completed_and_projected_budget(
     ):
         build_comparator_smoke_receipt(
             broken,
+            authority=smoke_authority,
+            registry=smoke_registry,
+            bound_configurations=smoke_bound_rows,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("peak_rss_bytes", 48 * 1024**3 + 1),
+        ("peak_gpu_bytes", 14 * 1024**3 + 1),
+    ),
+)
+def test_smoke_receipt_rejects_each_resource_cap_with_complete_denominator(
+    field: str,
+    value: int,
+    complete_smoke_outcomes,
+    smoke_authority,
+    smoke_registry,
+    smoke_bound_rows,
+) -> None:
+    outcomes = list(complete_smoke_outcomes)
+    outcomes[0] = replace(outcomes[0], **{field: value})
+    assert len(outcomes) == 34
+
+    with pytest.raises(ComparatorTuningError, match="resource cap"):
+        build_comparator_smoke_receipt(
+            outcomes,
+            authority=smoke_authority,
+            registry=smoke_registry,
+            bound_configurations=smoke_bound_rows,
+        )
+
+
+@pytest.mark.parametrize("gpu_required", (False, True), ids=("cpu", "gpu"))
+def test_smoke_receipt_rejects_projected_method_budget_with_complete_denominator(
+    gpu_required: bool,
+    complete_smoke_outcomes,
+    smoke_authority,
+    smoke_registry,
+    smoke_bound_rows,
+) -> None:
+    outcomes = list(complete_smoke_outcomes)
+    position = next(
+        index
+        for index, outcome in enumerate(outcomes)
+        if smoke_registry.by_id(
+            outcome.configuration.configuration.method_id
+        ).resources.gpu_required
+        is gpu_required
+    )
+    budget_seconds = 8 * 3600 if gpu_required else 24 * 3600
+    outcomes[position] = replace(
+        outcomes[position],
+        runtime_seconds=budget_seconds / 48.0 + 1.0,
+    )
+    assert len(outcomes) == 34
+
+    with pytest.raises(ComparatorTuningError, match="method budget"):
+        build_comparator_smoke_receipt(
+            outcomes,
             authority=smoke_authority,
             registry=smoke_registry,
             bound_configurations=smoke_bound_rows,
@@ -379,6 +465,9 @@ def test_spawned_smoke_request_retains_complete_fixed_fixture_descriptor(
     assert inner.to_dict()["smoke_fixture"] == json.loads(
         json.dumps(asdict(descriptor))
     )
+    changed = _with_negative_first_formula_zero(method_input)
+    with pytest.raises(RunnerContractError, match="fixed input"):
+        replace(inner, method_input=changed)
 
 
 def test_smoke_loader_recomputes_complete_receipt(

@@ -23,6 +23,7 @@ from maskimpute_benchmark.fair_comparator_execution import (
 )
 from maskimpute_benchmark.fair_comparator_plan import (
     DirectCompetitionPlan,
+    _build_structural_direct_competition_plan,
     _validate_direct_competition_plan_structure,
     build_direct_competition_plan,
     describe_prepared_input,
@@ -168,7 +169,7 @@ def _direct_fixture() -> tuple[
         _prepared_dataset(binding, ordinal, include_batch=ordinal == 1)
         for ordinal, binding in enumerate(datasets, start=1)
     )
-    plan = build_direct_competition_plan(
+    plan = _build_structural_direct_competition_plan(
         registry,
         datasets,
         load_runner_authority(),
@@ -242,7 +243,7 @@ def _replace_entry_cell(entry, source, *, model_seed: int | None = None):
 def _direct_grid_cases():
     base, registry, datasets, prepared = _direct_fixture()
     prepared_map = {value.binding.dataset_id: value for value in prepared}
-    revision = build_direct_competition_plan(
+    revision = _build_structural_direct_competition_plan(
         registry,
         datasets,
         load_v28_revision_authority(),
@@ -391,7 +392,7 @@ def test_production_direct_plan_requires_complete_runner_and_dataset_authority()
         )
 
     authority = load_runner_authority()
-    changed = build_direct_competition_plan(
+    changed = _build_structural_direct_competition_plan(
         registry,
         tuple(reversed(datasets)),
         authority,
@@ -602,7 +603,9 @@ def test_public_direct_handoff_rejects_candidate_only_plan(
     _allow_unbound_smoke_only_for_unrelated_structural_test(monkeypatch)
     _base, registry, datasets, prepared = _direct_fixture()
     authority = load_v28_revision_authority()
-    plan = build_direct_competition_plan(registry, datasets, authority, prepared)
+    plan = _build_structural_direct_competition_plan(
+        registry, datasets, authority, prepared
+    )
     comparator_authority = load_comparator_tuning_authority(
         ROOT,
         registry=registry,
@@ -962,7 +965,9 @@ def test_direct_plan_preserves_configuration_dataset_seed_order_and_blocks() -> 
 def test_direct_revision_plan_contains_one_48_row_candidate(loader) -> None:
     _base, registry, datasets, prepared = _direct_fixture()
 
-    plan = build_direct_competition_plan(registry, datasets, loader(), prepared)
+    plan = _build_structural_direct_competition_plan(
+        registry, datasets, loader(), prepared
+    )
 
     assert len(plan.configurations) == 1
     assert len(plan.entries) == 48
@@ -983,12 +988,58 @@ def test_runner_fair_comparator_entry_point_delegates_to_direct_plan() -> None:
             load_runner_authority(),
             prepared,
         )
-    assert direct == build_direct_competition_plan(
+    assert direct == _build_structural_direct_competition_plan(
         registry,
         datasets,
         load_runner_authority(),
         prepared,
     )
+
+
+def test_public_direct_builder_requires_and_validates_complete_smoke_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _direct, registry, datasets, prepared = _direct_fixture()
+    authority = load_runner_authority()
+    receipt = {"status": "ready"}
+    receipt_bytes = b'{"status":"ready"}\n'
+
+    plan_parameters = inspect.signature(DirectCompetitionPlan).parameters
+    assert (
+        plan_parameters["comparator_smoke_receipt"].default
+        is inspect.Parameter.empty
+    )
+    assert (
+        plan_parameters["comparator_smoke_receipt_bytes"].default
+        is inspect.Parameter.empty
+    )
+
+    with pytest.raises(TypeError, match="comparator_smoke_receipt"):
+        build_direct_competition_plan(registry, datasets, authority, prepared)
+
+    observed = []
+
+    def validate(payload, raw, *, authority, registry):
+        observed.append((payload, raw, authority, registry))
+        return dict(payload)
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.comparator_tuning.validate_comparator_smoke_receipt",
+        validate,
+    )
+    plan = build_direct_competition_plan(
+        registry,
+        datasets,
+        authority,
+        prepared,
+        comparator_smoke_receipt=receipt,
+        comparator_smoke_receipt_bytes=receipt_bytes,
+    )
+
+    assert observed
+    assert all(value[:2] == (receipt, receipt_bytes) for value in observed)
+    assert plan.comparator_smoke_receipt == (("status", "ready"),)
+    assert plan.comparator_smoke_receipt_bytes == receipt_bytes
 
 
 def test_production_plan_and_checkpoint_reject_unbound_smoke_evidence(

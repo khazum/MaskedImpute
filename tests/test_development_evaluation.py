@@ -243,6 +243,8 @@ def _direct_projection_checkpoint(tmp_path: Path):
         inputs=(descriptor,),
         entries=tuple(entries),
         configurations=configurations,
+        comparator_smoke_receipt=(),
+        comparator_smoke_receipt_bytes=b"",
     )
 
     identity_rows = plan.to_dict()["entries"]

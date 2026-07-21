@@ -224,3 +224,148 @@ the focused fresh commands above are the acceptance evidence.
   selector (`21 passed, 189 deselected`).
 - Concerns: none at implementation-report time beyond the factually recorded,
   intentionally cancelled broad baseline, which is not used as verification.
+
+## Independent review fixes
+
+The exact-range independent review in `.superpowers/sdd/task-9-review.md`
+reported two Important and two Minor findings. No real comparator, smoke,
+evaluator, competition, tuning, final, or other scientific workload was run
+while resolving them.
+
+### Focused RED and baseline evidence
+
+Signed-zero descriptor and inner-request chain:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_comparator_tuning.py::test_smoke_input_rejects_byte_distinct_negative_formula_zero tests/test_comparator_tuning.py::test_spawned_smoke_request_retains_complete_fixed_fixture_descriptor
+```
+
+Output: `2 failed in 0.77s`. Both expected exceptions were absent because
+`np.array_equal` treated the formula's canonical `+0.0` and the mutated
+little-endian `-0.0` bit pattern as equal.
+
+Receipt-required exported builder:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_fair_comparator_plan.py::test_public_direct_builder_requires_and_validates_complete_smoke_evidence
+```
+
+Initial output: `1 failed in 4.04s`; the public builder returned an unbound
+plan instead of requiring receipt arguments. After making the public arguments
+mandatory, the strengthened no-default assertion was separately observed RED
+with the same command: `1 failed in 3.11s`, because the dataclass still
+silently defaulted `comparator_smoke_receipt` to `()`.
+
+Complete resource and projected-budget threshold regressions:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_comparator_tuning.py::test_smoke_receipt_rejects_each_resource_cap_with_complete_denominator tests/test_comparator_tuning.py::test_smoke_receipt_rejects_projected_method_budget_with_complete_denominator
+```
+
+Baseline output: `4 passed in 0.69s`. This Minor finding was a coverage gap;
+the existing 48 GiB RSS, 14 GiB GPU, 24-hour CPU, and 8-hour GPU method gates
+already rejected complete 34-row outcome sets at the required thresholds.
+
+Deterministic missing-smoke ordering regression:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_benchmark_runner.py::test_scientific_execution_requires_smoke_before_storage_or_output
+```
+
+Baseline output: `1 passed in 2.01s`. The test now injects the loader failure
+and spies that panel preparation, storage preflight, and the output/checkpoint
+boundary remain untouched, independent of checkout artifact state.
+
+### Changes
+
+- `comparator_smoke_input_descriptor` now compares the complete immutable
+  canonical `<f8` count bytes directly. The regression independently asserts
+  the exact little-endian `+0.0` (`00 00 00 00 00 00 00 00`) and `-0.0`
+  (`00 00 00 00 00 00 00 80`) encodings before proving rejection at both the
+  descriptor and `DirectExecutionRequest` boundaries.
+- Receipt-free full-grid construction is named and confined to
+  `_build_structural_direct_competition_plan`. The exported
+  `build_direct_competition_plan` requires the parsed receipt and exact bytes,
+  binds them through the canonical loader, and strictly validates the complete
+  production plan before returning. The plan dataclass no longer supplies
+  silent empty receipt defaults, and structural fixtures state empty evidence
+  explicitly.
+- Resource-cap coverage now exercises both RSS and GPU caps, while projected
+  budget coverage exercises CPU and GPU methods with all 34 ordered outcomes
+  present and completed.
+- The missing-smoke runner test no longer depends on whether a receipt happens
+  to exist in the checkout.
+
+### Fresh GREEN verification
+
+The two focused commands from the RED section were rerun first. Signed-zero
+descriptor/inner-request output: `2 passed in 0.94s`. Final
+public-builder/no-default output: `1 passed in 4.96s`.
+
+Required Task 9 selector:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_comparator_tuning.py tests/test_benchmark_runner.py -k 'smoke or scientific_execution_requires_smoke'
+```
+
+Output: `26 passed, 189 deselected in 2.81s`.
+
+Complete comparator authority plus direct checkpoint suites:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_comparator_tuning.py tests/test_fair_comparator_checkpoint.py
+```
+
+Output: `175 passed in 3.40s`.
+
+Complete direct plan suite:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_fair_comparator_plan.py
+```
+
+Output: `39 passed in 70.55s`.
+
+Focused direct-request/descriptor/constructor slice:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_fair_comparator_execution.py -k 'request or descriptor or constructor'
+```
+
+Output: `33 passed, 19 deselected in 2.02s`.
+
+Base/revision binding plus public storage-plan runner slice:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_benchmark_runner.py -k 'development_base_entry_routes or development_base_forwards or direct_production_boundary_binds or revision_runners_inherit or development_storage_fixture_passes_public'
+```
+
+Output: `6 passed, 127 deselected in 4.42s`.
+
+Scoped direct source/schema/value audits:
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest -q -W error -p no:cacheprovider tests/test_selection_authority.py::test_scoped_direct_source_and_schema_migration_audit tests/test_selection_authority.py::test_scoped_direct_schema_audit_covers_every_synthetic_artifact tests/test_selection_authority.py::test_direct_closed_metadata_vocabularies_are_forbidden_token_free
+```
+
+Output: `3 passed in 2.29s`.
+
+Static checks:
+
+```text
+ruff check maskimpute_benchmark/comparator_tuning.py maskimpute_benchmark/fair_comparator_plan.py maskimpute_benchmark/runner.py tests/test_benchmark_runner.py tests/test_comparator_tuning.py tests/test_development_evaluation.py tests/test_fair_comparator_checkpoint.py tests/test_fair_comparator_plan.py tests/test_selection_authority.py
+```
+
+Output: `All checks passed!`.
+
+```text
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m compileall -q maskimpute_benchmark tests scripts/run_comparator_tuning_smoke.py
+```
+
+Output: exit 0, no output.
+
+```text
+git diff --check
+```
+
+Output: exit 0, no output.

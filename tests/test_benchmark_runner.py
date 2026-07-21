@@ -45,8 +45,8 @@ from maskimpute_benchmark.fair_comparator_plan import (
     DirectAuthorizedConfiguration,
     DirectCompetitionPlan,
     DirectPlanEntry,
+    _build_structural_direct_competition_plan,
     bind_comparator_smoke_receipt_to_plan,
-    build_direct_competition_plan,
     describe_prepared_input,
     direct_run_id,
 )
@@ -484,7 +484,7 @@ def direct_storage_case(monkeypatch: pytest.MonkeyPatch):
         "load_runner_authority",
         lambda: authority,
     )
-    plan = build_direct_competition_plan(
+    plan = _build_structural_direct_competition_plan(
         registry,
         bindings,
         authority,
@@ -669,7 +669,7 @@ def test_direct_plan_is_full_denominator_with_fixed_seed_policy() -> None:
     registry = load_method_registry(METHODS_PATH)
     datasets = validate_development_manifest_payload(_manifest_payload())
 
-    plan = build_direct_competition_plan(
+    plan = _build_structural_direct_competition_plan(
         registry,
         datasets,
         load_runner_authority(),
@@ -726,7 +726,7 @@ def test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks() -> No
     authority = load_runner_authority()
     registry = load_method_registry(ROOT / "study/methods.json")
     bindings = validate_development_manifest_payload(_manifest_payload())
-    plan = build_direct_competition_plan(
+    plan = _build_structural_direct_competition_plan(
         registry,
         bindings,
         authority,
@@ -1302,7 +1302,7 @@ def test_direct_plan_rejects_noncanonical_ready_maskimpute_authority() -> None:
 
     prepared = _prepared_plan_inputs(datasets)
     authority = load_runner_authority()
-    blocked = build_direct_competition_plan(
+    blocked = _build_structural_direct_competition_plan(
         registry,
         datasets,
         authority,
@@ -1320,7 +1320,9 @@ def test_direct_plan_rejects_noncanonical_ready_maskimpute_authority() -> None:
         entry.preflight_status == "blocked_authority" for entry in blocked.entries
     )
     with pytest.raises(RunnerContractError, match="fixed authority"):
-        build_direct_competition_plan(registry, datasets, ready, prepared)
+        _build_structural_direct_competition_plan(
+            registry, datasets, ready, prepared
+        )
 
 
 def test_method_input_hash_binds_only_truth_free_snapshot_and_is_stable() -> None:
@@ -2905,6 +2907,8 @@ def _direct_magic_checkpoint_case(prepared: PreparedDataset):
         inputs=(descriptor,),
         entries=(entry,),
         configurations=(configuration,),
+        comparator_smoke_receipt=(),
+        comparator_smoke_receipt_bytes=b"",
     )
     return plan, registry, {prepared.binding.dataset_id: prepared}
 
@@ -3240,11 +3244,34 @@ def test_scientific_execution_requires_smoke_before_storage_or_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output_dir = tmp_path / "competition"
+
+    def missing_smoke(_authority):
+        raise RunnerContractError("required comparator smoke receipt is absent")
+
+    monkeypatch.setattr(
+        runner_module,
+        "_load_required_comparator_smoke_evidence",
+        missing_smoke,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "load_prepared_development_panel",
+        lambda *_args, **_kwargs: pytest.fail(
+            "panel preparation ran before the smoke gate"
+        ),
+    )
     monkeypatch.setattr(
         runner_module,
         "require_development_storage_capacity",
         lambda *_args, **_kwargs: pytest.fail(
             "storage preflight ran before the smoke gate"
+        ),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_run_fair_comparator_base_with_authority",
+        lambda *_args, **_kwargs: pytest.fail(
+            "output/checkpoint boundary ran before the smoke gate"
         ),
     )
     with pytest.raises(RunnerContractError, match="smoke receipt"):
