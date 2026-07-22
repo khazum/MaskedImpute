@@ -98,6 +98,25 @@ def direct_equal(left: object, right: object) -> bool:
             direct_equal(getattr(left, item.name), getattr(right, item.name))
             for item in fields(left)
         )
+    if isinstance(left, FrozenDirectObject) or isinstance(right, FrozenDirectObject):
+        left_object = dict(left) if isinstance(left, FrozenDirectObject) else left
+        right_object = dict(right) if isinstance(right, FrozenDirectObject) else right
+        if not isinstance(left_object, Mapping) or not isinstance(
+            right_object, Mapping
+        ):
+            return False
+        return set(left_object) == set(right_object) and all(
+            direct_equal(left_object[key], right_object[key]) for key in left_object
+        )
+    if isinstance(left, FrozenDirectList) or isinstance(right, FrozenDirectList):
+        if not (isinstance(left, FrozenDirectList) or type(left) is list) or not (
+            isinstance(right, FrozenDirectList) or type(right) is list
+        ):
+            return False
+        return len(left) == len(right) and all(
+            direct_equal(first, second)
+            for first, second in zip(left, right, strict=True)
+        )
     if isinstance(left, Mapping) or isinstance(right, Mapping):
         if not isinstance(left, Mapping) or not isinstance(right, Mapping):
             return False

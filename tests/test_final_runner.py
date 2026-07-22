@@ -395,6 +395,70 @@ def test_final_plan_is_1760_and_all_selectable_split_is_1480_280() -> None:
     assert all(entry.run.configuration_id != "registry-default" for entry in magic_rows)
 
 
+def test_final_plan_rejects_selected_comparator_nonrun_disposition_drift() -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    frozen = _direct_frozen_method()
+    magic = next(row for row in frozen["method_denominator"] if row["id"] == "magic")
+    magic["integration_status"] = "unavailable"
+    magic["final_applicability"] = {
+        "rule": "never",
+        "non_run_reason": "selected_comparator_unavailable",
+        "required_reference": None,
+    }
+    unsigned = {key: value for key, value in frozen.items() if key != "payload_sha256"}
+    frozen["payload_sha256"] = canonical_sha256(unsigned)
+
+    with pytest.raises(
+        FinalRunnerContractError,
+        match="selected comparator magic.*executable",
+    ):
+        build_final_execution_plan(
+            frozen,
+            _full_registry(),
+            _bindings(),
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            execution_authority_sha256="9" * 64,
+        )
+
+
+def test_full_production_final_plan_enforces_1480_280_action_split() -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    frozen = _direct_frozen_method()
+    observed = next(
+        row for row in frozen["method_denominator"] if row["id"] == "observed"
+    )
+    observed["integration_status"] = "unavailable"
+    observed["final_applicability"] = {
+        "rule": "never",
+        "non_run_reason": "production_split_drift",
+        "required_reference": None,
+    }
+    unsigned = {key: value for key, value in frozen.items() if key != "payload_sha256"}
+    frozen["payload_sha256"] = canonical_sha256(unsigned)
+
+    with pytest.raises(
+        FinalRunnerContractError,
+        match="1480 executable and 280 not-applicable",
+    ):
+        build_final_execution_plan(
+            frozen,
+            _full_registry(),
+            _bindings(),
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            execution_authority_sha256="9" * 64,
+        )
+
+
 def test_unavailable_stochastic_comparator_reclassifies_120_seeded_rows() -> None:
     from maskimpute_benchmark.direct_values import direct_equal
     from maskimpute_benchmark.final_runner import build_final_execution_plan

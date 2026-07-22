@@ -1536,6 +1536,65 @@ def test_run_plan_entry_preserves_legacy_shape_and_rejects_summary_comparators()
         )
 
 
+def test_run_plan_entry_recursively_freezes_nonexecution_identity_and_serializes_stably() -> (
+    None
+):
+    from maskimpute_benchmark.direct_values import (
+        FrozenDirectList,
+        FrozenDirectObject,
+        direct_equal,
+    )
+
+    identity = {
+        "reason": "declared_nonexecution",
+        "evidence": {
+            "attempts": [{"status": "unavailable"}],
+            "seeds": [42, 43, 44],
+        },
+    }
+    entry = RunPlanEntry(
+        ordinal=1,
+        run_id="run-magic-nonexecution-test",
+        method_id="magic",
+        dataset_id="dataset-test",
+        source_dataset_sha256="a" * 64,
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        model_seed=42,
+        configuration_id="nonexecution-magic",
+        configuration_sha256=None,
+        preflight_status="planned",
+        preflight_reason=None,
+        configuration_kind="comparator_nonexecution",
+        comparator_nonexecution_identity=identity,
+    )
+    serialized = entry.to_dict()
+    frozen_evidence = dict(entry.comparator_nonexecution_identity)["evidence"]
+    frozen_attempts = dict(frozen_evidence)["attempts"]
+
+    assert isinstance(frozen_evidence, FrozenDirectObject)
+    assert isinstance(frozen_attempts, FrozenDirectList)
+    with pytest.raises(TypeError):
+        frozen_evidence[0] = ("reason", "changed")
+    with pytest.raises(TypeError):
+        frozen_attempts[0] = FrozenDirectObject((("status", "completed"),))
+
+    identity["evidence"]["attempts"][0]["status"] = "completed"
+    identity["evidence"]["seeds"].append(45)
+    replayed = replace(
+        entry,
+        comparator_nonexecution_identity=serialized["comparator_nonexecution_identity"],
+    )
+
+    assert entry.to_dict() == serialized
+    assert replayed.to_dict() == serialized
+    assert direct_equal(
+        serialized["comparator_nonexecution_identity"],
+        entry.comparator_nonexecution_identity,
+    )
+
+
 @pytest.mark.parametrize(
     ("kind", "identity_fields"),
     (

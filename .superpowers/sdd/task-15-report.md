@@ -179,3 +179,79 @@ suites pass warning-strict; lint, compilation, and diff checks pass. Independent
 acceptance of the exact Task 15 commit remains the next workflow step. Task 16
 retains responsibility for its downstream/scaling publication-schema work; no
 Task 16 identity or default migration was implemented early.
+
+## Task 15 review correction
+
+The independent review of `870ac99f4b7921f3e8eab82ff57bb44992a3b90a`
+identified one critical disposition-coupling defect and one important shallow
+immutability defect. Both are corrected in this follow-up change.
+
+### Disposition coupling and production split
+
+Selected direct comparator authority is now coupled to the exact executable
+disposition before `FrozenPlanMethodAuthority` construction and rechecked by
+that frozen value's invariant. Complete comparator nonexecution authority is
+likewise coupled to a reason-coded `not_applicable` disposition. A selected
+configuration can therefore no longer be combined with a duplicate
+`unavailable`/`never` method-denominator row.
+
+The full all-selected production final plan now requires all three binding
+counts: 1,760 total, 1,480 executable, and 280 not-applicable rows. This split
+gate is deliberately limited to the full production registry when every
+selectable comparator has a selected configuration. Subset/synthetic
+registries remain ungated, and an explicitly unavailable stochastic comparator
+continues to retain all three seeds in both final and trajectory plans.
+
+### Recursive nonexecution immutability
+
+`RunPlanEntry` now reconstructs its copied nonexecution identity with the
+existing `freeze_direct_mapping` representation rather than thawing nested
+objects and lists and wrapping only the outer mapping. Serialization remains
+the only thaw point. Caller-owned nested dict/list mutation cannot alter the
+entry, and serialized identities reconstruct to the same stable direct value.
+
+The adjacent `direct_values.py` adjustment is intentionally narrow:
+`direct_equal` recognizes `FrozenDirectObject` only as the immutable equivalent
+of a JSON object and `FrozenDirectList` only as the immutable equivalent of a
+JSON list. Ordinary tuple/list or list/object coercion remains forbidden. The
+existing nested-list-of-pairs and list/object-collision regressions were run to
+verify that exact container identity remains closed.
+
+No comparator content digest was added or recomputed, and legacy plan checksum
+or other outer provenance behavior was not expanded. Scaling code and Task 16
+behavior were not changed. No scientific workload ran, and the progress ledger
+was not edited.
+
+### Correction TDD evidence
+
+Supported-interpreter RED before production changes:
+
+```text
+selected-to-nonrun disposition drift, missing production split gate,
+and nested dict/list immutability:
+  3 failed, 254 deselected in 37.46s
+```
+
+Focused GREEN after the corrections and formatting:
+
+```text
+coupling, production split, selected happy path, stochastic final/trajectory
+nonexecution seeds, and recursive immutable replay:
+  6 passed, 251 deselected in 80.79s
+
+adjacent direct-value nested-list-of-pairs and list/object-collision contracts:
+  4 passed, 235 deselected in 2.11s
+```
+
+### Correction verification evidence
+
+The required exact warning-strict commands used the bound supported
+interpreter and disabled pytest's cache provider:
+
+```text
+tests/test_final_runner.py:
+  111 passed in 616.08s (0:10:16)
+
+tests/test_benchmark_runner.py:
+  146 passed in 1245.79s (0:20:45)
+```

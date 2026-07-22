@@ -1818,7 +1818,7 @@ class RunPlanEntry:
             ComparatorTuningError,
             _validate_bound_selection_configuration,
         )
-        from .direct_values import direct_json_value
+        from .direct_values import direct_json_value, freeze_direct_mapping
 
         if any(
             value is not None
@@ -1882,7 +1882,7 @@ class RunPlanEntry:
             )
             if not isinstance(encoded, Mapping):
                 raise ValueError("nonexecution identity is not an object")
-            frozen = MappingProxyType(dict(encoded))
+            frozen = MappingProxyType(dict(freeze_direct_mapping(encoded)))
         except (TypeError, ValueError) as error:
             raise RunnerContractError(
                 "comparator nonexecution plan identity is invalid"

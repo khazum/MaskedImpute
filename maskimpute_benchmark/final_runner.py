@@ -1335,6 +1335,17 @@ class FrozenPlanMethodAuthority:
             or self.comparator_configuration.configuration.method_id != self.method_id
         ):
             raise FinalRunnerContractError("selected frozen comparator method differs")
+        if self.comparator_configuration is not None and self.action != "execute":
+            raise FinalRunnerContractError(
+                f"selected comparator {self.method_id} must be executable"
+            )
+        if (
+            self.comparator_nonexecution_identity is not None
+            and self.action != "not_applicable"
+        ):
+            raise FinalRunnerContractError(
+                f"comparator {self.method_id} nonexecution authority must not execute"
+            )
         if self.action == "execute" and self.reason is not None:
             raise FinalRunnerContractError(
                 "executable frozen method authority has a reason"
@@ -4453,6 +4464,18 @@ def _frozen_method_plan_authority(
             )
         )
         action, reason, seeds = _frozen_final_applicability(spec, row, kind)
+        if comparator_configuration is not None and (
+            action != "execute" or reason is not None
+        ):
+            raise FinalRunnerContractError(
+                f"selected comparator {spec.id} must retain its executable disposition"
+            )
+        if comparator_nonexecution_identity is not None and (
+            action != "not_applicable" or reason is None
+        ):
+            raise FinalRunnerContractError(
+                f"comparator {spec.id} nonexecution disposition is invalid"
+            )
         configurations.append(
             FrozenPlanMethodAuthority(
                 method_id=spec.id,
@@ -4662,8 +4685,26 @@ def build_final_execution_plan(
                         reason=configuration.reason,
                     )
                 )
-    if _production_registry_matches(registry) and len(entries) != 1_760:
-        raise FinalRunnerContractError("final structural denominator must equal 1760")
+    if _production_registry_matches(registry):
+        if len(entries) != 1_760:
+            raise FinalRunnerContractError(
+                "final structural denominator must equal 1760"
+            )
+        all_comparators_selected = not any(
+            configuration.comparator_nonexecution_identity is not None
+            for configuration in configurations
+        )
+        execute_count = sum(entry.action == "execute" for entry in entries)
+        not_applicable_count = sum(
+            entry.action == "not_applicable" for entry in entries
+        )
+        if all_comparators_selected and (
+            execute_count != 1_480 or not_applicable_count != 280
+        ):
+            raise FinalRunnerContractError(
+                "all-selected production final denominator must contain "
+                "1480 executable and 280 not-applicable rows"
+            )
     input_hashes = {
         "frozen_method_sha256": str(frozen_method["payload_sha256"]),
         "method_registry_sha256": str(frozen_method["method_registry_sha256"]),
