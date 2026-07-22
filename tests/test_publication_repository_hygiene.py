@@ -1,10 +1,44 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+_GENERATED_MATRIX_SUFFIXES = {
+    ".h5",
+    ".h5ad",
+    ".mtx",
+    ".npy",
+    ".npz",
+}
+
+
+def _tracked_or_unignored_paths() -> tuple[Path, ...]:
+    result = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+        cwd=ROOT,
+        check=True,
+        stdout=subprocess.PIPE,
+    )
+    return tuple(Path(name) for name in result.stdout.decode().split("\0") if name)
+
+
+def _is_forbidden_tracked_or_unignored_path(path: Path) -> bool:
+    if (
+        {"__pycache__", ".pytest_cache", ".ruff_cache"} & set(path.parts)
+        or path.suffix in {".pyc", ".pyo", ".tmp", ".partial"}
+    ):
+        return True
+    if path.parts and path.parts[0] in {"feedback", "historical"}:
+        return False
+    return bool(
+        path.name == "checkpoint.json"
+        or path.suffix.lower() in _GENERATED_MATRIX_SUFFIXES
+        or path.parts[:2] in {("paper", "generated"), ("paper", "figures")}
+    )
 
 
 def _tracked_index_entries() -> tuple[tuple[str, str], ...]:
@@ -47,3 +81,43 @@ def test_machine_specific_scvi_environment_is_ignored() -> None:
     )
 
     assert result.returncode == 0
+
+
+def test_hygiene_path_classification_is_narrow_and_cache_strict() -> None:
+    assert not _is_forbidden_tracked_or_unignored_path(
+        Path("docs/method-overview.svg")
+    )
+    assert not _is_forbidden_tracked_or_unignored_path(
+        Path("feedback/review-report.pdf")
+    )
+    assert not _is_forbidden_tracked_or_unignored_path(
+        Path("historical/v26/results.npz")
+    )
+    assert _is_forbidden_tracked_or_unignored_path(
+        Path("historical/v26/__pycache__/module.pyc")
+    )
+    assert _is_forbidden_tracked_or_unignored_path(Path("feedback/.review.tmp"))
+    assert _is_forbidden_tracked_or_unignored_path(Path("results/matrix.npz"))
+
+
+def test_repository_has_no_generated_comparator_evidence_or_cache() -> None:
+    forbidden_ignored_paths = (
+        ROOT / "artifacts/study/development/evaluation/comparator_smoke.json",
+        ROOT / "artifacts/study/development/evaluation/comparator_selection.json",
+        ROOT
+        / "artifacts/study/development/competition-reconstruction/checkpoint.json",
+        ROOT / "artifacts/study/round-001",
+        ROOT / "paper/generated",
+        ROOT / "paper/figures",
+        ROOT / "paper/manuscript.bbl",
+        ROOT / "paper/manuscript.pdf",
+    )
+    assert not any(os.path.lexists(path) for path in forbidden_ignored_paths)
+
+    forbidden = [
+        path.as_posix()
+        for path in _tracked_or_unignored_paths()
+        if _is_forbidden_tracked_or_unignored_path(path)
+    ]
+
+    assert not forbidden, "generated or cache paths remain: " + ", ".join(forbidden)

@@ -1,6 +1,6 @@
 % Genome Biology Methodology draft. Numerical claims must be rendered only from
 % the sealed final-analysis artifact; every unresolved field is visibly marked.
-\documentclass[pdflatex,sn-vancouver-num]{sn-jnl}
+\documentclass[pdflatex,sn-vancouver-num,referee,lineno]{sn-jnl}
 
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
@@ -14,6 +14,7 @@
 \raggedbottom
 
 \begin{document}
+\pagenumbering{arabic}
 
 \title[Calibrated selective single-cell imputation]{MaskImpute: calibrated selective imputation for single-cell RNA-sequencing count matrices}
 
@@ -112,7 +113,10 @@ MaskImpute trains a masked autoencoder on count-derived normalized inputs with e
 
 \subsection{Comparator methods and applicability}
 
-The same-input denominator includes observed counts, a capacity-matched autoencoder, ALRA, MAGIC, DCA, scVI, SAVER, scZiva, afMF, BiAEImpute, scCR, and scSDAE where scheduled by the frozen registry \cite{vanDijk2018MAGIC,Eraslan2019DCA,Lopez2018scVI,Linderman2022ALRA,Huang2018SAVER}. Each adapter invokes a pristine pinned source tree in an isolated runtime, records compatibility actions, and applies a declared evaluator conversion. scImpute and WEDGE are retained as historical comparators but are not rerun. scGACL, scTACL, and scZN retain explicit non-applicability reasons. D3Impute and scTsI are evaluated only when a prespecified matched bulk reference exists.
+The prespecified same-input denominator schedules observed counts, a capacity-matched autoencoder, ALRA, MAGIC, DCA, scVI, SAVER, scZiva, afMF, BiAEImpute, scCR, and scSDAE as a fixed twelve-method denominator \cite{Linderman2022ALRA,vanDijk2018MAGIC,Eraslan2019DCA,Lopez2018scVI,Huang2018SAVER,Vo2026scZiva,Huang2025afMF,Zhang2025BiAEImpute,Um2024scCR,Chi2020scSDAE}.
+Before final evaluation, the development plan will evaluate thirty-four complete comparator configurations across all sixteen development datasets and three model seeds. Each tunable method varies one prespecified, scientifically interpretable axis around its upstream default; ALRA rank and SAVER empirical-Bayes parameters remain automatic. The selector will average model seeds within technical view and pair views within biological draw, then will select one global configuration per method using six reconstruction metrics, all-eligible Pareto filtering, and a deterministic Pareto-only quarter-rank tuple. Comparator selection cannot access MaskImpute performance, downstream endpoints, or final data by design. Selected payloads and method identities will be frozen unchanged for candidate assessment, final evaluation, trajectory evaluation, and scaling. Methods with no eligible development configuration will remain in the scheduled denominator with their complete reason-coded failure counts and will be excluded only from numerical estimands for which no selected configuration exists.
+
+Each adapter invokes a pristine pinned source tree in an isolated runtime, records compatibility actions, and applies a declared evaluator conversion. scImpute and WEDGE are retained as historical comparators but are not rerun. scGACL, scTACL, and scZN retain explicit non-applicability reasons. D3Impute and scTsI are evaluated only when a prespecified matched bulk reference exists.
 
 \subsection{Reconstruction and distributional metrics}
 
@@ -129,6 +133,10 @@ The biological draw is the independent unit. Model seeds are averaged within tec
 \subsection{Resource measurement and scaling}
 
 Independent parent-process telemetry samples the full process tree. Runs are terminated when their frozen wall-time, resident-memory, or GPU-memory ceiling is exceeded. Scaling uses the fixed cell-count grid and one biological draw; its accuracy summaries are descriptive and are not treated as biological replication.
+
+\subsection{Use of generative AI or AI-assisted technologies}
+
+\PendingAuthor{provide the author-approved disclosure required by current publisher policy}
 
 \subsection{Reproducibility and software availability}
 
@@ -156,9 +164,6 @@ Source revisions, source-tree hashes, runtime closure inventories, environment i
 
 \subsection*{Acknowledgements}
 \PendingAuthor{provide acknowledgements or an approved not-applicable statement}
-
-\subsection*{Use of generative AI or AI-assisted technologies}
-\PendingAuthor{provide the author-approved disclosure required by current publisher policy}
 
 \bibliography{references}
 

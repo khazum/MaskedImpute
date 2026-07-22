@@ -2,9 +2,9 @@
 
 **Status:** Blocking human-author checklist
 
-**Guidance verified:** 12 July 2026
+**Guidance verified:** 21 July 2026
 
-This checklist deliberately records requirements, not answers. An unchecked item blocks submission. The authors may mark an item not applicable only after making and recording the underlying determination; no contributor or automated system may infer names, affiliations, ethics decisions, consent, funding, contributions, conflicts, repository identifiers, preprint details, or disclosure wording.
+This checklist deliberately records requirements, not answers. An unchecked item blocks submission. The manuscript is currently a sealed-evidence draft, not submission-ready. The authors may mark an item not applicable only after making and recording the underlying determination; no contributor or automated system may infer names, affiliations, ethics decisions, consent, funding, contributions, conflicts, repository identifiers, preprint details, or disclosure wording.
 
 ## Official sources
 
@@ -25,6 +25,19 @@ Recheck every official page immediately before submission and record that the ma
 - [ ] The frozen evidence supports the manuscript's exact advance claim. If it supports competitiveness but not a clear advance, the authors have completed a presubmission enquiry or selected a more suitable article type or venue.
 - [ ] Every superiority statement is limited to the named endpoint and comparison supported by the prespecified multiplicity-aware analysis.
 
+### Prespecified fair-comparison evidence
+
+- [ ] The comparator smoke receipt records all 34 smoke completions before the complete development competition starts.
+- [ ] The development execution-status table contains exactly 2,896 scheduled rows: 16 observed-count rows, 48 capacity-matched autoencoder rows, 1,200 MaskImpute rows, and 1,632 comparator rows.
+- [ ] Readiness includes both required controls, all five established comparators, and at least three modern comparators.
+- [ ] BiAEImpute has an explicit eligible, failed, timeout, resource-exceeded, or unavailable status; its status is not inferred from omission.
+- [ ] Every eligible comparator has exactly one complete selected payload and complete method bindings, and every ineligible comparator retains complete reason-coded failure counts.
+- [ ] The selected payloads and method identities used for candidate assessment are unchanged in final, trajectory, and scaling execution.
+- [ ] The final execution-status table contains exactly 1,760 scheduled rows, and the trajectory execution-status table contains exactly 44 trajectory rows.
+- [ ] Every scheduled method appears in the complete execution-status table, including failures and unavailable methods.
+- [ ] No performance, ranking, or superiority claim is made against unavailable methods or for an estimand lacking an eligible selected configuration.
+- [ ] Comparator selection is development-only and cannot access MaskImpute performance, downstream endpoints, or final data.
+
 ## 2. Author identity, authorship, and approval
 
 - [ ] The title page contains the full name, institutional address, and email address of every author.
@@ -41,6 +54,7 @@ Recheck every official page immediately before submission and record that the ma
 
 - [ ] No LLM or AI system is listed as an author.
 - [ ] The authors have approved an accurate Methods statement describing substantive LLM use in study design, software development, analysis, or manuscript preparation. The statement distinguishes such use from copyediting alone and identifies the human validation and accountability applied to the output.
+- [ ] The final AI-use disclosure remains in Methods and contains no unresolved placeholder.
 - [ ] Human authors have reviewed every AI-assisted factual statement, citation, analysis, code path, figure, and conclusion against primary evidence or executable results.
 - [ ] No prohibited generative-AI image is included. Any policy exception or non-generative image manipulation has been disclosed as required by the current BMC policy.
 

@@ -73,6 +73,120 @@ FORBIDDEN_IDENTITY_TOKENS = (
 )
 
 
+def test_manuscript_discloses_development_only_comparator_selection() -> None:
+    manuscript = (ROOT / "paper/manuscript.tex").read_text()
+    required = (
+        "thirty-four",
+        "sixteen development datasets",
+        "three model seeds",
+        "Pareto",
+        "quarter-rank",
+        "BiAEImpute",
+        "Methods with no eligible development configuration will remain in the "
+        "scheduled denominator",
+    )
+    assert all(fragment in manuscript for fragment in required)
+
+
+def test_manuscript_discloses_primary_comparator_sources_and_venue_format() -> None:
+    manuscript = (ROOT / "paper/manuscript.tex").read_text()
+    references = (ROOT / "paper/references.bib").read_text()
+    expected_sources = {
+        "Vo2026scZiva": "10.1186/s12859-026-06422-2",
+        "Huang2025afMF": "10.1002/ctm2.70283",
+        "Zhang2025BiAEImpute": "10.1186/s12864-025-11988-x",
+        "Um2024scCR": "10.52202/079017-0598",
+        "Chi2020scSDAE": "10.3390/genes11050532",
+    }
+    assert all(
+        citation_key in manuscript
+        and any(
+            f"@{entry_type}{{{citation_key}," in references
+            for entry_type in ("article", "inproceedings")
+        )
+        and doi in references
+        for citation_key, doi in expected_sources.items()
+    )
+    assert (
+        "publisher = {Neural Information Processing Systems Foundation, Inc. "
+        "(NeurIPS)}" in references
+    )
+    assert (
+        r"\documentclass[pdflatex,sn-vancouver-num,referee,lineno]{sn-jnl}"
+        in manuscript
+    )
+    assert r"\pagenumbering{arabic}" in manuscript
+
+    methods_start = manuscript.index(r"\section{Methods}")
+    declarations_start = manuscript.index(r"\section*{Declarations}")
+    disclosure = r"\subsection{Use of generative AI or AI-assisted technologies}"
+    assert disclosure in manuscript
+    disclosure_start = manuscript.index(disclosure)
+    assert methods_start < disclosure_start < declarations_start
+    assert disclosure not in manuscript[declarations_start:]
+
+    log_path = ROOT / "paper/manuscript.log"
+    if log_path.exists():
+        log_text = log_path.read_text(errors="replace")
+        assert "undefined citations" not in log_text.lower()
+        assert "there were undefined references" not in log_text.lower()
+        assert not any(
+            "Warning: Citation " in line and " undefined" in line.lower()
+            for line in log_text.splitlines()
+        )
+
+
+def test_manuscript_discloses_exact_execution_order_and_publication_gates() -> None:
+    workflow = (ROOT / "docs/development-selection-workflow.md").read_text()
+    ordered_commands = (
+        "python scripts/run_comparator_tuning_smoke.py",
+        "python scripts/run_development_competition.py",
+        "python scripts/select_comparator_configurations.py",
+        "python scripts/build_development_selection_input.py",
+        "python scripts/promote_development_selection_input.py",
+        "python scripts/select_development_candidate.py",
+        "python scripts/run_v28_revision_competition.py "
+        "[--environment METHOD=EXECUTABLE ...]",
+        "python scripts/run_v29_revision_competition.py "
+        "[--environment METHOD=EXECUTABLE ...]",
+        "python scripts/freeze_publication_round.py prepare",
+        'python scripts/freeze_publication_round.py freeze "$ROUND_DIR"',
+        'python scripts/run_frozen_final.py "$ROUND_DIR"',
+    )
+    assert all(command in workflow for command in ordered_commands)
+    positions = tuple(workflow.index(command) for command in ordered_commands)
+    assert positions == tuple(sorted(positions))
+
+    checklists = "\n".join(
+        (
+            (ROOT / "paper/submission_checklist.md").read_text(),
+            (ROOT / "docs/genome-biology-submission-checklist.md").read_text(),
+        )
+    )
+    required_gates = (
+        "2,896",
+        "34 smoke",
+        "five established",
+        "at least three modern",
+        "BiAEImpute",
+        "selected payloads",
+        "method bindings",
+        "1,760",
+        "44 trajectory",
+        "execution-status table",
+        "unavailable methods",
+        "100 words",
+        "3--10 keywords",
+        "Minimum Standards",
+        "OSI-compliant",
+        "static archived release",
+        "editable",
+        "cover letter",
+        "AI-use disclosure",
+    )
+    assert all(fragment in checklists for fragment in required_gates)
+
+
 EXPECTED_ORDER = {
     "alra": ("alra-default",),
     "magic": ("magic-t03", "magic-t01", "magic-t05", "magic-t07"),
