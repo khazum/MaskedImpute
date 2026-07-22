@@ -41,6 +41,20 @@ from maskimpute_benchmark.scaling import (
 
 CANDIDATE = "maskimpute"
 COMPARATORS = ("observed", "dca")
+SCHEDULED_METHODS = (
+    "observed",
+    "capacity-matched-ae",
+    "alra",
+    "magic",
+    "dca",
+    "scvi",
+    "saver",
+    "scziva",
+    "afmf",
+    "biaeimpute",
+    "sccr",
+    "scsdae",
+)
 PRIMARY_METRICS = ("mse", "mse_dropout")
 PAIRWISE_EXCLUSION_NAMES = (
     "failed_rows",
@@ -87,7 +101,17 @@ def _frozen_method() -> Mapping[str, object]:
         "selected_version": "v29",
         "selection_gate_table": [assessment],
         "selected_assessment": assessment,
-        "required_comparator_ids": list(COMPARATORS),
+        "scheduled_same_input_ids": list(COMPARATORS),
+        "ready_comparison_population_ids": list(COMPARATORS),
+        "required_control_ids": ["observed"],
+        "scheduled_same_input_statuses": [
+            {
+                "method_id": method_id,
+                "aggregate_status": "completed",
+                "nonexecution_identity": None,
+            }
+            for method_id in COMPARATORS
+        ],
     }
     return _sealed(body, "payload_sha256")
 
@@ -272,6 +296,8 @@ def _entries(
                         configuration_sha256=config.configuration_sha256,
                         configuration_kind=config.kind,
                         method_artifact_sha256=_digest(f"{method}-artifact"),
+                        comparator_configuration=None,
+                        comparator_nonexecution_identity=None,
                         method_input_sha256=binding.method_input_sha256,
                         retained_cell_ids_sha256=binding.retained_cell_ids_sha256,
                         status="completed",
@@ -325,15 +351,27 @@ def _downstream_record(
     plan: DownstreamEvidencePlan,
     entry: DownstreamPlanEntry,
 ) -> Mapping[str, object]:
-    endpoint_rows = [
-        {
-            "endpoint": endpoint,
-            "status": "completed",
-            "reason_code": None,
-            "value": 0.5,
-        }
-        for endpoint in DOWNSTREAM_ENDPOINT_NAMES
-    ]
+    endpoint_rows = []
+    for endpoint in DOWNSTREAM_ENDPOINT_NAMES:
+        if entry.status == "completed":
+            endpoint_rows.append(
+                {
+                    "endpoint": endpoint,
+                    "status": "completed",
+                    "reason_code": None,
+                    "value": 0.5,
+                }
+            )
+        else:
+            endpoint_rows.append(
+                {
+                    "endpoint": endpoint,
+                    "status": entry.status,
+                    "reason_code": "upstream_run_not_completed",
+                    "upstream_reason": entry.reason,
+                    "value": None,
+                }
+            )
     body = {
         "schema_version": 1,
         "ordinal": entry.ordinal,
@@ -468,6 +506,8 @@ def _trajectory_plan(
                 configuration_sha256=configuration.configuration_sha256,
                 configuration_kind=configuration.kind,
                 method_artifact_sha256=_digest(f"{method}-trajectory-artifact"),
+                comparator_configuration=None,
+                comparator_nonexecution_identity=None,
                 method_input_sha256=dataset.method_input_sha256,
                 retained_cell_ids_sha256=dataset.retained_cell_ids_sha256,
                 status="completed",
@@ -829,7 +869,8 @@ def _primary_report(
                 else f"reconstruction_{reconstruction_status}"
             ),
             "candidate_method_id": CANDIDATE,
-            "required_comparator_ids": list(COMPARATORS),
+            "scheduled_same_input_ids": list(COMPARATORS),
+            "numerical_comparison_population_ids": list(COMPARATORS),
             "draw_collapsed_method_summaries": summaries,
             "strongest_applicable_comparators": strongest,
         },
@@ -857,6 +898,71 @@ def _loaded() -> _LoadedPublicationEvidence:
         trajectory_downstream_manifest=trajectory_downstream,
         null_de_plan=null_plan,
         null_de_manifest=null_manifest,
+        scaling_checkpoint=scaling,
+    )
+
+
+def _loaded_with_unavailable_biae() -> _LoadedPublicationEvidence:
+    frozen = dict(_frozen_method())
+    frozen.pop("payload_sha256")
+    frozen.update(
+        {
+            "scheduled_same_input_ids": list(SCHEDULED_METHODS),
+            "ready_comparison_population_ids": list(COMPARATORS),
+            "required_control_ids": ["observed", "capacity-matched-ae"],
+            "unavailable_comparator_nonexecution_identities": {
+                "biaeimpute": {
+                    "schema_version": 1,
+                    "reason": "all_configurations_intrinsic_terminal",
+                }
+            },
+            "scheduled_same_input_statuses": [
+                {
+                    "method_id": method_id,
+                    "aggregate_status": (
+                        "intrinsic_terminal_no_eligible_configuration"
+                        if method_id == "biaeimpute"
+                        else "completed"
+                    ),
+                    "terminal_status_counts": (
+                        {"unavailable": 4}
+                        if method_id == "biaeimpute"
+                        else {"completed": 1}
+                    ),
+                    "reason_histogram": (
+                        {"adapter_unavailable": 4} if method_id == "biaeimpute" else {}
+                    ),
+                    "selected_comparator_configuration": None,
+                    "nonexecution_identity": (
+                        {
+                            "schema_version": 1,
+                            "reason": "all_configurations_intrinsic_terminal",
+                        }
+                        if method_id == "biaeimpute"
+                        else None
+                    ),
+                }
+                for method_id in SCHEDULED_METHODS
+            ],
+        }
+    )
+    sealed = _sealed(frozen, "payload_sha256")
+    scaling = _scaling_checkpoint(str(sealed["payload_sha256"]))
+    binding = _evaluated_binding(scaling)
+    plan = _downstream_plan(binding)
+    downstream = _downstream_manifest(plan)
+    trajectory_plan = _trajectory_plan(binding)
+    trajectory_downstream = _trajectory_manifest(trajectory_plan)
+    null_plan = _null_plan(plan, downstream)
+    return _LoadedPublicationEvidence(
+        primary_report=_primary_report(sealed, binding),
+        frozen_method=sealed,
+        downstream_plan=plan,
+        downstream_manifest=downstream,
+        trajectory_downstream_plan=trajectory_plan,
+        trajectory_downstream_manifest=trajectory_downstream,
+        null_de_plan=null_plan,
+        null_de_manifest=_null_manifest(null_plan),
         scaling_checkpoint=scaling,
     )
 
@@ -954,6 +1060,60 @@ def _with_terminal_trajectory_status(
         null_de_plan=null_plan,
         null_de_manifest=null_manifest,
         scaling_checkpoint=loaded.scaling_checkpoint,
+    )
+
+
+def _with_selected_later_cell_failures(
+    loaded: _LoadedPublicationEvidence,
+) -> _LoadedPublicationEvidence:
+    trajectory_changed = _with_terminal_trajectory_status(loaded)
+    entries = list(trajectory_changed.downstream_plan.entries)
+    final_index = next(
+        index for index, entry in enumerate(entries) if entry.method_id == "dca"
+    )
+    entries[final_index] = replace(
+        entries[final_index],
+        status="timeout",
+        reason="adapter_timeout",
+        evaluator_output_sha256=None,
+        evaluator_output_path=None,
+        evaluator_output_file_sha256=None,
+        evaluator_output_shape=None,
+        evaluator_output_encoding=None,
+        evaluator_output_uncompressed_nbytes=None,
+        evaluator_output_uncompressed_sha256=None,
+    )
+    provisional = replace(
+        trajectory_changed.downstream_plan,
+        entries=tuple(entries),
+        source_statuses_sha256=canonical_sha256(
+            [
+                {
+                    "run_id": entry.run_id,
+                    "status": entry.status,
+                    "reason": entry.reason,
+                }
+                for entry in entries
+            ]
+        ),
+        plan_sha256=_digest("temporary-primary-plan"),
+    )
+    primary = replace(
+        provisional,
+        plan_sha256=canonical_sha256(provisional.body()),
+    )
+    primary_manifest = _downstream_manifest(primary)
+    null_plan = _null_plan(primary, primary_manifest)
+    return replace(
+        trajectory_changed,
+        primary_report=_primary_report(
+            trajectory_changed.frozen_method,
+            primary.evaluated_round_binding,
+        ),
+        downstream_plan=primary,
+        downstream_manifest=primary_manifest,
+        null_de_plan=null_plan,
+        null_de_manifest=_null_manifest(null_plan),
     )
 
 
@@ -1276,6 +1436,21 @@ def test_final_null_de_boundary_and_synthesis_permissions_pass() -> None:
     assert synthesis["gates"]["final_null_de"] == gate
     assert synthesis["gates"]["competitive"]["status"] == "passed"
     assert synthesis["claim_permissions"]["competitive"] is True
+
+
+def test_publication_claims_separate_scheduled_and_numerical_denominators() -> None:
+    synthesis = _build_publication_synthesis(_loaded_with_unavailable_biae())
+
+    assert synthesis["scheduled_same_input_ids"] == list(SCHEDULED_METHODS)
+    assert "biaeimpute" not in synthesis["numerical_comparison_population_ids"]
+    assert synthesis["execution_status_by_method"]["biaeimpute"] == {
+        "status": "unavailable",
+        "reason": "all_configurations_intrinsic_terminal",
+    }
+    assert (
+        synthesis["claim_permissions"]["superiority_by_method"]["biaeimpute"]
+        == "unavailable_uncompared_method"
+    )
     freeze = synthesis["freeze_prerequisite"]
     assert freeze["gate_flags"] == {
         "efficacy_pass": True,
@@ -1510,9 +1685,21 @@ def test_trajectory_values_and_terminal_statuses_are_gate_inert() -> None:
 
     for changed in (value_synthesis, status_synthesis):
         assert canonical_sha256(changed["gates"]) == canonical_sha256(base["gates"])
-        assert canonical_sha256(changed["claim_permissions"]) == canonical_sha256(
-            base["claim_permissions"]
+        assert (
+            changed["claim_permissions"]["competitive"]
+            == base["claim_permissions"]["competitive"]
         )
+        assert (
+            changed["claim_permissions"]["superiority"]
+            == base["claim_permissions"]["superiority"]
+        )
+    assert (
+        value_synthesis["claim_permissions"]["superiority_by_method"]
+        == base["claim_permissions"]["superiority_by_method"]
+    )
+    assert status_synthesis["claim_permissions"]["superiority_by_method"]["dca"] == (
+        "insufficient_completed_cells"
+    )
     assert status_synthesis["trajectory"]["run_status_counts"] == {
         "completed": 7,
         "resource_exceeded": 1,
@@ -1523,6 +1710,52 @@ def test_trajectory_values_and_terminal_statuses_are_gate_inert() -> None:
     assert status_synthesis["trajectory"]["endpoint_reason_counts"] == {
         "upstream_run_not_completed": 1
     }
+
+
+def test_selected_later_cell_failures_remain_visible_and_gate_only_unsupported_claims() -> (
+    None
+):
+    loaded = _with_selected_later_cell_failures(_loaded())
+
+    final_record = next(
+        row
+        for row in loaded.downstream_manifest.records
+        if row["method"] == "dca" and row["run_status"] == "timeout"
+    )
+    assert final_record["run_reason"] == "adapter_timeout"
+    assert all(
+        endpoint["value"] is None
+        and endpoint["status"] == "timeout"
+        and endpoint["upstream_reason"] == "adapter_timeout"
+        for endpoint in final_record["endpoints"]
+    )
+    trajectory_record = next(
+        row
+        for row in loaded.trajectory_downstream_manifest.records
+        if row["method"] == "dca" and row["run_status"] == "resource_exceeded"
+    )
+    assert trajectory_record["run_reason"] == "peak_gpu_memory_limit_exceeded"
+    assert trajectory_record["endpoints"] == [
+        {
+            "endpoint": "trajectory_pseudotime_rank_loss",
+            "status": "resource_exceeded",
+            "reason_code": "upstream_run_not_completed",
+            "upstream_reason": "peak_gpu_memory_limit_exceeded",
+            "value": None,
+        }
+    ]
+
+    synthesis = _build_publication_synthesis(loaded)
+    assert "dca" in synthesis["scheduled_same_input_ids"]
+    assert "dca" in synthesis["numerical_comparison_population_ids"]
+    assert synthesis["execution_status_by_method"]["dca"] == {
+        "status": "completed",
+        "reason": None,
+    }
+    assert (
+        synthesis["claim_permissions"]["superiority_by_method"]["dca"]
+        == "insufficient_completed_cells"
+    )
 
 
 def test_final_null_de_uses_seed_mean_then_paired_view_mean_not_raw_maximum() -> None:

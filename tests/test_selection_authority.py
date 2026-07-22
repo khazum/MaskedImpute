@@ -2536,7 +2536,7 @@ def test_repository_authority_derives_design_methods_and_pending_artifacts():
     assert authority.biological_ids == ("draw-01", "draw-02")
     assert authority.technical_views == ("moderate", "severe")
     assert authority.model_seeds == (42, 43, 44)
-    assert authority.required_comparator_ids == (
+    assert authority.numerical_comparison_population_ids == (
         "observed",
         "capacity-matched-ae",
         "alra",
@@ -2549,6 +2549,8 @@ def test_repository_authority_derives_design_methods_and_pending_artifacts():
         "sccr",
         "scsdae",
     )
+    with pytest.raises(AttributeError):
+        getattr(authority, "required_comparator_ids")
     assert authority.retained_calibration.status == "pending"
     assert authority.retained_calibration.path == (
         "artifacts/study/development/calibration/retained_calibration.json"

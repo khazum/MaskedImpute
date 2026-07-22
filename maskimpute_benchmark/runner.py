@@ -1748,6 +1748,58 @@ def direct_bound_comparator_value(
     }
 
 
+def decode_direct_bound_comparator_value(
+    value: object,
+) -> BoundComparatorConfiguration:
+    """Decode the readable complete comparator value without content summaries."""
+
+    from .comparator_tuning import (
+        ComparatorAuthorityReference,
+        ComparatorConfiguration,
+        ComparatorMethodBinding,
+        ComparatorTuningError,
+        _validate_bound_selection_configuration,
+    )
+    from .direct_values import direct_equal
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "configuration",
+        "authority_reference",
+        "method",
+    }:
+        raise RunnerContractError("direct comparator value schema is invalid")
+    raw_configuration = value.get("configuration")
+    raw_reference = value.get("authority_reference")
+    raw_method = value.get("method")
+    if (
+        not isinstance(raw_configuration, Mapping)
+        or set(raw_configuration)
+        != {"method_id", "configuration_id", "is_upstream_default", "payload"}
+        or not isinstance(raw_configuration.get("payload"), Mapping)
+        or not isinstance(raw_reference, Mapping)
+        or not isinstance(raw_method, Mapping)
+    ):
+        raise RunnerContractError("direct comparator value schema is invalid")
+    try:
+        configuration = ComparatorConfiguration(
+            method_id=raw_configuration["method_id"],
+            configuration_id=raw_configuration["configuration_id"],
+            payload_json=_canonical_bytes(dict(raw_configuration["payload"])).decode(
+                "utf-8"
+            ),
+            is_upstream_default=raw_configuration["is_upstream_default"],
+        )
+        reference = ComparatorAuthorityReference(**dict(raw_reference))
+        method = ComparatorMethodBinding(**dict(raw_method))
+        result = BoundComparatorConfiguration(configuration, reference, method)
+        _validate_bound_selection_configuration(result)
+    except (ComparatorTuningError, TypeError, ValueError) as error:
+        raise RunnerContractError("direct comparator value is invalid") from error
+    if not direct_equal(direct_bound_comparator_value(result), value):
+        raise RunnerContractError("direct comparator value differs after decoding")
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class RunPlanEntry:
     """One denominator entry, including preflight-blocked attempts."""
@@ -9997,6 +10049,7 @@ __all__ = [
     "derive_lock_only_environment_ids",
     "derive_authorized_configurations",
     "development_storage_preflight",
+    "decode_direct_bound_comparator_value",
     "execute_adapter_in_spawned_process",
     "execute_direct_adapter_in_spawned_process",
     "execute_final_comparator_adapter_in_spawned_process",

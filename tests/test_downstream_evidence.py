@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import importlib.util
 import json
@@ -16,6 +17,239 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import pytest
+
+
+@lru_cache(maxsize=1)
+def _task15_final_module():
+    path = Path(__file__).with_name("test_final_runner.py")
+    spec = importlib.util.spec_from_file_location("_task16_downstream_factory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@lru_cache(maxsize=2)
+def _frozen_downstream_authorities(unavailable_method: str | None = None):
+    from maskimpute_benchmark.final_runner import _frozen_method_plan_authority
+
+    module = _task15_final_module()
+    frozen = module._direct_frozen_method(unavailable_method=unavailable_method)
+    registry = module._full_registry()
+    _rows, configurations = _frozen_method_plan_authority(frozen, registry)
+    return frozen, registry, configurations
+
+
+def test_downstream_configuration_schema_preserves_complete_direct_authority() -> None:
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.downstream_evidence import _legacy_configuration_payload
+    from maskimpute_benchmark.runner import direct_bound_comparator_value
+
+    frozen, _registry, configurations = _frozen_downstream_authorities()
+    by_method = {value.method_id: value for value in configurations}
+
+    magic = _legacy_configuration_payload(by_method["magic"])
+    assert "configuration_sha256" not in magic
+    assert direct_equal(
+        magic["comparator_configuration"],
+        frozen["selected_comparator_configurations"]["magic"],
+    )
+    assert magic["comparator_nonexecution_identity"] is None
+    expected_magic = by_method["magic"].comparator_configuration
+    assert expected_magic is not None
+    assert direct_equal(
+        magic["comparator_configuration"],
+        direct_bound_comparator_value(expected_magic),
+    )
+
+    unavailable_frozen, _registry, unavailable_configurations = (
+        _frozen_downstream_authorities("biaeimpute")
+    )
+    unavailable_by_method = {
+        value.method_id: value for value in unavailable_configurations
+    }
+    unavailable = _legacy_configuration_payload(unavailable_by_method["biaeimpute"])
+    assert "configuration_sha256" not in unavailable
+    assert unavailable["comparator_configuration"] is None
+    assert direct_equal(
+        unavailable["comparator_nonexecution_identity"],
+        unavailable_frozen["unavailable_comparator_nonexecution_identities"][
+            "biaeimpute"
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    (
+        ("timeout", "adapter_timeout"),
+        ("resource_exceeded", "peak_gpu_memory_limit_exceeded"),
+    ),
+)
+def test_downstream_selected_comparator_terminal_rows_retain_complete_identity(
+    status: str,
+    reason: str,
+) -> None:
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.downstream_evidence import DownstreamPlanEntry
+    from maskimpute_benchmark.runner import direct_bound_comparator_value
+
+    _frozen, _registry, configurations = _frozen_downstream_authorities()
+    authority = {value.method_id: value for value in configurations}["magic"]
+    configuration = authority.comparator_configuration
+    assert configuration is not None
+    entry = DownstreamPlanEntry(
+        ordinal=1,
+        source_record_path="records/00000001.json",
+        source_record_sha256="1" * 64,
+        run_id="direct-terminal-magic",
+        method_id="magic",
+        dataset_id="dataset-direct",
+        source_dataset_sha256="2" * 64,
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        model_seed=42,
+        configuration_id=authority.configuration_id,
+        configuration_sha256=None,
+        configuration_kind=authority.kind,
+        method_artifact_sha256=None,
+        comparator_configuration=configuration,
+        comparator_nonexecution_identity=None,
+        method_input_sha256="3" * 64,
+        retained_cell_ids_sha256="4" * 64,
+        status=status,
+        reason=reason,
+        evaluator_output_sha256=None,
+        evaluator_output_path=None,
+        evaluator_output_file_sha256=None,
+        evaluator_output_shape=None,
+        evaluator_output_encoding=None,
+        evaluator_output_uncompressed_nbytes=None,
+        evaluator_output_uncompressed_sha256=None,
+    )
+
+    payload = entry.to_dict()
+    assert "configuration_sha256" not in payload
+    assert "method_artifact_sha256" not in payload
+    assert payload["status"] == status
+    assert payload["reason"] == reason
+    assert direct_equal(
+        payload["comparator_configuration"],
+        direct_bound_comparator_value(configuration),
+    )
+    assert payload["comparator_nonexecution_identity"] is None
+
+
+def test_downstream_terminal_endpoint_preserves_direct_status_reason_and_identity() -> (
+    None
+):
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.downstream_evaluation import terminal_downstream_endpoints
+    from maskimpute_benchmark.downstream_evidence import (
+        DownstreamPlanEntry,
+        _endpoint_row,
+    )
+    from maskimpute_benchmark.runner import direct_bound_comparator_value
+
+    _frozen, _registry, configurations = _frozen_downstream_authorities()
+    authority = {value.method_id: value for value in configurations}["magic"]
+    configuration = authority.comparator_configuration
+    assert configuration is not None
+    entry = DownstreamPlanEntry(
+        ordinal=1,
+        source_record_path="records/00000001.json",
+        source_record_sha256="1" * 64,
+        run_id="direct-timeout-magic",
+        method_id="magic",
+        dataset_id="dataset-direct",
+        source_dataset_sha256="2" * 64,
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        model_seed=42,
+        configuration_id=authority.configuration_id,
+        configuration_sha256=None,
+        configuration_kind=authority.kind,
+        method_artifact_sha256=None,
+        comparator_configuration=configuration,
+        comparator_nonexecution_identity=None,
+        method_input_sha256="3" * 64,
+        retained_cell_ids_sha256="4" * 64,
+        status="timeout",
+        reason="adapter_timeout",
+        evaluator_output_sha256=None,
+        evaluator_output_path=None,
+        evaluator_output_file_sha256=None,
+        evaluator_output_shape=None,
+        evaluator_output_encoding=None,
+        evaluator_output_uncompressed_nbytes=None,
+        evaluator_output_uncompressed_sha256=None,
+    )
+    endpoint = terminal_downstream_endpoints(
+        "upstream_run_not_completed",
+        procedure="terminal_upstream_run_not_completed",
+    )[0]
+    row = _endpoint_row(SimpleNamespace(source_kind="final"), entry, endpoint)
+
+    assert "configuration_sha256" not in row
+    assert "method_artifact_sha256" not in row
+    assert row["status"] == "timeout"
+    assert row["upstream_status"] == "timeout"
+    assert row["upstream_reason"] == "adapter_timeout"
+    assert row["value"] is None
+    assert direct_equal(
+        row["comparator_configuration"],
+        direct_bound_comparator_value(configuration),
+    )
+    assert row["comparator_nonexecution_identity"] is None
+
+
+def test_downstream_final_source_accepts_complete_direct_execution_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+    from maskimpute_benchmark.runner import direct_bound_comparator_value
+
+    _frozen, _registry, configurations = _frozen_downstream_authorities()
+    authority = {value.method_id: value for value in configurations}["magic"]
+    configuration = authority.comparator_configuration
+    assert configuration is not None
+    run = {name: None for name in downstream._DIRECT_FINAL_RUN_FIELDS}
+    run.update(
+        {
+            "configuration_kind": "comparator_tuning",
+            "native_output_sha256": None,
+            "native_output_retention": "not_available",
+            "native_output_path": None,
+            "native_output_file_sha256": None,
+            "native_output_shape": None,
+            "native_output_dtype": None,
+        }
+    )
+    request = {
+        "request_kind": "frozen_comparator_direct",
+        "configuration": direct_bound_comparator_value(configuration),
+        "dataset_id": "dataset-direct",
+        "execution_authority_sha256": "1" * 64,
+        "method_input_sha256": "2" * 64,
+        "model_seed": 42,
+    }
+    monkeypatch.setattr(
+        downstream,
+        "_validate_prezero_source_schema",
+        lambda _value, *, run: None,
+    )
+
+    downstream._validate_source_record_schema(
+        {
+            "run": run,
+            "metrics": [],
+            "p_pre_zero_evidence": {},
+            "execution_request": request,
+        },
+        source_kind="final",
+    )
 
 
 def test_direct_downstream_projection_routes_only_closed_direct_schema(

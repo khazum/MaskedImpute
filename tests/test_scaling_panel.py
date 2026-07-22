@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from functools import lru_cache
+import importlib.util
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +16,35 @@ SHA_A = "a" * 64
 SHA_B = "b" * 64
 SHA_C = "c" * 64
 SHA_D = "d" * 64
+
+
+@lru_cache(maxsize=1)
+def _task15_test_module():
+    path = Path(__file__).with_name("test_final_runner.py")
+    spec = importlib.util.spec_from_file_location("_task16_final_factory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@lru_cache(maxsize=1)
+def _direct_scaling_authorities():
+    from maskimpute_benchmark.final_runner import _frozen_method_plan_authority
+
+    module = _task15_test_module()
+    frozen = module._direct_frozen_method()
+    registry = module._full_registry()
+    _rows, configurations = _frozen_method_plan_authority(frozen, registry)
+    by_method = {value.method_id: value for value in configurations}
+    return (
+        frozen,
+        registry,
+        tuple(
+            by_method[method_id]
+            for method_id in ("observed", "maskimpute", "dca", "scvi", "magic")
+        ),
+    )
 
 
 def _claimed_lifecycle_round(tmp_path: Path) -> tuple[Path, Path]:
@@ -64,57 +95,20 @@ def _claimed_lifecycle_round(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _configurations():
-    from maskimpute_benchmark.methods import load_method_registry
-    from maskimpute_benchmark.runner import AuthorizedConfiguration
-
-    registry = load_method_registry(REPOSITORY / "study/methods.json")
-    values = []
-    for method_id in ("observed", "maskimpute", "dca", "scvi", "magic"):
-        spec = registry.by_id(method_id)
-        if method_id == "maskimpute":
-            payload = {
-                "method_version": "v27",
-                "decoder": "scaled_gaussian",
-                "encoder_mode": "explicit_mask",
-                "output_policy": "selective",
-                "score_policy": "direct_cross_fitted_count_score",
-                "hyperparameters": {
-                    "hidden_dim": 128,
-                    "latent_dim": 32,
-                    "epochs": 20,
-                    "batch_size": 128,
-                    "learning_rate": 0.001,
-                    "weight_decay": 0.0001,
-                    "mask_rate": 0.15,
-                    "natural_zero_weight": 0.5,
-                    "gate_temperature": 0.1,
-                },
-            }
-            values.append(
-                AuthorizedConfiguration.create(
-                    method_id="maskimpute",
-                    configuration_id="v27-scaling-fixture",
-                    kind="candidate_search",
-                    payload=payload,
-                    requires_count_score=True,
-                    requires_calibration=False,
-                )
-            )
-        else:
-            values.append(AuthorizedConfiguration.registry_default(spec))
-    return registry, tuple(values)
+    _frozen, registry, values = _direct_scaling_authorities()
+    return registry, values
 
 
 def _plan():
     from maskimpute_benchmark.scaling import build_scaling_plan, load_scaling_contract
 
     contract = load_scaling_contract(REPOSITORY / "study/scaling_panel.json")
-    registry, configurations = _configurations()
+    frozen, registry, configurations = _direct_scaling_authorities()
     return build_scaling_plan(
         contract,
         registry,
         configurations,
-        frozen_method_sha256=SHA_A,
+        frozen_method_sha256=str(frozen["payload_sha256"]),
         method_registry_file_sha256=SHA_B,
         protocol_file_sha256=hashlib.sha256(
             (REPOSITORY / "study/protocol.json").read_bytes()
@@ -139,6 +133,26 @@ def _single_entry_plan():
         schema_version=1,
         input_hashes=full.input_hashes,
         entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256=canonical_sha256(body),
+    )
+
+
+def _single_direct_entry_plan():
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    full = _plan()
+    entry = replace(full.entries[4], ordinal=1)
+    body = {
+        "schema_version": 1,
+        "input_hashes": dict(full.input_hashes),
+        "entries": [entry.to_dict()],
+        "configurations": [value.to_dict() for value in full.configurations],
+    }
+    return full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
         configurations=full.configurations,
         plan_sha256=canonical_sha256(body),
     )
@@ -263,6 +277,151 @@ def test_scaling_plan_closes_full_method_by_size_denominator() -> None:
     assert len({entry.run_id for entry in plan.entries}) == len(plan.entries)
 
 
+def test_scaling_plan_uses_exact_frozen_comparator_payloads() -> None:
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.runner import direct_bound_comparator_value
+    from maskimpute_benchmark.scaling import build_scaling_plan, load_scaling_contract
+
+    frozen, registry, configurations = _direct_scaling_authorities()
+    contract = load_scaling_contract(REPOSITORY / "study/scaling_panel.json")
+    plan = build_scaling_plan(
+        contract,
+        registry,
+        configurations,
+        frozen_method_sha256=str(frozen["payload_sha256"]),
+        method_registry_file_sha256=SHA_B,
+        protocol_file_sha256=hashlib.sha256(
+            (REPOSITORY / "study/protocol.json").read_bytes()
+        ).hexdigest(),
+        execution_authority_sha256=SHA_C,
+        execution_environment_sha256=SHA_D,
+        implementation_source_sha256="e" * 64,
+    )
+
+    planned = {row.method_id: row for row in plan.configurations}
+    frozen_selected = frozen["selected_comparator_configurations"]
+    for method_id in ("magic", "dca", "scvi"):
+        expected = planned[method_id].comparator_configuration
+        assert expected is not None
+        assert direct_equal(
+            direct_bound_comparator_value(expected),
+            frozen_selected[method_id],
+        )
+        entries = [row for row in plan.entries if row.method_id == method_id]
+        assert entries
+        assert all(
+            direct_equal(row.comparator_configuration, expected) for row in entries
+        )
+        assert all(row.comparator_nonexecution_identity is None for row in entries)
+
+
+@pytest.mark.parametrize("component", ("payload", "method", "authority"))
+def test_scaling_plan_rejects_complete_frozen_comparator_component_drift(
+    component: str,
+) -> None:
+    from maskimpute_benchmark.comparator_tuning import BoundComparatorConfiguration
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        build_scaling_plan,
+        load_scaling_contract,
+    )
+
+    frozen, registry, configurations = _direct_scaling_authorities()
+    magic_index = next(
+        index
+        for index, configuration in enumerate(configurations)
+        if configuration.method_id == "magic"
+    )
+    authority = configurations[magic_index]
+    bound = authority.comparator_configuration
+    assert bound is not None
+    if component == "payload":
+        payload = dict(bound.configuration.payload)
+        payload["task16_tamper"] = True
+        changed_bound = replace(
+            bound,
+            configuration=replace(
+                bound.configuration,
+                payload_json=json.dumps(payload, separators=(",", ":"), sort_keys=True),
+            ),
+        )
+    elif component == "method":
+        changed_bound = replace(
+            bound,
+            method=replace(
+                bound.method,
+                timeout_seconds=bound.method.timeout_seconds + 1,
+            ),
+        )
+    else:
+        changed_bound = replace(
+            bound,
+            authority_reference=replace(
+                bound.authority_reference,
+                authority_revision="tampered-authority-revision",
+            ),
+        )
+    assert isinstance(changed_bound, BoundComparatorConfiguration)
+    changed = list(configurations)
+    changed[magic_index] = replace(
+        authority,
+        comparator_configuration=changed_bound,
+    )
+
+    with pytest.raises(ScalingContractError, match="comparator.*(identity|invalid)"):
+        build_scaling_plan(
+            load_scaling_contract(REPOSITORY / "study/scaling_panel.json"),
+            registry,
+            tuple(changed),
+            frozen_method_sha256=str(frozen["payload_sha256"]),
+            method_registry_file_sha256=SHA_B,
+            protocol_file_sha256=hashlib.sha256(
+                (REPOSITORY / "study/protocol.json").read_bytes()
+            ).hexdigest(),
+            execution_authority_sha256=SHA_C,
+            execution_environment_sha256=SHA_D,
+            implementation_source_sha256="e" * 64,
+        )
+
+
+def test_scaling_plan_rejects_registry_defaults_for_frozen_comparators() -> None:
+    from maskimpute_benchmark.runner import AuthorizedConfiguration
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        build_scaling_plan,
+        load_scaling_contract,
+    )
+
+    frozen, registry, configurations = _direct_scaling_authorities()
+    changed = tuple(
+        replace(
+            value,
+            legacy_configuration=AuthorizedConfiguration.registry_default(
+                registry.by_id(value.method_id)
+            ),
+            comparator_configuration=None,
+        )
+        if value.method_id == "dca"
+        else value
+        for value in configurations
+    )
+
+    with pytest.raises(ScalingContractError, match="frozen comparator"):
+        build_scaling_plan(
+            load_scaling_contract(REPOSITORY / "study/scaling_panel.json"),
+            registry,
+            changed,
+            frozen_method_sha256=str(frozen["payload_sha256"]),
+            method_registry_file_sha256=SHA_B,
+            protocol_file_sha256=hashlib.sha256(
+                (REPOSITORY / "study/protocol.json").read_bytes()
+            ).hexdigest(),
+            execution_authority_sha256=SHA_C,
+            execution_environment_sha256=SHA_D,
+            implementation_source_sha256="e" * 64,
+        )
+
+
 def test_scaling_storage_preflight_is_pure_and_authority_derived() -> None:
     from types import SimpleNamespace
 
@@ -300,7 +459,12 @@ def test_scaling_plan_rejects_registry_default_for_candidate() -> None:
     contract = load_scaling_contract(REPOSITORY / "study/scaling_panel.json")
     registry, configurations = _configurations()
     changed = tuple(
-        AuthorizedConfiguration.registry_default(registry.by_id("maskimpute"))
+        replace(
+            value,
+            legacy_configuration=AuthorizedConfiguration.registry_default(
+                registry.by_id("maskimpute")
+            ),
+        )
         if value.method_id == "maskimpute"
         else value
         for value in configurations
@@ -630,6 +794,8 @@ def _first_attempt(
         stderr_sha256=hashlib.sha256(stderr).hexdigest(),
         native_output_sha256=native_output_sha256,
         evaluator_output_sha256=evaluator_output_sha256,
+        comparator_configuration=entry.comparator_configuration,
+        comparator_nonexecution_identity=entry.comparator_nonexecution_identity,
     )
     metrics = tuple(
         LongFormMetric(
@@ -646,6 +812,8 @@ def _first_attempt(
             n=n,
             status="completed" if value is not None else "unavailable",
             reason=reason,
+            comparator_configuration=entry.comparator_configuration,
+            comparator_nonexecution_identity=(entry.comparator_nonexecution_identity),
         )
         for name, (value, n, reason) in metric_values.items()
     )
@@ -689,6 +857,108 @@ def test_scaling_store_resumes_exact_prefix_with_compressed_evaluator_output(
     assert run["native_output_path"].endswith(".native-f64.zlib")
     assert run["executor_receipt_path"].endswith(".executor-receipt.json")
     assert store.load() == report
+
+
+def _mutate_direct_scaling_value(value: dict[str, object], component: str) -> None:
+    if component == "payload":
+        value["configuration"]["payload"]["task16_tamper"] = True
+    elif component == "method":
+        value["method"]["timeout_seconds"] += 1
+    else:
+        value["authority_reference"]["authority_revision"] = (
+            "tampered-authority-revision"
+        )
+
+
+@pytest.mark.parametrize(
+    ("boundary", "component"),
+    (
+        ("executor_receipt", "payload"),
+        ("checkpoint_run", "method"),
+        ("stored_metric", "authority"),
+    ),
+)
+def test_scaling_direct_evidence_rejects_complete_identity_tampering(
+    tmp_path: Path,
+    boundary: str,
+    component: str,
+) -> None:
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    plan = _single_direct_entry_plan()
+    entry = plan.entries[0]
+    expected = entry.to_dict()["comparator_configuration"]
+    store = ScalingResultStore(tmp_path, plan)
+    receipt = _dataset_receipt(tmp_path)
+    store.append_dataset(receipt)
+    report = store.append_attempt(
+        entry,
+        scaling_attempt_record(
+            _first_attempt(plan, tmp_path, receipt),
+            cells=10_000,
+            accuracy_enabled=True,
+        ),
+    )
+    run = report.records[0]["run"]
+    assert "configuration_sha256" not in run
+    assert direct_equal(run["comparator_configuration"], expected)
+    assert all(
+        "configuration_sha256" not in metric
+        and direct_equal(metric["comparator_configuration"], expected)
+        for metric in report.records[0]["metrics"]
+    )
+
+    checkpoint_path = store.checkpoint_path
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    record = payload["records"][0]
+    run_payload = record["run"]
+    if boundary == "executor_receipt":
+        executor_path = tmp_path / run_payload["executor_receipt_path"]
+        executor = json.loads(executor_path.read_text(encoding="utf-8"))
+        _mutate_direct_scaling_value(executor["comparator_configuration"], component)
+        executor_unsigned = {
+            key: value for key, value in executor.items() if key != "receipt_sha256"
+        }
+        executor["receipt_sha256"] = canonical_sha256(executor_unsigned)
+        executor_raw = (
+            json.dumps(executor, separators=(",", ":"), sort_keys=True) + "\n"
+        ).encode()
+        executor_path.write_bytes(executor_raw)
+        run_payload["executor_receipt_file_sha256"] = hashlib.sha256(
+            executor_raw
+        ).hexdigest()
+        run_payload["executor_receipt_size_bytes"] = len(executor_raw)
+        run_payload["executor_receipt_sha256"] = executor["receipt_sha256"]
+    elif boundary == "checkpoint_run":
+        _mutate_direct_scaling_value(run_payload["comparator_configuration"], component)
+    else:
+        _mutate_direct_scaling_value(
+            record["metrics"][0]["comparator_configuration"], component
+        )
+    record_unsigned = {
+        key: value for key, value in record.items() if key != "record_sha256"
+    }
+    record["record_sha256"] = canonical_sha256(record_unsigned)
+    checkpoint_unsigned = {
+        key: value for key, value in payload.items() if key != "checkpoint_sha256"
+    }
+    payload["checkpoint_sha256"] = canonical_sha256(checkpoint_unsigned)
+    checkpoint_path.write_text(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ScalingContractError,
+        match="comparator|metric|identity|differs from its plan",
+    ):
+        ScalingResultStore(tmp_path, plan).load()
 
 
 def test_scaling_checkpoints_are_immutable_append_only_snapshots(

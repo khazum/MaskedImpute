@@ -203,15 +203,16 @@ def _validate_freeze_prerequisite(
         raise PublicationSynthesisError(
             "frozen selected assessment does not pass every freeze prerequisite"
         )
+    denominator_field = "ready_comparison_population_ids"
     required_value = _sequence(
-        frozen.get("required_comparator_ids"), "frozen required comparators"
+        frozen.get(denominator_field), "frozen numerical comparison population"
     )
     required = tuple(required_value)
     if (
         not required
         or any(not isinstance(value, str) or not value for value in required)
         or len(set(required)) != len(required)
-        or list(required) != reconstruction.get("required_comparator_ids")
+        or list(required) != reconstruction.get("numerical_comparison_population_ids")
     ):
         raise PublicationSynthesisError(
             "frozen required comparator denominator differs"
@@ -229,6 +230,81 @@ def _validate_freeze_prerequisite(
         "frozen_method_payload_sha256": frozen_sha256,
         "numerical_use": "freeze_validity_only",
     }
+
+
+def _scheduled_claim_permissions(
+    loaded: _LoadedPublicationEvidence,
+) -> tuple[list[str], list[str], dict[str, dict[str, object]], dict[str, str]]:
+    """Separate scheduled visibility from numerically comparable evidence."""
+
+    frozen = loaded.frozen_method
+    scheduled = list(
+        _sequence(frozen.get("scheduled_same_input_ids"), "scheduled methods")
+    )
+    numerical = list(
+        _sequence(
+            frozen.get("ready_comparison_population_ids"),
+            "numerical comparison population",
+        )
+    )
+    controls = set(_sequence(frozen.get("required_control_ids"), "required controls"))
+    if (
+        not scheduled
+        or any(not isinstance(value, str) or not value for value in scheduled)
+        or len(set(scheduled)) != len(scheduled)
+        or any(value not in scheduled for value in numerical)
+        or len(set(numerical)) != len(numerical)
+        or any(value not in scheduled for value in controls)
+    ):
+        raise PublicationSynthesisError("frozen scheduled denominator differs")
+    raw_statuses = _sequence(
+        frozen.get("scheduled_same_input_statuses"), "scheduled method statuses"
+    )
+    if len(raw_statuses) != len(scheduled):
+        raise PublicationSynthesisError("scheduled method statuses are incomplete")
+    status_by_method: dict[str, dict[str, object]] = {}
+    for method_id, row in zip(scheduled, raw_statuses, strict=True):
+        if not isinstance(row, Mapping) or row.get("method_id") != method_id:
+            raise PublicationSynthesisError("scheduled method status order differs")
+        aggregate = row.get("aggregate_status")
+        if aggregate == "completed":
+            status_by_method[method_id] = {"status": "completed", "reason": None}
+            continue
+        identity = row.get("nonexecution_identity")
+        if not isinstance(identity, Mapping):
+            raise PublicationSynthesisError(
+                "scheduled unavailable method lacks nonexecution identity"
+            )
+        reason = _text(identity.get("reason"), "nonexecution reason")
+        status_by_method[method_id] = {"status": "unavailable", "reason": reason}
+
+    completed_by_method: dict[str, bool] = {}
+    for method_id in scheduled:
+        rows = [
+            entry
+            for entry in loaded.downstream_plan.entries
+            if entry.method_id == method_id
+        ]
+        trajectory_rows = [
+            entry
+            for entry in loaded.trajectory_downstream_plan.entries
+            if entry.method_id == method_id
+        ]
+        all_rows = rows + trajectory_rows
+        completed_by_method[method_id] = bool(all_rows) and all(
+            entry.status == "completed" for entry in all_rows
+        )
+    permissions: dict[str, str] = {}
+    for method_id in scheduled:
+        if status_by_method[method_id]["status"] == "unavailable":
+            permissions[method_id] = "unavailable_uncompared_method"
+        elif method_id in controls:
+            permissions[method_id] = "control_not_a_superiority_target"
+        elif method_id in numerical and completed_by_method[method_id]:
+            permissions[method_id] = "allowed"
+        else:
+            permissions[method_id] = "insufficient_completed_cells"
+    return scheduled, numerical, status_by_method, permissions
 
 
 def _validate_manifest_payload(
@@ -1114,7 +1190,7 @@ def _superiority_permissions(
         report.get("paired_comparisons"), "primary pairwise comparisons"
     )
     pairwise = [row for row in pairwise_values if isinstance(row, Mapping)]
-    required = reconstruction.get("required_comparator_ids")
+    required = reconstruction.get("numerical_comparison_population_ids")
     required_ids = tuple(_sequence(required, "required comparator denominator"))
     recomputed = _recomputed_strongest_comparators(
         reconstruction,
@@ -1331,10 +1407,16 @@ def _build_publication_synthesis(
     null_de = _build_final_null_de_gate(loaded)
     competitive = _competitive_gate(reconstruction, null_de)
     superiority = _superiority_permissions(report, reconstruction, competitive)
+    scheduled, numerical, execution_statuses, method_permissions = (
+        _scheduled_claim_permissions(loaded)
+    )
     body: dict[str, object] = {
         "schema_version": 1,
         "status": "completed",
         "candidate_method_id": candidate,
+        "scheduled_same_input_ids": scheduled,
+        "numerical_comparison_population_ids": numerical,
+        "execution_status_by_method": execution_statuses,
         "evidence_bindings": _evidence_bindings(
             loaded,
             report=report,
@@ -1353,6 +1435,7 @@ def _build_publication_synthesis(
         "claim_permissions": {
             "competitive": competitive["status"] == "passed",
             "superiority": superiority,
+            "superiority_by_method": method_permissions,
         },
     }
     return {**body, "synthesis_sha256": canonical_sha256(body)}

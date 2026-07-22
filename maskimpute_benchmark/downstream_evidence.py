@@ -30,8 +30,11 @@ from .downstream_evaluation import (
     evaluator_targets_from_dataset,
     terminal_downstream_endpoints,
 )
+from .final_runner import FrozenPlanMethodAuthority
+from .direct_values import direct_equal, direct_json_value
 from .protocol import canonical_sha256
-from .runner import AuthorizedConfiguration
+from .comparator_tuning import BoundComparatorConfiguration
+from .runner import AuthorizedConfiguration, direct_bound_comparator_value
 from .schema import benchmark_dataset_sha256, validate_benchmark_dataset
 
 
@@ -388,6 +391,13 @@ _FINAL_RUN_FIELDS = _DEVELOPMENT_RUN_FIELDS | frozenset(
         "evaluator_output_uncompressed_sha256",
     }
 )
+_DIRECT_DEVELOPMENT_RUN_FIELDS = (
+    _DEVELOPMENT_RUN_FIELDS - {"configuration_sha256"}
+) | {"comparator_configuration", "comparator_nonexecution_identity"}
+_DIRECT_FINAL_RUN_FIELDS = (_FINAL_RUN_FIELDS - {"configuration_sha256"}) | {
+    "comparator_configuration",
+    "comparator_nonexecution_identity",
+}
 _METRIC_FIELDS = frozenset(
     {
         "mechanism",
@@ -405,6 +415,10 @@ _METRIC_FIELDS = frozenset(
         "reason",
     }
 )
+_DIRECT_METRIC_FIELDS = (_METRIC_FIELDS - {"configuration_sha256"}) | {
+    "comparator_configuration",
+    "comparator_nonexecution_identity",
+}
 _PREZERO_EVIDENCE_FIELDS = frozenset(
     {
         "schema_version",
@@ -478,6 +492,16 @@ _FINAL_EXECUTION_REQUEST_FIELDS = frozenset(
         "model_seed",
         "request_sha256",
         "retained_calibration_sha256",
+    }
+)
+_DIRECT_FINAL_EXECUTION_REQUEST_FIELDS = frozenset(
+    {
+        "request_kind",
+        "configuration",
+        "dataset_id",
+        "execution_authority_sha256",
+        "method_input_sha256",
+        "model_seed",
     }
 )
 _FINAL_STORAGE_POLICY = MappingProxyType(
@@ -1238,9 +1262,11 @@ class DownstreamPlanEntry:
     technical_view: str
     model_seed: int | None
     configuration_id: str
-    configuration_sha256: str
+    configuration_sha256: str | None
     configuration_kind: str
-    method_artifact_sha256: str
+    method_artifact_sha256: str | None
+    comparator_configuration: BoundComparatorConfiguration | None
+    comparator_nonexecution_identity: Mapping[str, object] | None
     method_input_sha256: str
     retained_cell_ids_sha256: str
     status: str
@@ -1254,7 +1280,7 @@ class DownstreamPlanEntry:
     evaluator_output_uncompressed_sha256: str | None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        value = {
             "ordinal": self.ordinal,
             "source_record_path": self.source_record_path,
             "source_record_sha256": self.source_record_sha256,
@@ -1270,6 +1296,19 @@ class DownstreamPlanEntry:
             "configuration_sha256": self.configuration_sha256,
             "configuration_kind": self.configuration_kind,
             "method_artifact_sha256": self.method_artifact_sha256,
+            "comparator_configuration": (
+                None
+                if self.comparator_configuration is None
+                else direct_bound_comparator_value(self.comparator_configuration)
+            ),
+            "comparator_nonexecution_identity": (
+                None
+                if self.comparator_nonexecution_identity is None
+                else direct_json_value(
+                    self.comparator_nonexecution_identity,
+                    payload=True,
+                )
+            ),
             "method_input_sha256": self.method_input_sha256,
             "retained_cell_ids_sha256": self.retained_cell_ids_sha256,
             "status": self.status,
@@ -1290,6 +1329,16 @@ class DownstreamPlanEntry:
                 self.evaluator_output_uncompressed_sha256
             ),
         }
+        if self.configuration_kind in {
+            "comparator_tuning",
+            "comparator_nonexecution",
+        }:
+            value.pop("configuration_sha256")
+            value.pop("method_artifact_sha256")
+        else:
+            value.pop("comparator_configuration")
+            value.pop("comparator_nonexecution_identity")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -1658,7 +1707,11 @@ class ProjectedDownstreamConfiguration:
         }
 
 
-DownstreamConfiguration = AuthorizedConfiguration | ProjectedDownstreamConfiguration
+DownstreamConfiguration = (
+    AuthorizedConfiguration
+    | ProjectedDownstreamConfiguration
+    | FrozenPlanMethodAuthority
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1780,7 +1833,7 @@ _DATASET_BINDING_FIELDS = frozenset(
         "trajectory_binding_sha256",
     }
 )
-_CONFIGURATION_FIELDS = frozenset(
+_CONFIGURATION_LEGACY_FIELDS = frozenset(
     {
         "method_id",
         "configuration_id",
@@ -1791,6 +1844,20 @@ _CONFIGURATION_FIELDS = frozenset(
         "requires_calibration",
     }
 )
+_CONFIGURATION_DIRECT_FIELDS = frozenset(
+    {
+        "method_id",
+        "configuration_id",
+        "kind",
+        "requires_count_score",
+        "requires_calibration",
+        "comparator_configuration",
+        "comparator_nonexecution_identity",
+    }
+)
+_CONFIGURATION_FIELDS = _CONFIGURATION_LEGACY_FIELDS | frozenset(
+    {"comparator_configuration", "comparator_nonexecution_identity"}
+)
 
 
 def _legacy_configuration_payload(
@@ -1798,17 +1865,52 @@ def _legacy_configuration_payload(
 ) -> dict[str, object]:
     """Preserve the established downstream configuration envelope."""
 
+    if isinstance(configuration, FrozenPlanMethodAuthority):
+        legacy = configuration.legacy_configuration
+        if legacy is not None:
+            return _legacy_configuration_payload(legacy)
+        return {
+            "method_id": configuration.method_id,
+            "configuration_id": configuration.configuration_id,
+            "kind": configuration.kind,
+            "requires_count_score": configuration.requires_count_score,
+            "requires_calibration": configuration.requires_calibration,
+            "comparator_configuration": (
+                None
+                if configuration.comparator_configuration is None
+                else configuration.to_dict()["comparator_configuration"]
+            ),
+            "comparator_nonexecution_identity": (
+                None
+                if configuration.comparator_nonexecution_identity is None
+                else direct_json_value(
+                    configuration.comparator_nonexecution_identity,
+                    payload=True,
+                )
+            ),
+        }
+
     if not isinstance(
         configuration,
         (AuthorizedConfiguration, ProjectedDownstreamConfiguration),
     ):
         raise TypeError("configuration must be a downstream configuration")
     encoded = configuration.to_dict()
-    return {name: encoded[name] for name in _CONFIGURATION_FIELDS}
+    return {name: encoded[name] for name in _CONFIGURATION_LEGACY_FIELDS}
 
 
-def _method_artifact_sha256(configuration: DownstreamConfiguration) -> str:
-    """Derive the selection-authority artifact from one sealed configuration."""
+def _method_artifact_identity(configuration: DownstreamConfiguration) -> object:
+    """Return complete comparator evidence or the legacy method artifact."""
+
+    if isinstance(configuration, FrozenPlanMethodAuthority):
+        if configuration.comparator_configuration is not None:
+            return configuration.comparator_configuration
+        if configuration.comparator_nonexecution_identity is not None:
+            return configuration.comparator_nonexecution_identity
+        legacy = configuration.legacy_configuration
+        if legacy is None:  # pragma: no cover - frozen authority invariant
+            raise AssertionError("legacy downstream configuration is missing")
+        return _method_artifact_identity(legacy)
 
     if isinstance(configuration, ProjectedDownstreamConfiguration):
         return configuration.configuration_sha256
@@ -3051,7 +3153,18 @@ def _evaluated_round_binding_from_payload(
 
 
 def _configuration_from_payload(value: object) -> DownstreamConfiguration:
-    if not isinstance(value, Mapping) or set(value) != _CONFIGURATION_FIELDS:
+    if isinstance(value, Mapping) and set(value) == _CONFIGURATION_DIRECT_FIELDS:
+        selected = value.get("comparator_configuration")
+        nonexecution = value.get("comparator_nonexecution_identity")
+        if (selected is None) == (nonexecution is None) or value.get("kind") not in {
+            "comparator_tuning",
+            "comparator_nonexecution",
+        }:
+            raise DownstreamEvidenceError(
+                "persisted direct configuration authority differs"
+            )
+        return MappingProxyType(dict(value))  # type: ignore[return-value]
+    if not isinstance(value, Mapping) or set(value) != _CONFIGURATION_LEGACY_FIELDS:
         raise DownstreamEvidenceError("persisted configuration schema differs")
     payload = value.get("payload")
     if not isinstance(payload, Mapping):
@@ -3077,7 +3190,7 @@ def _configuration_from_payload(value: object) -> DownstreamConfiguration:
         ) from error
     if _legacy_configuration_payload(configuration) != dict(value):
         raise DownstreamEvidenceError("persisted configuration authority differs")
-    _method_artifact_sha256(configuration)
+    _method_artifact_identity(configuration)
     return configuration
 
 
@@ -3273,21 +3386,39 @@ def _validate_source_record_schema(
     if set(record) != expected_record_fields:
         raise DownstreamEvidenceError(f"{source_kind} source record schema differs")
     run = record.get("run")
-    expected_run_fields = _FINAL_RUN_FIELDS if final_source else _DEVELOPMENT_RUN_FIELDS
+    direct_comparator = isinstance(run, Mapping) and run.get("configuration_kind") in {
+        "comparator_tuning",
+        "comparator_nonexecution",
+    }
+    expected_run_fields = (
+        _DIRECT_FINAL_RUN_FIELDS
+        if final_source and direct_comparator
+        else _FINAL_RUN_FIELDS
+        if final_source
+        else _DIRECT_DEVELOPMENT_RUN_FIELDS
+        if direct_comparator
+        else _DEVELOPMENT_RUN_FIELDS
+    )
     if not isinstance(run, Mapping) or set(run) != expected_run_fields:
         raise DownstreamEvidenceError("source run schema differs")
     metrics = record.get("metrics")
     if not isinstance(metrics, list) or any(
-        not isinstance(metric, Mapping) or set(metric) != _METRIC_FIELDS
+        not isinstance(metric, Mapping)
+        or set(metric)
+        != (_DIRECT_METRIC_FIELDS if direct_comparator else _METRIC_FIELDS)
         for metric in metrics
     ):
         raise DownstreamEvidenceError("source metric schema differs")
     _validate_prezero_source_schema(record.get("p_pre_zero_evidence"), run=run)
     if final_source:
         request = record.get("execution_request")
+        expected_request_fields = (
+            _DIRECT_FINAL_EXECUTION_REQUEST_FIELDS
+            if run.get("configuration_kind") == "comparator_tuning"
+            else _FINAL_EXECUTION_REQUEST_FIELDS
+        )
         if request is not None and (
-            not isinstance(request, Mapping)
-            or set(request) != _FINAL_EXECUTION_REQUEST_FIELDS
+            not isinstance(request, Mapping) or set(request) != expected_request_fields
         ):
             raise DownstreamEvidenceError("final execution request schema differs")
         native_retention = run.get("native_output_retention")
@@ -3587,7 +3718,7 @@ def _trajectory_source(root: Path, source_plan: object) -> _SourceBundle:
     )
 
 
-_SOURCE_PLAN_RUN_FIELDS = (
+_SOURCE_PLAN_RUN_FIELDS = {
     "run_id",
     "method_id",
     "dataset_id",
@@ -3601,7 +3732,10 @@ _SOURCE_PLAN_RUN_FIELDS = (
     "configuration_kind",
     "requires_count_score",
     "requires_calibration",
-)
+}
+_DIRECT_SOURCE_PLAN_RUN_FIELDS = (
+    _SOURCE_PLAN_RUN_FIELDS - {"configuration_sha256"}
+) | {"comparator_configuration", "comparator_nonexecution_identity"}
 
 
 def _validate_independent_source_plan(
@@ -3635,8 +3769,13 @@ def _validate_independent_source_plan(
             or not isinstance(observed, Mapping)
             or expected_payload.get("ordinal") != ordinal
             or any(
-                observed.get(name) != expected_payload.get(name)
-                for name in _SOURCE_PLAN_RUN_FIELDS
+                not direct_equal(observed.get(name), expected_payload.get(name))
+                for name in (
+                    _DIRECT_SOURCE_PLAN_RUN_FIELDS
+                    if expected_payload.get("configuration_kind")
+                    in {"comparator_tuning", "comparator_nonexecution"}
+                    else _SOURCE_PLAN_RUN_FIELDS
+                )
             )
         ):
             raise DownstreamEvidenceError(
@@ -3680,7 +3819,7 @@ def _validated_plan_entry(
     source_kind: str,
     source_root: Path,
     datasets: Mapping[str, DatasetEvidenceBinding],
-    configurations: Mapping[tuple[str, str, str, str], DownstreamConfiguration],
+    configurations: Mapping[tuple[str, str, str], DownstreamConfiguration],
 ) -> DownstreamPlanEntry:
     run = source.payload.get("run")
     if not isinstance(run, Mapping):
@@ -3721,21 +3860,60 @@ def _validated_plan_entry(
     if retained_cell_ids_sha256 != binding.retained_cell_ids_sha256:
         raise DownstreamEvidenceError("run retained cell identity differs")
     configuration_id = _text(run.get("configuration_id"), "configuration_id")
-    configuration_sha256 = _digest(
-        run.get("configuration_sha256"), "configuration checksum"
-    )
     configuration_kind = _text(run.get("configuration_kind"), "configuration_kind")
     configuration = configurations.get(
         (
             method_id,
             configuration_id,
             configuration_kind,
-            configuration_sha256,
         )
     )
     if configuration is None:
         raise DownstreamEvidenceError("run configuration authority differs")
-    method_artifact_sha256 = _method_artifact_sha256(configuration)
+    direct_comparator = isinstance(configuration, FrozenPlanMethodAuthority) and (
+        configuration.comparator_configuration is not None
+        or configuration.comparator_nonexecution_identity is not None
+    )
+    if direct_comparator:
+        if (
+            "configuration_sha256" in run
+            or not direct_equal(
+                run.get("comparator_configuration"),
+                _legacy_configuration_payload(configuration).get(
+                    "comparator_configuration"
+                ),
+            )
+            or not direct_equal(
+                run.get("comparator_nonexecution_identity"),
+                _legacy_configuration_payload(configuration).get(
+                    "comparator_nonexecution_identity"
+                ),
+            )
+        ):
+            raise DownstreamEvidenceError("run direct configuration authority differs")
+        configuration_sha256 = None
+    else:
+        configuration_sha256 = _digest(
+            run.get("configuration_sha256"), "configuration checksum"
+        )
+        expected_legacy = (
+            configuration.legacy_configuration
+            if isinstance(configuration, FrozenPlanMethodAuthority)
+            else configuration
+        )
+        if configuration_sha256 != expected_legacy.configuration_sha256:
+            raise DownstreamEvidenceError("run configuration authority differs")
+    method_artifact_identity = _method_artifact_identity(configuration)
+    comparator_configuration = (
+        configuration.comparator_configuration
+        if isinstance(configuration, FrozenPlanMethodAuthority)
+        else None
+    )
+    comparator_nonexecution_identity = (
+        configuration.comparator_nonexecution_identity
+        if isinstance(configuration, FrozenPlanMethodAuthority)
+        else None
+    )
 
     status = _text(run.get("status"), "run status")
     if status not in _RUN_STATUSES:
@@ -3855,7 +4033,13 @@ def _validated_plan_entry(
         configuration_id=configuration_id,
         configuration_sha256=configuration_sha256,
         configuration_kind=configuration_kind,
-        method_artifact_sha256=method_artifact_sha256,
+        method_artifact_sha256=(
+            method_artifact_identity
+            if isinstance(method_artifact_identity, str)
+            else None
+        ),
+        comparator_configuration=comparator_configuration,
+        comparator_nonexecution_identity=comparator_nonexecution_identity,
         method_input_sha256=_digest(
             run.get("method_input_sha256"), "method input checksum"
         ),
@@ -3955,18 +4139,17 @@ def _build_downstream_evidence_plan(
     if not configuration_values or any(
         not isinstance(
             value,
-            (AuthorizedConfiguration, ProjectedDownstreamConfiguration),
+            (
+                AuthorizedConfiguration,
+                ProjectedDownstreamConfiguration,
+                FrozenPlanMethodAuthority,
+            ),
         )
         for value in configuration_values
     ):
         raise TypeError("configurations must contain downstream configuration values")
     configuration_lookup = {
-        (
-            value.method_id,
-            value.configuration_id,
-            value.kind,
-            value.configuration_sha256,
-        ): value
+        (value.method_id, value.configuration_id, value.kind): value
         for value in configuration_values
     }
     configuration_identities = {
@@ -3980,7 +4163,7 @@ def _build_downstream_evidence_plan(
             "configuration authority contains duplicate identities"
         )
     for value in configuration_values:
-        _method_artifact_sha256(value)
+        _method_artifact_identity(value)
     if source_kind == "development":
         source_bundle = _development_source(root)
     elif evidence_scope == "supplementary_trajectory":
@@ -4171,7 +4354,6 @@ def _build_downstream_evidence_plan(
                 value.method_id,
                 value.configuration_id,
                 value.kind,
-                value.configuration_sha256,
             ),
         )
     )
@@ -4803,7 +4985,9 @@ def _build_downstream_plan_from_selected_handoff(
                 configuration_id=configuration.configuration_id,
                 configuration_sha256=configuration.configuration_sha256,
                 configuration_kind=configuration.kind,
-                method_artifact_sha256=_method_artifact_sha256(configuration),
+                method_artifact_sha256=str(_method_artifact_identity(configuration)),
+                comparator_configuration=None,
+                comparator_nonexecution_identity=None,
                 method_input_sha256=dataset.method_input_sha256,
                 retained_cell_ids_sha256=dataset.retained_cell_ids_sha256,
                 status=_text(status, "direct downstream status"),
@@ -5176,7 +5360,7 @@ def build_final_downstream_evidence_plan(
         )
     round_root = _existing_directory(round_directory, "final round")
     from .final_runner import (
-        _configuration_for_method,
+        _frozen_method_plan_authority,
         build_final_execution_plan,
         load_prepared_final_panel,
     )
@@ -5186,10 +5370,14 @@ def build_final_downstream_evidence_plan(
     evaluated_round_binding = _read_verified_evaluated_round_binding(root, round_root)
     frozen_method = validate_frozen_method(root)
     registry = load_method_registry(root / "study/methods.json")
-    configurations = tuple(
-        _configuration_for_method(spec.id, spec, frozen_method)
-        for spec in registry.methods
-    )
+    try:
+        _frozen_rows, configurations = _frozen_method_plan_authority(
+            frozen_method, registry
+        )
+    except Exception as error:
+        raise DownstreamEvidenceError(
+            "frozen downstream method authority is invalid"
+        ) from error
     runner_bindings, prepared = load_prepared_final_panel(
         root,
         round_root,
@@ -5459,6 +5647,9 @@ _ENDPOINT_ROW_FIELDS = frozenset(
         "alpha",
     }
 )
+_DIRECT_ENDPOINT_ROW_FIELDS = (
+    _ENDPOINT_ROW_FIELDS - {"configuration_sha256", "method_artifact_sha256"}
+) | {"comparator_configuration", "comparator_nonexecution_identity"}
 _RECORD_BODY_FIELDS = frozenset(
     {
         "schema_version",
@@ -5484,6 +5675,35 @@ _RECORD_BODY_FIELDS = frozenset(
         "endpoints",
     }
 )
+_DIRECT_RECORD_BODY_FIELDS = (
+    _RECORD_BODY_FIELDS - {"configuration_sha256", "method_artifact_sha256"}
+) | {"comparator_configuration", "comparator_nonexecution_identity"}
+
+
+def _entry_configuration_evidence(entry: DownstreamPlanEntry) -> dict[str, object]:
+    if entry.configuration_kind in {
+        "comparator_tuning",
+        "comparator_nonexecution",
+    }:
+        return {
+            "comparator_configuration": (
+                None
+                if entry.comparator_configuration is None
+                else direct_bound_comparator_value(entry.comparator_configuration)
+            ),
+            "comparator_nonexecution_identity": (
+                None
+                if entry.comparator_nonexecution_identity is None
+                else direct_json_value(
+                    entry.comparator_nonexecution_identity,
+                    payload=True,
+                )
+            ),
+        }
+    return {
+        "configuration_sha256": entry.configuration_sha256,
+        "method_artifact_sha256": entry.method_artifact_sha256,
+    }
 
 
 def _analysis_method(plan: DownstreamEvidencePlan, entry: DownstreamPlanEntry) -> str:
@@ -5523,8 +5743,7 @@ def _endpoint_row(
         "technical_view": entry.technical_view,
         "model_seed": entry.model_seed,
         "configuration_id": entry.configuration_id,
-        "configuration_sha256": entry.configuration_sha256,
-        "method_artifact_sha256": entry.method_artifact_sha256,
+        **_entry_configuration_evidence(entry),
         "endpoint": endpoint.endpoint,
         "value": endpoint.value if upstream_completed else None,
         "status": endpoint.status if upstream_completed else entry.status,
@@ -5601,8 +5820,7 @@ def _evaluate_entry(
         "technical_view": entry.technical_view,
         "model_seed": entry.model_seed,
         "configuration_id": entry.configuration_id,
-        "configuration_sha256": entry.configuration_sha256,
-        "method_artifact_sha256": entry.method_artifact_sha256,
+        **_entry_configuration_evidence(entry),
         "run_status": entry.status,
         "run_reason": entry.reason,
         "endpoints": [_endpoint_row(plan, entry, endpoint) for endpoint in endpoints],
@@ -5686,8 +5904,7 @@ def _expected_record_common(
         "technical_view": entry.technical_view,
         "model_seed": entry.model_seed,
         "configuration_id": entry.configuration_id,
-        "configuration_sha256": entry.configuration_sha256,
-        "method_artifact_sha256": entry.method_artifact_sha256,
+        **_entry_configuration_evidence(entry),
         "run_status": entry.status,
         "run_reason": entry.reason,
     }
@@ -5762,7 +5979,13 @@ def _validate_endpoint_rows(
     if not isinstance(rows, list) or len(rows) != len(endpoint_names):
         raise DownstreamEvidenceError("downstream record endpoint count differs")
     for expected_endpoint, row in zip(endpoint_names, rows, strict=True):
-        if not isinstance(row, dict) or set(row) != _ENDPOINT_ROW_FIELDS:
+        expected_fields = (
+            _DIRECT_ENDPOINT_ROW_FIELDS
+            if entry.configuration_kind
+            in {"comparator_tuning", "comparator_nonexecution"}
+            else _ENDPOINT_ROW_FIELDS
+        )
+        if not isinstance(row, dict) or set(row) != expected_fields:
             raise DownstreamEvidenceError("downstream endpoint row schema differs")
         expected_metadata = {
             "source_kind": plan.source_kind,
@@ -5776,13 +5999,15 @@ def _validate_endpoint_rows(
             "technical_view": entry.technical_view,
             "model_seed": entry.model_seed,
             "configuration_id": entry.configuration_id,
-            "configuration_sha256": entry.configuration_sha256,
-            "method_artifact_sha256": entry.method_artifact_sha256,
+            **_entry_configuration_evidence(entry),
             "endpoint": expected_endpoint,
             "upstream_status": entry.status,
             "upstream_reason": entry.reason,
         }
-        if any(row.get(key) != value for key, value in expected_metadata.items()):
+        if any(
+            not direct_equal(row.get(key), value)
+            for key, value in expected_metadata.items()
+        ):
             raise DownstreamEvidenceError("downstream endpoint identity differs")
         if (
             row.get("independent_unit") != "biological_draw"
@@ -5825,13 +6050,18 @@ def _load_record(
     targets: EvaluatorTargets | None = None,
 ) -> dict[str, object]:
     value, _raw, _file_sha = _strict_json(path, "downstream record")
-    if set(value) != {*_RECORD_BODY_FIELDS, "record_sha256"}:
+    record_fields = (
+        _DIRECT_RECORD_BODY_FIELDS
+        if entry.configuration_kind in {"comparator_tuning", "comparator_nonexecution"}
+        else _RECORD_BODY_FIELDS
+    )
+    if set(value) != {*record_fields, "record_sha256"}:
         raise DownstreamEvidenceError("downstream record schema differs")
     body = {key: nested for key, nested in value.items() if key != "record_sha256"}
     if value.get("record_sha256") != canonical_sha256(body):
         raise DownstreamEvidenceError("downstream record checksum differs")
     common = _expected_record_common(plan, entry, binding)
-    if any(value.get(key) != nested for key, nested in common.items()):
+    if any(not direct_equal(value.get(key), nested) for key, nested in common.items()):
         raise DownstreamEvidenceError("downstream record identity differs")
     _validate_endpoint_rows(value.get("endpoints"), plan, entry)
     if entry.status == "completed" and targets is None:

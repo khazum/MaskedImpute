@@ -1752,18 +1752,20 @@ def _unavailable_reconstruction_claim_gate(
     *,
     candidate: str,
     primary_metrics: Sequence[str],
-    required_comparators: Sequence[str],
+    scheduled_methods: Sequence[str],
+    numerical_methods: Sequence[str],
     reason: str,
 ) -> dict[str, object]:
     return {
         "status": "unavailable",
         "reason": reason,
         "candidate_method_id": candidate,
-        "required_comparator_ids": list(required_comparators),
+        "scheduled_same_input_ids": list(scheduled_methods),
+        "numerical_comparison_population_ids": list(numerical_methods),
         "denominator": {
             "status": "unavailable",
             "reason": reason,
-            "method_ids": [candidate, *required_comparators],
+            "method_ids": [candidate, *numerical_methods],
             "metric_ids": list(
                 dict.fromkeys((*_CLAIM_RANK_METRICS, *_CLAIM_PARETO_METRICS))
             ),
@@ -1975,24 +1977,32 @@ def _reconstruction_claim_gate(
     selection_contract: Mapping[str, object],
     metric_direction_contract: Mapping[str, object],
 ) -> dict[str, object]:
-    raw_comparators = selection_contract.get("required_comparator_ids")
-    if raw_comparators is None:
+    raw_scheduled = selection_contract.get("scheduled_same_input_ids")
+    raw_comparators = selection_contract.get("numerical_comparison_population_ids")
+    if raw_scheduled is None or raw_comparators is None:
         return _unavailable_reconstruction_claim_gate(
             candidate=candidate,
             primary_metrics=primary_metrics,
-            required_comparators=(),
-            reason="required_comparator_authority_unavailable",
+            scheduled_methods=(),
+            numerical_methods=(),
+            reason="comparison_population_authority_unavailable",
         )
     if (
-        not isinstance(raw_comparators, list)
+        not isinstance(raw_scheduled, list)
+        or not raw_scheduled
+        or any(not isinstance(value, str) or not value for value in raw_scheduled)
+        or len(set(raw_scheduled)) != len(raw_scheduled)
+        or not isinstance(raw_comparators, list)
         or not raw_comparators
         or any(not isinstance(value, str) or not value for value in raw_comparators)
         or len(set(raw_comparators)) != len(raw_comparators)
         or candidate in raw_comparators
+        or any(value not in raw_scheduled for value in raw_comparators)
     ):
         raise FinalAnalysisContractError(
-            "selection contract required comparator authority is invalid"
+            "selection comparison population authority is invalid"
         )
+    scheduled = tuple(raw_scheduled)
     comparators = tuple(raw_comparators)
 
     authority = metric_direction_contract.get("authority")
@@ -2005,7 +2015,8 @@ def _reconstruction_claim_gate(
         return _unavailable_reconstruction_claim_gate(
             candidate=candidate,
             primary_metrics=primary_metrics,
-            required_comparators=comparators,
+            scheduled_methods=scheduled,
+            numerical_methods=comparators,
             reason="frozen_claim_metric_authority_unavailable",
         )
     if (
@@ -2026,7 +2037,8 @@ def _reconstruction_claim_gate(
         return _unavailable_reconstruction_claim_gate(
             candidate=candidate,
             primary_metrics=primary_metrics,
-            required_comparators=comparators,
+            scheduled_methods=scheduled,
+            numerical_methods=comparators,
             reason="incomplete_final_claim_denominator",
         )
     collapsed = _collapse_final_claim_draws(
@@ -2038,7 +2050,8 @@ def _reconstruction_claim_gate(
         return _unavailable_reconstruction_claim_gate(
             candidate=candidate,
             primary_metrics=primary_metrics,
-            required_comparators=comparators,
+            scheduled_methods=scheduled,
+            numerical_methods=comparators,
             reason="incomplete_final_claim_denominator",
         )
     draw_values, summaries = collapsed
@@ -2157,7 +2170,8 @@ def _reconstruction_claim_gate(
         "status": "failed" if failed else "passed",
         "reason": "final_reconstruction_gate_failed" if failed else None,
         "candidate_method_id": candidate,
-        "required_comparator_ids": list(comparators),
+        "scheduled_same_input_ids": list(scheduled),
+        "numerical_comparison_population_ids": list(comparators),
         "denominator": {
             "status": "complete",
             "reason": None,
@@ -2721,6 +2735,7 @@ def _validate_embedded_trajectory_evidence(
     from .final_runner import (
         FinalPlanEntry,
         FinalRunnerContractError,
+        FrozenPlanMethodAuthority,
         TrajectoryExecutionPlan,
         _canonical_round,
         _rederive_trajectory_evidence_before_receipt,
@@ -2734,7 +2749,9 @@ def _validate_embedded_trajectory_evidence(
         AuthorizedConfiguration,
         RunPlanEntry,
         RunnerContractError,
+        decode_direct_bound_comparator_value,
     )
+    from .direct_values import direct_equal
 
     try:
         selected_repository, destination = _canonical_round(repository, round_dir)
@@ -2859,51 +2876,85 @@ def _validate_embedded_trajectory_evidence(
     configuration_fields = frozenset(
         {
             "method_id",
-            "configuration_id",
-            "kind",
-            "configuration_sha256",
-            "payload",
-            "requires_count_score",
-            "requires_calibration",
+            "legacy_configuration",
+            "comparator_configuration",
+            "comparator_nonexecution_identity",
+            "action",
+            "reason",
+            "seeds",
         }
     )
-    configurations: list[AuthorizedConfiguration] = []
-    configuration_by_method: dict[str, AuthorizedConfiguration] = {}
+    configurations: list[FrozenPlanMethodAuthority] = []
+    configuration_by_method: dict[str, FrozenPlanMethodAuthority] = {}
     for index, row_value in enumerate(configuration_rows):
         row = _exact_mapping(
             row_value,
             configuration_fields,
             f"embedded trajectory configuration {index}",
         )
-        payload = row.get("payload")
-        if (
-            not isinstance(payload, Mapping)
-            or any(
-                not isinstance(row.get(name), str) or not row[name]
-                for name in (
-                    "method_id",
-                    "configuration_id",
-                    "kind",
-                    "configuration_sha256",
-                )
-            )
-            or type(row.get("requires_count_score")) is not bool
-            or type(row.get("requires_calibration")) is not bool
-        ):
-            raise FinalAnalysisContractError(
-                "embedded trajectory configuration payload is invalid"
-            )
+        legacy_value = row.get("legacy_configuration")
+        comparator_value = row.get("comparator_configuration")
+        nonexecution_value = row.get("comparator_nonexecution_identity")
+        seeds = row.get("seeds")
         try:
-            configuration = AuthorizedConfiguration.create(
-                method_id=row["method_id"],
-                configuration_id=row["configuration_id"],
-                kind=row["kind"],
-                payload=payload,
-                requires_count_score=row.get("requires_count_score"),
-                requires_calibration=row.get("requires_calibration"),
-                configuration_sha256=row["configuration_sha256"],
+            legacy = None
+            comparator = None
+            if legacy_value is not None:
+                if not isinstance(legacy_value, Mapping):
+                    raise TypeError("legacy configuration is not an object")
+                payload = legacy_value.get("payload")
+                if not isinstance(payload, Mapping):
+                    raise TypeError("legacy payload is not an object")
+                legacy = AuthorizedConfiguration.create(
+                    method_id=legacy_value.get("method_id"),
+                    configuration_id=legacy_value.get("configuration_id"),
+                    kind=legacy_value.get("kind"),
+                    payload=payload,
+                    requires_count_score=legacy_value.get("requires_count_score"),
+                    requires_calibration=legacy_value.get("requires_calibration"),
+                    configuration_sha256=legacy_value.get("configuration_sha256"),
+                    registry_method_sha256=legacy_value.get("registry_method_sha256"),
+                    tuning_authority_file_sha256=legacy_value.get(
+                        "tuning_authority_file_sha256"
+                    ),
+                    tuning_authority_payload_sha256=legacy_value.get(
+                        "tuning_authority_payload_sha256"
+                    ),
+                    source_authority_sha256=legacy_value.get("source_authority_sha256"),
+                    runtime_lock_sha256=legacy_value.get("runtime_lock_sha256"),
+                    environment_registry_sha256=legacy_value.get(
+                        "environment_registry_sha256"
+                    ),
+                    configuration_method_identity_sha256=legacy_value.get(
+                        "configuration_method_identity_sha256"
+                    ),
+                    nonexecution_identity_sha256=legacy_value.get(
+                        "nonexecution_identity_sha256"
+                    ),
+                )
+                if legacy.to_dict() != dict(legacy_value):
+                    raise ValueError("legacy configuration changed during decoding")
+            elif comparator_value is not None:
+                comparator = decode_direct_bound_comparator_value(comparator_value)
+            configuration = FrozenPlanMethodAuthority(
+                method_id=row.get("method_id"),
+                legacy_configuration=legacy,
+                comparator_configuration=comparator,
+                comparator_nonexecution_identity=(
+                    nonexecution_value
+                    if isinstance(nonexecution_value, Mapping)
+                    else None
+                ),
+                action=row.get("action"),
+                reason=row.get("reason"),
+                seeds=tuple(seeds) if isinstance(seeds, list) else (),
             )
-        except (RunnerContractError, TypeError, ValueError) as error:
+        except (
+            FinalRunnerContractError,
+            RunnerContractError,
+            TypeError,
+            ValueError,
+        ) as error:
             raise FinalAnalysisContractError(
                 "embedded trajectory configuration is invalid"
             ) from error
@@ -2972,7 +3023,7 @@ def _validate_embedded_trajectory_evidence(
             "embedded trajectory dataset receipt binding is invalid"
         )
 
-    run_fields = frozenset(
+    legacy_run_fields = frozenset(
         {
             "ordinal",
             "run_id",
@@ -2985,6 +3036,9 @@ def _validate_embedded_trajectory_evidence(
             "model_seed",
             "configuration_id",
             "configuration_sha256",
+            "configuration_payload_sha256",
+            "configuration_method_identity_sha256",
+            "nonexecution_identity_sha256",
             "preflight_status",
             "preflight_reason",
             "configuration_kind",
@@ -2992,6 +3046,15 @@ def _validate_embedded_trajectory_evidence(
             "requires_calibration",
         }
     )
+    direct_run_fields = (
+        legacy_run_fields
+        - {
+            "configuration_sha256",
+            "configuration_payload_sha256",
+            "configuration_method_identity_sha256",
+            "nonexecution_identity_sha256",
+        }
+    ) | {"comparator_configuration", "comparator_nonexecution_identity"}
     entries: list[FinalPlanEntry] = []
     run_ids: set[str] = set()
     used_methods: set[str] = set()
@@ -3001,9 +3064,22 @@ def _validate_embedded_trajectory_evidence(
             frozenset({"run", "action", "reason"}),
             f"embedded trajectory plan entry {ordinal}",
         )
+        raw_run_row = entry_row.get("run")
+        method_id = (
+            raw_run_row.get("method_id") if isinstance(raw_run_row, Mapping) else None
+        )
+        configuration = configuration_by_method.get(method_id)
+        if configuration is None:
+            raise FinalAnalysisContractError(
+                "embedded trajectory run lacks its configuration"
+            )
+        direct_comparator = configuration.kind in {
+            "comparator_tuning",
+            "comparator_nonexecution",
+        }
         run_row = _exact_mapping(
-            entry_row.get("run"),
-            run_fields,
+            raw_run_row,
+            direct_run_fields if direct_comparator else legacy_run_fields,
             f"embedded trajectory run {ordinal}",
         )
         action = entry_row.get("action")
@@ -3022,7 +3098,6 @@ def _validate_embedded_trajectory_evidence(
                     "biological_id",
                     "technical_view",
                     "configuration_id",
-                    "configuration_sha256",
                     "preflight_status",
                     "configuration_kind",
                 )
@@ -3048,12 +3123,23 @@ def _validate_embedded_trajectory_evidence(
             run_row.get("source_dataset_sha256"),
             "trajectory run source dataset",
         )
-        _sha256(
-            run_row.get("configuration_sha256"),
-            "trajectory run configuration",
-        )
+        if not direct_comparator:
+            _sha256(
+                run_row.get("configuration_sha256"),
+                "trajectory run configuration",
+            )
         try:
-            run = RunPlanEntry(**dict(run_row))
+            decoded_run = dict(run_row)
+            if (
+                direct_comparator
+                and run_row.get("comparator_configuration") is not None
+            ):
+                decoded_run["comparator_configuration"] = (
+                    decode_direct_bound_comparator_value(
+                        run_row.get("comparator_configuration")
+                    )
+                )
+            run = RunPlanEntry(**decoded_run)
             entry = FinalPlanEntry(
                 run=run,
                 action=action,
@@ -3063,17 +3149,13 @@ def _validate_embedded_trajectory_evidence(
             raise FinalAnalysisContractError(
                 "embedded trajectory plan entry is invalid"
             ) from error
-        configuration = configuration_by_method.get(run.method_id)
-        if configuration is None:
-            raise FinalAnalysisContractError(
-                "embedded trajectory run lacks its configuration"
-            )
         try:
             expected_run_id = _trajectory_run_id(
+                ordinal,
                 run.method_id,
                 run.dataset_id,
                 run.model_seed,
-                run.configuration_sha256,
+                configuration,
             )
         except (TypeError, ValueError) as error:
             raise FinalAnalysisContractError(
@@ -3090,7 +3172,19 @@ def _validate_embedded_trajectory_evidence(
             or run.technical_view != binding.technical_view
             or run.model_seed not in (None, *DEVELOPMENT_MODEL_SEEDS)
             or run.configuration_id != configuration.configuration_id
-            or run.configuration_sha256 != configuration.configuration_sha256
+            or (
+                run.configuration_sha256
+                != configuration.legacy_configuration.configuration_sha256
+                if configuration.legacy_configuration is not None
+                else not direct_equal(
+                    run.comparator_configuration,
+                    configuration.comparator_configuration,
+                )
+                or not direct_equal(
+                    run.comparator_nonexecution_identity,
+                    configuration.comparator_nonexecution_identity,
+                )
+            )
             or run.preflight_status != "planned"
             or run.preflight_reason is not None
             or run.configuration_kind != configuration.kind
@@ -4103,6 +4197,21 @@ def _evaluated_inputs(
         raise FinalAnalysisContractError(
             "selection contract candidate differs from frozen method"
         )
+    scheduled_methods = frozen_method.get("scheduled_same_input_ids")
+    numerical_methods = frozen_method.get("ready_comparison_population_ids")
+    if (
+        not isinstance(scheduled_methods, list)
+        or selection_contract.get("scheduled_same_input_ids") != scheduled_methods
+        or not isinstance(numerical_methods, list)
+        or any(value not in scheduled_methods for value in numerical_methods)
+    ):
+        raise FinalAnalysisContractError(
+            "frozen comparison populations differ from selection authority"
+        )
+    analysis_selection_contract = dict(selection_contract)
+    analysis_selection_contract["numerical_comparison_population_ids"] = list(
+        numerical_methods
+    )
 
     protocol_path = _authority_file(
         selected_repository, freeze.get("protocol_path"), "protocol"
@@ -4192,7 +4301,7 @@ def _evaluated_inputs(
     return (
         records,
         protocol,
-        selection_contract,
+        analysis_selection_contract,
         {
             "input_bindings": input_bindings,
             "snapshots": snapshots,

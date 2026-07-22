@@ -482,7 +482,8 @@ def _claim_analysis(records: list[dict[str, Any]]) -> dict[str, object]:
         selection_contract={
             "schema_version": 1,
             "candidate_method_id": "maskimpute",
-            "required_comparator_ids": ["observed", "dca"],
+            "scheduled_same_input_ids": ["observed", "dca"],
+            "numerical_comparison_population_ids": ["observed", "dca"],
         },
         input_bindings={
             "planned_run_count": len(records),
@@ -638,12 +639,15 @@ def _evaluated_evidence(
     selection = {
         "schema_version": 1,
         "candidate_method_id": "maskimpute",
+        "scheduled_same_input_ids": ["dca"],
     }
     selection_path = repository / "study/selection_contract.json"
     selection_raw = _write_json(selection_path, selection)
     frozen_body = {
         "schema_version": 1,
         "candidate_method_id": "maskimpute",
+        "scheduled_same_input_ids": ["dca"],
+        "ready_comparison_population_ids": ["dca"],
         "artifact_bindings": {
             "selection_contract": {
                 "path": "study/selection_contract.json",
@@ -807,8 +811,14 @@ def _evaluated_evidence(
             **scaling_evidence_body,
             "evidence_sha256": canonical_sha256(scaling_evidence_body),
         }
-        from maskimpute_benchmark.final_runner import _trajectory_run_id
-        from maskimpute_benchmark.runner import _RECONSTRUCTION_METRIC_NAMES
+        from maskimpute_benchmark.final_runner import (
+            FrozenPlanMethodAuthority,
+            _trajectory_run_id,
+        )
+        from maskimpute_benchmark.runner import (
+            AuthorizedConfiguration,
+            _RECONSTRUCTION_METRIC_NAMES,
+        )
 
         trajectory_dataset_path = (
             round_dir / "results/trajectory/dataset/evaluator.h5ad"
@@ -872,15 +882,25 @@ def _evaluated_evidence(
         trajectory_configuration_sha256 = canonical_sha256(
             trajectory_configuration_payload
         )
-        trajectory_configuration = {
-            "method_id": "observed",
-            "configuration_id": "registry-default",
-            "kind": "registry",
-            "configuration_sha256": trajectory_configuration_sha256,
-            "payload": trajectory_configuration_payload,
-            "requires_count_score": False,
-            "requires_calibration": False,
-        }
+        trajectory_legacy_configuration = AuthorizedConfiguration.create(
+            method_id="observed",
+            configuration_id="registry-default",
+            kind="registry",
+            payload=trajectory_configuration_payload,
+            requires_count_score=False,
+            requires_calibration=False,
+            configuration_sha256=trajectory_configuration_sha256,
+        )
+        trajectory_configuration_authority = FrozenPlanMethodAuthority(
+            method_id="observed",
+            legacy_configuration=trajectory_legacy_configuration,
+            comparator_configuration=None,
+            comparator_nonexecution_identity=None,
+            action="execute",
+            reason=None,
+            seeds=(None,),
+        )
+        trajectory_configuration = trajectory_configuration_authority.to_dict()
         trajectory_plan_inputs = {
             "frozen_method_sha256": frozen_method["payload_sha256"],
             "method_registry_sha256": "8" * 64,
@@ -907,10 +927,11 @@ def _evaluated_evidence(
         trajectory_run = {
             "ordinal": 1,
             "run_id": _trajectory_run_id(
+                1,
                 "observed",
                 trajectory_binding["dataset_id"],
                 None,
-                trajectory_configuration_sha256,
+                trajectory_configuration_authority,
             ),
             "method_id": "observed",
             "dataset_id": trajectory_binding["dataset_id"],
@@ -919,8 +940,11 @@ def _evaluated_evidence(
             "biological_id": trajectory_binding["biological_id"],
             "technical_view": trajectory_binding["technical_view"],
             "model_seed": None,
-            "configuration_id": trajectory_configuration["configuration_id"],
+            "configuration_id": trajectory_configuration_authority.configuration_id,
             "configuration_sha256": trajectory_configuration_sha256,
+            "configuration_payload_sha256": trajectory_configuration_sha256,
+            "configuration_method_identity_sha256": None,
+            "nonexecution_identity_sha256": None,
             "preflight_status": "planned",
             "preflight_reason": None,
             "configuration_kind": "registry",
@@ -2112,7 +2136,8 @@ def test_reconstruction_claim_gate_collapses_seeds_then_views_and_uses_exact_aut
     assert gate["status"] == "passed"
     assert gate["reason"] is None
     assert gate["candidate_method_id"] == "maskimpute"
-    assert gate["required_comparator_ids"] == ["observed", "dca"]
+    assert gate["scheduled_same_input_ids"] == ["observed", "dca"]
+    assert gate["numerical_comparison_population_ids"] == ["observed", "dca"]
     assert [row["metric"] for row in gate["rank_gates"]] == list(CLAIM_RANK_METRICS)
     assert all(row["status"] == "passed" for row in gate["rank_gates"])
     assert all(

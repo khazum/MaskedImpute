@@ -393,11 +393,12 @@ class SelectionAuthority:
     file_sha256: Mapping[str, str]
 
     @property
-    def required_comparator_ids(self) -> tuple[str, ...]:
+    def numerical_comparison_population_ids(self) -> tuple[str, ...]:
         return tuple(
             method_id
             for method_id in self.scheduled_same_input_ids
             if method_id != "biaeimpute"
+            and method_id not in self.comparator_nonexecution_identities
         )
 
 

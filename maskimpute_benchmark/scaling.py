@@ -21,14 +21,22 @@ import zlib
 
 import numpy as np
 
+from .comparator_tuning import (
+    BoundComparatorConfiguration,
+    ComparatorTuningError,
+    _validate_bound_selection_configuration,
+    comparator_method_binding,
+)
+from .direct_values import direct_equal, direct_json_value
+from .final_runner import FrozenPlanMethodAuthority
 from .methods.registry import MethodRegistry, load_method_registry
 from .protocol import DevelopmentProtocol, Protocol, canonical_sha256, load_protocol
 from .runner import (
     AdapterOutcome,
-    AuthorizedConfiguration,
     DatasetBinding,
     ExecutionEnvironmentRegistry,
     ExecutionRequest,
+    FinalComparatorExecutionRequest,
     LongFormMetric,
     PreparedDataset,
     RawRunResult,
@@ -36,6 +44,7 @@ from .runner import (
     RunPlanEntry,
     RunnerAuthority,
     SpawnedRepositoryExecutor,
+    direct_bound_comparator_value,
     derive_lock_only_environment_ids,
     enforce_calibration_fold_receipt,
     implementation_source_sha256,
@@ -85,14 +94,13 @@ _MAX_EVALUATOR_OUTPUT_BYTES = max(_CELL_COUNTS) * 500 * 8
 _NATIVE_OUTPUT_ENCODING = "zlib_raw_f64_v1"
 _NATIVE_OUTPUT_RETENTION = "compressed_zlib_raw_f64_v1"
 _MAX_NATIVE_OUTPUT_BYTES = _MAX_EVALUATOR_OUTPUT_BYTES
-_EXECUTOR_RECEIPT_KEYS = {
+_EXECUTOR_RECEIPT_COMMON_KEYS = {
     "schema_version",
     "run_id",
     "method_id",
     "dataset_id",
     "source_dataset_sha256",
     "model_seed",
-    "configuration_sha256",
     "method_input_sha256",
     "retained_cell_ids_sha256",
     "status",
@@ -108,6 +116,13 @@ _EXECUTOR_RECEIPT_KEYS = {
     "stderr_size_bytes",
     "native_snapshot",
     "receipt_sha256",
+}
+_EXECUTOR_RECEIPT_LEGACY_KEYS = _EXECUTOR_RECEIPT_COMMON_KEYS | {
+    "configuration_sha256",
+}
+_EXECUTOR_RECEIPT_DIRECT_KEYS = _EXECUTOR_RECEIPT_COMMON_KEYS | {
+    "comparator_configuration",
+    "comparator_nonexecution_identity",
 }
 _NATIVE_SNAPSHOT_KEYS = {
     "method_id",
@@ -236,10 +251,12 @@ class ScalingPlanEntry:
     method_id: str
     model_seed: int | None
     configuration_id: str
-    configuration_sha256: str
+    configuration_sha256: str | None
     configuration_kind: str
     requires_count_score: bool
     requires_calibration: bool
+    comparator_configuration: BoundComparatorConfiguration | None
+    comparator_nonexecution_identity: Mapping[str, object] | None
     accuracy_enabled: bool
     native_output_scale: str
     timeout_seconds: int
@@ -248,8 +265,55 @@ class ScalingPlanEntry:
     rss_measurement: str
     gpu_measurement: str
 
+    def __post_init__(self) -> None:
+        if self.configuration_kind == "comparator_tuning":
+            if (
+                self.configuration_sha256 is not None
+                or not isinstance(
+                    self.comparator_configuration, BoundComparatorConfiguration
+                )
+                or self.comparator_nonexecution_identity is not None
+                or self.configuration_id == "registry-default"
+                or self.comparator_configuration.configuration.configuration_id
+                != self.configuration_id
+                or self.comparator_configuration.configuration.method_id
+                != self.method_id
+                or self.comparator_configuration.method.method_id != self.method_id
+                or self.requires_count_score
+                or self.requires_calibration
+            ):
+                raise ScalingContractError(
+                    "scaling selected comparator identity is invalid"
+                )
+            try:
+                _validate_bound_selection_configuration(self.comparator_configuration)
+            except (ComparatorTuningError, TypeError, ValueError) as error:
+                raise ScalingContractError(
+                    "scaling selected comparator identity is invalid"
+                ) from error
+            return
+        if (
+            not isinstance(self.configuration_sha256, str)
+            or _SHA256.fullmatch(self.configuration_sha256) is None
+            or self.comparator_configuration is not None
+            or self.comparator_nonexecution_identity is not None
+        ):
+            raise ScalingContractError("scaling legacy configuration is invalid")
+
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        value = direct_json_value(self)
+        if not isinstance(value, dict):  # pragma: no cover - dataclass invariant
+            raise AssertionError("scaling plan entry must encode as an object")
+        if self.configuration_kind == "comparator_tuning":
+            value.pop("configuration_sha256")
+            value["comparator_configuration"] = direct_bound_comparator_value(
+                self.comparator_configuration
+            )
+            value["comparator_nonexecution_identity"] = None
+        else:
+            value.pop("comparator_configuration")
+            value.pop("comparator_nonexecution_identity")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,7 +323,7 @@ class ScalingPlan:
     schema_version: int
     input_hashes: Mapping[str, str]
     entries: tuple[ScalingPlanEntry, ...]
-    configurations: tuple[AuthorizedConfiguration, ...]
+    configurations: tuple[FrozenPlanMethodAuthority, ...]
     plan_sha256: str
 
 
@@ -1182,7 +1246,7 @@ def _expected_scaling_dataset_authority(
 def build_scaling_plan(
     contract: ScalingContract,
     registry: MethodRegistry,
-    configurations: Sequence[AuthorizedConfiguration],
+    configurations: Sequence[FrozenPlanMethodAuthority],
     *,
     frozen_method_sha256: str,
     method_registry_file_sha256: str,
@@ -1200,7 +1264,7 @@ def build_scaling_plan(
     values = tuple(configurations)
     if (
         len(values) != len(contract.method_ids)
-        or not all(isinstance(value, AuthorizedConfiguration) for value in values)
+        or not all(isinstance(value, FrozenPlanMethodAuthority) for value in values)
         or tuple(value.method_id for value in values) != contract.method_ids
     ):
         raise ScalingContractError("scaling configurations differ from method order")
@@ -1213,9 +1277,37 @@ def build_scaling_plan(
             ) from error
         if not spec.executable:
             raise ScalingContractError(f"scaling method {method_id} is not executable")
+    for value in values:
+        if (
+            value.action != "execute"
+            or value.reason is not None
+            or value.comparator_nonexecution_identity is not None
+        ):
+            raise ScalingContractError(
+                f"scaling method {value.method_id} is not frozen executable authority"
+            )
+        if value.method_id in {"dca", "scvi", "magic"}:
+            if (
+                value.comparator_configuration is None
+                or value.legacy_configuration is not None
+                or value.configuration_id == "registry-default"
+                or not direct_equal(
+                    value.comparator_configuration.method,
+                    comparator_method_binding(registry.by_id(value.method_id)),
+                )
+            ):
+                raise ScalingContractError(
+                    f"scaling frozen comparator {value.method_id} is invalid"
+                )
+        elif value.comparator_configuration is not None:
+            raise ScalingContractError(
+                f"scaling legacy method {value.method_id} has comparator authority"
+            )
     candidate = values[contract.method_ids.index("maskimpute")]
+    candidate_legacy = candidate.legacy_configuration
     if (
-        candidate.kind != "candidate_search"
+        candidate_legacy is None
+        or candidate.kind != "candidate_search"
         or candidate.configuration_id == "registry-default"
         or not candidate.requires_count_score
     ):
@@ -1249,24 +1341,34 @@ def build_scaling_plan(
             ordinal += 1
             spec = registry.by_id(method_id)
             configuration = by_method[method_id]
+            legacy = configuration.legacy_configuration
+            comparator = configuration.comparator_configuration
             seed = contract.model_seed if spec.stochastic else None
             seed_token = "deterministic" if seed is None else f"seed-{seed}"
+            identity_token = (
+                configuration.configuration_id
+                if comparator is not None
+                else str(legacy.configuration_sha256)[:12]
+            )
             entries.append(
                 ScalingPlanEntry(
                     ordinal=ordinal,
                     run_id=(
-                        f"scaling-{method_id}-{cells}-{seed_token}-"
-                        f"{configuration.configuration_sha256[:12]}"
+                        f"scaling-{method_id}-{cells}-{seed_token}-{identity_token}"
                     ),
                     cells=cells,
                     genes=contract.genes,
                     method_id=method_id,
                     model_seed=seed,
                     configuration_id=configuration.configuration_id,
-                    configuration_sha256=configuration.configuration_sha256,
+                    configuration_sha256=(
+                        None if legacy is None else legacy.configuration_sha256
+                    ),
                     configuration_kind=configuration.kind,
                     requires_count_score=configuration.requires_count_score,
                     requires_calibration=configuration.requires_calibration,
+                    comparator_configuration=comparator,
+                    comparator_nonexecution_identity=None,
                     accuracy_enabled=cells in contract.accuracy_cell_counts,
                     native_output_scale=spec.output_scale,
                     timeout_seconds=spec.resources.timeout_seconds,
@@ -1326,7 +1428,6 @@ def _executor_receipt_bytes(
         "dataset_id": run_entry.dataset_id,
         "source_dataset_sha256": run_entry.source_dataset_sha256,
         "model_seed": entry.model_seed,
-        "configuration_sha256": entry.configuration_sha256,
         "method_input_sha256": method_input_sha256(prepared.method_input),
         "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
         "status": outcome.status,
@@ -1342,6 +1443,13 @@ def _executor_receipt_bytes(
         "stderr_size_bytes": len(outcome.stderr),
         "native_snapshot": native_snapshot,
     }
+    if entry.comparator_configuration is None:
+        unsigned["configuration_sha256"] = entry.configuration_sha256
+    else:
+        unsigned["comparator_configuration"] = direct_bound_comparator_value(
+            entry.comparator_configuration
+        )
+        unsigned["comparator_nonexecution_identity"] = None
     return _canonical_executor_receipt(unsigned)
 
 
@@ -1370,7 +1478,6 @@ def _executor_receipt_from_attempt(attempt: ScalingEvaluatedAttempt) -> bytes:
         "dataset_id": run.dataset_id,
         "source_dataset_sha256": run.source_dataset_sha256,
         "model_seed": run.model_seed,
-        "configuration_sha256": run.configuration_sha256,
         "method_input_sha256": run.method_input_sha256,
         "retained_cell_ids_sha256": run.retained_cell_ids_sha256,
         "status": run.status,
@@ -1386,6 +1493,13 @@ def _executor_receipt_from_attempt(attempt: ScalingEvaluatedAttempt) -> bytes:
         "stderr_size_bytes": len(attempt.stderr),
         "native_snapshot": native_snapshot,
     }
+    if run.comparator_configuration is None:
+        unsigned["configuration_sha256"] = run.configuration_sha256
+    else:
+        unsigned["comparator_configuration"] = direct_bound_comparator_value(
+            run.comparator_configuration
+        )
+        unsigned["comparator_nonexecution_identity"] = None
     return _canonical_executor_receipt(unsigned)
 
 
@@ -1400,12 +1514,19 @@ def _parse_executor_receipt(raw: bytes) -> Mapping[str, object]:
         raise
     except (UnicodeError, json.JSONDecodeError) as error:
         raise ScalingContractError("scaling executor receipt is invalid") from error
+    if not isinstance(payload, dict):
+        raise ScalingContractError("scaling executor receipt fields are not closed")
+    keys = set(payload)
     if (
-        not isinstance(payload, dict)
-        or set(payload) != _EXECUTOR_RECEIPT_KEYS
+        keys not in (_EXECUTOR_RECEIPT_LEGACY_KEYS, _EXECUTOR_RECEIPT_DIRECT_KEYS)
         or raw != _canonical_bytes(payload) + b"\n"
     ):
         raise ScalingContractError("scaling executor receipt fields are not closed")
+    if keys == _EXECUTOR_RECEIPT_DIRECT_KEYS and (
+        not isinstance(payload.get("comparator_configuration"), Mapping)
+        or payload.get("comparator_nonexecution_identity") is not None
+    ):
+        raise ScalingContractError("scaling executor comparator identity is invalid")
     unsigned = {key: value for key, value in payload.items() if key != "receipt_sha256"}
     if payload.get("receipt_sha256") != canonical_sha256(unsigned):
         raise ScalingContractError("scaling executor receipt checksum mismatch")
@@ -1951,11 +2072,20 @@ class ScalingResultStore:
             "dataset_id": prepared.binding.dataset_id,
             "source_dataset_sha256": prepared.binding.dataset_sha256,
             "model_seed": entry.model_seed,
-            "configuration_sha256": entry.configuration_sha256,
             "method_input_sha256": method_input_sha256(prepared.method_input),
             "retained_cell_ids_sha256": prepared.audit.retained_cell_ids_sha256,
         }
-        if any(receipt.get(name) != value for name, value in expected.items()):
+        if entry.comparator_configuration is None:
+            expected["configuration_sha256"] = entry.configuration_sha256
+        else:
+            expected["comparator_configuration"] = direct_bound_comparator_value(
+                entry.comparator_configuration
+            )
+            expected["comparator_nonexecution_identity"] = None
+        if any(
+            not direct_equal(receipt.get(name), value)
+            for name, value in expected.items()
+        ):
             raise ScalingContractError("scaling executor receipt identity differs")
         if run.get("executor_receipt_sha256") != receipt.get("receipt_sha256"):
             raise ScalingContractError("scaling executor receipt binding differs")
@@ -2273,8 +2403,14 @@ class ScalingResultStore:
             "comparator_configuration",
             "comparator_nonexecution_identity",
         }
+        raw_run_fields = {field.name for field in fields(RawRunResult)}
         expected_run_fields = (
-            {field.name for field in fields(RawRunResult)} - direct_only_fields
+            raw_run_fields
+            - (
+                {"configuration_sha256"}
+                if entry.comparator_configuration is not None
+                else direct_only_fields
+            )
         ) | {
             "cells",
             "accuracy_enabled",
@@ -2309,9 +2445,12 @@ class ScalingResultStore:
             "evaluator_output_uncompressed_nbytes",
             "evaluator_output_uncompressed_sha256",
         }
-        metric_fields = {
-            field.name for field in fields(LongFormMetric)
-        } - direct_only_fields
+        raw_metric_fields = {field.name for field in fields(LongFormMetric)}
+        metric_fields = raw_metric_fields - (
+            {"configuration_sha256"}
+            if entry.comparator_configuration is not None
+            else direct_only_fields
+        )
         if set(run) != expected_run_fields or any(
             not isinstance(metric, dict) or set(metric) != metric_fields
             for metric in metrics
@@ -2324,15 +2463,22 @@ class ScalingResultStore:
             "method_id": entry.method_id,
             "model_seed": entry.model_seed,
             "configuration_id": entry.configuration_id,
-            "configuration_sha256": entry.configuration_sha256,
             "configuration_kind": entry.configuration_kind,
             "requires_count_score": entry.requires_count_score,
             "requires_calibration": entry.requires_calibration,
             "cells": entry.cells,
             "accuracy_enabled": entry.accuracy_enabled,
         }
+        if entry.comparator_configuration is None:
+            expected["configuration_sha256"] = entry.configuration_sha256
+        else:
+            expected["comparator_configuration"] = direct_bound_comparator_value(
+                entry.comparator_configuration
+            )
+            expected["comparator_nonexecution_identity"] = None
         if any(
-            run.get(name) != expected_value for name, expected_value in expected.items()
+            not direct_equal(run.get(name), expected_value)
+            for name, expected_value in expected.items()
         ):
             raise ScalingContractError("stored scaling record differs from its plan")
         cached = self._prepared_datasets.get(entry.cells)
@@ -2623,7 +2769,15 @@ class ScalingResultStore:
                 not isinstance(metric, dict)
                 or metric.get("method") != entry.method_id
                 or metric.get("model_seed") != entry.model_seed
-                or metric.get("configuration_sha256") != entry.configuration_sha256
+                or (
+                    metric.get("configuration_sha256") != entry.configuration_sha256
+                    if entry.comparator_configuration is None
+                    else not direct_equal(
+                        metric.get("comparator_configuration"),
+                        direct_bound_comparator_value(entry.comparator_configuration),
+                    )
+                    or metric.get("comparator_nonexecution_identity") is not None
+                )
                 for metric in metrics
             )
         ):
@@ -2636,14 +2790,22 @@ class ScalingResultStore:
             "method": entry.method_id,
             "model_seed": entry.model_seed,
             "configuration_id": entry.configuration_id,
-            "configuration_sha256": entry.configuration_sha256,
         }
+        if entry.comparator_configuration is None:
+            expected_metric_identity["configuration_sha256"] = (
+                entry.configuration_sha256
+            )
+        else:
+            expected_metric_identity["comparator_configuration"] = (
+                direct_bound_comparator_value(entry.comparator_configuration)
+            )
+            expected_metric_identity["comparator_nonexecution_identity"] = None
         expected_n = metric_authority
         correlation_pairs = int(metric_authority["correlation_pairs"])
         gene_count = int(metric_authority["n_corr_genes"])
         for metric in metrics:
             if any(
-                metric.get(name) != expected
+                not direct_equal(metric.get(name), expected)
                 for name, expected in expected_metric_identity.items()
             ):
                 raise ScalingContractError(
@@ -3613,11 +3775,19 @@ def load_scaling_execution_authority(
         raise ScalingContractError("score/calibration authority is not ready")
     registry_path = selected / "study/methods.json"
     registry = load_method_registry(registry_path)
-    from .final_runner import _configuration_for_method
+    from .final_runner import _frozen_method_plan_authority
 
+    try:
+        _frozen_rows, all_configurations = _frozen_method_plan_authority(
+            frozen, registry
+        )
+    except Exception as error:
+        raise ScalingContractError(
+            "frozen scaling method authority is invalid"
+        ) from error
+    configuration_by_method = {value.method_id: value for value in all_configurations}
     configurations = tuple(
-        _configuration_for_method(method_id, registry.by_id(method_id), frozen)
-        for method_id in contract.method_ids
+        configuration_by_method[method_id] for method_id in contract.method_ids
     )
     environments = _load_scaling_execution_environment_registry(selected, registry)
     plan = build_scaling_plan(
@@ -3663,6 +3833,8 @@ def _run_plan_entry(entry: ScalingPlanEntry, binding: DatasetBinding) -> RunPlan
         configuration_kind=entry.configuration_kind,
         requires_count_score=entry.requires_count_score,
         requires_calibration=entry.requires_calibration,
+        comparator_configuration=entry.comparator_configuration,
+        comparator_nonexecution_identity=entry.comparator_nonexecution_identity,
     )
 
 
@@ -3787,6 +3959,8 @@ def _scaling_metric_rows(
             n=n,
             status="completed" if value is not None else "unavailable",
             reason=metric_reason,
+            comparator_configuration=entry.comparator_configuration,
+            comparator_nonexecution_identity=entry.comparator_nonexecution_identity,
         )
         for name, (value, n, metric_reason) in values.items()
     )
@@ -3909,6 +4083,8 @@ def _evaluate_scaling_outcome(
         stderr_sha256=hashlib.sha256(outcome.stderr).hexdigest(),
         native_output_sha256=native_output_sha256,
         evaluator_output_sha256=evaluator_output_sha256,
+        comparator_configuration=entry.comparator_configuration,
+        comparator_nonexecution_identity=entry.comparator_nonexecution_identity,
     )
     return ScalingEvaluatedAttempt(
         run=run,
@@ -4009,25 +4185,45 @@ def execute_scaling_plan(
                     continue
                 spec = authority.registry.by_id(entry.method_id)
                 configuration = configuration_by_method[entry.method_id]
-                request = ExecutionRequest.create(
-                    spec,
-                    prepared.method_input,
-                    model_seed=entry.model_seed,
-                    configuration=configuration,
-                    authority=authority.runner_authority.execution_context,
-                    mechanism=binding.mechanism,
-                    biological_id=binding.biological_id,
-                    technical_view=binding.technical_view,
-                    dataset_id=binding.dataset_id,
-                    timeout_seconds=spec.resources.timeout_seconds,
-                    calibration_usage="retained_all_development",
-                )
+                if configuration.comparator_configuration is not None:
+                    request = FinalComparatorExecutionRequest.create(
+                        spec,
+                        prepared.method_input,
+                        model_seed=entry.model_seed,
+                        configuration=configuration.comparator_configuration,
+                        authority=authority.runner_authority.execution_context,
+                        mechanism=binding.mechanism,
+                        biological_id=binding.biological_id,
+                        technical_view=binding.technical_view,
+                        dataset_id=binding.dataset_id,
+                        timeout_seconds=spec.resources.timeout_seconds,
+                    )
+                else:
+                    legacy_configuration = configuration.legacy_configuration
+                    if (
+                        legacy_configuration is None
+                    ):  # pragma: no cover - plan invariant
+                        raise AssertionError("scaling legacy authority is missing")
+                    request = ExecutionRequest.create(
+                        spec,
+                        prepared.method_input,
+                        model_seed=entry.model_seed,
+                        configuration=legacy_configuration,
+                        authority=authority.runner_authority.execution_context,
+                        mechanism=binding.mechanism,
+                        biological_id=binding.biological_id,
+                        technical_view=binding.technical_view,
+                        dataset_id=binding.dataset_id,
+                        timeout_seconds=spec.resources.timeout_seconds,
+                        calibration_usage="retained_all_development",
+                    )
                 outcome = selected_executor(request)
                 if not isinstance(outcome, AdapterOutcome):
                     raise ScalingContractError(
                         "scaling executor returned a noncanonical outcome"
                     )
-                outcome = enforce_calibration_fold_receipt(request, outcome)
+                if isinstance(request, ExecutionRequest):
+                    outcome = enforce_calibration_fold_receipt(request, outcome)
                 attempt = _evaluate_scaling_outcome(
                     entry, _run_plan_entry(entry, binding), prepared, outcome
                 )
