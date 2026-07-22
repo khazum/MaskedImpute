@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict
+from functools import lru_cache
 import hashlib
+import importlib.util
 import inspect
 import json
 import os
@@ -203,6 +206,60 @@ def _registry() -> MethodRegistry:
     )
 
 
+@lru_cache(maxsize=1)
+def _task14_test_module():
+    path = Path(__file__).with_name("test_freeze_publication_round.py")
+    spec = importlib.util.spec_from_file_location("_task15_freeze_factory", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _full_registry() -> MethodRegistry:
+    from maskimpute_benchmark.methods.registry import parse_method_registry
+
+    return parse_method_registry(_task14_test_module()._direct_method_registry())
+
+
+def _direct_payload_template() -> dict[str, object]:
+    return _task14_test_module()._direct_payload()
+
+
+_DIRECT_PAYLOAD_TEMPLATE = _direct_payload_template()
+
+
+def _direct_frozen_method(
+    *, unavailable_method: str | None = None
+) -> dict[str, object]:
+    module = _task14_test_module()
+    if unavailable_method is None:
+        frozen = deepcopy(_DIRECT_PAYLOAD_TEMPLATE)
+    else:
+        fixture, receipt, _projection = (
+            module._intrinsic_unavailable_comparator_evidence(unavailable_method)
+        )
+        frozen = deepcopy(
+            module._direct_build(
+                comparator_fixture=fixture,
+                comparator_selection_receipt=receipt,
+            )
+        )
+    candidate = _receipt(_full_registry())
+    for key in (
+        "selected_configuration_id",
+        "selected_version",
+        "selected_configuration",
+        "selected_configuration_sha256",
+        "selected_calibrator",
+        "selected_ablation_control",
+    ):
+        frozen[key] = deepcopy(candidate[key])
+    unsigned = {key: value for key, value in frozen.items() if key != "payload_sha256"}
+    frozen["payload_sha256"] = canonical_sha256(unsigned)
+    return frozen
+
+
 def _observed_only_registry() -> MethodRegistry:
     source = load_method_registry(METHODS)
     return MethodRegistry(schema_version=1, methods=(source.by_id("observed"),))
@@ -224,6 +281,8 @@ def _receipt(registry: MethodRegistry) -> dict[str, object]:
             "mean_floor": 1e-08,
         },
     }
+    direct = deepcopy(_DIRECT_PAYLOAD_TEMPLATE)
+    direct_rows = {str(row["id"]): row for row in direct["method_denominator"]}
     denominator = []
     for spec in registry.methods:
         if spec.id == "scimpute":
@@ -240,14 +299,19 @@ def _receipt(registry: MethodRegistry) -> dict[str, object]:
                 "required_reference": None,
             }
             status = "implemented"
-        denominator.append(
-            {
-                "id": spec.id,
-                "method_sha256": canonical_sha256(asdict(spec)),
-                "integration_status": status,
-                "final_applicability": applicability,
-            }
-        )
+        row = {
+            "id": spec.id,
+            "method_sha256": canonical_sha256(asdict(spec)),
+            "integration_status": status,
+            "final_applicability": applicability,
+        }
+        if spec.id in direct_rows:
+            direct_row = direct_rows[spec.id]
+            row["selected_comparator_configuration"] = deepcopy(
+                direct_row["selected_comparator_configuration"]
+            )
+            row["nonexecution_identity"] = deepcopy(direct_row["nonexecution_identity"])
+        denominator.append(row)
     unsigned: dict[str, object] = {
         "schema_version": 1,
         "preparation_commit": "a" * 40,
@@ -276,7 +340,257 @@ def _receipt(registry: MethodRegistry) -> dict[str, object]:
             ),
         },
     }
+    for key in (
+        "comparator_tuning_authority",
+        "scheduled_same_input_ids",
+        "required_control_ids",
+        "established_comparator_ids",
+        "modern_core_ids",
+        "ready_comparison_population_ids",
+        "selected_comparator_configurations",
+        "unavailable_comparator_nonexecution_identities",
+        "scheduled_same_input_statuses",
+        "comparator_selection",
+    ):
+        unsigned[key] = deepcopy(direct[key])
     return {**unsigned, "payload_sha256": canonical_sha256(unsigned)}
+
+
+def test_final_plan_is_1760_and_all_selectable_split_is_1480_280() -> None:
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.final_runner import build_final_execution_plan
+
+    frozen = _direct_frozen_method()
+    registry = _full_registry()
+    plan = build_final_execution_plan(
+        frozen,
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+
+    assert len(plan.entries) == 1_760
+    assert sum(entry.action == "execute" for entry in plan.entries) == 1_480
+    assert sum(entry.action == "not_applicable" for entry in plan.entries) == 280
+    magic = next(value for value in plan.configurations if value.method_id == "magic")
+    assert magic.legacy_configuration is None
+    assert magic.comparator_nonexecution_identity is None
+    assert magic.comparator_configuration is not None
+    assert (
+        magic.comparator_configuration.configuration.configuration_id
+        == (
+            frozen["selected_comparator_configurations"]["magic"]["configuration"][
+                "configuration_id"
+            ]
+        )
+    )
+    magic_rows = [entry for entry in plan.entries if entry.run.method_id == "magic"]
+    assert magic_rows
+    assert all(
+        direct_equal(entry.run.comparator_configuration, magic.comparator_configuration)
+        for entry in magic_rows
+    )
+    assert all(entry.run.configuration_id != "registry-default" for entry in magic_rows)
+
+
+def test_unavailable_stochastic_comparator_reclassifies_120_seeded_rows() -> None:
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.final_runner import build_final_execution_plan
+
+    frozen = _direct_frozen_method(unavailable_method="biaeimpute")
+    plan = build_final_execution_plan(
+        frozen,
+        _full_registry(),
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    rows = [entry for entry in plan.entries if entry.run.method_id == "biaeimpute"]
+    expected = frozen["unavailable_comparator_nonexecution_identities"]["biaeimpute"]
+
+    assert len(plan.entries) == 1_760
+    assert len(rows) == 120
+    assert {entry.run.model_seed for entry in rows} == {42, 43, 44}
+    assert all(entry.action == "not_applicable" for entry in rows)
+    assert all(entry.run.comparator_configuration is None for entry in rows)
+    assert all(
+        direct_equal(entry.run.comparator_nonexecution_identity, expected)
+        for entry in rows
+    )
+    assert all(
+        entry.run.configuration_kind == "comparator_nonexecution" for entry in rows
+    )
+    assert all(
+        entry.run.configuration_id == "nonexecution-biaeimpute" for entry in rows
+    )
+
+
+def test_trajectory_always_has_44_rows_and_preserves_three_unavailable_seeds(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.final_runner import (
+        build_trajectory_execution_plan,
+        materialize_prepared_trajectory_dataset,
+    )
+    from maskimpute_benchmark.trajectory_dataset import (
+        default_trajectory_authority_path,
+    )
+
+    repository = tmp_path / "repository"
+    round_dir = repository / "artifacts/study/final/round-001"
+    (repository / "study").mkdir(parents=True)
+    round_dir.mkdir(parents=True)
+    (repository / "study/trajectory_panel.json").write_bytes(
+        default_trajectory_authority_path().read_bytes()
+    )
+    registered = materialize_prepared_trajectory_dataset(repository, round_dir)
+    frozen = _direct_frozen_method(unavailable_method="biaeimpute")
+    plan = build_trajectory_execution_plan(
+        frozen,
+        _full_registry(),
+        registered,
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+        primary_final_plan_sha256="a" * 64,
+    )
+    rows = [entry for entry in plan.entries if entry.run.method_id == "biaeimpute"]
+    expected = frozen["unavailable_comparator_nonexecution_identities"]["biaeimpute"]
+
+    assert len(plan.entries) == 44
+    assert len(rows) == 3
+    assert {entry.run.model_seed for entry in rows} == {42, 43, 44}
+    assert all(entry.action == "not_applicable" for entry in rows)
+    assert len({entry.reason for entry in rows}) == 1
+    assert all(
+        direct_equal(entry.run.comparator_nonexecution_identity, expected)
+        for entry in rows
+    )
+    assert all(
+        entry.run.configuration_kind == "comparator_nonexecution" for entry in rows
+    )
+
+
+def test_selected_final_comparator_dispatch_uses_complete_bound_configuration() -> None:
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.final_runner import build_final_execution_plan
+    from maskimpute_benchmark.runner import (
+        AdapterOutcome,
+        FinalComparatorExecutionRequest,
+        RepositoryAdapterDispatcher,
+        RunnerContractError,
+    )
+
+    registry = _full_registry()
+    plan = build_final_execution_plan(
+        _direct_frozen_method(),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    entry = next(
+        value
+        for value in plan.entries
+        if value.run.method_id == "magic" and value.action == "execute"
+    )
+    prepared = _unavailable_prepared(entry)
+    assert entry.run.comparator_configuration is not None
+    request = FinalComparatorExecutionRequest.create(
+        registry.by_id("magic"),
+        prepared.method_input,
+        model_seed=entry.run.model_seed,
+        configuration=entry.run.comparator_configuration,
+        authority=_authority(),
+        mechanism=entry.run.mechanism,
+        biological_id=entry.run.biological_id,
+        technical_view=entry.run.technical_view,
+        dataset_id=entry.run.dataset_id,
+        timeout_seconds=registry.by_id("magic").resources.timeout_seconds,
+    )
+    calls: list[tuple[object, ...]] = []
+
+    def execute_direct(method_id, spec, method_input, *, seed, config):
+        calls.append((method_id, spec, method_input, seed, config))
+        return AdapterOutcome.unavailable("synthetic_direct_terminal")
+
+    dispatcher = SimpleNamespace(_execute_direct_comparator=execute_direct)
+    outcome = RepositoryAdapterDispatcher._execute_validated(dispatcher, request)
+
+    assert outcome.status == "unavailable"
+    assert direct_equal(request.configuration, entry.run.comparator_configuration)
+    assert request.configuration.configuration.configuration_id != "registry-default"
+    assert calls[0][:4] == (
+        "magic",
+        registry.by_id("magic"),
+        prepared.method_input,
+        entry.run.model_seed,
+    )
+    assert calls[0][4] == request.configuration.configuration.decode()
+    with pytest.raises(RunnerContractError, match="resource authority"):
+        RepositoryAdapterDispatcher._execute_validated(
+            dispatcher,
+            replace(request, max_rss_bytes=request.max_rss_bytes + 1),
+        )
+
+
+@pytest.mark.parametrize("mutation", ("selected_payload", "overlap", "status"))
+def test_final_plan_rejects_tampered_direct_comparator_handoff(
+    mutation: str,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    frozen = _direct_frozen_method()
+    if mutation == "selected_payload":
+        frozen["selected_comparator_configurations"]["magic"]["configuration"][
+            "payload"
+        ]["diffusion_time"] = 5
+    elif mutation == "overlap":
+        frozen["unavailable_comparator_nonexecution_identities"]["magic"] = (
+            deepcopy(
+                next(
+                    iter(
+                        frozen[
+                            "unavailable_comparator_nonexecution_identities"
+                        ].values()
+                    )
+                )
+            )
+            if frozen["unavailable_comparator_nonexecution_identities"]
+            else {"reason": "overlap"}
+        )
+    else:
+        row = next(
+            value
+            for value in frozen["scheduled_same_input_statuses"]
+            if value["method_id"] == "magic"
+        )
+        row["selected_comparator_configuration"]["configuration"]["payload"][
+            "diffusion_time"
+        ] = 5
+    unsigned = {key: value for key, value in frozen.items() if key != "payload_sha256"}
+    frozen["payload_sha256"] = canonical_sha256(unsigned)
+
+    with pytest.raises(FinalRunnerContractError, match="comparator"):
+        build_final_execution_plan(
+            frozen,
+            _full_registry(),
+            _bindings(),
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            execution_authority_sha256="9" * 64,
+        )
 
 
 def _final_authority_receipt(
@@ -291,6 +605,7 @@ def _final_authority_receipt(
     calibration_raw = (
         json.dumps(calibration, separators=(",", ":"), sort_keys=True) + "\n"
     ).encode()
+    frozen = _receipt(_registry() if registry is None else registry)
 
     class FakeCalibrationArtifact:
         def __init__(self, payload):
@@ -304,7 +619,6 @@ def _final_authority_receipt(
         "CalibrationArtifact",
         FakeCalibrationArtifact,
     )
-    frozen = _receipt(_registry() if registry is None else registry)
     frozen["artifact_bindings"] = {
         "selection_contract": {
             "path": "study/selection_contract.json",
@@ -1197,6 +1511,12 @@ def test_trajectory_result_store_is_separate_resumable_and_complete(
         store.append(
             entry,
             _unavailable_attempt(entry, prepared=registered.prepared),
+            execution_request=_final_comparator_request(
+                entry,
+                _registry(),
+                registered.prepared,
+                authority,
+            ),
         )
     manifest = store.finalize()
     resumed = FinalResultStore(
@@ -1236,6 +1556,12 @@ def test_trajectory_manifest_publication_is_resumable_after_interruption(
         store.append(
             entry,
             _unavailable_attempt(entry, prepared=registered.prepared),
+            execution_request=_final_comparator_request(
+                entry,
+                _registry(),
+                registered.prepared,
+                authority,
+            ),
         )
 
     def interrupt_after_manifest() -> dict[str, object]:
@@ -1270,7 +1596,11 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
         final_result_file_manifest,
         validate_trajectory_execution_for_evaluation,
     )
-    from maskimpute_benchmark.runner import AdapterOutcome
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.runner import (
+        AdapterOutcome,
+        FinalComparatorExecutionRequest,
+    )
 
     fixture = _exact_primary_trajectory_chain_inputs(
         tmp_path,
@@ -1295,10 +1625,12 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
         authority_repository=repository,
     )
     calls: list[str] = []
+    requests: list[object] = []
     publications = 0
 
     def executor(request):
         calls.append(request.method_spec.id)
+        requests.append(request)
         return AdapterOutcome.unavailable("test_terminal_unavailable")
 
     def published() -> None:
@@ -1314,10 +1646,8 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
         store,
         on_record_published=published,
     )
-    validation = validate_trajectory_execution_for_evaluation(
-        plan,
-        store.load_records(),
-    )
+    records = store.load_records()
+    validation = validate_trajectory_execution_for_evaluation(plan, records)
     cumulative = _owned_final_result_file_manifest(round_dir)["result_files"]
     evidence = _trajectory_evaluation_evidence(
         round_dir,
@@ -1330,6 +1660,30 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
     )
 
     assert len(calls) == sum(entry.action == "execute" for entry in plan.entries)
+    magic_requests = [
+        request
+        for request in requests
+        if isinstance(request, FinalComparatorExecutionRequest)
+    ]
+    assert magic_requests
+    assert {request.method_spec.id for request in magic_requests} == {"magic"}
+    for entry, record in zip(plan.entries, records, strict=True):
+        if entry.action == "not_applicable":
+            assert record["execution_request"] is None
+        elif entry.run.comparator_configuration is not None:
+            assert "configuration_sha256" not in record["run"]
+            assert "configuration_sha256" not in record["execution_request"]
+            assert all(
+                "configuration_sha256" not in metric for metric in record["metrics"]
+            )
+            assert direct_equal(
+                record["run"]["comparator_configuration"],
+                entry.run.to_dict()["comparator_configuration"],
+            )
+            assert direct_equal(
+                record["execution_request"]["configuration"],
+                entry.run.to_dict()["comparator_configuration"],
+            )
     assert publications == 1
     assert manifest["scope"] == "supplementary_trajectory"
     assert validation["scope"] == "supplementary_trajectory"
@@ -1433,6 +1787,12 @@ def test_pre_receipt_rederivation_uses_exact_running_runtime_pair(
         store.append(
             entry,
             _unavailable_attempt(entry, prepared=registered.prepared),
+            execution_request=_final_comparator_request(
+                entry,
+                fixture["registry"],
+                registered.prepared,
+                authority,
+            ),
         )
     store.finalize()
     validation = final_runner.validate_trajectory_execution_for_evaluation(
@@ -1645,7 +2005,8 @@ def test_final_plan_derives_direct_score_without_calibration_requirement() -> No
 
     configuration = next(
         value for value in plan.configurations if value.method_id == "maskimpute"
-    )
+    ).legacy_configuration
+    assert configuration is not None
     assert configuration.requires_count_score is True
     assert configuration.requires_calibration is False
     assert {
@@ -1937,6 +2298,27 @@ def _authority():
     )
 
 
+def _final_comparator_request(entry, registry, prepared, authority):
+    from maskimpute_benchmark.runner import FinalComparatorExecutionRequest
+
+    configuration = entry.run.comparator_configuration
+    if entry.action != "execute" or configuration is None:
+        return None
+    spec = registry.by_id(entry.run.method_id)
+    return FinalComparatorExecutionRequest.create(
+        spec,
+        prepared.method_input,
+        model_seed=entry.run.model_seed,
+        configuration=configuration,
+        authority=authority,
+        mechanism=entry.run.mechanism,
+        biological_id=entry.run.biological_id,
+        technical_view=entry.run.technical_view,
+        dataset_id=entry.run.dataset_id,
+        timeout_seconds=spec.resources.timeout_seconds,
+    )
+
+
 def _write_real_final_score_authority(repository: Path, prepared):
     from maskimpute import PreZeroCountModelConfig
     from maskimpute.calibration import (
@@ -2068,7 +2450,8 @@ def _real_final_execution_inputs(repository: Path, entry, plan, registry):
     )
     configuration = next(
         value for value in plan.configurations if value.method_id == "maskimpute"
-    )
+    ).legacy_configuration
+    assert configuration is not None
     request = ExecutionRequest.create(
         registry.by_id("maskimpute"),
         prepared.method_input,
@@ -2506,7 +2889,8 @@ def test_final_result_store_refits_once_and_rejects_coordinated_score_replacemen
     )
     configuration = next(
         value for value in plan.configurations if value.method_id == "maskimpute"
-    )
+    ).legacy_configuration
+    assert configuration is not None
     request = ExecutionRequest.create(
         registry.by_id("maskimpute"),
         prepared.method_input,
@@ -4133,12 +4517,20 @@ def _exact_primary_trajectory_chain_inputs(
         authority_repository=repository,
     )
     for entry in primary_plan.entries:
+        prepared_entry = prepared[entry.run.dataset_id]
+        execution_request = _final_comparator_request(
+            entry,
+            registry,
+            prepared_entry,
+            primary,
+        )
         primary_store.append(
             entry,
             _unavailable_attempt(
                 entry,
                 prepared=prepared[entry.run.dataset_id],
             ),
+            execution_request=execution_request,
         )
     primary_manifest = primary_store.finalize()
     trajectory = final_runner.materialize_trajectory_execution_authority(

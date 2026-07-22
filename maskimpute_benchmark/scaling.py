@@ -1423,7 +1423,7 @@ def scaling_attempt_record(
         raise ValueError("cells must be a positive integer")
     if type(accuracy_enabled) is not bool:
         raise TypeError("accuracy_enabled must be bool")
-    run = asdict(attempt.run)
+    run = attempt.run.to_dict()
     run.update(
         {
             "cells": cells,
@@ -2269,7 +2269,13 @@ class ScalingResultStore:
             raise ScalingContractError("stored scaling record is malformed")
         from .runner import LongFormMetric, RawRunResult
 
-        expected_run_fields = {field.name for field in fields(RawRunResult)} | {
+        direct_only_fields = {
+            "comparator_configuration",
+            "comparator_nonexecution_identity",
+        }
+        expected_run_fields = (
+            {field.name for field in fields(RawRunResult)} - direct_only_fields
+        ) | {
             "cells",
             "accuracy_enabled",
             "native_output_retention",
@@ -2303,7 +2309,9 @@ class ScalingResultStore:
             "evaluator_output_uncompressed_nbytes",
             "evaluator_output_uncompressed_sha256",
         }
-        metric_fields = {field.name for field in fields(LongFormMetric)}
+        metric_fields = {
+            field.name for field in fields(LongFormMetric)
+        } - direct_only_fields
         if set(run) != expected_run_fields or any(
             not isinstance(metric, dict) or set(metric) != metric_fields
             for metric in metrics

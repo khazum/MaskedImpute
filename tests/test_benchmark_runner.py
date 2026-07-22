@@ -1500,7 +1500,9 @@ def test_execution_request_rejects_comparator_nonexecution_identity() -> None:
         )
 
 
-def test_run_plan_entry_propagates_closed_configuration_identity_shape() -> None:
+def test_run_plan_entry_preserves_legacy_shape_and_rejects_summary_comparators() -> (
+    None
+):
     legacy = RunPlanEntry(
         ordinal=1,
         run_id="run-observed-test",
@@ -1520,34 +1522,17 @@ def test_run_plan_entry_propagates_closed_configuration_identity_shape() -> None
     assert legacy.configuration_method_identity_sha256 is None
     assert legacy.nonexecution_identity_sha256 is None
 
-    tuning = replace(
-        legacy,
-        configuration_kind="comparator_tuning",
-        configuration_method_identity_sha256="c" * 64,
-    )
-    assert tuning.configuration_payload_sha256 == "b" * 64
-    assert tuning.configuration_method_identity_sha256 == "c" * 64
-    assert tuning.nonexecution_identity_sha256 is None
-
-    nonexecution = replace(
-        legacy,
-        configuration_kind="comparator_nonexecution",
-        nonexecution_identity_sha256="d" * 64,
-    )
-    assert nonexecution.configuration_method_identity_sha256 is None
-    assert nonexecution.nonexecution_identity_sha256 == "d" * 64
-
-    with pytest.raises(RunnerContractError, match="method identity"):
+    with pytest.raises(RunnerContractError, match="forbids content summaries"):
         replace(
             legacy,
             configuration_kind="comparator_tuning",
-            configuration_method_identity_sha256=None,
+            configuration_method_identity_sha256="c" * 64,
         )
-    with pytest.raises(RunnerContractError, match="nonexecution identity"):
+    with pytest.raises(RunnerContractError, match="forbids content summaries"):
         replace(
             legacy,
             configuration_kind="comparator_nonexecution",
-            nonexecution_identity_sha256=None,
+            nonexecution_identity_sha256="d" * 64,
         )
 
 
@@ -1566,10 +1551,10 @@ def test_run_plan_entry_propagates_closed_configuration_identity_shape() -> None
         ),
     ),
 )
-def test_run_plan_entry_requires_explicit_comparator_payload_checksum(
+def test_run_plan_entry_rejects_legacy_comparator_summary_fields(
     kind: str, identity_fields: dict[str, str]
 ) -> None:
-    with pytest.raises(RunnerContractError, match="explicit.*payload checksum"):
+    with pytest.raises(RunnerContractError, match="forbids content summaries"):
         RunPlanEntry(
             ordinal=1,
             run_id="run-magic-test",
@@ -4820,28 +4805,6 @@ def _single_configuration_plan(
     )
 
 
-def _comparator_plan_entry(
-    prepared,
-    configuration: AuthorizedConfiguration,
-    *,
-    preflight_status: str,
-    preflight_reason: str | None,
-    configuration_method_identity_sha256: str | None,
-    nonexecution_identity_sha256: str | None,
-) -> RunPlanEntry:
-    return replace(
-        _entry_for(prepared, "magic", seed=42),
-        configuration_id=configuration.configuration_id,
-        configuration_sha256=configuration.configuration_sha256,
-        configuration_kind=configuration.kind,
-        configuration_payload_sha256=configuration.configuration_sha256,
-        configuration_method_identity_sha256=(configuration_method_identity_sha256),
-        nonexecution_identity_sha256=nonexecution_identity_sha256,
-        preflight_status=preflight_status,
-        preflight_reason=preflight_reason,
-    )
-
-
 @pytest.fixture
 def completed_checkpoint_fixture(tmp_path: Path):
     prepared = _prepared_truth_dataset()
@@ -5052,9 +5015,7 @@ def test_execute_fair_comparator_plan_rejects_substituted_method_projection(
     assert not (tmp_path / "direct-checkpoint.json").exists()
 
 
-def test_execute_competition_plan_rejects_substituted_blocked_nonexecution_identity(
-    tmp_path: Path,
-) -> None:
+def test_legacy_competition_plan_rejects_summary_only_nonexecution_identity() -> None:
     prepared = _prepared_truth_dataset()
     configuration = AuthorizedConfiguration.create(
         method_id="magic",
@@ -5065,27 +5026,18 @@ def test_execute_competition_plan_rejects_substituted_blocked_nonexecution_ident
         requires_calibration=False,
         nonexecution_identity_sha256="e" * 64,
     )
-    entry = _comparator_plan_entry(
-        prepared,
-        configuration,
-        preflight_status="blocked_authority",
-        preflight_reason="declared_nonexecution",
-        configuration_method_identity_sha256=None,
-        nonexecution_identity_sha256="f" * 64,
-    )
-    plan = _single_configuration_plan(prepared, entry, configuration)
-    executor = _RecordingUnavailableExecutor()
-
-    with pytest.raises(RunnerContractError, match="configuration identity mismatch"):
-        execute_competition_plan(
-            plan,
-            load_method_registry(METHODS_PATH),
-            {prepared.binding.dataset_id: prepared},
-            executor,
-            CheckpointStore(tmp_path / "competition"),
+    with pytest.raises(RunnerContractError, match="forbids content summaries"):
+        replace(
+            _entry_for(prepared, "magic", seed=42),
+            configuration_id=configuration.configuration_id,
+            configuration_sha256=configuration.configuration_sha256,
+            configuration_kind=configuration.kind,
+            configuration_payload_sha256=configuration.configuration_sha256,
+            configuration_method_identity_sha256=None,
+            nonexecution_identity_sha256="f" * 64,
+            preflight_status="blocked_authority",
+            preflight_reason="declared_nonexecution",
         )
-
-    assert executor.input_hashes == []
 
 
 def test_execution_reuses_one_truth_free_input_and_checkpoints_full_denominator(

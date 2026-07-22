@@ -20,6 +20,16 @@ import zlib
 
 import numpy as np
 
+from .comparator_tuning import (
+    BoundComparatorConfiguration,
+    ComparatorSelectionProjection,
+    ComparatorTuningError,
+    _canonical_comparator_tuning_authority,
+    comparator_method_binding,
+    comparator_selection_projection,
+    comparator_selection_projection_value,
+)
+from .direct_values import direct_equal, direct_json_value
 from .methods.registry import MethodRegistry
 from .prezero_evidence import (
     PREZERO_STORAGE_COMPRESSION_LEVEL,
@@ -40,6 +50,7 @@ from .runner import (
     EvaluatedAttempt,
     ExecutionAuthorityContext,
     ExecutionRequest,
+    FinalComparatorExecutionRequest,
     PreparedDataset,
     RepositoryAdapterDispatcher,
     RunnerContractError,
@@ -49,6 +60,7 @@ from .runner import (
     _prepare_dataset_with_exclusions,
     _unlink_owned_staging_temporary,
     derive_lock_only_environment_ids,
+    direct_bound_comparator_value,
     enforce_calibration_fold_receipt,
     evaluate_adapter_outcome,
     method_input_sha256,
@@ -1291,13 +1303,119 @@ class FinalPlanEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class FrozenPlanMethodAuthority:
+    """One exact legacy, selected-comparator, or nonexecution method authority."""
+
+    method_id: str
+    legacy_configuration: AuthorizedConfiguration | None
+    comparator_configuration: BoundComparatorConfiguration | None
+    comparator_nonexecution_identity: Mapping[str, object] | None
+    action: Literal["execute", "not_applicable"]
+    reason: str | None
+    seeds: tuple[int | None, ...]
+
+    def __post_init__(self) -> None:
+        choices = (
+            self.legacy_configuration,
+            self.comparator_configuration,
+            self.comparator_nonexecution_identity,
+        )
+        if sum(value is not None for value in choices) != 1:
+            raise FinalRunnerContractError(
+                "frozen method configuration authority is not exclusive"
+            )
+        if not isinstance(self.method_id, str) or not self.method_id:
+            raise FinalRunnerContractError("frozen method authority ID is invalid")
+        if self.legacy_configuration is not None and (
+            self.legacy_configuration.method_id != self.method_id
+        ):
+            raise FinalRunnerContractError("legacy frozen configuration method differs")
+        if self.comparator_configuration is not None and (
+            self.comparator_configuration.method.method_id != self.method_id
+            or self.comparator_configuration.configuration.method_id != self.method_id
+        ):
+            raise FinalRunnerContractError("selected frozen comparator method differs")
+        if self.action == "execute" and self.reason is not None:
+            raise FinalRunnerContractError(
+                "executable frozen method authority has a reason"
+            )
+        if self.action == "not_applicable" and (
+            not isinstance(self.reason, str) or not self.reason
+        ):
+            raise FinalRunnerContractError(
+                "nonexecution frozen method authority lacks a reason"
+            )
+        if not self.seeds or any(
+            seed is not None and (type(seed) is not int or seed < 0)
+            for seed in self.seeds
+        ):
+            raise FinalRunnerContractError("frozen method seed denominator is invalid")
+
+    @property
+    def configuration_id(self) -> str:
+        if self.legacy_configuration is not None:
+            return self.legacy_configuration.configuration_id
+        if self.comparator_configuration is not None:
+            return self.comparator_configuration.configuration.configuration_id
+        return f"nonexecution-{self.method_id}"
+
+    @property
+    def kind(self) -> str:
+        if self.legacy_configuration is not None:
+            return self.legacy_configuration.kind
+        if self.comparator_configuration is not None:
+            return "comparator_tuning"
+        return "comparator_nonexecution"
+
+    @property
+    def requires_count_score(self) -> bool:
+        return bool(
+            self.legacy_configuration is not None
+            and self.legacy_configuration.requires_count_score
+        )
+
+    @property
+    def requires_calibration(self) -> bool:
+        return bool(
+            self.legacy_configuration is not None
+            and self.legacy_configuration.requires_calibration
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "method_id": self.method_id,
+            "legacy_configuration": (
+                None
+                if self.legacy_configuration is None
+                else self.legacy_configuration.to_dict()
+            ),
+            "comparator_configuration": (
+                None
+                if self.comparator_configuration is None
+                else direct_bound_comparator_value(self.comparator_configuration)
+            ),
+            "comparator_nonexecution_identity": (
+                None
+                if self.comparator_nonexecution_identity is None
+                else direct_json_value(
+                    self.comparator_nonexecution_identity,
+                    payload=True,
+                )
+            ),
+            "action": self.action,
+            "reason": self.reason,
+            "seeds": list(self.seeds),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class FinalExecutionPlan:
     """Hash-bound frozen method x final dataset x nested seed denominator."""
 
     schema_version: int
     input_hashes: Mapping[str, str]
     entries: tuple[FinalPlanEntry, ...]
-    configurations: tuple[AuthorizedConfiguration, ...]
+    configurations: tuple[FrozenPlanMethodAuthority, ...]
     plan_sha256: str
 
 
@@ -1309,7 +1427,7 @@ class TrajectoryExecutionPlan:
     scope: Literal["supplementary_trajectory"]
     input_hashes: Mapping[str, str]
     entries: tuple[FinalPlanEntry, ...]
-    configurations: tuple[AuthorizedConfiguration, ...]
+    configurations: tuple[FrozenPlanMethodAuthority, ...]
     plan_sha256: str
 
 
@@ -3486,14 +3604,54 @@ class FinalResultStore:
         plan_entry: FinalPlanEntry,
         run: Mapping[str, object],
     ) -> Mapping[str, object] | None:
+        direct_comparator = plan_entry.run.configuration_kind == "comparator_tuning"
         if value is None:
             if plan_entry.action == "not_applicable":
                 return None
+            if direct_comparator:
+                raise FinalRunnerContractError(
+                    "executed final comparator lacks its complete request receipt"
+                )
             if run.get("status") == "completed" and plan_entry.run.requires_calibration:
                 raise FinalRunnerContractError(
                     "completed final calibration lacks its execution request receipt"
                 )
             return None
+        if direct_comparator:
+            if not isinstance(value, Mapping) or set(value) != {
+                "request_kind",
+                "configuration",
+                "dataset_id",
+                "execution_authority_sha256",
+                "method_input_sha256",
+                "model_seed",
+            }:
+                raise FinalRunnerContractError(
+                    "final comparator request receipt has an invalid schema"
+                )
+            for name in (
+                "execution_authority_sha256",
+                "method_input_sha256",
+            ):
+                _sha256(value.get(name), f"final comparator request {name}")
+            expected_configuration = plan_entry.run.comparator_configuration
+            if (
+                expected_configuration is None
+                or value.get("request_kind") != "frozen_comparator_direct"
+                or not direct_equal(
+                    value.get("configuration"),
+                    direct_bound_comparator_value(expected_configuration),
+                )
+                or value.get("dataset_id") != plan_entry.run.dataset_id
+                or value.get("execution_authority_sha256")
+                != self.plan.input_hashes.get("execution_authority_sha256")
+                or value.get("method_input_sha256") != run.get("method_input_sha256")
+                or value.get("model_seed") != plan_entry.run.model_seed
+            ):
+                raise FinalRunnerContractError(
+                    "final comparator request receipt differs from its plan"
+                )
+            return value
         if not isinstance(value, Mapping) or set(value) != {
             "calibration_usage",
             "configuration_sha256",
@@ -3653,7 +3811,9 @@ class FinalResultStore:
         plan_entry: FinalPlanEntry,
         attempt: EvaluatedAttempt,
         *,
-        execution_request: ExecutionRequest | None = None,
+        execution_request: (
+            ExecutionRequest | FinalComparatorExecutionRequest | None
+        ) = None,
     ) -> dict[str, object]:
         if not isinstance(plan_entry, FinalPlanEntry):
             raise TypeError("plan_entry must be a FinalPlanEntry")
@@ -3674,47 +3834,85 @@ class FinalResultStore:
             raise FinalRunnerContractError("final attempt differs from its plan entry")
         request_receipt: dict[str, object] | None = None
         if execution_request is not None:
-            if not isinstance(execution_request, ExecutionRequest):
-                raise TypeError("execution_request must be an ExecutionRequest")
-            execution_request.validate_integrity()
-            if (
-                plan_entry.action != "execute"
-                or execution_request.method_spec.id != plan_entry.run.method_id
-                or execution_request.method_input_sha256
-                != attempt.run.method_input_sha256
-                or execution_request.model_seed != plan_entry.run.model_seed
-                or execution_request.dataset_id != plan_entry.run.dataset_id
-                or execution_request.mechanism != plan_entry.run.mechanism
-                or execution_request.biological_id != plan_entry.run.biological_id
-                or execution_request.technical_view != plan_entry.run.technical_view
-                or execution_request.configuration_id != plan_entry.run.configuration_id
-                or execution_request.configuration_sha256
-                != plan_entry.run.configuration_sha256
-                or execution_request.execution_authority_sha256
-                != self.plan.input_hashes.get("execution_authority_sha256")
-                or execution_request.calibration_usage != "retained_all_development"
-                or execution_request.calibration_context is not None
-            ):
-                raise FinalRunnerContractError(
-                    "final execution request differs from its plan entry"
-                )
-            request_receipt = {
-                "calibration_usage": execution_request.calibration_usage,
-                "configuration_sha256": execution_request.configuration_sha256,
-                "count_score_manifest_sha256": (
-                    execution_request.count_score_manifest_sha256
-                ),
-                "dataset_id": execution_request.dataset_id,
-                "execution_authority_sha256": (
-                    execution_request.execution_authority_sha256
-                ),
-                "method_input_sha256": execution_request.method_input_sha256,
-                "model_seed": execution_request.model_seed,
-                "request_sha256": execution_request.request_sha256,
-                "retained_calibration_sha256": (
-                    execution_request.retained_calibration_sha256
-                ),
-            }
+            if isinstance(execution_request, FinalComparatorExecutionRequest):
+                execution_request.validate_integrity()
+                configuration = plan_entry.run.comparator_configuration
+                input_identity = method_input_sha256(execution_request.method_input)
+                if (
+                    plan_entry.action != "execute"
+                    or plan_entry.run.configuration_kind != "comparator_tuning"
+                    or configuration is None
+                    or execution_request.method_spec.id != plan_entry.run.method_id
+                    or input_identity != attempt.run.method_input_sha256
+                    or execution_request.model_seed != plan_entry.run.model_seed
+                    or execution_request.dataset_id != plan_entry.run.dataset_id
+                    or execution_request.mechanism != plan_entry.run.mechanism
+                    or execution_request.biological_id != plan_entry.run.biological_id
+                    or execution_request.technical_view != plan_entry.run.technical_view
+                    or not direct_equal(
+                        execution_request.configuration,
+                        configuration,
+                    )
+                    or execution_request.execution_authority != self.execution_authority
+                ):
+                    raise FinalRunnerContractError(
+                        "final comparator request differs from its plan entry"
+                    )
+                request_receipt = {
+                    "request_kind": "frozen_comparator_direct",
+                    "configuration": direct_bound_comparator_value(
+                        execution_request.configuration
+                    ),
+                    "dataset_id": execution_request.dataset_id,
+                    "execution_authority_sha256": (
+                        execution_request.execution_authority.authority_sha256
+                    ),
+                    "method_input_sha256": input_identity,
+                    "model_seed": execution_request.model_seed,
+                }
+            elif not isinstance(execution_request, ExecutionRequest):
+                raise TypeError("execution_request must be a supported final request")
+            else:
+                execution_request.validate_integrity()
+                if (
+                    plan_entry.action != "execute"
+                    or execution_request.method_spec.id != plan_entry.run.method_id
+                    or execution_request.method_input_sha256
+                    != attempt.run.method_input_sha256
+                    or execution_request.model_seed != plan_entry.run.model_seed
+                    or execution_request.dataset_id != plan_entry.run.dataset_id
+                    or execution_request.mechanism != plan_entry.run.mechanism
+                    or execution_request.biological_id != plan_entry.run.biological_id
+                    or execution_request.technical_view != plan_entry.run.technical_view
+                    or execution_request.configuration_id
+                    != plan_entry.run.configuration_id
+                    or execution_request.configuration_sha256
+                    != plan_entry.run.configuration_sha256
+                    or execution_request.execution_authority_sha256
+                    != self.plan.input_hashes.get("execution_authority_sha256")
+                    or execution_request.calibration_usage != "retained_all_development"
+                    or execution_request.calibration_context is not None
+                ):
+                    raise FinalRunnerContractError(
+                        "final execution request differs from its plan entry"
+                    )
+                request_receipt = {
+                    "calibration_usage": execution_request.calibration_usage,
+                    "configuration_sha256": execution_request.configuration_sha256,
+                    "count_score_manifest_sha256": (
+                        execution_request.count_score_manifest_sha256
+                    ),
+                    "dataset_id": execution_request.dataset_id,
+                    "execution_authority_sha256": (
+                        execution_request.execution_authority_sha256
+                    ),
+                    "method_input_sha256": execution_request.method_input_sha256,
+                    "model_seed": execution_request.model_seed,
+                    "request_sha256": execution_request.request_sha256,
+                    "retained_calibration_sha256": (
+                        execution_request.retained_calibration_sha256
+                    ),
+                }
         try:
             with tempfile.TemporaryDirectory(
                 prefix="maskimpute-final-attempt-stage-"
@@ -3948,15 +4146,23 @@ class FinalResultStore:
 
 
 def _final_run_id(
+    ordinal: int,
     method_id: str,
     dataset_id: str,
     model_seed: int | None,
-    configuration_sha256: str,
+    configuration: FrozenPlanMethodAuthority,
 ) -> str:
     seed = "deterministic" if model_seed is None else f"seed-{model_seed}"
+    if configuration.kind in {"comparator_tuning", "comparator_nonexecution"}:
+        return (
+            f"final-{ordinal:04d}-{method_id}-"
+            f"{dataset_id.removeprefix('dataset-')}-{seed}-"
+            f"{configuration.configuration_id}"
+        )
+    assert configuration.legacy_configuration is not None
     return (
         f"final-{method_id}-{dataset_id.removeprefix('dataset-')}-{seed}-"
-        f"{configuration_sha256[:12]}"
+        f"{configuration.legacy_configuration.configuration_sha256[:12]}"
     )
 
 
@@ -4034,7 +4240,121 @@ def _configuration_for_method(
 
     if not isinstance(spec, MethodSpec):
         raise TypeError("spec must be a MethodSpec")
+    if method_id in _canonical_comparator_tuning_authority().method_order:
+        raise FinalRunnerContractError(
+            "selected comparator configuration must come from the frozen receipt"
+        )
     return AuthorizedConfiguration.registry_default(spec)
+
+
+def _frozen_comparator_projection(
+    frozen_method: Mapping[str, object],
+) -> tuple[object, ComparatorSelectionProjection]:
+    """Recompute and close the complete direct selection handoff."""
+
+    authority = _canonical_comparator_tuning_authority()
+    frozen_authority = frozen_method.get("comparator_tuning_authority")
+    selection = frozen_method.get("comparator_selection")
+    if not isinstance(selection, Mapping) or not isinstance(
+        selection.get("receipt"), Mapping
+    ):
+        raise FinalRunnerContractError("frozen comparator selection is incomplete")
+    try:
+        projection = comparator_selection_projection(selection["receipt"])
+    except (ComparatorTuningError, TypeError, ValueError) as error:
+        raise FinalRunnerContractError(
+            "frozen comparator selection is invalid"
+        ) from error
+    if (
+        not direct_equal(frozen_authority, direct_json_value(authority))
+        or not direct_equal(
+            selection,
+            comparator_selection_projection_value(projection),
+        )
+        or frozen_method.get("scheduled_same_input_ids")
+        != list(authority.scheduled_same_input_ids)
+        or frozen_method.get("required_control_ids")
+        != list(authority.required_control_ids)
+        or frozen_method.get("established_comparator_ids")
+        != list(authority.established_comparator_ids)
+        or frozen_method.get("modern_core_ids") != list(authority.modern_core_ids)
+        or frozen_method.get("ready_comparison_population_ids")
+        != list(projection.ready_comparison_population_ids)
+    ):
+        raise FinalRunnerContractError(
+            "frozen comparator selection differs from its complete receipt"
+        )
+    selected = frozen_method.get("selected_comparator_configurations")
+    unavailable = frozen_method.get("unavailable_comparator_nonexecution_identities")
+    if not isinstance(selected, Mapping) or not isinstance(unavailable, Mapping):
+        raise FinalRunnerContractError("frozen comparator maps are incomplete")
+    if (
+        set(selected) & set(unavailable)
+        or set(selected) | set(unavailable) != set(authority.method_order)
+        or set(selected) != set(projection.selected_by_method)
+        or set(unavailable) != set(projection.nonexecution_identity_by_method)
+    ):
+        raise FinalRunnerContractError(
+            "frozen comparator selected/nonexecution maps are incomplete"
+        )
+    for method_id, value in projection.selected_by_method.items():
+        if not direct_equal(
+            selected.get(method_id),
+            direct_bound_comparator_value(value.configuration),
+        ):
+            raise FinalRunnerContractError(
+                f"frozen selected comparator {method_id} differs"
+            )
+    for method_id, value in projection.nonexecution_identity_by_method.items():
+        if not direct_equal(
+            unavailable.get(method_id),
+            direct_json_value(value, payload=True),
+        ):
+            raise FinalRunnerContractError(
+                f"frozen comparator {method_id} nonexecution identity differs"
+            )
+    statuses = frozen_method.get("scheduled_same_input_statuses")
+    if (
+        not isinstance(statuses, list)
+        or tuple(
+            row.get("method_id") if isinstance(row, Mapping) else None
+            for row in statuses
+        )
+        != authority.scheduled_same_input_ids
+    ):
+        raise FinalRunnerContractError(
+            "frozen scheduled same-input status denominator differs"
+        )
+    status_by_id = {
+        str(row["method_id"]): row for row in statuses if isinstance(row, Mapping)
+    }
+    for method_id in authority.method_order:
+        row = status_by_id.get(method_id)
+        if not isinstance(row, Mapping):
+            raise FinalRunnerContractError(
+                f"frozen comparator {method_id} status is absent"
+            )
+        selected_value = projection.selected_by_method.get(method_id)
+        unavailable_value = projection.nonexecution_identity_by_method.get(method_id)
+        if not direct_equal(
+            row.get("selected_comparator_configuration"),
+            (
+                None
+                if selected_value is None
+                else direct_bound_comparator_value(selected_value.configuration)
+            ),
+        ) or not direct_equal(
+            row.get("nonexecution_identity"),
+            (
+                None
+                if unavailable_value is None
+                else direct_json_value(unavailable_value, payload=True)
+            ),
+        ):
+            raise FinalRunnerContractError(
+                f"frozen comparator {method_id} status identity differs"
+            )
+    return authority, projection
 
 
 def _frozen_method_plan_authority(
@@ -4042,7 +4362,7 @@ def _frozen_method_plan_authority(
     registry: MethodRegistry,
 ) -> tuple[
     dict[str, Mapping[str, object]],
-    tuple[AuthorizedConfiguration, ...],
+    tuple[FrozenPlanMethodAuthority, ...],
 ]:
     """Validate the one frozen method/configuration/applicability authority."""
 
@@ -4077,16 +4397,80 @@ def _frozen_method_plan_authority(
         registry_payload
     ):
         raise FinalRunnerContractError("method registry differs from frozen receipt")
-    configurations = tuple(
-        _configuration_for_method(spec.id, spec, frozen_method)
-        for spec in registry.methods
-    )
-    return frozen_by_id, configurations
+    comparator_authority, projection = _frozen_comparator_projection(frozen_method)
+    configurations: list[FrozenPlanMethodAuthority] = []
+    for spec in registry.methods:
+        row = frozen_by_id[spec.id]
+        legacy_configuration: AuthorizedConfiguration | None = None
+        comparator_configuration: BoundComparatorConfiguration | None = None
+        comparator_nonexecution_identity: Mapping[str, object] | None = None
+        if spec.id in comparator_authority.method_order:
+            selected = projection.selected_by_method.get(spec.id)
+            nonexecution = projection.nonexecution_identity_by_method.get(spec.id)
+            if selected is not None:
+                comparator_configuration = selected.configuration
+                if (
+                    not direct_equal(
+                        comparator_configuration.method,
+                        comparator_method_binding(spec),
+                    )
+                    or not direct_equal(
+                        row.get("selected_comparator_configuration"),
+                        direct_bound_comparator_value(comparator_configuration),
+                    )
+                    or row.get("nonexecution_identity") is not None
+                ):
+                    raise FinalRunnerContractError(
+                        f"frozen selected comparator {spec.id} differs from registry"
+                    )
+            elif nonexecution is not None:
+                comparator_nonexecution_identity = nonexecution
+                if (
+                    not direct_equal(
+                        row.get("nonexecution_identity"),
+                        direct_json_value(nonexecution, payload=True),
+                    )
+                    or row.get("selected_comparator_configuration") is not None
+                ):
+                    raise FinalRunnerContractError(
+                        f"frozen comparator {spec.id} nonexecution differs"
+                    )
+            else:  # pragma: no cover - complete projection checked above
+                raise AssertionError("comparator method projection is absent")
+        else:
+            legacy_configuration = _configuration_for_method(
+                spec.id,
+                spec,
+                frozen_method,
+            )
+        kind = (
+            legacy_configuration.kind
+            if legacy_configuration is not None
+            else (
+                "comparator_tuning"
+                if comparator_configuration is not None
+                else "comparator_nonexecution"
+            )
+        )
+        action, reason, seeds = _frozen_final_applicability(spec, row, kind)
+        configurations.append(
+            FrozenPlanMethodAuthority(
+                method_id=spec.id,
+                legacy_configuration=legacy_configuration,
+                comparator_configuration=comparator_configuration,
+                comparator_nonexecution_identity=(comparator_nonexecution_identity),
+                action=action,
+                reason=reason,
+                seeds=seeds,
+            )
+        )
+    return frozen_by_id, tuple(configurations)
 
 
 def _frozen_final_applicability(
     spec: object,
     row: Mapping[str, object],
+    configuration_kind: str,
 ) -> tuple[
     Literal["execute", "not_applicable"],
     str | None,
@@ -4161,7 +4545,42 @@ def _frozen_final_applicability(
             raise FinalRunnerContractError(
                 f"method {spec.id} matched-bulk disposition is invalid"
             )
+    if (
+        rule == "never"
+        and spec.execution_scope == "same_input_required"
+        and configuration_kind == "comparator_nonexecution"
+    ):
+        return (
+            "not_applicable",
+            raw_reason,
+            DEVELOPMENT_MODEL_SEEDS if spec.stochastic else (None,),
+        )
     return "not_applicable", raw_reason, (None,)
+
+
+def _production_registry_matches(registry: MethodRegistry) -> bool:
+    """Identify the frozen production denominator by complete execution fields."""
+
+    from .methods.registry import load_method_registry
+
+    canonical = load_method_registry(
+        Path(__file__).resolve().parents[1] / "study/methods.json"
+    )
+    return (
+        registry.ids == canonical.ids
+        and len(registry.methods) == len(canonical.methods)
+        and all(
+            direct_equal(
+                comparator_method_binding(observed),
+                comparator_method_binding(expected),
+            )
+            for observed, expected in zip(
+                registry.methods,
+                canonical.methods,
+                strict=True,
+            )
+        )
+    )
 
 
 def build_final_execution_plan(
@@ -4202,18 +4621,18 @@ def build_final_execution_plan(
     ordinal = 0
     for binding in dataset_values:
         for spec in registry.methods:
-            row = frozen_by_id[spec.id]
-            action, reason, seeds = _frozen_final_applicability(spec, row)
             configuration = configuration_by_id[spec.id]
-            for seed in seeds:
+            for seed in configuration.seeds:
                 ordinal += 1
+                legacy = configuration.legacy_configuration
                 run = RunPlanEntry(
                     ordinal=ordinal,
                     run_id=_final_run_id(
+                        ordinal,
                         spec.id,
                         binding.dataset_id,
                         seed,
-                        configuration.configuration_sha256,
+                        configuration,
                     ),
                     method_id=spec.id,
                     dataset_id=binding.dataset_id,
@@ -4223,14 +4642,28 @@ def build_final_execution_plan(
                     technical_view=binding.technical_view,
                     model_seed=seed,
                     configuration_id=configuration.configuration_id,
-                    configuration_sha256=configuration.configuration_sha256,
+                    configuration_sha256=(
+                        None if legacy is None else legacy.configuration_sha256
+                    ),
                     preflight_status="planned",
                     preflight_reason=None,
                     configuration_kind=configuration.kind,
                     requires_count_score=configuration.requires_count_score,
                     requires_calibration=configuration.requires_calibration,
+                    comparator_configuration=(configuration.comparator_configuration),
+                    comparator_nonexecution_identity=(
+                        configuration.comparator_nonexecution_identity
+                    ),
                 )
-                entries.append(FinalPlanEntry(run=run, action=action, reason=reason))
+                entries.append(
+                    FinalPlanEntry(
+                        run=run,
+                        action=configuration.action,
+                        reason=configuration.reason,
+                    )
+                )
+    if _production_registry_matches(registry) and len(entries) != 1_760:
+        raise FinalRunnerContractError("final structural denominator must equal 1760")
     input_hashes = {
         "frozen_method_sha256": str(frozen_method["payload_sha256"]),
         "method_registry_sha256": str(frozen_method["method_registry_sha256"]),
@@ -4262,13 +4695,23 @@ def build_final_execution_plan(
 
 
 def _trajectory_run_id(
+    ordinal: int,
     method_id: str,
     dataset_id: str,
     model_seed: int | None,
-    configuration_sha256: str,
+    configuration: FrozenPlanMethodAuthority,
 ) -> str:
     seed = "deterministic" if model_seed is None else f"seed-{model_seed}"
-    return f"trajectory-{method_id}-{dataset_id}-{seed}-{configuration_sha256[:12]}"
+    if configuration.kind in {"comparator_tuning", "comparator_nonexecution"}:
+        return (
+            f"trajectory-{ordinal:02d}-{method_id}-{dataset_id}-{seed}-"
+            f"{configuration.configuration_id}"
+        )
+    assert configuration.legacy_configuration is not None
+    return (
+        f"trajectory-{method_id}-{dataset_id}-{seed}-"
+        f"{configuration.legacy_configuration.configuration_sha256[:12]}"
+    )
 
 
 def build_trajectory_execution_plan(
@@ -4334,20 +4777,18 @@ def build_trajectory_execution_plan(
     entries: list[FinalPlanEntry] = []
     ordinal = 0
     for spec in registry.methods:
-        action, reason, seeds = _frozen_final_applicability(
-            spec,
-            frozen_by_id[spec.id],
-        )
         configuration = configuration_by_id[spec.id]
-        for seed in seeds:
+        for seed in configuration.seeds:
             ordinal += 1
+            legacy = configuration.legacy_configuration
             run = RunPlanEntry(
                 ordinal=ordinal,
                 run_id=_trajectory_run_id(
+                    ordinal,
                     spec.id,
                     binding.dataset_id,
                     seed,
-                    configuration.configuration_sha256,
+                    configuration,
                 ),
                 method_id=spec.id,
                 dataset_id=binding.dataset_id,
@@ -4357,14 +4798,30 @@ def build_trajectory_execution_plan(
                 technical_view=binding.technical_view,
                 model_seed=seed,
                 configuration_id=configuration.configuration_id,
-                configuration_sha256=configuration.configuration_sha256,
+                configuration_sha256=(
+                    None if legacy is None else legacy.configuration_sha256
+                ),
                 preflight_status="planned",
                 preflight_reason=None,
                 configuration_kind=configuration.kind,
                 requires_count_score=configuration.requires_count_score,
                 requires_calibration=configuration.requires_calibration,
+                comparator_configuration=configuration.comparator_configuration,
+                comparator_nonexecution_identity=(
+                    configuration.comparator_nonexecution_identity
+                ),
             )
-            entries.append(FinalPlanEntry(run=run, action=action, reason=reason))
+            entries.append(
+                FinalPlanEntry(
+                    run=run,
+                    action=configuration.action,
+                    reason=configuration.reason,
+                )
+            )
+    if _production_registry_matches(registry) and len(entries) != 44:
+        raise FinalRunnerContractError(
+            "trajectory structural denominator must equal 44"
+        )
     input_hashes = {
         "frozen_method_sha256": str(frozen_method["payload_sha256"]),
         "method_registry_sha256": str(frozen_method["method_registry_sha256"]),
@@ -4511,7 +4968,10 @@ def _execute_frozen_plan(
     registry: MethodRegistry,
     prepared_datasets: Mapping[str, PreparedDataset],
     authority: ExecutionAuthorityContext,
-    executor: Callable[[ExecutionRequest], AdapterOutcome],
+    executor: Callable[
+        [ExecutionRequest | FinalComparatorExecutionRequest],
+        AdapterOutcome,
+    ],
     store: FinalResultStore,
     *,
     on_record_published: Callable[[], object],
@@ -4555,25 +5015,45 @@ def _execute_frozen_plan(
             assert plan_entry.reason is not None
             outcome = AdapterOutcome.unavailable(plan_entry.reason)
         else:
-            request = ExecutionRequest.create(
-                spec,
-                prepared.method_input,
-                model_seed=plan_entry.run.model_seed,
-                configuration=configuration,
-                authority=authority,
-                mechanism=plan_entry.run.mechanism,
-                biological_id=plan_entry.run.biological_id,
-                technical_view=plan_entry.run.technical_view,
-                dataset_id=plan_entry.run.dataset_id,
-                timeout_seconds=spec.resources.timeout_seconds,
-                calibration_usage="retained_all_development",
-            )
+            if configuration.comparator_configuration is not None:
+                request: ExecutionRequest | FinalComparatorExecutionRequest = (
+                    FinalComparatorExecutionRequest.create(
+                        spec,
+                        prepared.method_input,
+                        model_seed=plan_entry.run.model_seed,
+                        configuration=configuration.comparator_configuration,
+                        authority=authority,
+                        mechanism=plan_entry.run.mechanism,
+                        biological_id=plan_entry.run.biological_id,
+                        technical_view=plan_entry.run.technical_view,
+                        dataset_id=plan_entry.run.dataset_id,
+                        timeout_seconds=spec.resources.timeout_seconds,
+                    )
+                )
+            else:
+                legacy = configuration.legacy_configuration
+                if legacy is None:  # pragma: no cover - action/config invariant
+                    raise AssertionError("executable final configuration is absent")
+                request = ExecutionRequest.create(
+                    spec,
+                    prepared.method_input,
+                    model_seed=plan_entry.run.model_seed,
+                    configuration=legacy,
+                    authority=authority,
+                    mechanism=plan_entry.run.mechanism,
+                    biological_id=plan_entry.run.biological_id,
+                    technical_view=plan_entry.run.technical_view,
+                    dataset_id=plan_entry.run.dataset_id,
+                    timeout_seconds=spec.resources.timeout_seconds,
+                    calibration_usage="retained_all_development",
+                )
             outcome = executor(request)
             if not isinstance(outcome, AdapterOutcome):
                 raise FinalRunnerContractError(
                     "final adapter returned a noncanonical outcome"
                 )
-            outcome = enforce_calibration_fold_receipt(request, outcome)
+            if isinstance(request, ExecutionRequest):
+                outcome = enforce_calibration_fold_receipt(request, outcome)
             if outcome.status in {
                 "infrastructure_error",
                 "blocked_authority",
@@ -4604,7 +5084,10 @@ def execute_final_plan(
     registry: MethodRegistry,
     prepared_datasets: Mapping[str, PreparedDataset],
     authority: ExecutionAuthorityContext,
-    executor: Callable[[ExecutionRequest], AdapterOutcome],
+    executor: Callable[
+        [ExecutionRequest | FinalComparatorExecutionRequest],
+        AdapterOutcome,
+    ],
     store: FinalResultStore,
     *,
     on_record_published: Callable[[], object],
@@ -4629,7 +5112,10 @@ def execute_trajectory_plan(
     registry: MethodRegistry,
     prepared_datasets: Mapping[str, PreparedDataset],
     authority: ExecutionAuthorityContext,
-    executor: Callable[[ExecutionRequest], AdapterOutcome],
+    executor: Callable[
+        [ExecutionRequest | FinalComparatorExecutionRequest],
+        AdapterOutcome,
+    ],
     store: FinalResultStore,
     *,
     on_record_published: Callable[[], object],

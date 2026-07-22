@@ -1725,6 +1725,29 @@ def _bind_v28_activation(
     )
 
 
+def direct_bound_comparator_value(
+    value: BoundComparatorConfiguration,
+) -> dict[str, object]:
+    """Encode one complete selected comparator with its readable typed payload."""
+
+    from .comparator_tuning import BoundComparatorConfiguration
+    from .direct_values import direct_json_value
+
+    if not isinstance(value, BoundComparatorConfiguration):
+        raise TypeError("value must be a BoundComparatorConfiguration")
+    payload = value.configuration.payload
+    return {
+        "configuration": {
+            "method_id": value.configuration.method_id,
+            "configuration_id": value.configuration.configuration_id,
+            "is_upstream_default": value.configuration.is_upstream_default,
+            "payload": direct_json_value(payload, payload=True),
+        },
+        "authority_reference": direct_json_value(value.authority_reference),
+        "method": direct_json_value(value.method),
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class RunPlanEntry:
     """One denominator entry, including preflight-blocked attempts."""
@@ -1739,7 +1762,7 @@ class RunPlanEntry:
     technical_view: str
     model_seed: int | None
     configuration_id: str
-    configuration_sha256: str
+    configuration_sha256: str | None
     preflight_status: Literal["planned", "blocked_authority"]
     preflight_reason: str | None
     configuration_kind: str = "registry"
@@ -1748,6 +1771,8 @@ class RunPlanEntry:
     configuration_payload_sha256: str | None = None
     configuration_method_identity_sha256: str | None = None
     nonexecution_identity_sha256: str | None = None
+    comparator_configuration: BoundComparatorConfiguration | None = None
+    comparator_nonexecution_identity: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.configuration_kind not in {
@@ -1758,16 +1783,14 @@ class RunPlanEntry:
             "comparator_nonexecution",
         }:
             raise RunnerContractError("plan configuration kind is invalid")
+        if self.configuration_kind in {
+            "comparator_tuning",
+            "comparator_nonexecution",
+        }:
+            self._validate_direct_comparator_identity()
+            return
         _require_sha256(self.configuration_sha256, "plan configuration checksum")
         if self.configuration_payload_sha256 is None:
-            if self.configuration_kind not in {
-                "registry",
-                "candidate_search",
-                "ablation",
-            }:
-                raise RunnerContractError(
-                    "comparator plan entry requires an explicit payload checksum"
-                )
             object.__setattr__(
                 self,
                 "configuration_payload_sha256",
@@ -1779,34 +1802,140 @@ class RunPlanEntry:
         )
         if self.configuration_payload_sha256 != self.configuration_sha256:
             raise RunnerContractError("plan configuration payload checksum differs")
-        if self.configuration_kind == "comparator_tuning":
-            _require_sha256(
-                self.configuration_method_identity_sha256,
-                "plan comparator method identity",
-            )
-            if self.nonexecution_identity_sha256 is not None:
-                raise RunnerContractError(
-                    "comparator tuning plan entry forbids nonexecution identity"
-                )
-        elif self.configuration_kind == "comparator_nonexecution":
-            if self.configuration_method_identity_sha256 is not None:
-                raise RunnerContractError(
-                    "comparator nonexecution plan entry forbids method identity"
-                )
-            _require_sha256(
-                self.nonexecution_identity_sha256,
-                "plan comparator nonexecution identity",
-            )
-        elif (
+        if (
             self.configuration_method_identity_sha256 is not None
             or self.nonexecution_identity_sha256 is not None
+            or self.comparator_configuration is not None
+            or self.comparator_nonexecution_identity is not None
         ):
             raise RunnerContractError(
                 "legacy plan entry forbids comparator identity fields"
             )
 
+    def _validate_direct_comparator_identity(self) -> None:
+        from .comparator_tuning import (
+            BoundComparatorConfiguration,
+            ComparatorTuningError,
+            _validate_bound_selection_configuration,
+        )
+        from .direct_values import direct_json_value
+
+        if any(
+            value is not None
+            for value in (
+                self.configuration_sha256,
+                self.configuration_payload_sha256,
+                self.configuration_method_identity_sha256,
+                self.nonexecution_identity_sha256,
+            )
+        ):
+            raise RunnerContractError(
+                "direct comparator plan entry forbids content summaries"
+            )
+        if self.requires_count_score or self.requires_calibration:
+            raise RunnerContractError(
+                "direct comparator plan entry forbids score authority"
+            )
+        if self.configuration_kind == "comparator_tuning":
+            if (
+                not isinstance(
+                    self.comparator_configuration,
+                    BoundComparatorConfiguration,
+                )
+                or self.comparator_nonexecution_identity is not None
+                or self.configuration_id == "registry-default"
+                or self.comparator_configuration.method.method_id != self.method_id
+                or self.comparator_configuration.configuration.method_id
+                != self.method_id
+                or self.comparator_configuration.configuration.configuration_id
+                != self.configuration_id
+            ):
+                raise RunnerContractError(
+                    "selected comparator plan identity is invalid"
+                )
+            try:
+                _validate_bound_selection_configuration(self.comparator_configuration)
+                decoded = self.comparator_configuration.configuration.decode()
+                if encode_comparator_configuration(decoded) != dict(
+                    self.comparator_configuration.configuration.payload
+                ):
+                    raise RunnerContractError(
+                        "selected comparator payload changed during typed decoding"
+                    )
+            except (ComparatorTuningError, TypeError, ValueError) as error:
+                raise RunnerContractError(
+                    "selected comparator plan identity is invalid"
+                ) from error
+            return
+        if (
+            self.comparator_configuration is not None
+            or not isinstance(self.comparator_nonexecution_identity, Mapping)
+            or self.configuration_id != f"nonexecution-{self.method_id}"
+        ):
+            raise RunnerContractError(
+                "comparator nonexecution plan identity is invalid"
+            )
+        try:
+            encoded = direct_json_value(
+                self.comparator_nonexecution_identity,
+                payload=True,
+            )
+            if not isinstance(encoded, Mapping):
+                raise ValueError("nonexecution identity is not an object")
+            frozen = MappingProxyType(dict(encoded))
+        except (TypeError, ValueError) as error:
+            raise RunnerContractError(
+                "comparator nonexecution plan identity is invalid"
+            ) from error
+        object.__setattr__(self, "comparator_nonexecution_identity", frozen)
+
+    @property
+    def nonexecution_identity(self) -> Mapping[str, object] | None:
+        """Compatibility spelling for the complete direct nonexecution value."""
+
+        return self.comparator_nonexecution_identity
+
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        if self.configuration_kind not in {
+            "comparator_tuning",
+            "comparator_nonexecution",
+        }:
+            value = asdict(self)
+            value.pop("comparator_configuration")
+            value.pop("comparator_nonexecution_identity")
+            return value
+        from .direct_values import direct_json_value
+
+        return {
+            "ordinal": self.ordinal,
+            "run_id": self.run_id,
+            "method_id": self.method_id,
+            "dataset_id": self.dataset_id,
+            "source_dataset_sha256": self.source_dataset_sha256,
+            "mechanism": self.mechanism,
+            "biological_id": self.biological_id,
+            "technical_view": self.technical_view,
+            "model_seed": self.model_seed,
+            "configuration_id": self.configuration_id,
+            "preflight_status": self.preflight_status,
+            "preflight_reason": self.preflight_reason,
+            "configuration_kind": self.configuration_kind,
+            "requires_count_score": self.requires_count_score,
+            "requires_calibration": self.requires_calibration,
+            "comparator_configuration": (
+                None
+                if self.comparator_configuration is None
+                else direct_bound_comparator_value(self.comparator_configuration)
+            ),
+            "comparator_nonexecution_identity": (
+                None
+                if self.comparator_nonexecution_identity is None
+                else direct_json_value(
+                    self.comparator_nonexecution_identity,
+                    payload=True,
+                )
+            ),
+        }
 
 
 def _counts_toward_configuration_limit(entry: RunPlanEntry) -> bool:
@@ -3144,6 +3273,131 @@ class ExecutionRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class FinalComparatorExecutionRequest:
+    """Narrow direct request for one frozen final/trajectory comparator row."""
+
+    method_spec: MethodSpec
+    method_input: MethodInput
+    model_seed: int | None
+    dataset_id: str
+    mechanism: str
+    biological_id: str
+    technical_view: str
+    configuration: BoundComparatorConfiguration
+    execution_authority: ExecutionAuthorityContext
+    timeout_seconds: float
+    max_rss_bytes: int
+    max_gpu_bytes: int
+
+    @classmethod
+    def create(
+        cls,
+        method_spec: MethodSpec,
+        method_input: MethodInput,
+        *,
+        model_seed: int | None,
+        configuration: BoundComparatorConfiguration,
+        authority: ExecutionAuthorityContext,
+        mechanism: str,
+        biological_id: str,
+        technical_view: str,
+        dataset_id: str,
+        timeout_seconds: int | float,
+    ) -> FinalComparatorExecutionRequest:
+        timeout = _require_nonnegative_number(timeout_seconds, "timeout_seconds")
+        if timeout == 0:
+            raise RunnerContractError("timeout_seconds must be positive")
+        request = cls(
+            method_spec=method_spec,
+            method_input=method_input,
+            model_seed=model_seed,
+            dataset_id=dataset_id,
+            mechanism=mechanism,
+            biological_id=biological_id,
+            technical_view=technical_view,
+            configuration=configuration,
+            execution_authority=authority,
+            timeout_seconds=float(timeout),
+            max_rss_bytes=int(method_spec.resources.max_rss_gib * 1024**3),
+            max_gpu_bytes=int(method_spec.resources.max_gpu_gib * 1024**3),
+        )
+        request.validate_integrity()
+        return request
+
+    def validate_integrity(self) -> None:
+        from .comparator_tuning import (
+            BoundComparatorConfiguration,
+            ComparatorTuningError,
+            _validate_bound_selection_configuration,
+        )
+        from .direct_values import direct_equal
+
+        if not isinstance(self.method_spec, MethodSpec):
+            raise TypeError("method_spec must be a MethodSpec")
+        if not isinstance(self.method_input, MethodInput):
+            raise TypeError("method_input must be a MethodInput")
+        if not isinstance(self.configuration, BoundComparatorConfiguration):
+            raise TypeError("configuration must be a BoundComparatorConfiguration")
+        if not isinstance(self.execution_authority, ExecutionAuthorityContext):
+            raise TypeError("authority must be an ExecutionAuthorityContext")
+        for value, name in (
+            (self.dataset_id, "dataset_id"),
+            (self.mechanism, "mechanism"),
+            (self.biological_id, "biological_id"),
+            (self.technical_view, "technical_view"),
+        ):
+            if not isinstance(value, str) or not value:
+                raise RunnerContractError(f"{name} must be a nonempty string")
+        if self.method_spec.stochastic:
+            if type(self.model_seed) is not int or self.model_seed not in (
+                DEVELOPMENT_MODEL_SEEDS
+            ):
+                raise RunnerContractError(
+                    "stochastic final comparators require seed 42, 43, or 44"
+                )
+        elif self.model_seed is not None:
+            raise RunnerContractError(
+                "deterministic final comparators require a null seed"
+            )
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, (int, float))
+            or not math.isfinite(self.timeout_seconds)
+            or self.timeout_seconds <= 0
+            or type(self.max_rss_bytes) is not int
+            or self.max_rss_bytes < 0
+            or type(self.max_gpu_bytes) is not int
+            or self.max_gpu_bytes < 0
+            or self.timeout_seconds != float(self.method_spec.resources.timeout_seconds)
+            or self.max_rss_bytes
+            != int(self.method_spec.resources.max_rss_gib * 1024**3)
+            or self.max_gpu_bytes
+            != int(self.method_spec.resources.max_gpu_gib * 1024**3)
+        ):
+            raise RunnerContractError("final comparator resource authority is invalid")
+        try:
+            _validate_bound_selection_configuration(self.configuration)
+            decoded = self.configuration.configuration.decode()
+        except (ComparatorTuningError, TypeError, ValueError) as error:
+            raise RunnerContractError(
+                "final comparator configuration is invalid"
+            ) from error
+        if (
+            not direct_equal(
+                self.configuration.method,
+                comparator_method_binding(self.method_spec),
+            )
+            or self.configuration.configuration.method_id != self.method_spec.id
+            or self.configuration.configuration.configuration_id == "registry-default"
+            or encode_comparator_configuration(decoded)
+            != dict(self.configuration.configuration.payload)
+        ):
+            raise RunnerContractError(
+                "final comparator configuration differs from method authority"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class AdapterOutcome:
     """Measured adapter result before evaluator-side conversion and metrics."""
 
@@ -4360,7 +4614,7 @@ class RawRunResult:
     technical_view: str
     model_seed: int | None
     configuration_id: str
-    configuration_sha256: str
+    configuration_sha256: str | None
     configuration_kind: str
     requires_count_score: bool
     requires_calibration: bool
@@ -4388,6 +4642,37 @@ class RawRunResult:
     stderr_sha256: str
     native_output_sha256: str | None
     evaluator_output_sha256: str | None
+    comparator_configuration: BoundComparatorConfiguration | None = None
+    comparator_nonexecution_identity: Mapping[str, object] | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        from .direct_values import direct_json_value
+
+        value = direct_json_value(self)
+        if not isinstance(value, dict):  # pragma: no cover - dataclass invariant
+            raise AssertionError("raw run result must encode as an object")
+        if self.configuration_kind in {
+            "comparator_tuning",
+            "comparator_nonexecution",
+        }:
+            value.pop("configuration_sha256")
+            value["comparator_configuration"] = (
+                None
+                if self.comparator_configuration is None
+                else direct_bound_comparator_value(self.comparator_configuration)
+            )
+            value["comparator_nonexecution_identity"] = (
+                None
+                if self.comparator_nonexecution_identity is None
+                else direct_json_value(
+                    self.comparator_nonexecution_identity,
+                    payload=True,
+                )
+            )
+        else:
+            value.pop("comparator_configuration")
+            value.pop("comparator_nonexecution_identity")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -4401,15 +4686,43 @@ class LongFormMetric:
     method: str
     model_seed: int | None
     configuration_id: str
-    configuration_sha256: str
+    configuration_sha256: str | None
     metric: str
     value: float | None
     n: int
     status: str
     reason: str | None
+    comparator_configuration: BoundComparatorConfiguration | None = None
+    comparator_nonexecution_identity: Mapping[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        from .direct_values import direct_json_value
+
+        value = direct_json_value(self)
+        if not isinstance(value, dict):  # pragma: no cover - dataclass invariant
+            raise AssertionError("long-form metric must encode as an object")
+        if (
+            self.comparator_configuration is not None
+            or self.comparator_nonexecution_identity is not None
+        ):
+            value.pop("configuration_sha256")
+            value["comparator_configuration"] = (
+                None
+                if self.comparator_configuration is None
+                else direct_bound_comparator_value(self.comparator_configuration)
+            )
+            value["comparator_nonexecution_identity"] = (
+                None
+                if self.comparator_nonexecution_identity is None
+                else direct_json_value(
+                    self.comparator_nonexecution_identity,
+                    payload=True,
+                )
+            )
+        else:
+            value.pop("comparator_configuration")
+            value.pop("comparator_nonexecution_identity")
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -4996,6 +5309,8 @@ def _long_form_unavailable(
             model_seed=entry.model_seed,
             configuration_id=entry.configuration_id,
             configuration_sha256=entry.configuration_sha256,
+            comparator_configuration=entry.comparator_configuration,
+            comparator_nonexecution_identity=(entry.comparator_nonexecution_identity),
             metric=name,
             value=None,
             n=0,
@@ -5200,6 +5515,10 @@ def evaluate_adapter_outcome(
                     model_seed=entry.model_seed,
                     configuration_id=entry.configuration_id,
                     configuration_sha256=entry.configuration_sha256,
+                    comparator_configuration=entry.comparator_configuration,
+                    comparator_nonexecution_identity=(
+                        entry.comparator_nonexecution_identity
+                    ),
                     metric=name,
                     value=None if metric.value is None else float(metric.value),
                     n=int(metric.n),
@@ -5306,6 +5625,8 @@ def evaluate_adapter_outcome(
         stderr_sha256=stderr_sha256,
         native_output_sha256=native_output_sha256,
         evaluator_output_sha256=evaluator_digest,
+        comparator_configuration=entry.comparator_configuration,
+        comparator_nonexecution_identity=entry.comparator_nonexecution_identity,
     )
     return EvaluatedAttempt(
         run=run,
@@ -6267,7 +6588,7 @@ class CheckpointStore:
             temporary.unlink(missing_ok=True)
 
     def _stored_attempt(self, attempt: EvaluatedAttempt) -> dict[str, object]:
-        run = asdict(attempt.run)
+        run = attempt.run.to_dict()
         base = f"runs/{attempt.run.run_id}"
         stdout_path, stdout_file_sha256 = self._publish_immutable(
             f"{base}.stdout", attempt.stdout
@@ -6616,25 +6937,65 @@ class CheckpointStore:
         metrics = value["metrics"]
         if not isinstance(run, dict) or not isinstance(metrics, list):
             raise RunnerContractError("checkpoint record payload is malformed")
-        for name, expected in (
+        direct_comparator = entry.configuration_kind in {
+            "comparator_tuning",
+            "comparator_nonexecution",
+        }
+        expected_run_fields = (
             ("run_id", entry.run_id),
             ("method_id", entry.method_id),
             ("dataset_id", entry.dataset_id),
             ("source_dataset_sha256", entry.source_dataset_sha256),
             ("model_seed", entry.model_seed),
             ("configuration_id", entry.configuration_id),
-            ("configuration_sha256", entry.configuration_sha256),
             ("configuration_kind", entry.configuration_kind),
             ("requires_count_score", entry.requires_count_score),
             ("requires_calibration", entry.requires_calibration),
             ("mechanism", entry.mechanism),
             ("biological_id", entry.biological_id),
             ("technical_view", entry.technical_view),
+        )
+        for name, expected in (
+            expected_run_fields
+            if direct_comparator
+            else (
+                *expected_run_fields,
+                ("configuration_sha256", entry.configuration_sha256),
+            )
         ):
             if run.get(name) != expected:
                 raise RunnerContractError(
                     f"checkpoint run {name} mismatches plan prefix"
                 )
+        from .direct_values import direct_equal
+
+        if direct_comparator:
+            if "configuration_sha256" in run:
+                raise RunnerContractError(
+                    "direct comparator record contains a configuration summary"
+                )
+            expected_configuration = (
+                None
+                if entry.comparator_configuration is None
+                else direct_bound_comparator_value(entry.comparator_configuration)
+            )
+            if not direct_equal(
+                run.get("comparator_configuration"),
+                expected_configuration,
+            ) or not direct_equal(
+                run.get("comparator_nonexecution_identity"),
+                entry.comparator_nonexecution_identity,
+            ):
+                raise RunnerContractError(
+                    "direct comparator record differs from complete plan identity"
+                )
+        elif (
+            "comparator_configuration" in run
+            or "comparator_nonexecution_identity" in run
+        ):
+            raise RunnerContractError(
+                "legacy checkpoint record contains comparator identity fields"
+            )
         if run.get("status") not in _OUTCOME_STATUSES:
             raise RunnerContractError("checkpoint run status is invalid")
         authoritative_method_input_sha256 = method_input_sha256(prepared.method_input)
@@ -6831,16 +7192,50 @@ class CheckpointStore:
                 raise RunnerContractError(
                     "checkpoint metrics are not canonically ordered"
                 )
-            for name, expected in (
+            metric_expected_fields = (
                 ("method", entry.method_id),
                 ("dataset_id", entry.dataset_id),
                 ("model_seed", entry.model_seed),
-                ("configuration_sha256", entry.configuration_sha256),
+            )
+            for name, expected in (
+                metric_expected_fields
+                if direct_comparator
+                else (
+                    *metric_expected_fields,
+                    ("configuration_sha256", entry.configuration_sha256),
+                )
             ):
                 if metric.get(name) != expected:
                     raise RunnerContractError(
                         f"checkpoint metric {name} mismatches plan"
                     )
+            if direct_comparator:
+                expected_configuration = (
+                    None
+                    if entry.comparator_configuration is None
+                    else direct_bound_comparator_value(entry.comparator_configuration)
+                )
+                if (
+                    "configuration_sha256" in metric
+                    or not direct_equal(
+                        metric.get("comparator_configuration"),
+                        expected_configuration,
+                    )
+                    or not direct_equal(
+                        metric.get("comparator_nonexecution_identity"),
+                        entry.comparator_nonexecution_identity,
+                    )
+                ):
+                    raise RunnerContractError(
+                        "checkpoint metric direct comparator identity differs"
+                    )
+            elif (
+                "comparator_configuration" in metric
+                or "comparator_nonexecution_identity" in metric
+            ):
+                raise RunnerContractError(
+                    "legacy checkpoint metric contains comparator identity fields"
+                )
         return value
 
     def load(
@@ -8384,7 +8779,10 @@ class RepositoryAdapterDispatcher:
             calibration_fold_receipt=receipt,
         )
 
-    def __call__(self, request: ExecutionRequest) -> AdapterOutcome:
+    def __call__(
+        self,
+        request: ExecutionRequest | FinalComparatorExecutionRequest,
+    ) -> AdapterOutcome:
         method_id = request.method_spec.id
         monitor = (
             self.environments.change_monitor() if self.monitor_runtime_changes else None
@@ -8415,9 +8813,29 @@ class RepositoryAdapterDispatcher:
             if monitor is not None:
                 monitor.close()
 
-    def _execute_validated(self, request: ExecutionRequest) -> AdapterOutcome:
+    def _execute_validated(
+        self,
+        request: ExecutionRequest | FinalComparatorExecutionRequest,
+    ) -> AdapterOutcome:
         request.validate_integrity()
         method_id = request.method_spec.id
+        if isinstance(request, FinalComparatorExecutionRequest):
+            configuration = request.configuration.configuration.decode()
+            outcome = self._execute_direct_comparator(
+                method_id,
+                request.method_spec,
+                request.method_input,
+                seed=request.model_seed,
+                config=configuration,
+            )
+            request.validate_integrity()
+            if encode_comparator_configuration(configuration) != dict(
+                request.configuration.configuration.payload
+            ):
+                raise RunnerContractError(
+                    "final comparator effective configuration changed"
+                )
+            return outcome
         try:
             if method_id == "observed":
                 from .methods import run_observed
@@ -8666,7 +9084,10 @@ class SpawnedRepositoryExecutor:
         object.__setattr__(self, "_resource_sampler", resource_sampler)
         object.__setattr__(self, "_child_dispatcher", child_dispatcher)
 
-    def __call__(self, request: ExecutionRequest) -> AdapterOutcome:
+    def __call__(
+        self,
+        request: ExecutionRequest | FinalComparatorExecutionRequest,
+    ) -> AdapterOutcome:
         if self._closed:
             raise RunnerContractError("spawned repository executor is closed")
         method_id = request.method_spec.id
@@ -8676,6 +9097,18 @@ class SpawnedRepositoryExecutor:
         except RuntimeEnvironmentError as error:
             raise RunnerContractError(str(error)) from error
         try:
+            if isinstance(request, FinalComparatorExecutionRequest):
+                return execute_final_comparator_adapter_in_spawned_process(
+                    request,
+                    self._child_dispatcher,
+                    resource_sampler=self._resource_sampler,
+                    expected_spawn_executable=(
+                        self.dispatcher.environments.benchmark_python
+                    ),
+                    spawn_search_path=(
+                        self.dispatcher.environments.python_spawn_search_path
+                    ),
+                )
             return execute_adapter_in_spawned_process(
                 request,
                 self._child_dispatcher,
@@ -9482,6 +9915,22 @@ def execute_direct_adapter_in_spawned_process(
     return outcome
 
 
+def execute_final_comparator_adapter_in_spawned_process(
+    request: FinalComparatorExecutionRequest,
+    executor: Callable[[FinalComparatorExecutionRequest], AdapterOutcome],
+    **options: object,
+) -> AdapterOutcome:
+    """Execute one frozen final comparator request with parent telemetry."""
+
+    if not isinstance(request, FinalComparatorExecutionRequest):
+        raise TypeError("request must be a FinalComparatorExecutionRequest")
+    request.validate_integrity()
+    outcome = _execute_measured_spawn(request, executor, **options)
+    if not isinstance(outcome, AdapterOutcome):  # pragma: no cover - fixed type
+        raise AssertionError("final comparator executor returned the wrong type")
+    return outcome
+
+
 def execute_direct_revision_adapter_in_spawned_process(
     request: DirectRevisionExecutionRequest,
     executor: Callable[
@@ -9530,6 +9979,7 @@ __all__ = [
     "EvaluatedAttempt",
     "ExecutionEnvironmentRegistry",
     "ExecutionRequest",
+    "FinalComparatorExecutionRequest",
     "LongFormMetric",
     "LinuxProcessTreeResourceSampler",
     "MAX_CPU_BUDGET_SECONDS",
@@ -9549,6 +9999,7 @@ __all__ = [
     "development_storage_preflight",
     "execute_adapter_in_spawned_process",
     "execute_direct_adapter_in_spawned_process",
+    "execute_final_comparator_adapter_in_spawned_process",
     "execute_direct_revision_adapter_in_spawned_process",
     "execute_competition_plan",
     "execute_fair_comparator_plan",
