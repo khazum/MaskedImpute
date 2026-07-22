@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict, dataclass, fields
+from functools import lru_cache
 import json
 import math
 import os
@@ -552,6 +553,13 @@ def _selection_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
     return MappingProxyType(dict(value))
 
 
+@lru_cache(maxsize=1)
+def _canonical_method_registry() -> MethodRegistry:
+    return load_method_registry(
+        Path(__file__).resolve().parents[1] / "study/methods.json"
+    )
+
+
 def _validate_bound_selection_configuration(
     bound: BoundComparatorConfiguration,
 ) -> None:
@@ -565,7 +573,17 @@ def _validate_bound_selection_configuration(
         not isinstance(configuration, ComparatorConfiguration)
         or not isinstance(reference, ComparatorAuthorityReference)
         or not isinstance(method, ComparatorMethodBinding)
-        or configuration.method_id != method.method_id
+    ):
+        raise ComparatorTuningError("bound comparator identity is invalid")
+    try:
+        expected_method = comparator_method_binding(
+            _canonical_method_registry().by_id(configuration.method_id)
+        )
+    except KeyError as error:
+        raise ComparatorTuningError("bound comparator method is absent") from error
+    if (
+        configuration.method_id != method.method_id
+        or not direct_equal(method, expected_method)
         or reference.path != "study/comparator_tuning.json"
         or reference.schema_version != canonical_authority.schema_version
         or reference.authority_revision != canonical_authority.authority_revision

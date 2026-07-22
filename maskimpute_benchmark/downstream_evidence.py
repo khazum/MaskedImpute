@@ -35,6 +35,7 @@ from .direct_values import direct_equal, direct_json_value, freeze_direct_mappin
 from .protocol import canonical_sha256
 from .comparator_tuning import (
     BoundComparatorConfiguration,
+    _canonical_comparator_tuning_authority,
     decode_bound_comparator_configuration,
 )
 from .runner import (
@@ -3179,7 +3180,8 @@ def _direct_nonexecution_identity_from_payload(
     authority_reference = value.get("authority_reference")
     method = value.get("method")
     if (
-        value.get("schema_version") != 1
+        type(value.get("schema_version")) is not int
+        or value.get("schema_version") != 1
         or value.get("selection_receipt_namespace")
         != "maskimpute-comparator-selection-v1"
         or not isinstance(authority_reference, Mapping)
@@ -3234,8 +3236,22 @@ def _direct_nonexecution_identity_from_payload(
         configuration_ids.add(configuration_id)
         decoded.append(bound)
     first = decoded[0]
+    canonical_configurations = (
+        _canonical_comparator_tuning_authority().configurations_for(
+            first.method.method_id
+        )
+    )
     if (
-        any(
+        len(decoded) != len(canonical_configurations)
+        or any(
+            not direct_equal(bound.configuration, expected)
+            for bound, expected in zip(
+                decoded,
+                canonical_configurations,
+                strict=True,
+            )
+        )
+        or any(
             not direct_equal(bound.authority_reference, first.authority_reference)
             or not direct_equal(bound.method, first.method)
             for bound in decoded

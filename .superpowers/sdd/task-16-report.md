@@ -185,3 +185,75 @@ Fresh post-format checks also passed:
 
 No scientific workload, figure generation, asset export, ledger edit, or
 publication export was run during the review fix.
+
+## Typed-parser closure re-review fix
+
+The Task 16 re-review found that persisted direct authorities still admitted
+internally consistent forgeries. The shared bound-configuration validator now
+requires the decoded `ComparatorMethodBinding` to equal the complete canonical
+projection from `comparator_method_binding(registry.by_id(method_id))`. This
+authenticates every method field for both readable selected configurations and
+the payload-JSON configurations used by nonexecution authorities.
+
+The nonexecution parser now additionally:
+
+- requires an exact integer `schema_version` and rejects `bool`;
+- requires the complete canonical configuration denominator for the method;
+- preserves canonical row order; and
+- verifies the exact canonical method and authority on every row.
+
+Valid selected, nonexecution, generic-builder, final-plan, and trajectory-plan
+roundtrips retain their typed recursively frozen values.
+
+### Strict TDD evidence
+
+All commands used the supported interpreter and warning-strict pytest flags.
+Before production edits, the new method-component, omitted-row, reordered-row,
+and bool-as-int mutations produced:
+
+```text
+45 failed, 2 passed, 99 deselected in 59.94s
+```
+
+The two already-rejected cases were the existing method-ID consistency checks;
+the remaining 45 failures established the open boundary. After the production
+change, the identical focused command produced:
+
+```text
+47 passed, 99 deselected in 55.56s
+```
+
+The complete downstream evidence file then produced:
+
+```text
+146 passed in 88.00s (0:01:28)
+```
+
+The targeted adjacent comparator-tuning, scaling, and benchmark-runner command
+produced:
+
+```text
+17 passed, 295 deselected in 107.06s (0:01:47)
+```
+
+After Ruff formatting, the focused mutation and valid roundtrip regression set
+produced:
+
+```text
+51 passed, 95 deselected in 71.58s (0:01:11)
+```
+
+The prior 623-test gate was not rerun, as requested for this narrow closure;
+the adjacent warning-strict run exposed no broad impact.
+
+### Typed-parser closure verification
+
+- Ruff formatting completed, Ruff lint passed, and Ruff format check passed on
+  all three changed Python files.
+- Supported-interpreter `compileall` passed for `maskimpute_benchmark` and
+  `tests`.
+- `git diff --check` passed.
+- The production legacy scan for `required_comparator_ids` returned no matches.
+- No hashes, summaries, compatibility/default reconstruction, scientific
+  workload, figure generation, asset export, publication export, or ledger edit
+  was introduced or run.

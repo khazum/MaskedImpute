@@ -107,6 +107,113 @@ def test_direct_downstream_configuration_decoder_restores_exact_typed_authority(
         assert direct_equal(_legacy_configuration_payload(decoded), payload)
 
 
+_COMPARATOR_METHOD_BINDING_FIELDS = (
+    "method_id",
+    "execution_scope",
+    "integration_status",
+    "adapter_key",
+    "environment_id",
+    "environment_status",
+    "source_kind",
+    "source_url",
+    "source_revision",
+    "source_tree",
+    "source_cache_path",
+    "source_freeze_binding",
+    "input_scale",
+    "output_scale",
+    "stochastic",
+    "seed_policy",
+    "gpu_mode",
+    "cpu_cores",
+    "timeout_seconds",
+    "max_rss_gib",
+    "max_gpu_gib",
+    "preserves_observed_positives",
+)
+
+
+def _forged_method_component(value: object) -> object:
+    if type(value) is bool:
+        return not value
+    if type(value) is int:
+        return value + 1
+    if type(value) is float:
+        return value + 1.0
+    if value is None:
+        return "forged-optional-binding"
+    assert isinstance(value, str)
+    return f"{value}-forged"
+
+
+@pytest.mark.parametrize("authority_kind", ("selected", "nonexecution"))
+@pytest.mark.parametrize("field_name", _COMPARATOR_METHOD_BINDING_FIELDS)
+def test_persisted_direct_decoder_rejects_canonical_method_binding_mutations(
+    authority_kind: str,
+    field_name: str,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+
+    unavailable = authority_kind == "nonexecution"
+    _frozen, _registry, configurations = _frozen_downstream_authorities(
+        "biaeimpute" if unavailable else None
+    )
+    method_id = "biaeimpute" if unavailable else "magic"
+    authority = {value.method_id: value for value in configurations}[method_id]
+    payload = copy.deepcopy(downstream._legacy_configuration_payload(authority))
+    if unavailable:
+        identity = payload["comparator_nonexecution_identity"]
+        assert isinstance(identity, dict)
+        targets = [identity["method"]]
+        targets.extend(
+            row["configuration"]["method"]
+            for row in identity["configuration_terminal_denominator"]
+        )
+    else:
+        selected = payload["comparator_configuration"]
+        assert isinstance(selected, dict)
+        targets = [selected["method"]]
+    for target in targets:
+        target[field_name] = _forged_method_component(target[field_name])
+
+    with pytest.raises(
+        downstream.DownstreamEvidenceError,
+        match="persisted direct configuration authority",
+    ):
+        downstream._configuration_from_payload(payload)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("omitted_configuration", "reordered_configurations", "bool_schema_version"),
+)
+def test_persisted_direct_decoder_rejects_noncanonical_nonexecution_denominator(
+    mutation: str,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+
+    _frozen, _registry, configurations = _frozen_downstream_authorities("biaeimpute")
+    authority = {value.method_id: value for value in configurations}["biaeimpute"]
+    payload = copy.deepcopy(downstream._legacy_configuration_payload(authority))
+    identity = payload["comparator_nonexecution_identity"]
+    assert isinstance(identity, dict)
+    denominator = identity["configuration_terminal_denominator"]
+    assert isinstance(denominator, list) and len(denominator) > 1
+    if mutation == "omitted_configuration":
+        denominator.pop()
+    elif mutation == "reordered_configurations":
+        denominator[0], denominator[1] = denominator[1], denominator[0]
+    else:
+        assert mutation == "bool_schema_version"
+        identity["schema_version"] = True
+
+    with pytest.raises(
+        downstream.DownstreamEvidenceError,
+        match="persisted direct comparator nonexecution",
+    ):
+        downstream._configuration_from_payload(payload)
+
+
 def test_generic_downstream_builder_accepts_decoded_direct_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
