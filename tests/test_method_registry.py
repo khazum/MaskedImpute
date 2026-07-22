@@ -219,11 +219,18 @@ def test_comparator_method_binding_projects_every_execution_identity_field() -> 
         "source_url": "https://github.com/KrishnaswamyLab/MAGIC.git",
         "source_revision": "3a4ffdbe435716bb3b2fbe78f434c6cdc8dd8d78",
         "source_tree": "438dd149656a51b7f9f80251b5cf5300954a1c28",
+        "source_cache_path": "artifacts/method-sources/core-magic",
         "source_freeze_binding": None,
+        "input_scale": "log1p_cp10k",
+        "output_scale": "log1p_cp10k",
+        "stochastic": True,
+        "seed_policy": "required",
         "gpu_mode": "forbidden",
+        "cpu_cores": 8,
         "timeout_seconds": 21_600,
         "max_rss_gib": 48,
         "max_gpu_gib": 0,
+        "preserves_observed_positives": False,
     }
     drifted = replace(binding, timeout_seconds=binding.timeout_seconds + 1)
     assert drifted != comparator_method_binding(spec)

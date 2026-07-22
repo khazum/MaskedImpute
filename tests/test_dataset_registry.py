@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import importlib.util
 import json
 import os
 from pathlib import Path
 import runpy
 import shutil
 import subprocess
-from types import SimpleNamespace
 
 import anndata as ad
 import numpy as np
@@ -764,9 +764,20 @@ def test_final_downstream_builder_loads_real_evaluated_forty_dataset_panel(
 
     before = round_snapshot()
     evaluated_binding = object()
-    frozen_method = object()
-    registry = SimpleNamespace(methods=(SimpleNamespace(id="observed"),))
-    configuration = object()
+    factory_path = Path(__file__).with_name("test_final_runner.py")
+    factory_spec = importlib.util.spec_from_file_location(
+        "_task18_dataset_registry_final_factory",
+        factory_path,
+    )
+    assert factory_spec is not None and factory_spec.loader is not None
+    factory = importlib.util.module_from_spec(factory_spec)
+    factory_spec.loader.exec_module(factory)
+    frozen_method = factory._direct_frozen_method()
+    registry = factory._full_registry()
+    _frozen_rows, configurations = final_runner._frozen_method_plan_authority(
+        frozen_method,
+        registry,
+    )
     bound_datasets = (object(),)
     source_plan = object()
     final_plan = object()
@@ -841,13 +852,6 @@ def test_final_downstream_builder_loads_real_evaluated_forty_dataset_panel(
         lambda path: registry
         if path == panel_repo.resolve() / "study/methods.json"
         else pytest.fail("downstream builder selected a different method registry"),
-    )
-    monkeypatch.setattr(
-        final_runner,
-        "_configuration_for_method",
-        lambda method_id, _spec, selected_frozen: configuration
-        if method_id == "observed" and selected_frozen is frozen_method
-        else pytest.fail("downstream builder changed configuration authority"),
     )
 
     def load_panel(
@@ -924,7 +928,7 @@ def test_final_downstream_builder_loads_real_evaluated_forty_dataset_panel(
     assert observed["source_root"] == (round_dir.resolve() / "results/final/execution")
     downstream_inputs = observed["downstream_inputs"]
     assert downstream_inputs["datasets"] is bound_datasets
-    assert downstream_inputs["configurations"] == (configuration,)
+    assert downstream_inputs["configurations"] == configurations
     assert downstream_inputs["evaluated_round_binding"] is evaluated_binding
     assert downstream_inputs["source_plan"] is source_plan
     assert observed["source_plan_inputs"] == {

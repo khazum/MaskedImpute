@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
 import hashlib
 import importlib.util
 from pathlib import Path
@@ -15,6 +16,24 @@ import pandas as pd
 import pytest
 
 
+@lru_cache(maxsize=1)
+def _frozen_method_authorities():
+    from maskimpute_benchmark.final_runner import _frozen_method_plan_authority
+
+    path = Path(__file__).with_name("test_final_runner.py")
+    spec = importlib.util.spec_from_file_location(
+        "_task18_final_null_de_final_factory",
+        path,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    frozen = module._direct_frozen_method()
+    registry = module._full_registry()
+    _rows, configurations = _frozen_method_plan_authority(frozen, registry)
+    return configurations
+
+
 def _source_plan(*, include_failed: bool = True):
     from maskimpute_benchmark.downstream_evidence import (
         DatasetEvidenceBinding,
@@ -25,6 +44,9 @@ def _source_plan(*, include_failed: bool = True):
 
     cells = tuple(f"cell-{index:03d}" for index in range(40))
     genes = tuple(f"gene-{index:03d}" for index in range(120))
+    authorities = {
+        authority.method_id: authority for authority in _frozen_method_authorities()
+    }
     binding = DatasetEvidenceBinding(
         dataset_id="final-symsim-draw-01-moderate",
         path=str(Path("/tmp/final-null-de-fixture.h5ad").absolute()),
@@ -54,6 +76,8 @@ def _source_plan(*, include_failed: bool = True):
         reason: str | None,
     ) -> DownstreamPlanEntry:
         completed = status == "completed"
+        authority = authorities[method_id]
+        legacy = authority.legacy_configuration
         return DownstreamPlanEntry(
             ordinal=ordinal,
             source_record_path=f"records/{ordinal:08d}.json",
@@ -66,10 +90,18 @@ def _source_plan(*, include_failed: bool = True):
             biological_id=binding.biological_id,
             technical_view=binding.technical_view,
             model_seed=model_seed,
-            configuration_id=f"{method_id}-configuration",
-            configuration_sha256=f"{ordinal + 9:x}" * 64,
-            configuration_kind="registry",
-            method_artifact_sha256=f"{ordinal + 12:x}" * 64,
+            configuration_id=authority.configuration_id,
+            configuration_sha256=(
+                None if legacy is None else legacy.configuration_sha256
+            ),
+            configuration_kind=authority.kind,
+            method_artifact_sha256=(
+                None if legacy is None else f"{ordinal + 12:x}" * 64
+            ),
+            comparator_configuration=authority.comparator_configuration,
+            comparator_nonexecution_identity=(
+                authority.comparator_nonexecution_identity
+            ),
             method_input_sha256=binding.method_input_sha256,
             retained_cell_ids_sha256=binding.retained_cell_ids_sha256,
             status=status,
@@ -168,7 +200,9 @@ def _source_plan(*, include_failed: bool = True):
         development_revision_versions=(),
         development_sources=(),
         datasets=(binding,),
-        configurations=(),
+        configurations=tuple(
+            authorities[method_id] for method_id in ("maskimpute", "magic", "scvi")
+        ),
         entries=tuple(entries),
         plan_sha256="9" * 64,
     )

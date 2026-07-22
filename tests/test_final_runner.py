@@ -6299,14 +6299,14 @@ def test_frozen_final_cli_requires_and_forwards_runtime_locators(
     namespace = runpy.run_path("scripts/run_frozen_final.py")
     main = namespace["main"]
 
+    monkeypatch.setenv("PATH", "/tmp/ephemeral-codex-bin:/usr/bin")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/ephemeral-codex-libraries")
     monkeypatch.setattr(sys, "argv", ["run_frozen_final.py", str(relative_round)])
     with pytest.raises(SystemExit) as missing:
         main()
     assert missing.value.code == 2
     assert calls == []
 
-    monkeypatch.setenv("PATH", "/tmp/ephemeral-codex-bin:/usr/bin")
-    monkeypatch.setenv("LD_LIBRARY_PATH", "/tmp/ephemeral-codex-libraries")
     monkeypatch.setattr(
         sys,
         "argv",

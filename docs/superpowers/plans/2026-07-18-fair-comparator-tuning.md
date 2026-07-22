@@ -3288,7 +3288,7 @@ def test_revision_runner_authority_is_candidate_only(loader) -> None:
     assert authority.configurations[0].method_id == "maskimpute"
 
 
-def test_revision_plan_has_exact_48_candidate_rows(
+def test_revision_plan_contains_exactly_one_48_row_maskimpute_candidate(
     activated_v28_authority, registry, development_bindings
 ) -> None:
     plan = build_competition_plan(
@@ -4186,7 +4186,7 @@ env -u LD_LIBRARY_PATH PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
   /tmp/maskimpute-supported/bin/python -m pytest \
   tests/test_comparator_tuning.py::test_tracked_authority_has_exact_grid_and_operational_contract \
   tests/test_benchmark_runner.py::test_tracked_plan_has_exact_2896_rows_and_complete_comparator_blocks \
-  tests/test_benchmark_runner.py::test_revision_plan_has_exact_48_candidate_rows \
+  tests/test_benchmark_runner.py::test_revision_plan_contains_exactly_one_48_row_maskimpute_candidate \
   tests/test_final_runner.py::test_final_plan_is_1760_and_all_selectable_split_is_1480_280 \
   tests/test_final_runner.py::test_unavailable_stochastic_comparator_reclassifies_120_seeded_rows \
   tests/test_final_runner.py::test_trajectory_always_has_44_rows_and_preserves_three_unavailable_seeds \
