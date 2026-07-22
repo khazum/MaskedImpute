@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import lru_cache
+import importlib.util
 import inspect
 from pathlib import Path
 from types import MappingProxyType
@@ -77,6 +79,27 @@ VIEWS = (
 )
 
 
+@lru_cache(maxsize=1)
+def _task15_final_module():
+    path = Path(__file__).with_name("test_final_runner.py")
+    spec = importlib.util.spec_from_file_location(
+        "_task16_review_synthesis_factory", path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@lru_cache(maxsize=2)
+def _production_frozen_statuses(
+    unavailable_method: str | None = None,
+) -> Mapping[str, object]:
+    return _task15_final_module()._direct_frozen_method(
+        unavailable_method=unavailable_method
+    )
+
+
 def _digest(label: str) -> str:
     return canonical_sha256({"test_binding": label})
 
@@ -87,6 +110,10 @@ def _sealed(value: Mapping[str, object], field: str) -> Mapping[str, object]:
 
 
 def _frozen_method() -> Mapping[str, object]:
+    production = _production_frozen_statuses()
+    production_statuses = {
+        row["method_id"]: row for row in production["scheduled_same_input_statuses"]
+    }
     assessment = {
         "configuration_id": "candidate-01",
         "version": "v29",
@@ -105,12 +132,7 @@ def _frozen_method() -> Mapping[str, object]:
         "ready_comparison_population_ids": list(COMPARATORS),
         "required_control_ids": ["observed"],
         "scheduled_same_input_statuses": [
-            {
-                "method_id": method_id,
-                "aggregate_status": "completed",
-                "nonexecution_identity": None,
-            }
-            for method_id in COMPARATORS
+            dict(production_statuses[method_id]) for method_id in COMPARATORS
         ],
     }
     return _sealed(body, "payload_sha256")
@@ -903,6 +925,10 @@ def _loaded() -> _LoadedPublicationEvidence:
 
 
 def _loaded_with_unavailable_biae() -> _LoadedPublicationEvidence:
+    production = _production_frozen_statuses("biaeimpute")
+    production_statuses = {
+        row["method_id"]: row for row in production["scheduled_same_input_statuses"]
+    }
     frozen = dict(_frozen_method())
     frozen.pop("payload_sha256")
     frozen.update(
@@ -911,38 +937,12 @@ def _loaded_with_unavailable_biae() -> _LoadedPublicationEvidence:
             "ready_comparison_population_ids": list(COMPARATORS),
             "required_control_ids": ["observed", "capacity-matched-ae"],
             "unavailable_comparator_nonexecution_identities": {
-                "biaeimpute": {
-                    "schema_version": 1,
-                    "reason": "all_configurations_intrinsic_terminal",
-                }
+                "biaeimpute": production[
+                    "unavailable_comparator_nonexecution_identities"
+                ]["biaeimpute"]
             },
             "scheduled_same_input_statuses": [
-                {
-                    "method_id": method_id,
-                    "aggregate_status": (
-                        "intrinsic_terminal_no_eligible_configuration"
-                        if method_id == "biaeimpute"
-                        else "completed"
-                    ),
-                    "terminal_status_counts": (
-                        {"unavailable": 4}
-                        if method_id == "biaeimpute"
-                        else {"completed": 1}
-                    ),
-                    "reason_histogram": (
-                        {"adapter_unavailable": 4} if method_id == "biaeimpute" else {}
-                    ),
-                    "selected_comparator_configuration": None,
-                    "nonexecution_identity": (
-                        {
-                            "schema_version": 1,
-                            "reason": "all_configurations_intrinsic_terminal",
-                        }
-                        if method_id == "biaeimpute"
-                        else None
-                    ),
-                }
-                for method_id in SCHEDULED_METHODS
+                dict(production_statuses[method_id]) for method_id in SCHEDULED_METHODS
             ],
         }
     )
@@ -1445,7 +1445,7 @@ def test_publication_claims_separate_scheduled_and_numerical_denominators() -> N
     assert "biaeimpute" not in synthesis["numerical_comparison_population_ids"]
     assert synthesis["execution_status_by_method"]["biaeimpute"] == {
         "status": "unavailable",
-        "reason": "all_configurations_intrinsic_terminal",
+        "reason": "intrinsic_terminal_no_eligible_configuration",
     }
     assert (
         synthesis["claim_permissions"]["superiority_by_method"]["biaeimpute"]
@@ -1464,6 +1464,52 @@ def test_publication_claims_separate_scheduled_and_numerical_denominators() -> N
     assert synthesis["scaling"]["numerical_gate_status"] == "not_prespecified"
     body = {key: value for key, value in synthesis.items() if key != "synthesis_sha256"}
     assert synthesis["synthesis_sha256"] == canonical_sha256(body)
+
+
+def test_scheduled_claim_permissions_accept_production_completed_and_selected_rows() -> (
+    None
+):
+    frozen = _production_frozen_statuses()
+    loaded = replace(_loaded(), frozen_method=frozen)
+
+    scheduled, numerical, statuses, permissions = (
+        publication_synthesis._scheduled_claim_permissions(loaded)
+    )
+
+    assert scheduled == list(SCHEDULED_METHODS)
+    assert numerical == frozen["ready_comparison_population_ids"]
+    assert statuses["observed"] == {"status": "completed", "reason": None}
+    assert statuses["magic"] == {"status": "selected", "reason": None}
+    assert permissions["observed"] == "control_not_a_superiority_target"
+    assert permissions["dca"] == "allowed"
+    assert permissions["magic"] == "insufficient_completed_cells"
+
+
+def test_scheduled_claim_permissions_decodes_production_nonexecution_denominator() -> (
+    None
+):
+    frozen = _production_frozen_statuses("biaeimpute")
+    loaded = replace(_loaded(), frozen_method=frozen)
+    frozen_row = next(
+        row
+        for row in frozen["scheduled_same_input_statuses"]
+        if row["method_id"] == "biaeimpute"
+    )
+    identity = frozen_row["nonexecution_identity"]
+    assert "reason" not in identity
+    assert identity["configuration_terminal_denominator"]
+
+    scheduled, numerical, statuses, permissions = (
+        publication_synthesis._scheduled_claim_permissions(loaded)
+    )
+
+    assert scheduled == list(SCHEDULED_METHODS)
+    assert "biaeimpute" not in numerical
+    assert statuses["biaeimpute"] == {
+        "status": "unavailable",
+        "reason": "intrinsic_terminal_no_eligible_configuration",
+    }
+    assert permissions["biaeimpute"] == "unavailable_uncompared_method"
 
 
 def test_synthesis_loads_current_primary_and_separate_trajectory_evidence() -> None:
@@ -1749,7 +1795,7 @@ def test_selected_later_cell_failures_remain_visible_and_gate_only_unsupported_c
     assert "dca" in synthesis["scheduled_same_input_ids"]
     assert "dca" in synthesis["numerical_comparison_population_ids"]
     assert synthesis["execution_status_by_method"]["dca"] == {
-        "status": "completed",
+        "status": "selected",
         "reason": None,
     }
     assert (

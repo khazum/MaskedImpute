@@ -263,20 +263,136 @@ def _scheduled_claim_permissions(
     if len(raw_statuses) != len(scheduled):
         raise PublicationSynthesisError("scheduled method statuses are incomplete")
     status_by_method: dict[str, dict[str, object]] = {}
+    intrinsic_statuses = {
+        "failed",
+        "timeout",
+        "resource_exceeded",
+        "unavailable",
+    }
     for method_id, row in zip(scheduled, raw_statuses, strict=True):
-        if not isinstance(row, Mapping) or row.get("method_id") != method_id:
+        if (
+            not isinstance(row, Mapping)
+            or set(row)
+            != {
+                "method_id",
+                "aggregate_status",
+                "terminal_status_counts",
+                "reason_histogram",
+                "selected_comparator_configuration",
+                "nonexecution_identity",
+            }
+            or row.get("method_id") != method_id
+        ):
             raise PublicationSynthesisError("scheduled method status order differs")
         aggregate = row.get("aggregate_status")
+        terminal_counts = row.get("terminal_status_counts")
+        reason_histogram = row.get("reason_histogram")
+        selected_configuration = row.get("selected_comparator_configuration")
+        identity = row.get("nonexecution_identity")
+        if (
+            not isinstance(terminal_counts, Mapping)
+            or any(
+                not isinstance(status, str) or type(count) is not int or count < 0
+                for status, count in terminal_counts.items()
+            )
+            or not isinstance(reason_histogram, Mapping)
+            or any(
+                not isinstance(reason, str)
+                or not reason
+                or type(count) is not int
+                or count < 0
+                for reason, count in reason_histogram.items()
+            )
+        ):
+            raise PublicationSynthesisError(
+                "scheduled method terminal denominator differs"
+            )
         if aggregate == "completed":
+            if selected_configuration is not None or identity is not None:
+                raise PublicationSynthesisError(
+                    "completed scheduled method carries comparator identity"
+                )
             status_by_method[method_id] = {"status": "completed", "reason": None}
             continue
-        identity = row.get("nonexecution_identity")
-        if not isinstance(identity, Mapping):
+        if aggregate == "selected":
+            if not isinstance(selected_configuration, Mapping) or identity is not None:
+                raise PublicationSynthesisError(
+                    "selected scheduled method lacks its comparator configuration"
+                )
+            status_by_method[method_id] = {"status": "selected", "reason": None}
+            continue
+        if (
+            aggregate != "intrinsic_terminal_no_eligible_configuration"
+            or selected_configuration is not None
+            or not isinstance(identity, Mapping)
+            or set(identity)
+            != {
+                "schema_version",
+                "authority_reference",
+                "method",
+                "selection_receipt_namespace",
+                "configuration_terminal_denominator",
+            }
+            or identity.get("schema_version") != 1
+            or identity.get("selection_receipt_namespace")
+            != "maskimpute-comparator-selection-v1"
+            or not isinstance(identity.get("authority_reference"), Mapping)
+            or not isinstance(identity.get("method"), Mapping)
+            or identity["method"].get("method_id") != method_id
+        ):
             raise PublicationSynthesisError(
                 "scheduled unavailable method lacks nonexecution identity"
             )
-        reason = _text(identity.get("reason"), "nonexecution reason")
-        status_by_method[method_id] = {"status": "unavailable", "reason": reason}
+        denominator = identity.get("configuration_terminal_denominator")
+        if not isinstance(denominator, list) or not denominator:
+            raise PublicationSynthesisError(
+                "scheduled unavailable method terminal denominator is absent"
+            )
+        derived_statuses: Counter[str] = Counter()
+        derived_reasons: Counter[str] = Counter()
+        for terminal in denominator:
+            if (
+                not isinstance(terminal, Mapping)
+                or set(terminal)
+                != {
+                    "configuration",
+                    "terminal_status_counts",
+                    "reason_histogram",
+                }
+                or not isinstance(terminal.get("configuration"), Mapping)
+                or not isinstance(terminal.get("terminal_status_counts"), Mapping)
+                or not isinstance(terminal.get("reason_histogram"), Mapping)
+            ):
+                raise PublicationSynthesisError(
+                    "scheduled unavailable configuration denominator differs"
+                )
+            counts = terminal["terminal_status_counts"]
+            reasons = terminal["reason_histogram"]
+            if any(
+                status not in intrinsic_statuses or type(count) is not int or count < 0
+                for status, count in counts.items()
+            ) or any(
+                not isinstance(reason, str)
+                or not reason
+                or type(count) is not int
+                or count < 0
+                for reason, count in reasons.items()
+            ):
+                raise PublicationSynthesisError(
+                    "scheduled unavailable terminal evidence is invalid"
+                )
+            derived_statuses.update(counts)
+            derived_reasons.update(reasons)
+        if dict(sorted(derived_statuses.items())) != dict(terminal_counts) or dict(
+            sorted(derived_reasons.items())
+        ) != dict(reason_histogram):
+            raise PublicationSynthesisError(
+                "scheduled unavailable terminal evidence differs from its identity"
+            )
+        status_by_method[method_id] = {
+            "status": "unavailable",
+            "reason": aggregate,
+        }
 
     completed_by_method: dict[str, bool] = {}
     for method_id in scheduled:

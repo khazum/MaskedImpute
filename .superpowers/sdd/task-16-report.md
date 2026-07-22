@@ -110,3 +110,78 @@ Additional verification:
 
 None. The existing p_pre_zero score-evidence envelope and unrelated legacy
 outer provenance remain unchanged by design.
+
+## Independent-review fixes
+
+The Task 16 independent review identified one Critical synthesis boundary and
+one Important persisted-decoder boundary. Both are repaired in a separate
+follow-up commit:
+
+- Publication synthesis now decodes the exact six-field scheduled status rows
+  accepted by publication freeze. Completed controls, selected comparators,
+  and intrinsic-terminal unavailable comparators remain distinct. Unavailable
+  status/reason evidence is recomputed from the closed configuration terminal
+  denominator instead of relying on a fabricated top-level reason.
+- The downstream seven-field direct configuration envelope now decodes to a
+  typed `FrozenPlanMethodAuthority`. Selected configurations use the readable
+  direct bound-comparator decoder; nonexecution authorities use the closed
+  bound-configuration decoder for every denominator row and are recursively
+  frozen. Method/configuration/kind/requirements, exclusivity, disposition,
+  and seed policy are revalidated before the value reaches any plan builder.
+- The closed readable comparator decoder also received its missing local
+  `BoundComparatorConfiguration` import, exposed by the new persisted decoder
+  regression.
+- Synthesis fixtures now reuse production-shaped freeze rows; the obsolete
+  fabricated `{schema_version, reason}` nonexecution fixture is gone.
+
+### Corrected TDD evidence
+
+Earlier exploratory results obtained with an unsupported interpreter are
+discarded. The authoritative review-fix RED/GREEN cycle used only:
+
+```bash
+env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m pytest \
+  tests/test_publication_synthesis.py tests/test_downstream_evidence.py \
+  -k 'scheduled_claim_permissions_accept_production_completed_and_selected_rows or scheduled_claim_permissions_decodes_production_nonexecution_denominator or direct_downstream_configuration_decoder_restores_exact_typed_authority or generic_downstream_builder_accepts_decoded_direct_configuration or persisted_direct_final_and_trajectory_plans_reload_typed_configurations' \
+  -q -W error -p no:cacheprovider
+```
+
+- Exact `3bb46ae` production behavior with the new tests: `6 failed, 154
+  deselected in 100.18s`. The failures proved selected/unavailable synthesis
+  incompatibility, the untyped decoder, generic builder rejection, and both
+  persisted final and trajectory reload boundaries.
+- First corrected implementation run: the two synthesis cases passed; all four
+  decoder cases exposed the missing local `BoundComparatorConfiguration`
+  import in `decode_direct_bound_comparator_value`.
+- After that one-line closed-decoder repair: `6 passed, 154 deselected in
+  98.50s`.
+- After Ruff formatting: `6 passed, 154 deselected in 101.49s`.
+
+The complete synthesis file initially exposed the old hand-built scheduled
+rows and one stale `completed` expectation for a production `selected` row.
+After migrating those fixtures, the exact supported-interpreter synthesis run
+passed: `61 passed in 47.36s`.
+
+### Review-fix final verification
+
+The exact required warning-strict seven-file suite passed after the fixture
+migration:
+
+```text
+623 passed in 2747.47s (0:45:47)
+```
+
+The command was the same supported-interpreter command recorded above in
+`Final verification`, with `-q -W error -p no:cacheprovider` and no additional
+environment or warning flags.
+
+Fresh post-format checks also passed:
+
+- Ruff lint and Ruff format check on all five changed Python files.
+- `env -u LD_LIBRARY_PATH /tmp/maskimpute-supported/bin/python -m compileall
+  -q maskimpute_benchmark tests`.
+- `git diff --check`.
+- `rg -n 'required_comparator_ids' maskimpute_benchmark` returned no matches.
+
+No scientific workload, figure generation, asset export, ledger edit, or
+publication export was run during the review fix.

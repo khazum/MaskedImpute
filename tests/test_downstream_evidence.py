@@ -79,6 +79,107 @@ def test_downstream_configuration_schema_preserves_complete_direct_authority() -
     )
 
 
+def test_direct_downstream_configuration_decoder_restores_exact_typed_authority() -> (
+    None
+):
+    from maskimpute_benchmark.direct_values import direct_equal
+    from maskimpute_benchmark.downstream_evidence import (
+        _configuration_from_payload,
+        _legacy_configuration_payload,
+    )
+    from maskimpute_benchmark.final_runner import FrozenPlanMethodAuthority
+
+    _frozen, _registry, selected_configurations = _frozen_downstream_authorities()
+    _unavailable_frozen, _registry, unavailable_configurations = (
+        _frozen_downstream_authorities("biaeimpute")
+    )
+    selected = {value.method_id: value for value in selected_configurations}["magic"]
+    unavailable = {value.method_id: value for value in unavailable_configurations}[
+        "biaeimpute"
+    ]
+
+    for authority in (selected, unavailable):
+        payload = _legacy_configuration_payload(authority)
+        decoded = _configuration_from_payload(payload)
+
+        assert isinstance(decoded, FrozenPlanMethodAuthority)
+        assert direct_equal(decoded.to_dict(), authority.to_dict())
+        assert direct_equal(_legacy_configuration_payload(decoded), payload)
+
+
+def test_generic_downstream_builder_accepts_decoded_direct_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+
+    _frozen, _registry, configurations = _frozen_downstream_authorities()
+    authority = {value.method_id: value for value in configurations}["magic"]
+    decoded = downstream._configuration_from_payload(
+        downstream._legacy_configuration_payload(authority)
+    )
+    dataset_path = tmp_path / "dataset.h5ad"
+    _dataset_value, cells, _genes = _dataset(dataset_path)
+    dataset = _dataset_binding(dataset_path, cells)
+    source = tmp_path / "direct-source"
+    source.mkdir()
+    entry = downstream.DownstreamPlanEntry(
+        ordinal=1,
+        source_record_path="records/00000001.json",
+        source_record_sha256="1" * 64,
+        run_id="direct-generic-magic",
+        method_id="magic",
+        dataset_id=dataset.dataset_id,
+        source_dataset_sha256=dataset.dataset_sha256,
+        mechanism=dataset.mechanism,
+        biological_id=dataset.biological_id,
+        technical_view=dataset.technical_view,
+        model_seed=42,
+        configuration_id=authority.configuration_id,
+        configuration_sha256=None,
+        configuration_kind=authority.kind,
+        method_artifact_sha256=None,
+        comparator_configuration=authority.comparator_configuration,
+        comparator_nonexecution_identity=None,
+        method_input_sha256=dataset.method_input_sha256,
+        retained_cell_ids_sha256=dataset.retained_cell_ids_sha256,
+        status="failed",
+        reason="adapter_nonzero_exit",
+        evaluator_output_sha256=None,
+        evaluator_output_path=None,
+        evaluator_output_file_sha256=None,
+        evaluator_output_shape=None,
+        evaluator_output_encoding=None,
+        evaluator_output_uncompressed_nbytes=None,
+        evaluator_output_uncompressed_sha256=None,
+    )
+    source_bundle = SimpleNamespace(
+        manifest_path="checkpoint.json",
+        manifest_file_sha256="2" * 64,
+        manifest_payload_sha256="3" * 64,
+        source_plan_sha256="4" * 64,
+        source_input_hashes_sha256="5" * 64,
+        records=({},),
+    )
+    monkeypatch.setattr(downstream, "_read_bound_dataset", lambda _value: None)
+    monkeypatch.setattr(downstream, "_development_source", lambda _root: source_bundle)
+    monkeypatch.setattr(
+        downstream,
+        "_validated_plan_entry",
+        lambda *_args, **_kwargs: entry,
+    )
+
+    plan = downstream.build_downstream_evidence_plan(
+        source,
+        source_kind="development",
+        datasets=(dataset,),
+        configurations=(decoded,),
+    )
+
+    assert isinstance(plan.configurations[0], downstream.FrozenPlanMethodAuthority)
+    assert plan.configurations[0] == decoded
+
+
 @pytest.mark.parametrize(
     ("status", "reason"),
     (
@@ -3099,6 +3200,75 @@ def test_persisted_trajectory_plan_uses_fixed_builder_not_independent_label(
     assert rebuilt == plan
     assert payload == plan.to_dict()
     assert calls == [(binding.repository_root, binding.round_root)]
+
+
+@pytest.mark.parametrize(
+    ("evidence_scope", "builder_name"),
+    (
+        ("all", "build_final_downstream_evidence_plan"),
+        (
+            "supplementary_trajectory",
+            "build_final_trajectory_downstream_evidence_plan",
+        ),
+    ),
+)
+def test_persisted_direct_final_and_trajectory_plans_reload_typed_configurations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_scope: str,
+    builder_name: str,
+) -> None:
+    from dataclasses import replace
+
+    import maskimpute_benchmark.downstream_evidence as downstream
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset, configuration, source_plan, fixture = _trajectory_source(tmp_path)
+    monkeypatch.setattr(
+        downstream, "_validate_evaluated_round_binding", lambda _binding: None
+    )
+    monkeypatch.setattr(downstream, "_read_bound_dataset", lambda _binding: None)
+    baseline = downstream._build_downstream_evidence_plan(
+        source,
+        source_kind="final",
+        evidence_scope="supplementary_trajectory",
+        datasets=(dataset,),
+        configurations=(configuration,),
+        evaluated_round_binding=fixture["evaluated_round_binding"],
+        source_plan=source_plan,
+    )
+    _frozen, _registry, configurations = _frozen_downstream_authorities()
+    direct = {value.method_id: value for value in configurations}["magic"]
+    provisional = replace(
+        baseline,
+        evidence_scope=evidence_scope,
+        configurations=(direct,),
+        plan_sha256="0" * 64,
+    )
+    plan = replace(provisional, plan_sha256=canonical_sha256(provisional.body()))
+    output = downstream.expected_final_downstream_output_directory(plan)
+    _write_canonical(output / "plan.json", plan.to_dict())
+    monkeypatch.setattr(
+        downstream,
+        builder_name,
+        lambda _repository, _round_root: plan,
+    )
+    decoded: list[object] = []
+    decode = downstream._configuration_from_payload
+
+    def capture(value: object):
+        result = decode(value)
+        decoded.append(result)
+        return result
+
+    monkeypatch.setattr(downstream, "_configuration_from_payload", capture)
+
+    rebuilt, payload, _file_sha256 = downstream._load_persisted_plan(output)
+
+    assert rebuilt == plan
+    assert payload == plan.to_dict()
+    assert len(decoded) == 1
+    assert isinstance(decoded[0], downstream.FrozenPlanMethodAuthority)
 
 
 def test_trajectory_scope_emits_one_reason_coded_endpoint_and_exact_counts(

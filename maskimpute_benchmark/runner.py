@@ -1755,6 +1755,7 @@ def decode_direct_bound_comparator_value(
 
     from .comparator_tuning import (
         ComparatorAuthorityReference,
+        BoundComparatorConfiguration,
         ComparatorConfiguration,
         ComparatorMethodBinding,
         ComparatorTuningError,

@@ -31,10 +31,18 @@ from .downstream_evaluation import (
     terminal_downstream_endpoints,
 )
 from .final_runner import FrozenPlanMethodAuthority
-from .direct_values import direct_equal, direct_json_value
+from .direct_values import direct_equal, direct_json_value, freeze_direct_mapping
 from .protocol import canonical_sha256
-from .comparator_tuning import BoundComparatorConfiguration
-from .runner import AuthorizedConfiguration, direct_bound_comparator_value
+from .comparator_tuning import (
+    BoundComparatorConfiguration,
+    decode_bound_comparator_configuration,
+)
+from .runner import (
+    DEVELOPMENT_MODEL_SEEDS,
+    AuthorizedConfiguration,
+    decode_direct_bound_comparator_value,
+    direct_bound_comparator_value,
+)
 from .schema import benchmark_dataset_sha256, validate_benchmark_dataset
 
 
@@ -3152,18 +3160,188 @@ def _evaluated_round_binding_from_payload(
     return binding
 
 
+def _direct_nonexecution_identity_from_payload(
+    value: object,
+) -> tuple[Mapping[str, object], str, bool]:
+    """Decode and freeze one complete comparator nonexecution authority."""
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "schema_version",
+        "authority_reference",
+        "method",
+        "selection_receipt_namespace",
+        "configuration_terminal_denominator",
+    }:
+        raise DownstreamEvidenceError(
+            "persisted direct comparator nonexecution schema differs"
+        )
+    denominator = value.get("configuration_terminal_denominator")
+    authority_reference = value.get("authority_reference")
+    method = value.get("method")
+    if (
+        value.get("schema_version") != 1
+        or value.get("selection_receipt_namespace")
+        != "maskimpute-comparator-selection-v1"
+        or not isinstance(authority_reference, Mapping)
+        or not isinstance(method, Mapping)
+        or not isinstance(denominator, list)
+        or not denominator
+    ):
+        raise DownstreamEvidenceError(
+            "persisted direct comparator nonexecution authority differs"
+        )
+    decoded: list[BoundComparatorConfiguration] = []
+    configuration_ids: set[str] = set()
+    for row in denominator:
+        if not isinstance(row, Mapping) or set(row) != {
+            "configuration",
+            "terminal_status_counts",
+            "reason_histogram",
+        }:
+            raise DownstreamEvidenceError(
+                "persisted direct comparator nonexecution denominator differs"
+            )
+        terminal_counts = row.get("terminal_status_counts")
+        reasons = row.get("reason_histogram")
+        if (
+            not isinstance(terminal_counts, Mapping)
+            or not terminal_counts
+            or not set(terminal_counts).issubset(
+                {"failed", "timeout", "resource_exceeded", "unavailable"}
+            )
+            or any(
+                type(count) is not int or count <= 0
+                for count in terminal_counts.values()
+            )
+            or not isinstance(reasons, Mapping)
+            or any(
+                not isinstance(reason, str)
+                or not reason
+                or type(count) is not int
+                or count <= 0
+                for reason, count in reasons.items()
+            )
+        ):
+            raise DownstreamEvidenceError(
+                "persisted direct comparator nonexecution denominator differs"
+            )
+        bound = decode_bound_comparator_configuration(row.get("configuration"))
+        configuration_id = bound.configuration.configuration_id
+        if configuration_id in configuration_ids:
+            raise DownstreamEvidenceError(
+                "persisted direct comparator nonexecution denominator differs"
+            )
+        configuration_ids.add(configuration_id)
+        decoded.append(bound)
+    first = decoded[0]
+    if (
+        any(
+            not direct_equal(bound.authority_reference, first.authority_reference)
+            or not direct_equal(bound.method, first.method)
+            for bound in decoded
+        )
+        or not direct_equal(
+            authority_reference,
+            direct_json_value(first.authority_reference),
+        )
+        or not direct_equal(method, direct_json_value(first.method))
+    ):
+        raise DownstreamEvidenceError(
+            "persisted direct comparator nonexecution authority differs"
+        )
+    try:
+        frozen = MappingProxyType(dict(freeze_direct_mapping(value)))
+    except ValueError as error:
+        raise DownstreamEvidenceError(
+            "persisted direct comparator nonexecution authority is invalid"
+        ) from error
+    if not direct_equal(direct_json_value(frozen, payload=True), value):
+        raise DownstreamEvidenceError(
+            "persisted direct comparator nonexecution authority differs"
+        )
+    return frozen, first.method.method_id, first.method.stochastic
+
+
 def _configuration_from_payload(value: object) -> DownstreamConfiguration:
     if isinstance(value, Mapping) and set(value) == _CONFIGURATION_DIRECT_FIELDS:
         selected = value.get("comparator_configuration")
         nonexecution = value.get("comparator_nonexecution_identity")
-        if (selected is None) == (nonexecution is None) or value.get("kind") not in {
-            "comparator_tuning",
-            "comparator_nonexecution",
-        }:
+        method_id = value.get("method_id")
+        configuration_id = value.get("configuration_id")
+        kind = value.get("kind")
+        if (
+            (selected is None) == (nonexecution is None)
+            or not isinstance(method_id, str)
+            or not method_id
+            or not isinstance(configuration_id, str)
+            or not configuration_id
+            or type(value.get("requires_count_score")) is not bool
+            or type(value.get("requires_calibration")) is not bool
+            or value.get("requires_count_score") is not False
+            or value.get("requires_calibration") is not False
+        ):
             raise DownstreamEvidenceError(
                 "persisted direct configuration authority differs"
             )
-        return MappingProxyType(dict(value))  # type: ignore[return-value]
+        comparator_configuration: BoundComparatorConfiguration | None = None
+        comparator_nonexecution_identity: Mapping[str, object] | None = None
+        action = "execute"
+        reason: str | None = None
+        stochastic: bool
+        try:
+            if selected is not None:
+                comparator_configuration = decode_direct_bound_comparator_value(
+                    selected
+                )
+                method = comparator_configuration.method
+                stochastic = method.stochastic
+                if (
+                    kind != "comparator_tuning"
+                    or method.method_id != method_id
+                    or comparator_configuration.configuration.method_id != method_id
+                    or comparator_configuration.configuration.configuration_id
+                    != configuration_id
+                ):
+                    raise DownstreamEvidenceError(
+                        "persisted direct configuration authority differs"
+                    )
+            else:
+                (
+                    comparator_nonexecution_identity,
+                    decoded_method_id,
+                    stochastic,
+                ) = _direct_nonexecution_identity_from_payload(nonexecution)
+                action = "not_applicable"
+                reason = "technical_unavailable_development_attempts"
+                if (
+                    kind != "comparator_nonexecution"
+                    or decoded_method_id != method_id
+                    or configuration_id != f"nonexecution-{method_id}"
+                ):
+                    raise DownstreamEvidenceError(
+                        "persisted direct configuration authority differs"
+                    )
+            authority = FrozenPlanMethodAuthority(
+                method_id=method_id,
+                legacy_configuration=None,
+                comparator_configuration=comparator_configuration,
+                comparator_nonexecution_identity=(comparator_nonexecution_identity),
+                action=action,
+                reason=reason,
+                seeds=DEVELOPMENT_MODEL_SEEDS if stochastic else (None,),
+            )
+        except DownstreamEvidenceError:
+            raise
+        except (RuntimeError, TypeError, ValueError) as error:
+            raise DownstreamEvidenceError(
+                "persisted direct configuration authority is invalid"
+            ) from error
+        if not direct_equal(_legacy_configuration_payload(authority), dict(value)):
+            raise DownstreamEvidenceError(
+                "persisted direct configuration authority differs"
+            )
+        _method_artifact_identity(authority)
+        return authority
     if not isinstance(value, Mapping) or set(value) != _CONFIGURATION_LEGACY_FIELDS:
         raise DownstreamEvidenceError("persisted configuration schema differs")
     payload = value.get("payload")
