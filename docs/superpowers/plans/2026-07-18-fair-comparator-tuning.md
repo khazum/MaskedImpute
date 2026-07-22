@@ -3321,7 +3321,7 @@ respective tests.
 env -u LD_LIBRARY_PATH PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
   /tmp/maskimpute-supported/bin/python -m pytest \
   tests/test_revision_authority.py tests/test_revision_evaluation.py \
-  tests/test_benchmark_runner.py -k 'candidate_only or exact_48_candidate_rows' \
+  tests/test_benchmark_runner.py -k 'candidate_only or contains_exactly_one_48_row_maskimpute_candidate' \
   -q -W error -p no:cacheprovider
 ```
 
@@ -4263,7 +4263,13 @@ build product.
 
 - [ ] **Step 5: Perform an independent two-pass review**
 
-Invoke `superpowers:requesting-code-review`. First pass checks exact spec coverage, scientific independence, cardinalities, status policy, hash cycles, identity domains, and no-default propagation. Second pass checks implementation quality, unsafe I/O, race/idempotence, checkpoint replay, private-path leakage, tests, and documentation. Resolve every blocking finding with a failing regression and a focused fix commit, then rerun Steps 2-4.
+Invoke `superpowers:requesting-code-review`. First pass checks exact spec coverage,
+scientific independence, cardinalities, status policy, complete direct-value
+propagation, absence of content-summary mechanisms, and no-default propagation.
+Second pass checks implementation quality, unsafe I/O, race/idempotence,
+checkpoint replay, private-path leakage, tests, and documentation. Resolve every
+blocking finding with a failing regression and a focused fix commit, then rerun
+Steps 2-4.
 
 - [ ] **Step 6: Confirm the completion boundary**
 
@@ -4286,8 +4292,8 @@ Do not create a final empty commit. If review fixes were required, their focused
 ## Plan Self-Review Checklist
 
 - [ ] **Spec coverage:** Map tracked authority/grid to Tasks 1-3; identities/plan/dispatch/budget/storage/smoke to Tasks 4-9; collapse/selection/receipt to Tasks 10-11; candidate projection/readiness to Task 12; revision reuse to Task 13; freeze to Task 14; final/trajectory to Task 15; scaling/downstream/claims to Task 16; Genome Biology documentation/hygiene to Task 17; full verification/review to Task 18.
-- [ ] **Hash direction:** Confirm the acyclic chain is `methods.json -> comparator_tuning.json -> selection_contract.json -> development_search.json -> runner plan/checkpoint -> comparator selection -> candidate selection -> revision -> freeze -> final/trajectory/scaling -> analysis/assets`.
-- [ ] **Identity types:** Confirm `configuration_payload_sha256` is the adapter-payload hash, `configuration_method_identity_sha256` is the preselection stable identity, `selected_method_identity_sha256` repeats it exactly, and `nonexecution_identity_sha256` is used only when no configuration was selected.
+- [ ] **Direct chain:** Confirm the acyclic chain is `methods.json + comparator_tuning.json full validation -> selection/development references -> complete runner plan/input/checkpoint -> full comparator selection -> typed selected/nonexecution map -> candidate selection -> revision -> freeze -> final/trajectory/scaling -> analysis/assets`.
+- [ ] **Identity types:** Confirm selected comparators use complete `BoundComparatorConfiguration`, runs use complete `ComparatorRunIdentity`, unavailable methods use the complete typed nonexecution identity, and no direct identity field is a content summary string.
 - [ ] **Cardinalities:** Confirm tests assert 34 configurations, 2,896 development rows, 1,632 comparator rows, 48 rows per comparator config, 48 rows per revision, 1,760 final rows, 1,480/280 all-selectable split, and 44 trajectory rows.
 - [ ] **No placeholders:** Run the scan below and rewrite any matching prose as an exact action/code block:
 
@@ -4303,7 +4309,7 @@ PY
 
 Expected: exit 0 and no output.
 
-- [ ] **Type consistency:** Verify every later consumer uses the exact names declared here: `ComparatorTuningAuthority`, `BoundComparatorConfiguration`, `ComparatorSelectionProjection`, `SelectedComparatorConfiguration`, `configuration_payload_sha256`, `configuration_method_identity_sha256`, `selected_method_identity_sha256`, and `nonexecution_identity_sha256`.
+- [ ] **Type consistency:** Verify every later consumer uses the exact direct types declared here: `ComparatorTuningAuthority`, `ComparatorAuthorityReference`, `ComparatorMethodBinding`, `BoundComparatorConfiguration`, `ComparatorRunIdentity`, `PreparedInputDescriptor`, `ComparatorSelectionProjection`, `SelectedComparatorConfiguration`, and the complete typed nonexecution identity.
 - [ ] **Plan structure and paths:** Run this static audit and fix every failure:
 
 ```bash
