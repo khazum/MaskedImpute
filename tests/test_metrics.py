@@ -114,9 +114,10 @@ def test_reconstruction_result_exposes_protocol_metric_names(
     assert result["mae_dropout"] == result["mae_induced_dropout"]
     assert result["gnrmse_dropout"] == result["gnrmse_induced_dropout"]
     assert result["mse_nonzero"] == result["mse_non_dropout_nonzero"]
-    assert result["pairwise_cell_distance_distortion"] == result[
-        "cell_distance_distortion"
-    ]
+    assert (
+        result["pairwise_cell_distance_distortion"]
+        == result["cell_distance_distortion"]
+    )
 
 
 def test_gnrmse_averages_gene_rmse_over_population_truth_sd(
@@ -125,8 +126,7 @@ def test_gnrmse_averages_gene_rmse_over_population_truth_sd(
     imputed, observed, truth = reconstruction_fixture
     result = reconstruction_metrics(imputed, observed, truth)
     expected = np.mean(
-        np.sqrt(np.mean((imputed - truth) ** 2, axis=0))
-        / np.std(truth, axis=0, ddof=0)
+        np.sqrt(np.mean((imputed - truth) ** 2, axis=0)) / np.std(truth, axis=0, ddof=0)
     )
 
     assert result["gnrmse"].value == pytest.approx(expected)
@@ -303,9 +303,7 @@ def test_discrete_zero_reconstruction_endpoints_respect_truth_kind(
     reason: str,
 ) -> None:
     imputed, observed, truth = reconstruction_fixture
-    result = reconstruction_metrics(
-        imputed, observed, truth, truth_kind=truth_kind
-    )
+    result = reconstruction_metrics(imputed, observed, truth, truth_kind=truth_kind)
 
     assert result["mse"].reason is None
     assert result["mse_pre_dropout_zero"].reason == reason
@@ -331,9 +329,7 @@ def test_score_metrics_with_ties_are_hand_calculated_and_calibrated() -> None:
     # standard logistic calibration model therefore has intercept 0, slope 1.
     observed = np.zeros((2, 4))
     truth = np.array([[0.0, 1.0, 1.0, 1.0], [0.0, 0.0, 0.0, 1.0]])
-    probability = np.array(
-        [[0.25, 0.25, 0.25, 0.25], [0.75, 0.75, 0.75, 0.75]]
-    )
+    probability = np.array([[0.25, 0.25, 0.25, 0.25], [0.75, 0.75, 0.75, 0.75]])
     result = zero_score_metrics(probability, observed, truth, n_bins=2)
 
     assert result["n"] == 8

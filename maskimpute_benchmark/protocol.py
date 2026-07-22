@@ -168,8 +168,12 @@ def load_protocol(path: Path) -> Protocol:
         raise ValueError("legacy_data_role must be development_only")
 
     primary_metrics_value = data.get("primary_metrics")
-    if not isinstance(primary_metrics_value, list) or not primary_metrics_value or not all(
-        isinstance(metric, str) and metric for metric in primary_metrics_value
+    if (
+        not isinstance(primary_metrics_value, list)
+        or not primary_metrics_value
+        or not all(
+            isinstance(metric, str) and metric for metric in primary_metrics_value
+        )
     ):
         raise ValueError("primary_metrics must be a nonempty list of strings")
 

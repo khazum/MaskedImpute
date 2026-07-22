@@ -1016,9 +1016,7 @@ def validate_stored_prezero_evidence(
     unavailable_status = (
         None if evidence_status == "completed" else str(evidence_status)
     )
-    unavailable_reason = (
-        None if unavailable_status is None else str(evidence_reason)
-    )
+    unavailable_reason = None if unavailable_status is None else str(evidence_reason)
     expected_overall, expected_strata = _score_report(
         probability,
         observed_array,

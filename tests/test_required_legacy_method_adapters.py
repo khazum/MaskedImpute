@@ -648,15 +648,10 @@ def test_scsdae_real_pinned_gpu0_tiny_smoke_parses_upstream_header(
     assert receipt["keras_version"] == "2.2.4"
     assert receipt["tensorflow_memory_growth"] == "true"
     assert (
-        b"MASKIMPUTE_SCSDAE_PREFLIGHT tensorflow_memory_growth=true"
-        in execution.stdout
+        b"MASKIMPUTE_SCSDAE_PREFLIGHT tensorflow_memory_growth=true" in execution.stdout
     )
-    assert "gpu_device_binding" in {
-        event.code for event in execution.compatibility_log
-    }
-    assert "allocator_policy" in {
-        event.code for event in execution.compatibility_log
-    }
+    assert "gpu_device_binding" in {event.code for event in execution.compatibility_log}
+    assert "allocator_policy" in {event.code for event in execution.compatibility_log}
 
 
 def test_scsdae_failed_run_receipt_retains_probe_and_run_evidence(
@@ -726,12 +721,16 @@ def test_scsdae_gpu0_kernel_probe_failure_uses_canonical_retained_receipt(
     assert attempt.reason_code == "legacy_gpu_kernel_incompatible"
     assert attempt.probe_command == error.command
     assert attempt.run_command is None
-    assert attempt.probe_stdout_sha256 == hashlib.sha256(
-        b"MASKIMPUTE_LEGACY_GPU_KERNEL_INCOMPATIBLE gpu=/gpu:0\n"
-    ).hexdigest()
-    assert attempt.probe_stderr_sha256 == hashlib.sha256(
-        b"first-gpu0-kernel-failed\n"
-    ).hexdigest()
+    assert (
+        attempt.probe_stdout_sha256
+        == hashlib.sha256(
+            b"MASKIMPUTE_LEGACY_GPU_KERNEL_INCOMPATIBLE gpu=/gpu:0\n"
+        ).hexdigest()
+    )
+    assert (
+        attempt.probe_stderr_sha256
+        == hashlib.sha256(b"first-gpu0-kernel-failed\n").hexdigest()
+    )
     assert attempt.run_stdout_sha256 == hashlib.sha256(b"").hexdigest()
     assert attempt.run_stderr_sha256 == hashlib.sha256(b"").hexdigest()
 

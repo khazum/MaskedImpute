@@ -554,15 +554,18 @@ def test_saver_lock_manifest_and_build_receipt_cover_complete_dependency_closure
     assert manifest["environment_id"] == "saver-r"
     assert manifest["r_version"] == "4.6.1"
     assert len(manifest["installed_library_sha256"]) == 64
-    assert manifest["build_receipt_sha256"] == hashlib.sha256(
-        SAVER_BUILD_RECEIPT_PATH.read_bytes()
-    ).hexdigest()
+    assert (
+        manifest["build_receipt_sha256"]
+        == hashlib.sha256(SAVER_BUILD_RECEIPT_PATH.read_bytes()).hexdigest()
+    )
     assert {name: item["version"] for name, item in packages.items()} == {
         name: version
         for name, version in SAVER_PACKAGE_VERSIONS.items()
         if name != "SAVER"
     }
-    assert all(item["url"].startswith("https://github.com/cran/") for item in packages.values())
+    assert all(
+        item["url"].startswith("https://github.com/cran/") for item in packages.values()
+    )
     assert all(len(item["sha256"]) == 64 for item in packages.values())
     assert manifest["upstream_saver"] == {
         "package": "SAVER",
@@ -572,9 +575,7 @@ def test_saver_lock_manifest_and_build_receipt_cover_complete_dependency_closure
         "tree": "76884afc63ef27d78ce929bd608b29dad2b0a0be",
     }
     assert receipt["status"] == "real_tiny_smoke_passed"
-    assert receipt["installed_library_sha256"] == manifest[
-        "installed_library_sha256"
-    ]
+    assert receipt["installed_library_sha256"] == manifest["installed_library_sha256"]
     assert receipt["package_versions"] == SAVER_PACKAGE_VERSIONS
 
 
@@ -1102,7 +1103,7 @@ def test_saver_rejects_a_mutated_installed_library_before_execution(
 
 def _has_saver_dependencies(rscript: str, library_dir: Path) -> bool:
     expression = (
-        f'.libPaths(c({str(library_dir)!r}, .Library));'
+        f".libPaths(c({str(library_dir)!r}, .Library));"
         f"packages<-c({','.join(repr(name) for name in SAVER_PACKAGE_VERSIONS)});"
         "quit(status=!all(vapply(packages,requireNamespace,logical(1),quietly=TRUE)))"
     )
@@ -1154,15 +1155,20 @@ def test_real_pinned_saver_fixed_seed_is_reproducible_when_dependencies_exist(
     _assert_evaluator_scales(runs[0], method_input)
     receipt = dict(runs[0].environment_receipt)
     assert receipt["manifest_sha256"] == manifest_sha256
-    assert receipt["qualification_sha256"] == hashlib.sha256(
-        SAVER_QUALIFICATION_PATH.read_bytes()
-    ).hexdigest()
-    assert receipt["installed_library_sha256"] == json.loads(
-        SAVER_LOCK_PATH.read_text(encoding="utf-8")
-    )["installed_library_sha256"]
-    assert receipt["build_receipt_sha256"] == hashlib.sha256(
-        SAVER_BUILD_RECEIPT_PATH.read_bytes()
-    ).hexdigest()
+    assert (
+        receipt["qualification_sha256"]
+        == hashlib.sha256(SAVER_QUALIFICATION_PATH.read_bytes()).hexdigest()
+    )
+    assert (
+        receipt["installed_library_sha256"]
+        == json.loads(SAVER_LOCK_PATH.read_text(encoding="utf-8"))[
+            "installed_library_sha256"
+        ]
+    )
+    assert (
+        receipt["build_receipt_sha256"]
+        == hashlib.sha256(SAVER_BUILD_RECEIPT_PATH.read_bytes()).hexdigest()
+    )
     assert receipt["saver_library_dir"] == str(SAVER_LIBRARY_PATH.resolve())
     for package, version in SAVER_PACKAGE_VERSIONS.items():
         key = package.casefold() + "_version"

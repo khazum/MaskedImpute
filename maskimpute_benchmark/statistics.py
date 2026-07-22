@@ -197,7 +197,9 @@ def _validate_records(
             )
         for field in _IDENTITY_FIELDS:
             if not isinstance(record[field], str) or not record[field]:
-                raise ValueError(f"record {index} field {field} must be a non-empty string")
+                raise ValueError(
+                    f"record {index} field {field} must be a non-empty string"
+                )
         raw_seed = record["model_seed"]
         if isinstance(raw_seed, (bool, np.bool_)) or not isinstance(
             raw_seed, (int, np.integer)
@@ -245,7 +247,9 @@ def _seed_values(
 ) -> tuple[float, ...]:
     """Collapse duplicate result rows without giving a seed extra weight."""
 
-    ordered_seeds = sorted(grouped, key=lambda value: (type(value).__name__, repr(value)))
+    ordered_seeds = sorted(
+        grouped, key=lambda value: (type(value).__name__, repr(value))
+    )
     return tuple(_finite_mean(grouped[seed]) for seed in ordered_seeds)
 
 
@@ -403,7 +407,11 @@ def hierarchical_paired_bootstrap(
     raw_records = list(records)
     validated = _validate_records(raw_records)
     materialized = list(validated.records)
-    for name, value in (("method", method), ("comparator", comparator), ("metric", metric)):
+    for name, value in (
+        ("method", method),
+        ("comparator", comparator),
+        ("metric", metric),
+    ):
         if not isinstance(value, str) or not value:
             raise ValueError(f"{name} must be a non-empty string")
     if method == comparator:
@@ -767,9 +775,7 @@ def summarize_seed_variance(
                 method=method,
                 metric=metric,
                 within_draw_seed_variance=_mean_or_none(within_seed_variances),
-                between_biological_draw_variance=_mean_or_none(
-                    between_draw_variances
-                ),
+                between_biological_draw_variance=_mean_or_none(between_draw_variances),
                 between_view_variance=_mean_or_none(between_view_variances),
                 n_seed_groups=len(seed_groups),
                 n_seed_variance_groups=len(within_seed_variances),

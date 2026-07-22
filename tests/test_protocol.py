@@ -19,7 +19,9 @@ def test_protocol_declares_four_non_splatter_mechanisms():
 
 def test_protocol_rejects_splatter_as_final(tmp_path):
     path = tmp_path / "protocol.json"
-    path.write_text(json.dumps({"schema_version": 1, "final": {"mechanisms": ["splatter"]}}))
+    path.write_text(
+        json.dumps({"schema_version": 1, "final": {"mechanisms": ["splatter"]}})
+    )
     with pytest.raises(ValueError, match="Splatter is development-only"):
         load_protocol(path)
 

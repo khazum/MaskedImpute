@@ -105,9 +105,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for environment_id, path in arguments.r_library:
         r_libraries.setdefault(environment_id, []).append(path)
     try:
-        lock = build_runtime_environment_lock(
-            environments, r_library_paths=r_libraries
-        )
+        lock = build_runtime_environment_lock(environments, r_library_paths=r_libraries)
         _write_exclusive(arguments.output, lock)
     except (OSError, RuntimeEnvironmentError, ValueError) as error:
         print(json.dumps({"error": str(error)}, sort_keys=True), file=sys.stderr)

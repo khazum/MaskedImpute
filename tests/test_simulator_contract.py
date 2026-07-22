@@ -485,7 +485,9 @@ def test_final_manifest_loader_binds_journal_across_outer_snapshots(
         study_module, "_validate_result_journal", change_head_between_snapshots
     )
 
-    with pytest.raises(SimulationContractError, match="journal.*changed|changed.*journal"):
+    with pytest.raises(
+        SimulationContractError, match="journal.*changed|changed.*journal"
+    ):
         load_final_manifest_claim(repo, round_dir)
 
 

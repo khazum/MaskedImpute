@@ -148,9 +148,9 @@ def test_exact_duplicates_and_input_order_are_inference_invariant(
 
     assert reverse == forward
     assert reverse.exclusions["duplicate_rows"] == len(paired_records)
-    assert summarize_seed_variance(list(reversed(duplicated))) == summarize_seed_variance(
-        duplicated
-    )
+    assert summarize_seed_variance(
+        list(reversed(duplicated))
+    ) == summarize_seed_variance(duplicated)
 
 
 @pytest.mark.parametrize(
@@ -164,9 +164,7 @@ def test_model_seed_rejects_noninteger_aliases(invalid_seed: object) -> None:
     ]
 
     with pytest.raises(TypeError, match="model_seed must be an integer"):
-        hierarchical_paired_bootstrap(
-            records, "maskimpute", "dca", "mse", n_boot=10
-        )
+        hierarchical_paired_bootstrap(records, "maskimpute", "dca", "mse", n_boot=10)
 
 
 @pytest.mark.parametrize("invalid_seed", [-1, 2**63])
@@ -179,9 +177,7 @@ def test_model_seed_must_match_the_nonnegative_63_bit_manifest_domain(
     ]
 
     with pytest.raises(ValueError, match=r"model_seed must lie in \[0, 2\*\*63\)"):
-        hierarchical_paired_bootstrap(
-            records, "maskimpute", "dca", "mse", n_boot=10
-        )
+        hierarchical_paired_bootstrap(records, "maskimpute", "dca", "mse", n_boot=10)
 
 
 def test_numpy_and_python_integer_seed_aliases_collapse_canonically() -> None:
@@ -324,9 +320,7 @@ def test_extreme_finite_effect_aggregation_and_intervals_remain_finite() -> None
                         1,
                         1e308,
                     ),
-                    _record(
-                        "m", biological_id, view, dataset_id, "dca", 1, 1.0
-                    ),
+                    _record("m", biological_id, view, dataset_id, "dca", 1, 1.0),
                 )
             )
 
@@ -514,7 +508,9 @@ def test_hierarchical_bootstrap_preserves_cluster_resampling_structure() -> None
     records = []
     for biological_id, effect in (("left", -0.5), ("right", 0.5)):
         for method, value in (("maskimpute", 10.0 * (1 + effect)), ("dca", 10.0)):
-            records.append(_record("m", biological_id, "v", biological_id, method, 1, value))
+            records.append(
+                _record("m", biological_id, "v", biological_id, method, 1, value)
+            )
 
     result = hierarchical_paired_bootstrap(
         records, "maskimpute", "dca", "mse", n_boot=500, seed=9

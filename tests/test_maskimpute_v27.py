@@ -409,9 +409,7 @@ def _binding_identity_calibration_artifact():
         ),
         start=5,
     ):
-        calibrated = expit(
-            0.5 * np.log(levels) - 1.7 * np.log1p(-levels) + intercept
-        )
+        calibrated = expit(0.5 * np.log(levels) - 1.7 * np.log1p(-levels) + intercept)
         probability = []
         target = []
         for raw, expected in zip(levels, calibrated, strict=True):
@@ -613,9 +611,7 @@ def test_public_reference_applies_binding_identity_calibrator():
 
     expected = np.zeros_like(score.p_pre_zero)
     observed_zero = counts == 0
-    expected[observed_zero] = calibration.transform(
-        score.p_pre_zero[observed_zero]
-    )
+    expected[observed_zero] = calibration.transform(score.p_pre_zero[observed_zero])
     np.testing.assert_allclose(result.p_pre_zero, expected)
     np.testing.assert_array_equal(result.p_pre_zero, score.p_pre_zero)
     diagnostics = result.diagnostics

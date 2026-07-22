@@ -255,11 +255,7 @@ def test_direct_attempt_rejects_oversized_executor_receipt(
         request,
         prepared,
         authority,
-        {
-            "magic": lambda *_args, **_kwargs: AdapterOutcome.failed(
-                "synthetic_failure"
-            )
-        },
+        {"magic": lambda *_args, **_kwargs: AdapterOutcome.failed("synthetic_failure")},
     )
     encoded = direct_execution_module._executor_receipt(attempt)
     monkeypatch.setattr(

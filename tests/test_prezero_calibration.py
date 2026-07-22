@@ -158,8 +158,9 @@ def test_binding_calibration_contract_is_tracked_fixed_and_pre_final():
             "reported_not_gated_nested_technical_observation"
         ),
     }
-    assert len(contract["truth_scope"]["eligible_exact_mechanisms"]) < (
-        contract["retention_rules"]["minimum_exact_mechanisms_improved"]
+    assert (
+        len(contract["truth_scope"]["eligible_exact_mechanisms"])
+        < (contract["retention_rules"]["minimum_exact_mechanisms_improved"])
     )
 
 
@@ -616,10 +617,7 @@ def test_retention_gate_requires_every_exact_mechanism_draw_and_technical_record
             "symsim/draw-02": _metrics(brier=0.21),
         },
         technical_record_metrics={
-            **{
-                name: _metrics(brier=0.19)
-                for name in tuple(records)[:-1]
-            },
+            **{name: _metrics(brier=0.19) for name in tuple(records)[:-1]},
             "symsim/draw-02/severe": _metrics(brier=0.21, log_loss=0.5011),
         },
         aggregate=_metrics(brier=0.195, log_loss=0.5011),
@@ -640,12 +638,8 @@ def test_retention_gate_requires_every_exact_mechanism_draw_and_technical_record
     assert "insufficient_technical_record_brier_improvement:3<4" in reasons
     assert "not_all_technical_records_improved:symsim/draw-02/severe" in reasons
     assert "aggregate_log_loss_worsened" in reasons
-    assert (
-        "fold_fit_failure:symsim/draw-02:RuntimeError:fit failed" in reasons
-    )
-    assert (
-        "technical_record_log_loss_worsened:symsim/draw-02/severe" in reasons
-    )
+    assert "fold_fit_failure:symsim/draw-02:RuntimeError:fit failed" in reasons
+    assert "technical_record_log_loss_worsened:symsim/draw-02/severe" in reasons
 
 
 def test_retention_gate_preserves_draw_record_evidence_when_mechanism_count_blocks():
@@ -818,9 +812,7 @@ def _consistent_two_draw_retention_records():
     levels = np.array([0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 0.96])
 
     def draw_values(intercept):
-        calibrated = expit(
-            0.5 * np.log(levels) - 1.7 * np.log1p(-levels) + intercept
-        )
+        calibrated = expit(0.5 * np.log(levels) - 1.7 * np.log1p(-levels) + intercept)
         probabilities = []
         targets = []
         for probability, calibrated_probability in zip(
@@ -906,9 +898,7 @@ def test_real_shaped_fixture_reports_improvement_but_rejects_one_mechanism_fit()
 def test_single_exact_mechanism_forces_identity_under_three_mechanism_gate():
     from maskimpute.calibration import fit_development_calibration
 
-    artifact = fit_development_calibration(
-        _consistent_two_draw_retention_records()
-    )
+    artifact = fit_development_calibration(_consistent_two_draw_retention_records())
     payload = artifact.to_dict()
 
     assert payload["selected_algorithm"] == "identity"

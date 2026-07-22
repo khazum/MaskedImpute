@@ -857,9 +857,7 @@ def _plan_payload(
             "endpoint_ids": list(_ENDPOINT_IDS),
             "endpoint_reference_overlap": dict(_ENDPOINT_REFERENCE_OVERLAP),
             "independent_endpoint_ids": [],
-            "non_matched_bulk_endpoint_ids": [
-                "technical_replicate_concordance"
-            ],
+            "non_matched_bulk_endpoint_ids": ["technical_replicate_concordance"],
             "independence_disclosure": (
                 "no_endpoint_is_an_independent_validation_cohort"
             ),
@@ -1338,7 +1336,9 @@ def _fixed_work_paths(
     names: tuple[str, ...],
 ) -> tuple[str, ...]:
     if len(values) != len(names):
-        raise ExternalReferenceDevelopmentError("adapter command work paths are invalid")
+        raise ExternalReferenceDevelopmentError(
+            "adapter command work paths are invalid"
+        )
     paths = tuple(Path(value) for value in values)
     parents = {path.parent for path in paths}
     if (
@@ -1346,22 +1346,21 @@ def _fixed_work_paths(
         or any(not path.is_absolute() or ".." in path.parts for path in paths)
         or tuple(path.name for path in paths) != names
     ):
-        raise ExternalReferenceDevelopmentError("adapter command work paths are invalid")
+        raise ExternalReferenceDevelopmentError(
+            "adapter command work paths are invalid"
+        )
     parent = next(iter(parents))
     work_root = parent.parent
     current_staging = work_root == output / "adapter-work"
     published_staging = (
         work_root.name == "adapter-work"
         and work_root.parent.parent == output.parent
-        and work_root.parent.name.startswith(
-            ".competition-external-reference-staging-"
-        )
+        and work_root.parent.name.startswith(".competition-external-reference-staging-")
     )
-    if (
-        not (current_staging or published_staging)
-        or not parent.name.startswith(prefix)
-    ):
-        raise ExternalReferenceDevelopmentError("adapter command work paths are invalid")
+    if not (current_staging or published_staging) or not parent.name.startswith(prefix):
+        raise ExternalReferenceDevelopmentError(
+            "adapter command work paths are invalid"
+        )
     return tuple(str(path) for path in paths)
 
 
@@ -1464,8 +1463,7 @@ def _validate_completed_environment_receipt(
         archive = str((source / "PYTHON.zip").resolve())
         valid = (
             set(receipt) == expected_keys
-            and receipt.get("bulk_reference_id")
-            == authority.d3_reference.reference_id
+            and receipt.get("bulk_reference_id") == authority.d3_reference.reference_id
             and receipt.get("bulk_reference_sha256")
             == authority.d3_reference.source_sha256
             and receipt.get("source_archive") == archive
@@ -1597,10 +1595,7 @@ def _validate_environment_payload(
         or not receipt_valid
         or not compatibility_valid
         or (status == "completed" and (not adapter_receipt or not compatibility))
-        or (
-            status == "unavailable"
-            and (adapter_receipt != [] or compatibility != [])
-        )
+        or (status == "unavailable" and (adapter_receipt != [] or compatibility != []))
         or (
             value.get("adapter_attempt_receipt") is not None
             and not isinstance(value.get("adapter_attempt_receipt"), Mapping)
@@ -1616,9 +1611,11 @@ def _validate_environment_payload(
         raise ExternalReferenceDevelopmentError(
             f"environment library receipt is invalid for {method_id}"
         )
-    if status == "completed" and tuple(
-        row["code"] for row in compatibility
-    ) != _COMPATIBILITY_CODES[method_id]:
+    if (
+        status == "completed"
+        and tuple(row["code"] for row in compatibility)
+        != _COMPATIBILITY_CODES[method_id]
+    ):
         raise ExternalReferenceDevelopmentError(
             f"compatibility disclosure is incomplete for {method_id}"
         )
@@ -1626,9 +1623,7 @@ def _validate_environment_payload(
         _validate_fixed_command(command, output, authority, method_id)
     if status == "completed":
         assert isinstance(adapter_receipt, list)
-        _validate_completed_environment_receipt(
-            adapter_receipt, authority, method_id
-        )
+        _validate_completed_environment_receipt(adapter_receipt, authority, method_id)
     attempt = value.get("adapter_attempt_receipt")
     if status == "completed" or method_id == "d3impute":
         if attempt is not None:
@@ -1668,10 +1663,8 @@ def _validate_environment_payload(
         or attempt.get("executable") != str(authority.locators[method_id])
         or attempt.get("r_library") != str(authority.sctsi_library)
         or attempt.get("reference_id") != expected_reference.reference_id
-        or attempt.get("reference_source_sha256")
-        != expected_reference.source_sha256
-        or attempt.get("reference_matrix_sha256")
-        != expected_reference.matrix_sha256
+        or attempt.get("reference_source_sha256") != expected_reference.source_sha256
+        or attempt.get("reference_matrix_sha256") != expected_reference.matrix_sha256
         or attempt.get("outcome") != "unavailable"
         or not isinstance(reason_code, str)
         or _REASON.fullmatch(reason_code) is None

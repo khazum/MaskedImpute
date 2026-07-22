@@ -867,11 +867,7 @@ class DirectCheckpointStore:
 
     def _publish(self, path: Path, payload: Mapping[str, object]) -> None:
         data = _canonical_bytes(payload) + b"\n"
-        name = (
-            "direct checkpoint"
-            if path == self.path
-            else "direct transaction intent"
-        )
+        name = "direct checkpoint" if path == self.path else "direct transaction intent"
         if len(data) > DEVELOPMENT_MAX_CHECKPOINT_BYTES:
             raise RunnerContractError(f"{name} exceeds its byte bound")
         path.parent.mkdir(parents=True, exist_ok=True)

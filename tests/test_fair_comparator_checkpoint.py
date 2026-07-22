@@ -637,9 +637,7 @@ def test_direct_checkpoint_rejects_noncanonical_stored_metadata(
 def test_direct_checkpoint_binds_complete_storage_receipts(tmp_path: Path) -> None:
     plan, registry, prepared = _direct_checkpoint_fixture()
 
-    report = DirectCheckpointStore(
-        tmp_path / "checkpoint.json"
-    )._write_structural(
+    report = DirectCheckpointStore(tmp_path / "checkpoint.json")._write_structural(
         plan,
         (),
         registry=registry,

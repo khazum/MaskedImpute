@@ -33,9 +33,7 @@ def main() -> int:
                     "artifacts/study/development/evaluation/comparator_smoke.json"
                 ),
                 "status": receipt["status"],
-                "planned_configuration_count": receipt[
-                    "planned_configuration_count"
-                ],
+                "planned_configuration_count": receipt["planned_configuration_count"],
                 "completed_configuration_count": receipt[
                     "completed_configuration_count"
                 ],

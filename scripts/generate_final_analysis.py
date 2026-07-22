@@ -31,9 +31,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     round_dir = (
-        args.round_dir
-        if args.round_dir.is_absolute()
-        else REPOSITORY / args.round_dir
+        args.round_dir if args.round_dir.is_absolute() else REPOSITORY / args.round_dir
     )
     report = generate_final_analysis(REPOSITORY, round_dir)
     print(

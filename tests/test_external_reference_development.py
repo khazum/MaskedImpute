@@ -301,9 +301,7 @@ def _make_fixture(
             raise AdapterUnavailableError(
                 reason,
                 "D3 development attempt did not start",
-                command=(
-                    None if commandless else command
-                ),
+                command=(None if commandless else command),
                 stdout=b"d3-out",
                 stderr=b"d3-err",
             )
@@ -326,9 +324,7 @@ def _make_fixture(
                 ("bulk_reference_sha256", bulk_reference.source_sha256),
                 (
                     "inference_module",
-                    str(
-                        (_kwargs["source_dir"] / "PYTHON.zip").resolve()
-                    )
+                    str((_kwargs["source_dir"] / "PYTHON.zip").resolve())
                     + "/PYTHON/Function/Inference.py",
                 ),
                 ("numpy_version", "test"),
@@ -377,9 +373,7 @@ def _make_fixture(
             error = AdapterUnavailableError(
                 "dependency_missing",
                 "scTsI development attempt did not start",
-                command=(
-                    None if commandless else command
-                ),
+                command=(None if commandless else command),
                 stdout=b"sctsi-out",
                 stderr=b"sctsi-err",
             )
@@ -551,8 +545,7 @@ def test_producer_writes_reopenable_semantic_tung_evidence(
             for row in metrics["endpoints"]
         )
         assert {
-            row["endpoint"]: row["reference_overlap"]
-            for row in metrics["endpoints"]
+            row["endpoint"]: row["reference_overlap"] for row in metrics["endpoints"]
         } == {
             "bulk_pseudobulk_concordance": "adapter_input_matched_bulk",
             "ercc_recovery": "adapter_input_matched_bulk",
@@ -1191,9 +1184,7 @@ def test_cli_rejects_duplicate_or_unknown_environment_locators(
         "fixed locator variables to run the production Tung track"
     ),
 )
-def test_real_external_reference_producer_and_loader_when_locked_assets_exist() -> (
-    None
-):
+def test_real_external_reference_producer_and_loader_when_locked_assets_exist() -> None:
     from maskimpute_benchmark.external_reference_development import (
         OUTPUT_RELATIVE_PATH,
         load_external_reference_evidence,

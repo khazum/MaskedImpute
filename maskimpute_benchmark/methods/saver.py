@@ -11,7 +11,11 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
-from .direct import DirectAdapterExecution, DirectMethodOutput, finalize_direct_method_output
+from .direct import (
+    DirectAdapterExecution,
+    DirectMethodOutput,
+    finalize_direct_method_output,
+)
 from .observed import (
     AdapterExecution,
     AdapterUnavailableError,
@@ -235,10 +239,7 @@ def _load_saver_qualification(
     expected_lock = repository / _SAVER_LOCK_RELATIVE
     expected_build_receipt = repository / _SAVER_BUILD_RECEIPT_RELATIVE
     try:
-        if (
-            expected_build_receipt.is_symlink()
-            or not expected_build_receipt.is_file()
-        ):
+        if expected_build_receipt.is_symlink() or not expected_build_receipt.is_file():
             raise OSError("build receipt is not a regular file")
         observed_build_sha256 = hashlib.sha256(
             expected_build_receipt.read_bytes()
@@ -485,7 +486,8 @@ def _saver_library_sha256(library_dir: Path) -> str:
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.+@/:=-"
     )
     entries = sorted(
-        library_dir.rglob("*"), key=lambda path: path.relative_to(library_dir).as_posix()
+        library_dir.rglob("*"),
+        key=lambda path: path.relative_to(library_dir).as_posix(),
     )
     for path in entries:
         relative = path.relative_to(library_dir).as_posix()
@@ -496,8 +498,10 @@ def _saver_library_sha256(library_dir: Path) -> str:
             )
         if path.is_dir():
             continue
-        if not path.is_file() or not relative or any(
-            character not in allowed for character in relative
+        if (
+            not path.is_file()
+            or not relative
+            or any(character not in allowed for character in relative)
         ):
             raise AdapterUnavailableError(
                 "environment_library_malformed",
@@ -535,7 +539,9 @@ def _validate_saver_library(
             f"locked SAVER library is missing: {library_dir}",
         )
     selected = library_dir.resolve(strict=True)
-    missing = sorted(package for package in versions if not (selected / package).is_dir())
+    missing = sorted(
+        package for package in versions if not (selected / package).is_dir()
+    )
     if missing:
         raise AdapterUnavailableError(
             "environment_library_incomplete",
@@ -797,8 +803,7 @@ def run_saver(
             receipt_values["manifest_sha256"] != manifest_sha256
             or receipt_values["qualification_sha256"] != qualification_sha256
             or receipt_values["build_receipt_sha256"] != build_receipt_sha256
-            or receipt_values["installed_library_sha256"]
-            != installed_library_sha256
+            or receipt_values["installed_library_sha256"] != installed_library_sha256
             or receipt_values["r_version"] != locked_r_version
             or any(
                 receipt_values[_SAVER_PACKAGE_KEYS[package]] != version

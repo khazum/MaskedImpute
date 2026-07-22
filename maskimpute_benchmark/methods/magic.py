@@ -9,7 +9,11 @@ from tempfile import TemporaryDirectory
 import numpy as np
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
-from .direct import DirectAdapterExecution, DirectMethodOutput, finalize_direct_method_output
+from .direct import (
+    DirectAdapterExecution,
+    DirectMethodOutput,
+    finalize_direct_method_output,
+)
 from .observed import (
     AdapterExecution,
     CompatibilityEvent,
@@ -301,23 +305,46 @@ def _run_magic_impl(
 
 
 def run_magic(
-    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
-    python_executable: Path, seed: int, config: MAGICConfig = MAGICConfig(),
+    spec: MethodSpec,
+    method_input: MethodInput,
+    *,
+    source_dir: Path,
+    python_executable: Path,
+    seed: int,
+    config: MAGICConfig = MAGICConfig(),
     work_root: Path | None = None,
 ) -> AdapterExecution:
-    return _run_magic_impl(spec, method_input, source_dir=source_dir,
-                           python_executable=python_executable, seed=seed,
-                           config=config, work_root=work_root)
+    return _run_magic_impl(
+        spec,
+        method_input,
+        source_dir=source_dir,
+        python_executable=python_executable,
+        seed=seed,
+        config=config,
+        work_root=work_root,
+    )
 
 
 def run_magic_direct(
-    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
-    python_executable: Path, seed: int, config: MAGICConfig = MAGICConfig(),
+    spec: MethodSpec,
+    method_input: MethodInput,
+    *,
+    source_dir: Path,
+    python_executable: Path,
+    seed: int,
+    config: MAGICConfig = MAGICConfig(),
     work_root: Path | None = None,
 ) -> DirectAdapterExecution:
-    return _run_magic_impl(spec, method_input, source_dir=source_dir,
-                           python_executable=python_executable, seed=seed,
-                           config=config, work_root=work_root, _direct=True)
+    return _run_magic_impl(
+        spec,
+        method_input,
+        source_dir=source_dir,
+        python_executable=python_executable,
+        seed=seed,
+        config=config,
+        work_root=work_root,
+        _direct=True,
+    )
 
 
 __all__ = [

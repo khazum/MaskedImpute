@@ -78,14 +78,10 @@ def _binding_identity_calibration_artifact():
         ),
         start=5,
     ):
-        calibrated = expit(
-            0.5 * np.log(levels) - 1.7 * np.log1p(-levels) + intercept
-        )
+        calibrated = expit(0.5 * np.log(levels) - 1.7 * np.log1p(-levels) + intercept)
         probabilities = []
         targets = []
-        for probability, calibrated_probability in zip(
-            levels, calibrated, strict=True
-        ):
+        for probability, calibrated_probability in zip(levels, calibrated, strict=True):
             positives = min(49, max(1, round(50 * calibrated_probability)))
             probabilities.extend([float(probability)] * 50)
             targets.extend([1] * positives + [0] * (50 - positives))
@@ -564,9 +560,7 @@ def test_development_reference_records_binding_identity_holdout_receipt():
         load_ablation_registry,
     )
 
-    counts = np.array(
-        [[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64
-    )
+    counts = np.array([[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64)
     cell_ids = tuple(f"cell-{index}" for index in range(len(counts)))
     score = fit_p_pre_zero_count_model(
         counts,
@@ -648,8 +642,9 @@ def test_development_reference_records_binding_identity_holdout_receipt():
     assert result.diagnostics["score"]["calibration_file_sha256"] == (
         calibration_file_sha256
     )
-    assert result.diagnostics["score"]["calibration_payload_sha256"] == (
-        calibration_payload["payload_sha256"]
+    assert (
+        result.diagnostics["score"]["calibration_payload_sha256"]
+        == (calibration_payload["payload_sha256"])
     )
     assert calibration_file_sha256 != calibration_payload["payload_sha256"]
     derived_probability, derived_policy = _derive_prezero_execution_policy(
@@ -707,9 +702,7 @@ def test_development_score_derivation_uses_exact_policy_by_mechanism(
         load_ablation_registry,
     )
 
-    counts = np.array(
-        [[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64
-    )
+    counts = np.array([[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64)
     cell_ids = tuple(f"cell-{index}" for index in range(len(counts)))
     score = fit_p_pre_zero_count_model(
         counts,
@@ -718,9 +711,11 @@ def test_development_score_derivation_uses_exact_policy_by_mechanism(
     )
     artifact = _binding_identity_calibration_artifact()
     registry = load_ablation_registry(Path("study/ablations.json"))
-    spec = registry.reference if spec_id == registry.reference.id else registry.by_id[
-        spec_id
-    ]
+    spec = (
+        registry.reference
+        if spec_id == registry.reference.id
+        else registry.by_id[spec_id]
+    )
 
     probability, diagnostics = _derive_prezero_execution_policy(
         counts,
@@ -751,9 +746,7 @@ def test_final_reference_uses_retained_all_development_calibrator_on_unseen_draw
     )
     from maskimpute.ablations import _fit_ablation_once, load_ablation_registry
 
-    counts = np.array(
-        [[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64
-    )
+    counts = np.array([[5, 0, 1], [2, 3, 0], [0, 4, 2], [1, 0, 3]], dtype=np.int64)
     cell_ids = tuple(f"cell-{index}" for index in range(len(counts)))
     score = fit_p_pre_zero_count_model(
         counts,

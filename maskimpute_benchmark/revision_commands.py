@@ -129,7 +129,13 @@ def build_revision_main(
             repository,
             version,
         )
-    except (RevisionEvaluationError, OSError, RuntimeError, TypeError, ValueError) as error:
+    except (
+        RevisionEvaluationError,
+        OSError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as error:
         print(json.dumps({"error": str(error)}, sort_keys=True), file=sys.stderr)
         return 2
     print(

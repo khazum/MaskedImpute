@@ -449,9 +449,10 @@ def test_operational_root_is_receipt_bound_across_final_lifecycle(
         operational_artifact_roots=(environment_root.parent, source_root.parent),
     )
 
-    assert [
-        row["path"] for row in frozen["operational_artifact_roots"]
-    ] == ["artifacts/envs", "artifacts/method-sources"]
+    assert [row["path"] for row in frozen["operational_artifact_roots"]] == [
+        "artifacts/envs",
+        "artifacts/method-sources",
+    ]
     assert all(
         row["entry_count"] > 0 and len(row["tree_sha256"]) == 64
         for row in frozen["operational_artifact_roots"]
@@ -553,9 +554,7 @@ def test_freeze_records_commit_relative_inputs_hashes_and_utc_time(
     assert record["config_sha256"] == file_sha256(clean_repo / "config.json")
     assert record["protocol_sha256"] == file_sha256(clean_repo / "protocol.json")
     assert record["environment_path"] == "environment.lock"
-    assert record["environment_sha256"] == file_sha256(
-        clean_repo / "environment.lock"
-    )
+    assert record["environment_sha256"] == file_sha256(clean_repo / "environment.lock")
     assert record["round_path"] == "artifacts/study/round-001"
     assert len(record["round_token"]) == 32
     assert len(record["repository_instance_id"]) == 32
@@ -586,9 +585,7 @@ def test_freeze_rejects_mismatched_validated_hash_handoff(clean_repo: Path) -> N
             environment_path=clean_repo / "environment.lock",
             expected_config_sha256="0" * 64,
             expected_protocol_sha256=file_sha256(clean_repo / "protocol.json"),
-            expected_environment_sha256=file_sha256(
-                clean_repo / "environment.lock"
-            ),
+            expected_environment_sha256=file_sha256(clean_repo / "environment.lock"),
         )
 
     assert not (round_dir / "freeze.json").exists()
@@ -606,9 +603,7 @@ def test_freeze_rejects_mismatched_validated_commit_handoff(clean_repo: Path) ->
             environment_path=clean_repo / "environment.lock",
             expected_config_sha256=file_sha256(clean_repo / "config.json"),
             expected_protocol_sha256=file_sha256(clean_repo / "protocol.json"),
-            expected_environment_sha256=file_sha256(
-                clean_repo / "environment.lock"
-            ),
+            expected_environment_sha256=file_sha256(clean_repo / "environment.lock"),
             expected_method_commit="0" * 40,
         )
 
@@ -629,9 +624,7 @@ def test_freeze_rejects_symlinked_authority_directories(
         state_root.symlink_to(external, target_is_directory=True)
     else:
         state_root.mkdir(mode=0o700)
-        (state_root / f".{authority}").symlink_to(
-            external, target_is_directory=True
-        )
+        (state_root / f".{authority}").symlink_to(external, target_is_directory=True)
 
     with pytest.raises(StudyStateError, match="authority|directory|lock"):
         freeze_fixture(clean_repo)
@@ -786,9 +779,7 @@ def test_evaluation_receipt_is_one_use(clean_repo: Path) -> None:
     round_dir = freeze_fixture(clean_repo)
     materialize_final(round_dir, seed_count=4, repo=clean_repo)
     assert_final_runnable(clean_repo, round_dir)
-    record_final_evaluation(
-        round_dir, {"results_sha256": "a" * 64}, repo=clean_repo
-    )
+    record_final_evaluation(round_dir, {"results_sha256": "a" * 64}, repo=clean_repo)
     with pytest.raises(StudyStateError, match="already evaluated"):
         assert_final_runnable(clean_repo, round_dir)
 
@@ -809,9 +800,7 @@ def test_evaluation_receipt_records_result_manifest_and_hash(clean_repo: Path) -
     assert record["state"] == "evaluated"
     assert record["result_manifest"] == result_manifest
     assert record["result_manifest_sha256"] == canonical_sha256(result_manifest)
-    assert record["environment_sha256"] == file_sha256(
-        clean_repo / "environment.lock"
-    )
+    assert record["environment_sha256"] == file_sha256(clean_repo / "environment.lock")
     assert record == json.loads(
         (round_dir / "evaluation_receipt.json").read_text(encoding="utf-8")
     )
@@ -902,11 +891,7 @@ def test_evaluation_rejects_declared_result_hash_mismatch(clean_repo: Path) -> N
     with pytest.raises(StudyStateError, match="result file hash"):
         record_final_evaluation(
             round_dir,
-            {
-                "result_files": [
-                    {"path": "results/scores.json", "sha256": "0" * 64}
-                ]
-            },
+            {"result_files": [{"path": "results/scores.json", "sha256": "0" * 64}]},
             repo=clean_repo,
         )
 
@@ -1057,7 +1042,9 @@ def test_nonfinite_result_manifest_is_a_state_error(clean_repo: Path) -> None:
         record_final_evaluation(round_dir, {"metric": float("nan")}, repo=clean_repo)
 
 
-def test_supersede_preserves_prior_records_and_requires_reason(clean_repo: Path) -> None:
+def test_supersede_preserves_prior_records_and_requires_reason(
+    clean_repo: Path,
+) -> None:
     round_dir = freeze_fixture(clean_repo)
     materialize_final(round_dir, seed_count=4, repo=clean_repo)
     before = {path.name: path.read_bytes() for path in round_dir.iterdir()}
@@ -1070,7 +1057,9 @@ def test_supersede_preserves_prior_records_and_requires_reason(clean_repo: Path)
     assert record["state"] == "superseded"
     assert record["previous_state"] == "materialized"
     assert record["reason"] == "new development round"
-    assert all((round_dir / name).read_bytes() == contents for name, contents in before.items())
+    assert all(
+        (round_dir / name).read_bytes() == contents for name, contents in before.items()
+    )
     with pytest.raises(StudyStateError, match="superseded"):
         assert_final_runnable(clean_repo, round_dir)
 
@@ -1177,7 +1166,9 @@ def test_dirty_submodule_cannot_be_hidden_by_ignore_configuration(
     )
     _git(clean_repo, "commit", "-am", "add competitor")
     _git(clean_repo, "config", "submodule.competitor.ignore", "all")
-    (clean_repo / "competitor/method.py").write_text("hidden change\n", encoding="utf-8")
+    (clean_repo / "competitor/method.py").write_text(
+        "hidden change\n", encoding="utf-8"
+    )
     assert _git(clean_repo, "status", "--porcelain") == ""
 
     with pytest.raises(StudyStateError, match="clean"):
@@ -1311,7 +1302,9 @@ def test_record_rechecks_repository_immediately_before_receipt(
             repo=clean_repo,
         )
         assert first_check.wait(timeout=5)
-        (clean_repo / "tracked.py").write_text("changed during record\n", encoding="utf-8")
+        (clean_repo / "tracked.py").write_text(
+            "changed during record\n", encoding="utf-8"
+        )
         continue_record.set()
         with pytest.raises(StudyStateError, match="clean frozen commit"):
             future.result(timeout=5)
@@ -1585,7 +1578,9 @@ def test_post_publication_repository_change_supersedes_round(
                 "changed after publication\n", encoding="utf-8"
             )
 
-    monkeypatch.setattr(study_module, "_atomic_write_json", change_after_materialization)
+    monkeypatch.setattr(
+        study_module, "_atomic_write_json", change_after_materialization
+    )
     with pytest.raises(StudyStateError, match="clean frozen commit"):
         materialize_final(round_dir, seed_count=4, repo=clean_repo)
 
@@ -1623,9 +1618,12 @@ def test_post_publication_seed_manifest_change_supersedes_round(
     with pytest.raises(StudyStateError, match="manifest"):
         materialize_final(round_dir, seed_count=4, repo=clean_repo)
 
-    assert study_module._read_record(
-        study_module._registry_path(clean_repo, "round-001")
-    )["state"] == "superseded"
+    assert (
+        study_module._read_record(study_module._registry_path(clean_repo, "round-001"))[
+            "state"
+        ]
+        == "superseded"
+    )
 
 
 def test_post_publication_execution_claim_change_supersedes_round(
@@ -1648,9 +1646,12 @@ def test_post_publication_execution_claim_change_supersedes_round(
     with pytest.raises(StudyStateError, match="claim|registry"):
         assert_final_runnable(clean_repo, round_dir)
 
-    assert study_module._read_record(
-        study_module._registry_path(clean_repo, "round-001")
-    )["state"] == "superseded"
+    assert (
+        study_module._read_record(study_module._registry_path(clean_repo, "round-001"))[
+            "state"
+        ]
+        == "superseded"
+    )
 
 
 def test_seed_manifest_change_during_registry_advance_supersedes_round(
@@ -1671,9 +1672,12 @@ def test_seed_manifest_change_during_registry_advance_supersedes_round(
     with pytest.raises(StudyStateError, match="manifest"):
         materialize_final(round_dir, seed_count=4, repo=clean_repo)
 
-    assert study_module._read_record(
-        study_module._registry_path(clean_repo, "round-001")
-    )["state"] == "superseded"
+    assert (
+        study_module._read_record(study_module._registry_path(clean_repo, "round-001"))[
+            "state"
+        ]
+        == "superseded"
+    )
 
 
 def test_receipt_change_after_registry_publication_fails_closed(
@@ -1732,9 +1736,12 @@ def test_post_receipt_repository_change_marks_receipt_superseded(
         (round_dir / "supersession.json").read_text(encoding="utf-8")
     )
     assert supersession["previous_state"] == "running"
-    assert study_module._read_record(
-        study_module._registry_path(clean_repo, "round-001")
-    )["state"] == "superseded"
+    assert (
+        study_module._read_record(study_module._registry_path(clean_repo, "round-001"))[
+            "state"
+        ]
+        == "superseded"
+    )
 
 
 @pytest.mark.parametrize("action", ["mutate", "delete"])
@@ -1765,9 +1772,12 @@ def test_post_receipt_seed_manifest_change_is_superseded(
             round_dir, {"results_sha256": "a" * 64}, repo=clean_repo
         )
 
-    assert study_module._read_record(
-        study_module._registry_path(clean_repo, "round-001")
-    )["state"] == "superseded"
+    assert (
+        study_module._read_record(study_module._registry_path(clean_repo, "round-001"))[
+            "state"
+        ]
+        == "superseded"
+    )
 
 
 def test_replaced_lock_path_cannot_publish_after_supersession(
@@ -1809,7 +1819,11 @@ def test_supersession_registry_write_is_reconciled_on_retry(
 
     def fail_once(path, payload, **kwargs):
         nonlocal failed
-        if path == registry_path and payload.get("state") == "superseded" and not failed:
+        if (
+            path == registry_path
+            and payload.get("state") == "superseded"
+            and not failed
+        ):
             failed = True
             raise OSError("injected registry publication failure")
         return original(path, payload, **kwargs)

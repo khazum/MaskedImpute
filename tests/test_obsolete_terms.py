@@ -44,9 +44,7 @@ def _tracked_paths() -> tuple[str, ...]:
         check=True,
         capture_output=True,
     )
-    return tuple(
-        item.decode("utf-8") for item in result.stdout.split(b"\0") if item
-    )
+    return tuple(item.decode("utf-8") for item in result.stdout.split(b"\0") if item)
 
 
 def _is_excluded(relative_path: str) -> bool:
@@ -81,8 +79,8 @@ def test_active_tracked_tree_uses_canonical_zero_terminology() -> None:
             if pattern.search(searchable):
                 violations.append(f"{relative_path}: {description}")
 
-    assert not violations, "obsolete terminology outside explicit archives:\n" + "\n".join(
-        violations
+    assert not violations, (
+        "obsolete terminology outside explicit archives:\n" + "\n".join(violations)
     )
 
 

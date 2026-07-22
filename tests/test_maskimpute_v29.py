@@ -84,7 +84,7 @@ def test_structure_penalty_is_zero_at_observed_geometry_and_differentiable() -> 
     assert components["covariance"] == pytest.approx(0.0, abs=1e-12)
     assert components["neighborhood"] == pytest.approx(0.0, abs=1e-12)
 
-    perturbed = (target + torch.linspace(0.0, 1.0, target.numel()).reshape_as(target))
+    perturbed = target + torch.linspace(0.0, 1.0, target.numel()).reshape_as(target)
     perturbed.requires_grad_(True)
     loss, _ = structure_preservation_loss(
         perturbed,

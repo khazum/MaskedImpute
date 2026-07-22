@@ -92,9 +92,9 @@ def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _json_text(payload: Mapping[str, Any]) -> str:
     try:
-        return json.dumps(
-            dict(payload), allow_nan=False, indent=2, sort_keys=True
-        ) + "\n"
+        return (
+            json.dumps(dict(payload), allow_nan=False, indent=2, sort_keys=True) + "\n"
+        )
     except (TypeError, ValueError) as exc:
         raise StudyStateError(f"record is not valid JSON: {exc}") from exc
 
@@ -102,11 +102,7 @@ def _json_text(payload: Mapping[str, Any]) -> str:
 def _fsync_directory(directory: Path) -> None:
     """Durably publish directory-entry changes on supported POSIX filesystems."""
 
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(directory, flags)
     try:
         os.fsync(descriptor)
@@ -160,9 +156,7 @@ def _read_record(path: Path) -> dict[str, Any]:
     try:
         descriptor = os.open(
             path,
-            os.O_RDONLY
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
         )
         metadata = os.fstat(descriptor)
         if (
@@ -212,9 +206,7 @@ def _read_private_canonical_record(path: Path, label: str) -> dict[str, Any]:
         named_before = path.lstat()
         descriptor = os.open(
             path,
-            os.O_RDONLY
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
         )
         opened = os.fstat(descriptor)
         if (
@@ -228,7 +220,9 @@ def _read_private_canonical_record(path: Path, label: str) -> dict[str, Any]:
         chunks: list[bytes] = []
         total = 0
         while True:
-            chunk = os.read(descriptor, min(1024 * 1024, _MAX_JOURNAL_ENTRY_BYTES + 1 - total))
+            chunk = os.read(
+                descriptor, min(1024 * 1024, _MAX_JOURNAL_ENTRY_BYTES + 1 - total)
+            )
             if not chunk:
                 break
             total += len(chunk)
@@ -237,10 +231,9 @@ def _read_private_canonical_record(path: Path, label: str) -> dict[str, Any]:
             chunks.append(chunk)
         opened_after = os.fstat(descriptor)
         named_after = path.lstat()
-        if (
-            _file_state(opened) != _file_state(opened_after)
-            or _file_state(opened) != _file_state(named_after)
-        ):
+        if _file_state(opened) != _file_state(opened_after) or _file_state(
+            opened
+        ) != _file_state(named_after):
             raise StudyStateError(f"{label} changed while reading")
         raw = b"".join(chunks)
         payload = json.loads(
@@ -572,11 +565,10 @@ def _round_lock(repo: Path, round_id: str):
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             metadata = os.fstat(lock_file.fileno())
             named = lock_path.stat(follow_symlinks=False)
-            if (
-                not stat_module.S_ISREG(metadata.st_mode)
-                or (metadata.st_dev, metadata.st_ino)
-                != (named.st_dev, named.st_ino)
-            ):
+            if not stat_module.S_ISREG(metadata.st_mode) or (
+                metadata.st_dev,
+                metadata.st_ino,
+            ) != (named.st_dev, named.st_ino):
                 raise StudyStateError("study round lock identity changed")
             identity = _RoundLockIdentity(
                 common=_git_common_dir_identity(repo),
@@ -725,9 +717,7 @@ def _validate_freeze(round_dir: Path, repo: Path | None = None) -> dict[str, Any
         freeze.get("repository_instance_id"), str
     ) or not _TOKEN_RE.fullmatch(freeze["repository_instance_id"]):
         raise StudyStateError("invalid frozen repository instance")
-    _require_sha256(
-        freeze.get("worktree_path_sha256"), "frozen worktree path hash"
-    )
+    _require_sha256(freeze.get("worktree_path_sha256"), "frozen worktree path hash")
     if (
         type(freeze.get("git_common_dir_device")) is not int
         or freeze["git_common_dir_device"] < 0
@@ -794,7 +784,10 @@ def _validate_registry(
     expected_state: str | None = None,
 ) -> dict[str, Any]:
     registry = _read_record(_registry_path(repo, round_dir.name))
-    if type(registry.get("schema_version")) is not int or registry["schema_version"] != 1:
+    if (
+        type(registry.get("schema_version")) is not int
+        or registry["schema_version"] != 1
+    ):
         raise StudyStateError("round registry has invalid schema_version")
     valid_identity = (
         registry.get("round_id") == round_dir.name
@@ -802,20 +795,15 @@ def _validate_registry(
         and registry.get("round_token") == freeze.get("round_token")
         and registry.get("repository_instance_id")
         == freeze.get("repository_instance_id")
-        and registry.get("worktree_path_sha256")
-        == freeze.get("worktree_path_sha256")
-        and registry.get("git_common_dir_device")
-        == freeze.get("git_common_dir_device")
-        and registry.get("git_common_dir_inode")
-        == freeze.get("git_common_dir_inode")
+        and registry.get("worktree_path_sha256") == freeze.get("worktree_path_sha256")
+        and registry.get("git_common_dir_device") == freeze.get("git_common_dir_device")
+        and registry.get("git_common_dir_inode") == freeze.get("git_common_dir_inode")
         and registry.get("study_state_root_device")
         == freeze.get("study_state_root_device")
         and registry.get("study_state_root_inode")
         == freeze.get("study_state_root_inode")
-        and registry.get("registry_dir_device")
-        == freeze.get("registry_dir_device")
-        and registry.get("registry_dir_inode")
-        == freeze.get("registry_dir_inode")
+        and registry.get("registry_dir_device") == freeze.get("registry_dir_device")
+        and registry.get("registry_dir_inode") == freeze.get("registry_dir_inode")
     )
     if not valid_identity:
         raise StudyStateError("round identity does not match repository registry")
@@ -899,9 +887,7 @@ def _validate_registry(
     if registry.get("history_head_sha256") != previous_entry_sha256:
         raise StudyStateError("round registry history head is invalid")
     if expected_state is not None and state != expected_state:
-        raise StudyStateError(
-            f"round registry is {state}; expected {expected_state}"
-        )
+        raise StudyStateError(f"round registry is {state}; expected {expected_state}")
     return registry
 
 
@@ -1039,9 +1025,7 @@ def _operational_file_entry(path: Path, relative: str) -> dict[str, Any]:
         named_before = path.lstat()
         descriptor = os.open(
             path,
-            os.O_RDONLY
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
         )
         opened_before = os.fstat(descriptor)
         identity = lambda value: (  # noqa: E731 - compact stable-stat projection
@@ -1054,10 +1038,9 @@ def _operational_file_entry(path: Path, relative: str) -> dict[str, Any]:
             value.st_mtime_ns,
             value.st_ctime_ns,
         )
-        if (
-            not stat_module.S_ISREG(opened_before.st_mode)
-            or identity(named_before) != identity(opened_before)
-        ):
+        if not stat_module.S_ISREG(opened_before.st_mode) or identity(
+            named_before
+        ) != identity(opened_before):
             raise StudyStateError("operational artifact is not a stable regular file")
         digest = hashlib.sha256()
         while True:
@@ -1067,10 +1050,9 @@ def _operational_file_entry(path: Path, relative: str) -> dict[str, Any]:
             digest.update(chunk)
         opened_after = os.fstat(descriptor)
         named_after = path.lstat()
-        if (
-            identity(opened_before) != identity(opened_after)
-            or identity(opened_before) != identity(named_after)
-        ):
+        if identity(opened_before) != identity(opened_after) or identity(
+            opened_before
+        ) != identity(named_after):
             raise StudyStateError("operational artifact changed while being hashed")
         return {
             "path": relative,
@@ -1283,9 +1265,7 @@ def _validated_operational_root_receipts(
             for second in observed_paths[index + 1 :]
         ):
             raise StudyStateError("frozen operational artifact roots overlap")
-    digest = _require_sha256(
-        expected_sha256, "frozen operational artifact roots hash"
-    )
+    digest = _require_sha256(expected_sha256, "frozen operational artifact roots hash")
     if canonical_sha256(value) != digest:
         raise StudyStateError("frozen operational artifact roots hash differs")
     return [dict(row) for row in value]
@@ -1345,9 +1325,7 @@ def _worktree_paths_are_allowed(
             if not relative_parent and child.name == ".git":
                 continue
             relative = (
-                f"{relative_parent}/{child.name}"
-                if relative_parent
-                else child.name
+                f"{relative_parent}/{child.name}" if relative_parent else child.name
             )
             try:
                 is_directory = child.is_dir(follow_symlinks=False)
@@ -1485,9 +1463,7 @@ def _verify_frozen_repository(
             freeze.get("operational_artifact_roots"),
             freeze.get("operational_artifact_roots_sha256"),
         )
-        operational_roots = frozenset(
-            str(row["path"]) for row in operational_receipts
-        )
+        operational_roots = frozenset(str(row["path"]) for row in operational_receipts)
         allowed_untracked = _round_state_untracked_paths(repo, round_dir).union(
             allowed_result_paths
         )
@@ -1539,9 +1515,7 @@ def _hash_unique_result_file(path: Path) -> str:
         named_before = path.lstat()
         descriptor = os.open(
             path,
-            os.O_RDONLY
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
         )
         opened = os.fstat(descriptor)
         if (
@@ -1558,10 +1532,9 @@ def _hash_unique_result_file(path: Path) -> str:
             digest.update(chunk)
         opened_after = os.fstat(descriptor)
         named_after = path.lstat()
-        if (
-            _file_state(opened) != _file_state(opened_after)
-            or _file_state(opened) != _file_state(named_after)
-        ):
+        if _file_state(opened) != _file_state(opened_after) or _file_state(
+            opened
+        ) != _file_state(named_after):
             raise StudyStateError("result file changed while hashing")
         return digest.hexdigest()
     except StudyStateError:
@@ -1612,10 +1585,7 @@ def _validate_result_files(
             resolved.relative_to(results_root)
         except (OSError, ValueError) as exc:
             raise StudyStateError("result file path is invalid") from exc
-        if (
-            candidate.is_symlink()
-            or resolved != candidate.absolute()
-        ):
+        if candidate.is_symlink() or resolved != candidate.absolute():
             raise StudyStateError("result file must be a regular file")
         observed_hash = _hash_unique_result_file(candidate)
         try:
@@ -1937,7 +1907,9 @@ def _fsync_declared_result_files(
             if cursor == round_dir:
                 break
             cursor = cursor.parent
-    for directory in sorted(directories, key=lambda value: len(value.parts), reverse=True):
+    for directory in sorted(
+        directories, key=lambda value: len(value.parts), reverse=True
+    ):
         _fsync_directory(directory)
     if _validate_result_files(repo, round_dir, manifest) != allowed:
         raise StudyStateError("result file set changed while syncing")
@@ -2032,9 +2004,7 @@ def _validate_evaluation_receipt_record(
     materialization: Mapping[str, Any],
     claim: Mapping[str, Any],
 ) -> dict[str, Any]:
-    receipt = _require_round_record(
-        round_dir, EVALUATION_RECEIPT_NAME, "evaluated"
-    )
+    receipt = _require_round_record(round_dir, EVALUATION_RECEIPT_NAME, "evaluated")
     _validate_bindings(receipt, freeze)
     if receipt.get("execution_claim_id") != claim.get("execution_claim_id"):
         raise StudyStateError("evaluation receipt claim does not match")
@@ -2076,9 +2046,7 @@ def _validate_state_record_chain(
     if order[expected_state] >= 2:
         if materialization is None:
             raise StudyStateError("materialization record chain is incomplete")
-        claim = _validate_execution_claim_record(
-            round_dir, freeze, materialization
-        )
+        claim = _validate_execution_claim_record(round_dir, freeze, materialization)
     if order[expected_state] >= 3:
         if materialization is None or claim is None:
             raise StudyStateError("execution record chain is incomplete")
@@ -2101,9 +2069,7 @@ def _reconcile_registry(
         state = registry["state"]
         if state == "evaluated":
             materialization, _ = _validate_seed_manifest(round_dir, freeze)
-            claim = _validate_execution_claim_record(
-                round_dir, freeze, materialization
-            )
+            claim = _validate_execution_claim_record(round_dir, freeze, materialization)
             receipt = _validate_evaluation_receipt_record(
                 round_dir, freeze, materialization, claim
             )
@@ -2133,7 +2099,9 @@ def _reconcile_registry(
             )
             _validate_bindings(supersession, freeze)
             if supersession.get("previous_state") != state:
-                raise StudyStateError("supersession previous state does not match registry")
+                raise StudyStateError(
+                    "supersession previous state does not match registry"
+                )
             registry = _advance_registry(
                 repo,
                 round_dir,
@@ -2160,9 +2128,7 @@ def _reconcile_registry(
             continue
         if state == "materialized" and (round_dir / EXECUTION_CLAIM_NAME).exists():
             materialization, _ = _validate_seed_manifest(round_dir, freeze)
-            claim = _validate_execution_claim_record(
-                round_dir, freeze, materialization
-            )
+            claim = _validate_execution_claim_record(round_dir, freeze, materialization)
             registry = _advance_registry(
                 repo,
                 round_dir,
@@ -2176,9 +2142,7 @@ def _reconcile_registry(
             continue
         if state == "running" and (round_dir / EVALUATION_RECEIPT_NAME).exists():
             materialization, _ = _validate_seed_manifest(round_dir, freeze)
-            claim = _validate_execution_claim_record(
-                round_dir, freeze, materialization
-            )
+            claim = _validate_execution_claim_record(round_dir, freeze, materialization)
             receipt = _validate_evaluation_receipt_record(
                 round_dir, freeze, materialization, claim
             )
@@ -2245,9 +2209,7 @@ def _supersede_integrity_failure_locked(
         _assert_round_lock_identity(repo, round_dir.name, lock_identity)
         _atomic_write_json(round_dir / SUPERSESSION_NAME, record, exclusive=True)
     except FileExistsError:
-        existing = _require_round_record(
-            round_dir, SUPERSESSION_NAME, "superseded"
-        )
+        existing = _require_round_record(round_dir, SUPERSESSION_NAME, "superseded")
         _validate_bindings(existing, freeze)
         record = existing
     _assert_round_lock_identity(repo, round_dir.name, lock_identity)
@@ -2261,9 +2223,7 @@ def _supersede_integrity_failure_locked(
         record=record,
         lock_identity=lock_identity,
     )
-    _validate_registry(
-        repo, round_dir, freeze, expected_state="superseded"
-    )
+    _validate_registry(repo, round_dir, freeze, expected_state="superseded")
     _assert_round_lock_identity(repo, round_dir.name, lock_identity)
 
 
@@ -2346,9 +2306,7 @@ def freeze_round(
             raise StudyStateError("round registry already reserves this round ID")
 
         config, config_relative = _input_path(repository, config_path, "config")
-        protocol, protocol_relative = _input_path(
-            repository, protocol_path, "protocol"
-        )
+        protocol, protocol_relative = _input_path(repository, protocol_path, "protocol")
         environment, environment_relative = _input_path(
             repository, environment_path, "environment"
         )
@@ -2373,7 +2331,9 @@ def freeze_round(
             expected_environment_sha256 is not None
             and environment_sha256 != expected_environment_sha256
         ):
-            raise StudyStateError("validated environment checksum changed before freeze")
+            raise StudyStateError(
+                "validated environment checksum changed before freeze"
+            )
         final_operational_receipts = _operational_root_receipts(
             repository, operational_artifact_roots
         )
@@ -2404,9 +2364,7 @@ def freeze_round(
             "environment_path": environment_relative,
             "environment_sha256": environment_sha256,
             "operational_artifact_roots": operational_receipts,
-            "operational_artifact_roots_sha256": canonical_sha256(
-                operational_receipts
-            ),
+            "operational_artifact_roots_sha256": canonical_sha256(operational_receipts),
         }
         first_entry = _registry_entry(
             state="frozen",
@@ -2452,9 +2410,7 @@ def freeze_round(
         _assert_round_lock_identity(repository, destination.name, lock_identity)
         _atomic_write_json(destination / FREEZE_NAME, record, exclusive=True)
         _validate_freeze(destination, repository)
-        _validate_registry(
-            repository, destination, record, expected_state="frozen"
-        )
+        _validate_registry(repository, destination, record, expected_state="frozen")
         _verify_frozen_repository(repository, destination)
         _assert_round_lock_identity(repository, destination.name, lock_identity)
         return record
@@ -2478,9 +2434,7 @@ def materialize_final(
         raise StudyStateError("round must be frozen before final materialization")
     with _round_lock(repository, destination.name) as lock_identity:
         freeze = _verify_frozen_repository(repository, destination)
-        registry = _reconcile_registry(
-            repository, destination, freeze, lock_identity
-        )
+        registry = _reconcile_registry(repository, destination, freeze, lock_identity)
         state = registry["state"]
         observed_state = _current_state(destination)
         if state != "frozen" or observed_state != "frozen":
@@ -2493,7 +2447,9 @@ def materialize_final(
                 "materialized",
                 "running",
             }:
-                raise StudyStateError("final seed manifest already exists or was claimed")
+                raise StudyStateError(
+                    "final seed manifest already exists or was claimed"
+                )
             raise StudyStateError("round must be frozen before final materialization")
         claim: dict[str, Any] = {
             "schema_version": 1,
@@ -2504,9 +2460,7 @@ def materialize_final(
             **_binding_fields(freeze),
         }
         try:
-            _assert_round_lock_identity(
-                repository, destination.name, lock_identity
-            )
+            _assert_round_lock_identity(repository, destination.name, lock_identity)
             _atomic_write_json(
                 destination / MATERIALIZATION_CLAIM_NAME, claim, exclusive=True
             )
@@ -2548,7 +2502,9 @@ def materialize_final(
                 destination / MATERIALIZATION_NAME, record, exclusive=True
             )
         except FileExistsError as exc:
-            raise StudyStateError("final materialization records already exist") from exc
+            raise StudyStateError(
+                "final materialization records already exist"
+            ) from exc
         _assert_round_lock_identity(repository, destination.name, lock_identity)
         try:
             _verify_frozen_repository(repository, destination)
@@ -2602,9 +2558,7 @@ def assert_final_runnable(repo: Path, round_dir: Path) -> dict[str, Any]:
     repository, destination = _repository_for_round(round_dir, repo)
     with _round_lock(repository, destination.name) as lock_identity:
         freeze = _verify_frozen_repository(repository, destination)
-        registry = _reconcile_registry(
-            repository, destination, freeze, lock_identity
-        )
+        registry = _reconcile_registry(repository, destination, freeze, lock_identity)
         state = registry["state"]
         if state == "evaluated":
             raise StudyStateError("final round was already evaluated")
@@ -2664,22 +2618,23 @@ def assert_final_runnable(repo: Path, round_dir: Path) -> dict[str, Any]:
         _assert_round_lock_identity(repository, destination.name, lock_identity)
         try:
             _verify_frozen_repository(repository, destination)
-            _validate_state_record_chain(
-                destination, freeze, expected_state="running"
-            )
+            _validate_state_record_chain(destination, freeze, expected_state="running")
             current_materialization, _manifest = _validate_seed_manifest(
                 destination, freeze
             )
             current_execution = _validate_execution_claim_record(
                 destination, freeze, current_materialization
             )
-            if _validate_result_journal(
-                repository,
-                destination,
-                freeze,
-                current_materialization,
-                current_execution,
-            )["sequence"] != 0:
+            if (
+                _validate_result_journal(
+                    repository,
+                    destination,
+                    freeze,
+                    current_materialization,
+                    current_execution,
+                )["sequence"]
+                != 0
+            ):
                 raise StudyStateError("new execution claim journal is not empty")
         except StudyStateError:
             _supersede_integrity_failure_locked(
@@ -2702,9 +2657,7 @@ def assert_final_runnable(repo: Path, round_dir: Path) -> dict[str, Any]:
                 record=record,
                 lock_identity=lock_identity,
             )
-            _validate_state_record_chain(
-                destination, freeze, expected_state="running"
-            )
+            _validate_state_record_chain(destination, freeze, expected_state="running")
             _validate_registry(
                 repository, destination, freeze, expected_state="running"
             )
@@ -2714,13 +2667,16 @@ def assert_final_runnable(repo: Path, round_dir: Path) -> dict[str, Any]:
             current_execution = _validate_execution_claim_record(
                 destination, freeze, current_materialization
             )
-            if _validate_result_journal(
-                repository,
-                destination,
-                freeze,
-                current_materialization,
-                current_execution,
-            )["sequence"] != 0:
+            if (
+                _validate_result_journal(
+                    repository,
+                    destination,
+                    freeze,
+                    current_materialization,
+                    current_execution,
+                )["sequence"]
+                != 0
+            ):
                 raise StudyStateError("new execution claim journal is not empty")
             _verify_frozen_repository(repository, destination)
         except StudyStateError:
@@ -2831,9 +2787,7 @@ def record_final_evaluation(
                 destination,
                 allowed_result_paths=allowed_result_paths,
             )
-        registry = _reconcile_registry(
-            repository, destination, freeze, lock_identity
-        )
+        registry = _reconcile_registry(repository, destination, freeze, lock_identity)
         state = registry["state"]
         if state == "evaluated":
             raise StudyStateError("final round was already evaluated")
@@ -2842,13 +2796,9 @@ def record_final_evaluation(
         if state != "running" or _current_state(destination) != "running":
             raise StudyStateError("final execution must be claimed before evaluation")
         materialization, _ = _validate_seed_manifest(destination, freeze)
-        claim = _validate_execution_claim_record(
-            destination, freeze, materialization
-        )
+        claim = _validate_execution_claim_record(destination, freeze, materialization)
         claim_id = claim["execution_claim_id"]
-        _validate_registry(
-            repository, destination, freeze, expected_state="running"
-        )
+        _validate_registry(repository, destination, freeze, expected_state="running")
 
         record: dict[str, Any] = {
             "schema_version": 1,
@@ -2865,9 +2815,7 @@ def record_final_evaluation(
         allowed_result_paths = _fsync_declared_result_files(
             repository, destination, manifest
         )
-        _validate_state_record_chain(
-            destination, freeze, expected_state="running"
-        )
+        _validate_state_record_chain(destination, freeze, expected_state="running")
         _verify_frozen_repository(
             repository,
             destination,
@@ -2951,13 +2899,9 @@ def supersede_round(round_dir: Path, reason: str) -> dict[str, Any]:
         if state is None:
             raise StudyStateError("round must be frozen before it can be superseded")
         freeze = _validate_freeze(destination, repository)
-        registry = _reconcile_registry(
-            repository, destination, freeze, lock_identity
-        )
+        registry = _reconcile_registry(repository, destination, freeze, lock_identity)
         if registry["state"] == "superseded":
-            return _require_round_record(
-                destination, SUPERSESSION_NAME, "superseded"
-            )
+            return _require_round_record(destination, SUPERSESSION_NAME, "superseded")
         authoritative_state = registry["state"]
         record: dict[str, Any] = {
             "schema_version": 1,
@@ -2971,21 +2915,17 @@ def supersede_round(round_dir: Path, reason: str) -> dict[str, Any]:
         }
         materialization_path = destination / MATERIALIZATION_NAME
         if materialization_path.exists():
-            record["seed_manifest_sha256"] = _read_record(
-                materialization_path
-            ).get("seed_manifest_sha256")
+            record["seed_manifest_sha256"] = _read_record(materialization_path).get(
+                "seed_manifest_sha256"
+            )
         receipt_path = destination / EVALUATION_RECEIPT_NAME
         if receipt_path.exists():
             record["result_manifest_sha256"] = _read_record(receipt_path).get(
                 "result_manifest_sha256"
             )
         try:
-            _assert_round_lock_identity(
-                repository, destination.name, lock_identity
-            )
-            _atomic_write_json(
-                destination / SUPERSESSION_NAME, record, exclusive=True
-            )
+            _assert_round_lock_identity(repository, destination.name, lock_identity)
+            _atomic_write_json(destination / SUPERSESSION_NAME, record, exclusive=True)
         except FileExistsError as exc:
             raise StudyStateError("round is already superseded") from exc
         _assert_round_lock_identity(repository, destination.name, lock_identity)
@@ -2999,9 +2939,7 @@ def supersede_round(round_dir: Path, reason: str) -> dict[str, Any]:
             record=record,
             lock_identity=lock_identity,
         )
-        _validate_registry(
-            repository, destination, freeze, expected_state="superseded"
-        )
+        _validate_registry(repository, destination, freeze, expected_state="superseded")
         _assert_round_lock_identity(repository, destination.name, lock_identity)
         return record
 

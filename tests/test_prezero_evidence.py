@@ -158,9 +158,7 @@ def _write_real_score_authority(
     count_payload = asdict(count_config)
     context = ExecutionAuthorityContext(
         authority_sha256="9" * 64,
-        base_configuration_json=json.dumps(
-            base, separators=(",", ":"), sort_keys=True
-        ),
+        base_configuration_json=json.dumps(base, separators=(",", ":"), sort_keys=True),
         base_configuration_sha256=canonical_sha256(base),
         count_model_config_json=json.dumps(
             count_payload, separators=(",", ":"), sort_keys=True
@@ -374,9 +372,7 @@ def _real_development_checkpoint_case(
 ) -> tuple[CompetitionPlan, object, CheckpointStore]:
     from maskimpute_benchmark.runner import _derive_prezero_execution_authority
 
-    context, _score, _calibration = _write_real_score_authority(
-        repository, prepared
-    )
+    context, _score, _calibration = _write_real_score_authority(repository, prepared)
     probability, policy = _derive_prezero_execution_authority(
         prepared,
         _entry(prepared),
@@ -416,9 +412,13 @@ def _real_development_checkpoint_case(
         },
         execution_context=context,
     )
-    return plan, attempt, CheckpointStore(
-        repository / "competition",
-        authority_repository=repository,
+    return (
+        plan,
+        attempt,
+        CheckpointStore(
+            repository / "competition",
+            authority_repository=repository,
+        ),
     )
 
 
@@ -715,14 +715,10 @@ def test_stored_score_validation_rejects_coordinated_matrix_report_replacement()
     )
     replacement_raw = replacement.tobytes(order="C")
     replacement_compressed = zlib.compress(replacement_raw, level=6)
-    record["matrix"]["content_sha256"] = hashlib.sha256(
-        replacement_raw
-    ).hexdigest()
+    record["matrix"]["content_sha256"] = hashlib.sha256(replacement_raw).hexdigest()
     record["storage"].update(
         {
-            "compressed_sha256": hashlib.sha256(
-                replacement_compressed
-            ).hexdigest(),
+            "compressed_sha256": hashlib.sha256(replacement_compressed).hexdigest(),
             "compressed_nbytes": len(replacement_compressed),
             "uncompressed_sha256": hashlib.sha256(replacement_raw).hexdigest(),
             "uncompressed_nbytes": len(replacement_raw),
@@ -812,9 +808,7 @@ def test_development_score_authority_uses_exact_ready_artifacts_and_digest_domai
     from maskimpute_benchmark.runner import _derive_prezero_execution_authority
 
     prepared = _prepared()
-    context, score, calibration = _write_real_score_authority(
-        tmp_path, prepared
-    )
+    context, score, calibration = _write_real_score_authority(tmp_path, prepared)
 
     probability, policy = _derive_prezero_execution_authority(
         prepared,
@@ -829,16 +823,12 @@ def test_development_score_authority_uses_exact_ready_artifacts_and_digest_domai
     assert policy["score_artifact_sha256"] == score.score_sha256
     assert policy["score_input_sha256"] == score.input_sha256
     assert policy["score_config_sha256"] == score.config_sha256
-    assert policy["calibration_file_sha256"] == (
-        context.retained_calibration_sha256
-    )
-    assert policy["calibration_payload_sha256"] == (
-        calibration.to_dict()["payload_sha256"]
-    )
+    assert policy["calibration_file_sha256"] == (context.retained_calibration_sha256)
     assert (
-        policy["calibration_file_sha256"]
-        != policy["calibration_payload_sha256"]
+        policy["calibration_payload_sha256"]
+        == (calibration.to_dict()["payload_sha256"])
     )
+    assert policy["calibration_file_sha256"] != policy["calibration_payload_sha256"]
     assert policy["calibration_algorithm"] == "identity"
     assert policy["calibration_scope"] == "leave_one_biological_draw_out"
     assert policy["calibration_equivalence_reason"] == (
@@ -1196,9 +1186,7 @@ def test_development_append_validates_before_publishing_and_allows_retry(
     tmp_path: Path,
 ) -> None:
     prepared = _prepared()
-    plan, valid_attempt, store = _real_development_checkpoint_case(
-        tmp_path, prepared
-    )
+    plan, valid_attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
     policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
     assert isinstance(policy, dict)
     invalid_probability = np.where(
@@ -1213,9 +1201,7 @@ def test_development_append_validates_before_publishing_and_allows_retry(
             invalid_probability,
             _diagnostics_from_persisted_policy(policy),
         ),
-        calibration_file_sha256=plan.input_hashes[
-            "retained_calibration_sha256"
-        ],
+        calibration_file_sha256=plan.input_hashes["retained_calibration_sha256"],
     )
     prepared_datasets = _prepared_datasets(prepared)
 
@@ -1635,9 +1621,7 @@ def test_development_conversion_terminal_score_remains_exactly_authorized(
     from maskimpute_benchmark.prezero_evidence import _score_report
 
     prepared = _prepared()
-    plan, valid_attempt, store = _real_development_checkpoint_case(
-        tmp_path, prepared
-    )
+    plan, valid_attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
     policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
     assert isinstance(policy, dict)
 
@@ -1651,9 +1635,7 @@ def test_development_conversion_terminal_score_remains_exactly_authorized(
             valid_attempt.p_pre_zero_evidence.matrix,
             _diagnostics_from_persisted_policy(policy),
         ),
-        calibration_file_sha256=plan.input_hashes[
-            "retained_calibration_sha256"
-        ],
+        calibration_file_sha256=plan.input_hashes["retained_calibration_sha256"],
         output_converter=reject_conversion,
     )
     assert conversion_attempt.run.status == "unavailable"
@@ -1726,9 +1708,7 @@ def test_development_conversion_terminal_score_cannot_be_coordinately_removed(
     from maskimpute_benchmark.prezero_evidence import _score_report
 
     prepared = _prepared()
-    plan, valid_attempt, store = _real_development_checkpoint_case(
-        tmp_path, prepared
-    )
+    plan, valid_attempt, store = _real_development_checkpoint_case(tmp_path, prepared)
     policy = valid_attempt.p_pre_zero_evidence.to_record()["policy"]
     assert isinstance(policy, dict)
 
@@ -1742,9 +1722,7 @@ def test_development_conversion_terminal_score_cannot_be_coordinately_removed(
             valid_attempt.p_pre_zero_evidence.matrix,
             _diagnostics_from_persisted_policy(policy),
         ),
-        calibration_file_sha256=plan.input_hashes[
-            "retained_calibration_sha256"
-        ],
+        calibration_file_sha256=plan.input_hashes["retained_calibration_sha256"],
         output_converter=reject_conversion,
     )
     prepared_datasets = _prepared_datasets(prepared)

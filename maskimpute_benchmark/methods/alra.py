@@ -7,7 +7,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .base import MethodInput, MethodOutputSnapshot, MethodSpec, snapshot_method_output
-from .direct import DirectAdapterExecution, DirectMethodOutput, finalize_direct_method_output
+from .direct import (
+    DirectAdapterExecution,
+    DirectMethodOutput,
+    finalize_direct_method_output,
+)
 from .observed import (
     AdapterExecution,
     CompatibilityEvent,
@@ -285,21 +289,46 @@ def _run_alra_impl(
 
 
 def run_alra(
-    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
-    rscript: Path, seed: int, config: ALRAConfig = ALRAConfig(),
+    spec: MethodSpec,
+    method_input: MethodInput,
+    *,
+    source_dir: Path,
+    rscript: Path,
+    seed: int,
+    config: ALRAConfig = ALRAConfig(),
     work_root: Path | None = None,
 ) -> AdapterExecution:
-    return _run_alra_impl(spec, method_input, source_dir=source_dir, rscript=rscript,
-                          seed=seed, config=config, work_root=work_root)
+    return _run_alra_impl(
+        spec,
+        method_input,
+        source_dir=source_dir,
+        rscript=rscript,
+        seed=seed,
+        config=config,
+        work_root=work_root,
+    )
 
 
 def run_alra_direct(
-    spec: MethodSpec, method_input: MethodInput, *, source_dir: Path,
-    rscript: Path, seed: int, config: ALRAConfig = ALRAConfig(),
+    spec: MethodSpec,
+    method_input: MethodInput,
+    *,
+    source_dir: Path,
+    rscript: Path,
+    seed: int,
+    config: ALRAConfig = ALRAConfig(),
     work_root: Path | None = None,
 ) -> DirectAdapterExecution:
-    return _run_alra_impl(spec, method_input, source_dir=source_dir, rscript=rscript,
-                          seed=seed, config=config, work_root=work_root, _direct=True)
+    return _run_alra_impl(
+        spec,
+        method_input,
+        source_dir=source_dir,
+        rscript=rscript,
+        seed=seed,
+        config=config,
+        work_root=work_root,
+        _direct=True,
+    )
 
 
 __all__ = [

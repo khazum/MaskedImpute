@@ -165,9 +165,7 @@ _DIRECT_EVALUATOR_METRIC_REASONS = frozenset(
         "undefined_for_continuous_truth",
     }
 )
-_DIRECT_METRIC_REASONS = (
-    _DIRECT_TERMINAL_REASONS | _DIRECT_EVALUATOR_METRIC_REASONS
-)
+_DIRECT_METRIC_REASONS = _DIRECT_TERMINAL_REASONS | _DIRECT_EVALUATOR_METRIC_REASONS
 
 
 def _canonical_terminal_reason(status: str, reason: str | None) -> str | None:
@@ -208,7 +206,9 @@ def _canonical_bytes(value: object) -> bytes:
             sort_keys=True,
         ).encode("utf-8")
     except (TypeError, ValueError) as error:
-        raise RunnerContractError("direct execution receipt is not canonical JSON") from error
+        raise RunnerContractError(
+            "direct execution receipt is not canonical JSON"
+        ) from error
 
 
 def _identity_dict(identity: ComparatorRunIdentity) -> dict[str, object]:
@@ -267,9 +267,7 @@ class DirectExecutionRequest:
                     "smoke_fixture must be a ComparatorSmokeInputDescriptor or None"
                 )
             try:
-                observed_fixture = comparator_smoke_input_descriptor(
-                    self.method_input
-                )
+                observed_fixture = comparator_smoke_input_descriptor(self.method_input)
             except ComparatorTuningError as error:
                 raise RunnerContractError(
                     "direct smoke request fixture differs from the fixed input"
@@ -1230,9 +1228,7 @@ def _evaluate(
                     None if metrics[name].value is None else float(metrics[name].value)
                 ),
                 n=int(metrics[name].n),
-                status=(
-                    "unavailable" if metrics[name].value is None else "completed"
-                ),
+                status=("unavailable" if metrics[name].value is None else "completed"),
                 reason=_canonical_metric_reason(
                     "unavailable" if metrics[name].value is None else "completed",
                     metrics[name].reason,
