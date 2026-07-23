@@ -181,19 +181,20 @@ def _metric_from_term(term: _ScaledTerm, n: int) -> MetricValue:
     return MetricValue(value, int(n), None)
 
 
-def _term_from_fraction(value: Fraction) -> _ScaledTerm:
-    """Retain one positive exact rational without materializing its magnitude."""
+def _metric_from_high_precision(value: Fraction | Decimal, n: int) -> MetricValue:
+    """Round one completed nonnegative estimand directly to float64."""
 
     if value < 0:
-        raise ValueError("scaled terms require nonnegative values")
+        raise ValueError("metric values must be nonnegative")
     if value == 0:
-        return _ZERO_TERM
-    exponent = value.numerator.bit_length() - value.denominator.bit_length()
-    if exponent >= 0:
-        coefficient = value / Fraction(1 << exponent)
-    else:
-        coefficient = value * Fraction(1 << -exponent)
-    return _normalize_term(float(coefficient), exponent)
+        return MetricValue(0.0, int(n), None)
+    try:
+        numeric = float(value)
+    except (OverflowError, ValueError):
+        return _unavailable(n, "nonfinite_metric")
+    if not math.isfinite(numeric) or numeric == 0.0:
+        return _unavailable(n, "nonfinite_metric")
+    return MetricValue(numeric, int(n), None)
 
 
 def _fraction_to_decimal(value: Fraction) -> Decimal:
@@ -236,12 +237,12 @@ def _variance_difference_fraction(
     return abs(scaled_difference) * common_scale * common_scale / count
 
 
-def _euclidean_norm_difference_term(
+def _euclidean_norm_difference_decimal(
     imputed_left: np.ndarray,
     imputed_right: np.ndarray,
     truth_left: np.ndarray,
     truth_right: np.ndarray,
-) -> _ScaledTerm:
+) -> Decimal:
     """Compute ``abs(||u|| - ||v||)`` before either norm is rounded."""
 
     imputed_difference = [
@@ -257,7 +258,7 @@ def _euclidean_norm_difference_term(
         default=Fraction(),
     )
     if common_scale == 0:
-        return _ZERO_TERM
+        return Decimal()
 
     imputed_scaled = [value / common_scale for value in imputed_difference]
     truth_scaled = [value / common_scale for value in truth_difference]
@@ -275,7 +276,7 @@ def _euclidean_norm_difference_term(
         )
     )
     if squared_norm_difference == 0:
-        return _ZERO_TERM
+        return Decimal()
     imputed_squared_norm = sum(
         (value * value for value in imputed_scaled),
         start=Fraction(),
@@ -284,12 +285,10 @@ def _euclidean_norm_difference_term(
         (value * value for value in truth_scaled),
         start=Fraction(),
     )
-    with localcontext() as context:
-        context.prec = 120
-        denominator = _fraction_to_decimal(imputed_squared_norm).sqrt()
-        denominator += _fraction_to_decimal(truth_squared_norm).sqrt()
-        coefficient = _fraction_to_decimal(squared_norm_difference) / denominator
-    return _term_from_fraction(common_scale * Fraction(coefficient))
+    denominator = _fraction_to_decimal(imputed_squared_norm).sqrt()
+    denominator += _fraction_to_decimal(truth_squared_norm).sqrt()
+    coefficient = _fraction_to_decimal(squared_norm_difference) / denominator
+    return _fraction_to_decimal(common_scale) * coefficient
 
 
 def _scaled_signed_differences(
@@ -675,18 +674,25 @@ def _pairwise_distance_distortion(
     if ordinary_value is not None and np.isfinite(ordinary_value):
         return MetricValue(float(ordinary_value), n_pairs, None)
 
-    values: list[_ScaledTerm] = []
-    for first in range(n_cells - 1):
-        values.extend(
-            _euclidean_norm_difference_term(
-                imputed[second],
-                imputed[first],
-                truth[second],
-                truth[first],
+    # Retain 120 significant digits after the worst-case loss from summing all
+    # pairs. This gives more than 100 guard digits beyond binary64 precision;
+    # for the closest reviewed half-subnormal construction, the normalized
+    # endpoint exceeds one half by more than 4e-17.
+    with localcontext() as context:
+        context.prec = 120 + len(str(n_pairs))
+        values: list[Decimal] = []
+        for first in range(n_cells - 1):
+            values.extend(
+                _euclidean_norm_difference_decimal(
+                    imputed[second],
+                    imputed[first],
+                    truth[second],
+                    truth[first],
+                )
+                for second in range(first + 1, n_cells)
             )
-            for second in range(first + 1, n_cells)
-        )
-    return _metric_from_term(_term_mean(values), n_pairs)
+        mean_value = sum(values, start=Decimal()) / Decimal(n_pairs)
+    return _metric_from_high_precision(mean_value, n_pairs)
 
 
 def _mean_gene_wasserstein_distance(
@@ -875,8 +881,8 @@ def reconstruction_metrics(
             variance_differences,
             start=Fraction(),
         ) / len(variance_differences)
-        result["variance_distortion"] = _metric_from_term(
-            _term_from_fraction(variance_mean),
+        result["variance_distortion"] = _metric_from_high_precision(
+            variance_mean,
             truth_array.shape[1],
         )
     result["mean_gene_wasserstein_distance"] = _mean_gene_wasserstein_distance(

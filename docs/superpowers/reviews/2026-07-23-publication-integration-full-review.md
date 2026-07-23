@@ -900,11 +900,12 @@ and orthogonal evidence is reconstructed independently from typed authority.
 | F-035 | Minor | Finite extended-precision values outside float64 range leaked `RuntimeWarning` or `FloatingPointError` from evaluator-target, common-scale-output, and stored pre-zero target casts under warnings-as-errors. | The boundaries caught Python conversion exceptions but not NumPy's floating-point signal from an overflowing cast. | Closed test-first with narrow `over`/`invalid` cast trapping. Evaluator targets enter `RunnerContractError`, common-scale output enters the existing reason-coded unavailable path, and both stored pre-zero target roles enter `PreZeroEvidenceError`; no warning or floating-point exception crosses the public contract. |
 | F-036 | Important | The scaled variance and pairwise-distance fallbacks could still lose a representable final difference by independently rounding two unrepresentable or nearly equal endpoints before subtraction. For adjacent extreme profiles, an exact population-variance distortion of `0x1.8p+1023` became unavailable; an exact cell-distance distortion of `0x1.6a09e667f3bcdp+971` became `0x1p+972`. | Variances were formed by separately squaring two rounded scaled standard deviations, and pair distances by separately rounding two scaled norms. Subtracting those rounded endpoints discarded the low-order difference the metric is defined to retain. | Closed test-first in both operand orders. The strict established NumPy branches remain unchanged. The variance fallback now common-scales each aligned gene profile and sums centered square differences directly through `(a-b)*(a+b)` using exact rational arithmetic in linear time. The distance fallback common-scales both pair-difference vectors and evaluates `abs(sum(u²-v²))/(||u||+||v||)` before either norm is rounded. Exact-hex warnings-as-errors regressions lock both reviewed endpoints, and the obsolete subtract-after-rounded helpers were removed. |
 | F-037 | Minor | The native-output matrix boundary leaked `FloatingPointError` or a promoted `RuntimeWarning` when a finite `longdouble` lay outside float64 range. | Unlike the other reviewed conversion boundaries, `_validated_native_matrix` performed its narrowing cast outside a local NumPy error-translation boundary. | Closed test-first for both raw-count and log1p-CP10k native-output converters. Only `over` and `invalid` signals from the narrowing cast are translated to the established `ValueError` contract; ordinary float64 conversion and subsequent nonnegative/finite validation are unchanged. |
+| F-038 | Important | The F-036 joint fallbacks still classified two positive, representable minimum-subnormal endpoints as unavailable. The exact variance difference `2^-1075 + 2^-1128` and a pairwise norm difference slightly above one half of the minimum subnormal both had to round upward, but instead became `nonfinite_metric` in both operand orders. | Each completed exact or high-precision endpoint was converted to a float mantissa before `ldexp` restored its scale. That first rounding erased the increment above the half-subnormal boundary, so the second rounding tied to zero. | Closed test-first in both operand orders. Variance differences remain exact through the across-gene `Fraction` mean and are converted directly once. Unsafe pair distances remain high-precision `Decimal` values through the across-pair mean and are converted directly once with pair-count guard precision. Positive exact endpoints that round to zero and overflowing endpoints remain reason-coded unavailable; exact zero remains available. The obsolete exact-rational-to-scaled-term path was removed. |
 | O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
 
 No unresolved metric-domain, statistical-independence, evaluation-row,
 external-reference, manifest, or pre-zero evidence defect was demonstrated
-after F-025 through F-037. Legacy runtime-lock, filesystem-hardening, and
+after F-025 through F-038. Legacy runtime-lock, filesystem-hardening, and
 outer-provenance mechanisms were not redesigned or extended.
 
 ### Task 5 test-first and verification evidence
@@ -1033,6 +1034,37 @@ and all scoped static checks, reported:
 Before that final suite, scoped Ruff lint and formatting, byte compilation,
 and `git diff --check` all passed. No production or test file changed after
 those gates or the exact suite.
+
+A final narrow double-rounding review then demonstrated F-038. Its exact
+minimum-subnormal regressions produced all four expected failures under
+warnings-as-errors: both operand orders for variance distortion and both
+operand orders for pairwise distance distortion. After preserving exact or
+high-precision state through the completed aggregate, the identical set
+reported:
+
+```text
+4 passed in 0.23s
+```
+
+The complete metrics, core-method adapter, and pre-zero owning files then
+reported:
+
+```text
+195 passed, 14 skipped in 12.89s
+```
+
+After formatting and all scoped static checks, the final correctly sanitized
+five-file Task 5 suite reported:
+
+```text
+361 passed, 1 skipped in 1196.70s (0:19:56)
+```
+
+Two earlier broad commands were stopped after the four publication-spawn
+tests correctly rejected command-level nondefault Python warning/no-user-site
+flags. Neither attempt demonstrated a production or test defect. The final
+command retained default interpreter flags and removed only the diagnosed
+inherited CUDA library path.
 
 These checks establish bounded-fixture evaluation contracts only. No real
 scientific or comparator workload ran, and no empirical competitiveness,

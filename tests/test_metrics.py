@@ -319,6 +319,29 @@ def test_variance_distortion_preserves_adjacent_extreme_variance_cancellation(
 
 
 @pytest.mark.parametrize("reverse", [False, True])
+def test_variance_distortion_rounds_exact_subnormal_difference_once(
+    reverse: bool,
+) -> None:
+    x = float.fromhex("0x1p-512")
+    y = np.nextafter(x, np.inf)
+    truth = np.array([[-x], [x]])
+    imputed = np.array([[-y], [y]])
+    if reverse:
+        truth, imputed = imputed, truth
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result["variance_distortion"] == MetricValue(
+        float.fromhex("0x0.0000000000001p-1022"),
+        1,
+        None,
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
 def test_cell_distance_distortion_preserves_adjacent_extreme_norm_cancellation(
     reverse: bool,
 ) -> None:
@@ -339,6 +362,28 @@ def test_cell_distance_distortion_preserves_adjacent_extreme_norm_cancellation(
         1,
         None,
     )
+    assert result["cell_distance_distortion"] == expected
+    assert result["pairwise_cell_distance_distortion"] == expected
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_cell_distance_distortion_rounds_exact_subnormal_difference_once(
+    reverse: bool,
+) -> None:
+    t = np.nextafter(0.0, np.inf)
+    m = 94_906_265
+    n = m * m - 1
+    truth = np.array([[0.0, 0.0], [n * t, 0.0]])
+    imputed = np.array([[0.0, 0.0], [n * t, m * t]])
+    if reverse:
+        truth, imputed = imputed, truth
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    expected = MetricValue(t, 1, None)
     assert result["cell_distance_distortion"] == expected
     assert result["pairwise_cell_distance_distortion"] == expected
 
