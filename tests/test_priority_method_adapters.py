@@ -780,6 +780,33 @@ def test_native_finalizers_retain_declared_scales_and_do_not_copy_entries() -> N
     assert snapshots[0].matrix[0, 0] != method_input.counts[0, 0]
 
 
+@pytest.mark.parametrize(
+    ("stochastic", "seed_policy"),
+    (
+        (True, "required"),
+        (False, "required"),
+        (True, "not_applicable"),
+    ),
+)
+def test_d3impute_rejects_deterministic_seed_contract_drift(
+    stochastic: bool,
+    seed_policy: str,
+) -> None:
+    method_input = _method_input(cells=8, genes=6)
+    spec = replace(
+        _registry().by_id("d3impute"),
+        stochastic=stochastic,
+        seed_policy=seed_policy,
+    )
+
+    with pytest.raises(ValueError, match="deterministic without a seed"):
+        d3impute_adapter.finalize_d3impute_output(
+            spec,
+            method_input,
+            np.ones(method_input.shape, dtype=np.float64),
+        )
+
+
 def test_recent_converters_are_explicit_and_use_one_shared_log_scale() -> None:
     method_input = _method_input(cells=8, genes=6)
     registry = _registry()

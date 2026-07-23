@@ -598,3 +598,142 @@ The Task 3 brief was corrected to remove the nonexistent
 command, and staging command. This is a plan correction, not a missing
 production-file finding. No real dataset, simulator, or scientific workload
 was run.
+
+## Task 4 method-adapter and fair-comparator execution audit
+
+### Environment and baseline
+
+Task 4 began from a clean linked worktree at the expected
+`codex/publication-integration` head. The existing
+`/tmp/maskimpute-scziva312/bin/python` interpreter was used without installing
+or changing dependencies.
+
+The exact eleven-file suite named in the Task 4 brief initially reported:
+
+```text
+21 failed, 489 passed, 44 skipped in 573.59s
+```
+
+All 21 failures were in `tests/test_runtime_environments.py`. The invoking
+shell inherited this CUDA library path:
+
+```text
+/usr/local/cuda/lib64:/usr/local/cuda/lib64:
+```
+
+Both entries resolve through symlinks, so the declared runtime validator
+rejected them. This is an environment-selection concern, not a repository
+defect: the production operational-environment builder already removes the
+inherited variable. A representative failing runtime test passed unchanged
+when invoked without that inherited setting:
+
+```text
+1 passed in 182.31s
+```
+
+No runtime-lock, path-hardening, dependency, or operational-environment code
+was changed.
+
+### Registry, adapter, and execution coverage
+
+All 20 canonical registry entries were cross-checked for execution scope,
+integration status, input/output scale, stochastic and seed policy,
+environment, CPU/GPU mode, timeout, memory ceiling, and observed-positive
+policy. They comprise three in-tree/control methods, ten scheduled same-input
+comparators, two historical methods, three unavailable methods, and two
+external-reference-only methods.
+
+The 34 smoke rows bind exactly the scheduled comparator configurations:
+1 ALRA, 4 MAGIC, 4 DCA, 4 scVI, 1 SAVER, 4 scZiva, 4 afMF, 4 BiAEImpute,
+4 scCR, and 4 scSDAE. Their typed configuration decoding, canonical ordering,
+fixed truth-free fixture, complete binding projection, and exact 34-row
+denominator were inspected.
+
+Every adapter was compared with the shared input/output boundary for declared
+domain, preprocessing, seed propagation, output orientation, observed-value
+policy, runtime invocation, and failure translation:
+
+- ALRA and MAGIC use their declared log-normalized cells-by-genes domain and
+  the shared inverse to count equivalents.
+- DCA and scVI consume raw cells-by-genes counts; scVI uses only the allowed
+  batch covariate and rescales frequencies with observed library sizes.
+- SAVER, afMF, scCR, and scSDAE retain their declared native normalized output
+  and explicit evaluator inverses.
+- afMF and scSDAE explicitly bridge their upstream genes-by-cells contracts
+  back to the benchmark cells-by-genes orientation.
+- scZiva and BiAEImpute propagate required framework seeds and retain their
+  declared non-preservation policy without a post-hoc observed-value rewrite.
+- MaskImpute and its matched control bind the exact model seed and raw-count
+  output policies; the separately declared full-denoising behavior remains
+  explicit.
+- D3Impute and SCTSI remain external-reference-only with exact matched-bulk,
+  orientation, and scale handling. Preserved legacy provenance was not
+  modified.
+
+The direct competition plan has 2,896 scheduled rows: 16 observed controls,
+48 matched controls, 1,200 MaskImpute rows, and 1,632 comparator rows. Every
+identity includes the complete method/configuration binding and dataset,
+mechanism, biological, technical-view, seed, and draw coordinates. Structural
+validation re-resolves those identities against the authorities.
+
+Direct dispatch uses only the typed configuration for the named adapter,
+rejects configuration mutation, enforces method resources, and maps
+unavailable, timeout, memory, infrastructure, and unexpected adapter failures
+to the closed terminal vocabulary. Completed rows carry exactly six metrics.
+Non-completed rows carry one consistent terminal status/reason with zero
+metric denominators. Checkpoint replay reconstructs those semantics, requires
+an exact plan prefix, revalidates bindings and budget states, and retains
+blockers in the scheduled denominator. No comparator fallback or fabricated
+output was found.
+
+### Task 4 findings and dispositions
+
+| ID | Severity | Finding | Root cause | Disposition |
+|---|---|---|---|---|
+| F-018 | Important | D3Impute accepted a method specification whose stochastic flag or seed policy drifted from its declared deterministic/no-seed contract. | Its adapter-specific specification guard checked identity, track, and scales but omitted the seed contract enforced by the sibling SCTSI external-reference adapter. | Closed test-first. The D3Impute boundary now rejects independent or combined stochastic/seed-policy drift before finalization or execution. |
+| F-019 | Important | Smoke execution granted all methods the global 14 GiB GPU ceiling, and smoke-receipt validation applied the same global ceiling. A CPU-only method could consume GPU memory and still satisfy the readiness gate despite its exact zero-GPU binding. | Request construction and receipt validation used authority-wide maxima instead of the `ResourceSpec` attached to the canonical method. | Closed test-first. Spawned smoke requests now use the method's exact timeout, RSS, and GPU limits; receipt validation enforces the exact method RSS/GPU limits, including zero GPU bytes for CPU-only methods. |
+| O-003 | Minor | The inherited CUDA library path caused the initial runtime-environment suite failures. | The two inherited entries resolve through symlinks, which the runtime declaration intentionally rejects. | No code change. The authoritative rerun used the same sanitized environment constructed by the operational boundary. |
+
+No other adapter, tuning, plan, execution, checkpoint, or operational
+environment defect was demonstrated. The method-specific observed-value
+differences for scZiva, BiAEImpute, scSDAE, and full denoising are intentional
+declared policies covered by tests.
+
+### Exact test-first and verification evidence
+
+The focused pre-fix invocation covered three D3Impute seed-contract cases, a
+CPU smoke-receipt GPU overage, a spawned CPU smoke request, and the existing
+RSS-overage control:
+
+```text
+5 failed, 1 passed in 2.40s
+```
+
+The same invocation after the minimal fixes passed:
+
+```text
+6 passed in 1.97s
+```
+
+The complete two changed test files then passed:
+
+```text
+153 passed, 8 skipped in 204.47s
+```
+
+The authoritative complete eleven-file suite was rerun without the inherited
+CUDA library path and passed:
+
+```text
+513 passed, 44 skipped in 1730.33s (0:28:50)
+```
+
+Targeted Ruff lint reported all checks passed, and Ruff format checking
+reported all four changed Python files already formatted. Byte compilation of
+all scoped production modules and test files exited zero with no output.
+`git diff --check` also exited zero with no output.
+
+These checks establish the reviewed method binding, adapter, fixed-smoke,
+direct execution, and checkpoint contracts only. No real comparator workload
+was run, no external runtime availability claim was made, and no empirical
+performance or publication-readiness conclusion is drawn.

@@ -3396,10 +3396,14 @@ def build_comparator_smoke_receipt(
     projected: dict[str, float] = {}
     for row in rows:
         method_id = row.configuration.configuration.method_id
+        resources = registry.by_id(method_id).resources
         projected[method_id] = (
             projected.get(method_id, 0.0) + 48.0 * row.runtime_seconds
         )
-        if row.peak_rss_bytes > 48 * 1024**3 or row.peak_gpu_bytes > 14 * 1024**3:
+        if (
+            row.peak_rss_bytes > resources.max_rss_gib * 1024**3
+            or row.peak_gpu_bytes > resources.max_gpu_gib * 1024**3
+        ):
             raise ComparatorTuningError("smoke resource cap is exceeded")
     if any(
         seconds
@@ -3737,9 +3741,9 @@ def _execute_smoke_request_in_spawned_dispatcher(
         identity=identity,
         method_spec=request.method_spec,
         method_input=request.method_input,
-        timeout_seconds=float(EXPECTED_BUDGETS["per_run_timeout_seconds"]),
-        max_rss_bytes=EXPECTED_BUDGETS["max_rss_bytes"],
-        max_gpu_bytes=EXPECTED_BUDGETS["max_gpu_bytes"],
+        timeout_seconds=float(request.method_spec.resources.timeout_seconds),
+        max_rss_bytes=request.method_spec.resources.max_rss_gib * 1024**3,
+        max_gpu_bytes=request.method_spec.resources.max_gpu_gib * 1024**3,
         smoke_fixture=request.fixture,
     )
     child_dispatcher = replace(

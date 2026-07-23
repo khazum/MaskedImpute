@@ -1731,23 +1731,21 @@ def test_smoke_receipt_requires_all_34_completed_and_projected_budget(
         )
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    (
-        ("peak_rss_bytes", 48 * 1024**3 + 1),
-        ("peak_gpu_bytes", 14 * 1024**3 + 1),
-    ),
-)
+@pytest.mark.parametrize("field", ("peak_rss_bytes", "peak_gpu_bytes"))
 def test_smoke_receipt_rejects_each_resource_cap_with_complete_denominator(
     field: str,
-    value: int,
     complete_smoke_outcomes,
     smoke_authority,
     smoke_registry,
     smoke_bound_rows,
 ) -> None:
     outcomes = list(complete_smoke_outcomes)
-    outcomes[0] = replace(outcomes[0], **{field: value})
+    method_id = outcomes[0].configuration.configuration.method_id
+    resources = smoke_registry.by_id(method_id).resources
+    limit_gib = (
+        resources.max_rss_gib if field == "peak_rss_bytes" else resources.max_gpu_gib
+    )
+    outcomes[0] = replace(outcomes[0], **{field: limit_gib * 1024**3 + 1})
     assert len(outcomes) == 34
 
     with pytest.raises(ComparatorTuningError, match="resource cap"):
@@ -1956,6 +1954,9 @@ def test_spawned_smoke_request_retains_complete_fixed_fixture_descriptor(
 
     inner = captured["request"]
     assert inner.smoke_fixture == descriptor
+    assert inner.timeout_seconds == float(request.method_spec.resources.timeout_seconds)
+    assert inner.max_rss_bytes == request.method_spec.resources.max_rss_gib * 1024**3
+    assert inner.max_gpu_bytes == request.method_spec.resources.max_gpu_gib * 1024**3
     assert inner.to_dict()["smoke_fixture"] == json.loads(
         json.dumps(asdict(descriptor))
     )
