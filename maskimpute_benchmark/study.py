@@ -1672,7 +1672,8 @@ def _validate_result_journal(
             or entry.get("execution_claim_sha256") != execution_sha256
             or entry.get("seed_manifest_sha256")
             != materialization.get("seed_manifest_sha256")
-            or entry.get("sequence") != sequence
+            or type(entry.get("sequence")) is not int
+            or entry["sequence"] != sequence
             or entry.get("previous_entry_sha256") != previous_sha256
             or not isinstance(observed_entry_sha256, str)
             or not _SHA256_RE.fullmatch(observed_entry_sha256)

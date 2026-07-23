@@ -774,6 +774,13 @@ def _semantic_source_receipts(
             raise SimulatorRuntimeAssetsError(
                 "runtime source receipt has unsupported authority fields"
             )
+        if (
+            type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != 1
+        ):
+            raise SimulatorRuntimeAssetsError(
+                "runtime source receipt schema_version is invalid"
+            )
         value = {key: receipt[key] for key in sorted(base_keys)}
         if source_type == "data":
             artifacts = receipt.get("artifacts")

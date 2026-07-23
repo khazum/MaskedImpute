@@ -327,6 +327,43 @@ def test_result_journal_rejects_boolean_schema_version(clean_repo: Path) -> None
         load_final_manifest_claim(clean_repo, round_dir)
 
 
+def test_result_journal_rejects_boolean_sequence_at_public_boundary(
+    clean_repo: Path,
+) -> None:
+    round_dir = freeze_fixture(clean_repo)
+    materialize_final(round_dir, seed_count=4, repo=clean_repo)
+    assert_final_runnable(clean_repo, round_dir)
+    results = round_dir / "results"
+    results.mkdir()
+    (results / "bound.txt").write_text("bound\n", encoding="utf-8")
+    record_incremental_results(
+        round_dir,
+        _result_manifest(round_dir, "bound.txt"),
+        repo=clean_repo,
+    )
+    _root, journal, _root_identity, _journal_identity = (
+        study_module._result_journal_directories(
+            clean_repo, round_dir.name, create=False
+        )
+    )
+    entry_path = journal / "00000001.json"
+    entry = json.loads(entry_path.read_text(encoding="utf-8"))
+    entry["sequence"] = True
+    entry.pop("entry_sha256")
+    entry["entry_sha256"] = canonical_sha256(entry)
+    entry_path.write_text(
+        json.dumps(entry, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    from maskimpute_benchmark.simulators import (
+        SimulationContractError,
+        load_final_manifest_claim,
+    )
+
+    with pytest.raises(SimulationContractError, match="valid claimed"):
+        load_final_manifest_claim(clean_repo, round_dir)
+
+
 def test_incremental_journal_rejects_hardlinks_and_postrecord_mutation(
     clean_repo: Path,
 ) -> None:

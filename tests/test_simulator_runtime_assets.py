@@ -237,6 +237,37 @@ def test_semantic_receipt_excludes_machine_specific_paths(
     assert baron["artifacts"] == [{"name": "fixture-data.tar", "sha256": "a" * 64}]
 
 
+def test_loader_rejects_boolean_runtime_source_receipt_schema_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(tmp_path)
+    external_root, r_environment = _external_assets(tmp_path, "boolean-schema")
+    _mock_semantics(monkeypatch)
+    collections = 0
+
+    def collect_source_receipts(
+        _ledger_path: Path, _external_root: Path
+    ) -> tuple[str, tuple[dict[str, object], ...]]:
+        nonlocal collections
+        receipts = tuple(dict(value) for value in SOURCE_RECEIPTS)
+        if collections == 0:
+            receipts[0]["schema_version"] = True
+        collections += 1
+        return SOURCE_LEDGER_SHA256, receipts
+
+    monkeypatch.setattr(
+        runtime_module, "_collect_source_receipts", collect_source_receipts
+    )
+
+    with pytest.raises(SimulatorRuntimeAssetsError, match="runtime source receipt"):
+        load_simulator_runtime_assets(
+            repository,
+            external_root=external_root,
+            r_environment=r_environment,
+            require_outside_repository=True,
+        )
+
+
 def test_runtime_assets_context_releases_the_private_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
