@@ -680,6 +680,8 @@ Direct dispatch uses only the typed configuration for the named adapter,
 rejects configuration mutation, enforces method resources, and maps
 unavailable, timeout, memory, infrastructure, and unexpected adapter failures
 to the closed terminal vocabulary. Completed rows carry exactly six metrics.
+Ready comparator-smoke evidence requires both canonical process-tree RSS
+provenance and canonical process-tree GPU provenance on every completed row.
 Non-completed rows carry one consistent terminal status/reason with zero
 metric denominators. Checkpoint replay reconstructs those semantics, requires
 an exact plan prefix, revalidates bindings and budget states, and retains
@@ -695,9 +697,10 @@ output was found.
 | F-020 | Important | The corrected zero-byte cap was not actually observed for CPU-declared smoke methods: the spawned runner skipped GPU sampling, initialized a synthetic zero, and allowed imported completed outcomes to label that zero unavailable or not applicable. | The sampler's `gpu_required` switch was also used as the decision to measure GPU use, conflating a method's scheduling mode with whether the smoke authority needed evidence that forbidden use was zero. Receipt validation required only a nonempty measurement string. | Closed test-first. Comparator smoke execution now requires independent GPU measurement for every row while preserving the CPU path's 50 ms sampling cadence. A nonzero CPU-method sample exceeds its exact zero cap; missing telemetry produces `resource_telemetry_unavailable`; and receipt construction/loading accepts completed outcomes only with the canonical process-tree GPU measurement code. A host unable to provide the required measurement cannot issue ready smoke evidence. |
 | F-021 | Important | Directly constructed `MethodSpec` values could bypass declared seed contracts. Integer zero passed the D3Impute and SCTSI truthiness checks, while observed and ALRA accepted self-consistent stochastic/seed-policy drift; all same-input adapters shared the latter incomplete guard. | External-reference guards used truthiness instead of an exact boolean check, and the shared same-input guard checked identity, track, and scales without checking the canonical seed contract. | Closed test-first. D3Impute and SCTSI require an exact false boolean with `not_applicable`; the one shared same-input guard now enforces the exact canonical stochastic/seed-policy pair for observed, the two in-tree learned methods, and all ten implemented same-input comparator adapters. |
 | F-022 | Minor | A directly constructed method resource specification with fractional GiB limits produced floating-point byte limits in the smoke request, unlike other direct request paths. | Smoke request construction multiplied GiB by bytes-per-GiB without applying the established integer normalization. | Closed test-first by normalizing both RSS and GPU limits to integer bytes at direct smoke request construction. |
+| F-023 | Important | A completed 34-row comparator-smoke population could use unavailable, not-applicable, or arbitrary nonempty RSS provenance and still produce ready imported evidence. | Receipt construction canonicalized GPU provenance after F-020 but continued to validate RSS provenance only as a nonempty string. | Closed test-first. Every completed smoke row must now use the canonical `linux_proc_process_tree_rss` measurement code. Synthetic completed fixtures use that same valid provenance, and receipt loading inherits the check through full receipt recomputation. |
 | O-003 | Minor | The inherited CUDA library path caused the initial runtime-environment suite failures. | The two inherited entries resolve through symlinks, which the runtime declaration intentionally rejects. | No code change. The authoritative rerun used the same sanitized environment constructed by the operational boundary. |
 
-After F-018 through F-022, no unresolved adapter, tuning, plan, execution,
+After F-018 through F-023, no unresolved adapter, tuning, plan, execution,
 checkpoint, or operational-environment defect was demonstrated. The
 method-specific observed-value differences for scZiva, BiAEImpute, scSDAE,
 and full denoising are intentional declared policies covered by tests.
@@ -762,16 +765,50 @@ with the inherited CUDA library path removed:
 ```
 
 After the one-line cadence refinement, the exact same suite passed again at
-the final correction state:
+that correction state:
 
 ```text
 524 passed, 44 skipped in 1719.54s (0:28:39)
 ```
 
-Targeted Ruff lint reported all checks passed, and Ruff format checking
-reported all ten changed Python files already formatted. Byte compilation of
-the scoped production modules and test files exited zero with no output.
-`git diff --check` also exited zero with no output.
+The final independent re-review then exposed the remaining RSS provenance
+gap recorded as F-023. Three completed 34-row receipt cases using
+`rss_measurement_unavailable`, `not_applicable`, and an arbitrary nonempty
+label all failed to raise before the production correction:
+
+```text
+3 failed in 2.06s
+```
+
+After requiring the canonical process-tree RSS code, the identical focused
+node passed all three parameter cases:
+
+```text
+3 passed in 2.17s
+```
+
+The focused smoke builder, GPU/RSS provenance, create-only, and loader set
+then passed:
+
+```text
+10 passed in 2.77s
+```
+
+The complete owning comparator-tuning file passed:
+
+```text
+125 passed in 204.56s (0:03:24)
+```
+
+The exact sanitized eleven-file Task 4 suite passed at the final formatted
+F-023 state:
+
+```text
+527 passed, 44 skipped in 1797.30s (0:29:57)
+```
+
+Targeted Ruff lint and formatting, byte compilation of the final changed
+production and test files, and `git diff --check` passed.
 
 These checks establish the reviewed method binding, adapter, fixed-smoke,
 direct execution, and checkpoint contracts only. No real comparator workload

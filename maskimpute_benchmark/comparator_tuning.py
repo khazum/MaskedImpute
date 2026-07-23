@@ -3393,6 +3393,10 @@ def build_comparator_smoke_receipt(
         for row in rows
     ):
         raise ComparatorTuningError("smoke measurement is invalid")
+    if any(row.rss_measurement != "linux_proc_process_tree_rss" for row in rows):
+        raise ComparatorTuningError(
+            "smoke RSS measurement is not an authoritative process-tree measurement"
+        )
     if any(
         row.gpu_measurement != "nvidia_smi_process_tree_used_memory" for row in rows
     ):

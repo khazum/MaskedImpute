@@ -294,7 +294,7 @@ def complete_smoke_outcomes(smoke_bound_rows):
             runtime_seconds=1.0,
             peak_rss_bytes=1024,
             peak_gpu_bytes=0,
-            rss_measurement="fixed_test_sampler",
+            rss_measurement="linux_proc_process_tree_rss",
             gpu_measurement="nvidia_smi_process_tree_used_memory",
         )
         for row in smoke_bound_rows
@@ -1796,6 +1796,37 @@ def test_smoke_receipt_rejects_unverified_cpu_zero_gpu_measurement(
         )
 
 
+@pytest.mark.parametrize(
+    "rss_measurement",
+    (
+        "rss_measurement_unavailable",
+        "not_applicable",
+        "executor_reported_unverified",
+    ),
+)
+def test_smoke_receipt_rejects_noncanonical_rss_measurement(
+    rss_measurement: str,
+    complete_smoke_outcomes,
+    smoke_authority,
+    smoke_registry,
+    smoke_bound_rows,
+) -> None:
+    outcomes = list(complete_smoke_outcomes)
+    outcomes[0] = replace(
+        outcomes[0],
+        rss_measurement=rss_measurement,
+    )
+    assert len(outcomes) == 34
+
+    with pytest.raises(ComparatorTuningError, match="RSS measurement"):
+        build_comparator_smoke_receipt(
+            outcomes,
+            authority=smoke_authority,
+            registry=smoke_registry,
+            bound_configurations=smoke_bound_rows,
+        )
+
+
 @pytest.mark.parametrize("gpu_required", (False, True), ids=("cpu", "gpu"))
 def test_smoke_receipt_rejects_projected_method_budget_with_complete_denominator(
     gpu_required: bool,
@@ -1872,7 +1903,7 @@ def test_smoke_run_uses_all_bound_rows_and_create_only_complete_bytes(
             runtime_seconds=1.0,
             peak_rss_bytes=1024,
             peak_gpu_bytes=0,
-            rss_measurement="fixed_test_sampler",
+            rss_measurement="linux_proc_process_tree_rss",
             gpu_measurement="nvidia_smi_process_tree_used_memory",
         )
 
