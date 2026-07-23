@@ -666,6 +666,88 @@ def _encoded_completed_score(
     return record, compressed
 
 
+def test_stored_score_rejects_boolean_schema_version_at_schema_boundary() -> None:
+    from maskimpute_benchmark.prezero_evidence import PreZeroEvidenceError
+
+    prepared = _prepared()
+    record, compressed = _encoded_completed_score(prepared)
+    record["schema_version"] = True
+
+    with pytest.raises(PreZeroEvidenceError, match="schema_version must be 1"):
+        _validate_stored_completed_score(prepared, record, compressed)
+
+
+def test_metric_group_rejects_boolean_denominator_alias() -> None:
+    from maskimpute_benchmark.prezero_evidence import (
+        PreZeroEvidenceError,
+        _METRIC_NAMES,
+        _validate_metric_group,
+    )
+
+    group = {
+        "metrics": {
+            name: {
+                "value": None,
+                "n": True,
+                "status": "unavailable",
+                "reason": "not_available",
+            }
+            for name in _METRIC_NAMES
+        },
+        "reliability_bins": [],
+    }
+
+    with pytest.raises(PreZeroEvidenceError, match="denominator differs"):
+        _validate_metric_group(
+            group,
+            expected_n=1,
+            evidence_status="unavailable",
+            evidence_reason="not_available",
+            truth_kind="exact_pre_capture",
+        )
+
+
+def test_stored_score_rejects_masked_authoritative_observed_targets() -> None:
+    from maskimpute_benchmark.prezero_evidence import (
+        PreZeroEvidenceError,
+        validate_stored_prezero_evidence,
+    )
+
+    prepared = _prepared()
+    record, compressed = _encoded_completed_score(prepared)
+    observed = np.ma.array(
+        prepared.evaluator_dataset.X,
+        mask=np.array([[True, False, False, False], [False, False, False, False]]),
+    )
+    truth_layer = prepared.evaluator_dataset.uns["primary_truth_layer"]
+
+    with pytest.raises(PreZeroEvidenceError, match="authoritative.*observed targets"):
+        validate_stored_prezero_evidence(
+            record,
+            expected_identity=record["identity"],
+            run_status="completed",
+            run_reason=None,
+            observed_zero_count=6,
+            expected_shape=prepared.method_input.shape,
+            requires_count_score=True,
+            requires_calibration=True,
+            expected_calibration_file_sha256="7" * 64,
+            compressed=compressed,
+            observed=observed,
+            truth=np.asarray(
+                prepared.evaluator_dataset.layers[truth_layer], dtype=np.float64
+            ),
+            truth_kind="exact_pre_capture",
+            expected_score_input_sha256=_score_input_sha256(prepared),
+            expected_score_config_sha256="6" * 64,
+            expected_matrix_present=True,
+            expected_probability=np.frombuffer(
+                zlib.decompress(compressed), dtype="<f8"
+            ).reshape(prepared.method_input.shape),
+            expected_policy=dict(record["policy"]),
+        )
+
+
 def test_stored_score_validation_rejects_rehashed_metric_drift() -> None:
     from maskimpute_benchmark.prezero_evidence import PreZeroEvidenceError
 

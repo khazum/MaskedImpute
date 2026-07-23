@@ -4771,6 +4771,38 @@ def test_evaluator_conversion_failure_retains_only_stable_hashed_detail() -> Non
     assert all(metric.reason == expected for metric in evaluated.metrics)
 
 
+def test_evaluator_rejects_masked_common_scale_output() -> None:
+    prepared = _prepared_truth_dataset()
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    execution = run_observed(spec, prepared.method_input)
+
+    def masked_converter(method_input, adapter_execution):
+        mask = np.zeros(method_input.shape, dtype=bool)
+        mask[0, 0] = True
+        return np.ma.array(
+            method_input.counts,
+            mask=mask,
+        )
+
+    evaluated = evaluate_adapter_outcome(
+        _entry_for(prepared, "observed", seed=None),
+        prepared,
+        AdapterOutcome.completed(
+            execution,
+            runtime_seconds=1,
+            peak_rss_bytes=1,
+            peak_gpu_bytes=0,
+        ),
+        output_converter=masked_converter,
+    )
+
+    assert evaluated.run.status == "unavailable"
+    assert evaluated.run.reason is not None
+    assert evaluated.run.reason.startswith("evaluator_conversion_typeerror_detail_")
+    assert evaluated.evaluator_output is None
+    assert all(metric.reason == evaluated.run.reason for metric in evaluated.metrics)
+
+
 @pytest.mark.parametrize("method_id", ["maskimpute", "capacity-matched-ae"])
 def test_in_tree_adapter_contracts_require_score_evidence_before_shared_conversion(
     method_id: str,

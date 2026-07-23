@@ -865,3 +865,74 @@ These checks establish the reviewed method binding, adapter, fixed-smoke,
 direct execution, and checkpoint contracts only. No real comparator workload
 was run, no external runtime availability claim was made, and no empirical
 performance or publication-readiness conclusion is drawn.
+
+## Task 5: Metrics, statistics, and evaluation orchestration
+
+The audit covered the complete Task 5 production and test scope: metric
+domains and denominators, reason-coded unavailable states, biological-draw
+inference, duplicate/conflicting result identities, common-scale conversion,
+plan and checkpoint evidence, calibration separation, external-reference
+truth isolation, pre-zero score semantics, and evaluation-manifest
+reconstruction.
+
+The biological draw remains the independent inferential unit. Technical views
+and model seeds remain repeated measurements. The hierarchical bootstrap,
+variance components, interval construction, win/tie/loss definition, and Holm
+multiplicity family are unchanged. External reference remains fixed to the
+D3Impute/SCTSI denominator on the declared Tung single-cell and matched-bulk
+inputs, with truth excluded from method execution. Evaluation-manifest direct
+and orthogonal evidence is reconstructed independently from typed authority.
+
+### Task 5 findings and dispositions
+
+| ID | Severity | Finding | Root cause | Disposition |
+|---|---|---|---|---|
+| F-025 | Important | Direct and nested masks at metric inputs, a common-scale converter result, and stored pre-zero authoritative targets were silently accepted as ordinary dense values. | Ordinary NumPy conversion erased masked-array semantics before the owning boundary validated the resulting matrix. | Closed test-first. Metrics, evaluator targets and converter output, and stored-score targets now reuse the approved unmasked snapshot boundary, which rejects direct, nested, and protocol-produced masks before coercion. |
+| F-026 | Important | A finite extended-precision matrix outside float64 range became infinity after validation, while finite float64 inputs could overflow derived metric arithmetic and abort the complete metric row. | Finiteness was checked only before float64 conversion, and the strict public scalar dataclass received unrepresentable derived values directly. | Closed test-first. Matrices are rechecked after float64 conversion; unrepresentable derived endpoints retain their denominator and become unavailable with `nonfinite_metric`. Overflow-prone constant-profile detection now uses exact equality, and intentional overflow paths do not emit warnings. No value is clipped or rescaled. |
+| F-027 | Minor | Exported tie-aware grouping accepted zero/negative maximum group counts and lacked explicit empty, dimensional, numeric, and finite input checks. | The public helper assumed already validated internal callers. | Closed test-first by enforcing a nonempty finite one-dimensional real vector and an exact positive integer maximum. The stable tie-preserving partition is unchanged. |
+| F-028 | Minor | Whitespace-only result statuses passed nonempty validation and canonicalized to an empty status. | Validation preceded `strip().lower()`. | Closed test-first by requiring every identity/status string to contain a non-whitespace character before canonicalization. |
+| F-029 | Important | Pre-zero outer/policy schema versions and metric/overall denominators could accept Boolean integer aliases. | Equality checks relied on Python's Boolean/integer equivalence. | Closed test-first with exact built-in integer checks. Existing reliability-bin and stratum exact-type checks remain. No checksum or provenance mechanism changed. |
+| O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
+
+No unresolved metric-domain, statistical-independence, evaluation-row,
+external-reference, manifest, or pre-zero evidence defect was demonstrated
+after F-025 through F-029. Legacy runtime-lock, filesystem-hardening, and
+outer-provenance mechanisms were not redesigned or extended.
+
+### Task 5 test-first and verification evidence
+
+The focused pre-correction nodes produced 13 expected failures and one
+downstream-type-error control pass. After the minimal corrections and final
+formatting, the combined focused set reported:
+
+```text
+14 passed in 2.40s
+```
+
+The overflow regression passed with runtime warnings promoted to errors. The
+complete metrics and statistics files reported:
+
+```text
+80 passed in 0.83s
+```
+
+The exact transient-runtime-swap node passed unchanged after the one
+fluctuating full-suite attempt:
+
+```text
+1 passed in 193.68s (0:03:13)
+```
+
+The exact sanitized five-file Task 5 suite passed at the final formatted
+state:
+
+```text
+335 passed, 1 skipped in 976.13s (0:16:16)
+```
+
+Targeted Ruff lint and formatting, byte compilation of all changed production
+and test files, and `git diff --check` passed.
+
+These checks establish bounded-fixture evaluation contracts only. No real
+scientific or comparator workload ran, and no empirical competitiveness,
+external-runtime availability, or publication-readiness claim is made.

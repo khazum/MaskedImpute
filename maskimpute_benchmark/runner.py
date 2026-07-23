@@ -4865,8 +4865,12 @@ def _default_output_converter(
 def _dense_evaluator_matrix(value: object, name: str) -> np.ndarray:
     from scipy import sparse
 
+    from maskimpute.sparse_input import _unmasked_array
+
     try:
-        array = value.toarray() if sparse.issparse(value) else np.asarray(value)
+        array = (
+            value.toarray() if sparse.issparse(value) else _unmasked_array(value, name)
+        )
         dense = np.array(array, dtype=np.float64, copy=True, order="C")
     except (TypeError, ValueError, OverflowError) as error:
         raise RunnerContractError(f"{name} cannot be represented as float64") from error
@@ -5486,6 +5490,8 @@ def evaluate_adapter_outcome(
 ) -> EvaluatedAttempt:
     """Convert one attempt and compute complete evaluator-only metric rows."""
 
+    from maskimpute.sparse_input import _unmasked_array
+
     from .methods import AdapterUnavailableError
     from .metrics import reconstruction_metrics
 
@@ -5530,7 +5536,11 @@ def evaluate_adapter_outcome(
         try:
             converted = output_converter(prepared.method_input, outcome.execution)
             evaluator_output = np.array(
-                converted, dtype=np.float64, copy=True, order="C", subok=False
+                _unmasked_array(converted, "common-scale output"),
+                dtype=np.float64,
+                copy=True,
+                order="C",
+                subok=False,
             )
             if (
                 evaluator_output.shape != prepared.method_input.shape

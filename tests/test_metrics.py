@@ -10,8 +10,23 @@ from maskimpute_benchmark.metrics import (
     entry_masks,
     reconstruction_metrics,
     stratified_zero_score_metrics,
+    tie_aware_groups,
     zero_score_metrics,
 )
+
+
+class _MaskedArrayProtocol:
+    def __init__(self, values, mask):
+        self._values = values
+        self._mask = mask
+
+    def __array__(self, dtype=None, copy=None):
+        return np.ma.array(
+            self._values,
+            mask=self._mask,
+            dtype=dtype,
+            copy=False if copy is None else copy,
+        )
 
 
 @pytest.fixture
@@ -76,6 +91,62 @@ def test_entry_masks_partition_requested_entry_types(
     assert int(masks["truth_nonzero"].sum()) == 6
     assert int(masks["observed_positive"].sum()) == 3
     assert not np.any(masks["induced_dropout"] & masks["pre_dropout_zero"])
+
+
+@pytest.mark.parametrize(
+    "masked",
+    [
+        np.ma.array([[0.0, 1.0]], mask=[[False, True]]),
+        [_MaskedArrayProtocol([0.0, 1.0], [False, True])],
+    ],
+)
+def test_metric_matrix_boundary_rejects_direct_and_nested_protocol_masks(
+    masked: object,
+) -> None:
+    with pytest.raises(TypeError, match="masked arrays"):
+        entry_masks(masked, np.zeros((1, 2)))
+
+
+def test_metric_matrix_boundary_rejects_values_not_representable_as_float64() -> None:
+    if np.finfo(np.longdouble).max <= np.finfo(np.float64).max:
+        pytest.skip("longdouble has no wider finite range on this platform")
+    outside_float64 = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+
+    with pytest.raises(ValueError, match="finite"):
+        entry_masks(np.array([[outside_float64]], dtype=np.longdouble), [[0.0]])
+
+
+def test_finite_metric_inputs_keep_overflow_reason_coded() -> None:
+    maximum = np.finfo(np.float64).max
+    result = reconstruction_metrics(
+        np.full((2, 2), maximum),
+        np.zeros((2, 2)),
+        np.zeros((2, 2)),
+    )
+
+    assert result["mse"] == MetricValue(None, 4, "nonfinite_metric")
+    assert all(
+        metric.value is None or np.isfinite(metric.value) for metric in result.values()
+    )
+
+
+def test_tie_aware_groups_requires_nonempty_finite_one_dimensional_values() -> None:
+    for values in (
+        np.array([]),
+        np.zeros((1, 1)),
+        np.array([0.0, np.nan]),
+    ):
+        with pytest.raises(ValueError):
+            tie_aware_groups(values, 2)
+
+
+@pytest.mark.parametrize("maximum_groups", [True, 0, -1, 1.5])
+def test_tie_aware_groups_requires_a_positive_integer_maximum(
+    maximum_groups: object,
+) -> None:
+    expected = TypeError if isinstance(maximum_groups, (bool, float)) else ValueError
+    with pytest.raises(expected):
+        tie_aware_groups(np.array([0.0, 1.0]), maximum_groups)
 
 
 def test_reconstruction_subset_mse_and_mae_are_hand_calculated(

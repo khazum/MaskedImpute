@@ -196,7 +196,11 @@ def _validate_records(
                 f"record {index} is missing required field(s): {', '.join(missing)}"
             )
         for field in _IDENTITY_FIELDS:
-            if not isinstance(record[field], str) or not record[field]:
+            if (
+                not isinstance(record[field], str)
+                or not record[field]
+                or not record[field].strip()
+            ):
                 raise ValueError(
                     f"record {index} field {field} must be a non-empty string"
                 )

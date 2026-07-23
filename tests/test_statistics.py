@@ -167,6 +167,16 @@ def test_model_seed_rejects_noninteger_aliases(invalid_seed: object) -> None:
         hierarchical_paired_bootstrap(records, "maskimpute", "dca", "mse", n_boot=10)
 
 
+def test_whitespace_only_status_is_rejected_before_canonicalization() -> None:
+    records = [
+        _record("m", "b", "v", "d", "maskimpute", 1, 1.0, status="   "),
+        _record("m", "b", "v", "d", "dca", 1, 1.0),
+    ]
+
+    with pytest.raises(ValueError, match="status must be a non-empty string"):
+        hierarchical_paired_bootstrap(records, "maskimpute", "dca", "mse", n_boot=10)
+
+
 @pytest.mark.parametrize("invalid_seed", [-1, 2**63])
 def test_model_seed_must_match_the_nonnegative_63_bit_manifest_domain(
     invalid_seed: int,

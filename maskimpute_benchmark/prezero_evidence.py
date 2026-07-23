@@ -12,6 +12,8 @@ import zlib
 
 import numpy as np
 
+from maskimpute.sparse_input import _unmasked_array
+
 from .metrics import (
     MetricValue,
     stratified_zero_score_metrics,
@@ -478,7 +480,7 @@ def _validate_metric_group(
             "reason",
         }:
             raise PreZeroEvidenceError(f"p_pre_zero metric {name} is malformed")
-        if metric.get("n") != expected_n:
+        if type(metric.get("n")) is not int or metric.get("n") != expected_n:
             raise PreZeroEvidenceError(f"p_pre_zero metric {name} denominator differs")
         metric_value = metric.get("value")
         metric_status = metric.get("status")
@@ -619,16 +621,31 @@ def validate_stored_prezero_evidence(
 
     try:
         observed_array = np.array(
-            observed, dtype="<f8", copy=True, order="C", subok=False
-        )
-        truth_array = (
-            None
-            if truth is None
-            else np.array(truth, dtype="<f8", copy=True, order="C", subok=False)
+            _unmasked_array(observed, "authoritative p_pre_zero observed targets"),
+            dtype="<f8",
+            copy=True,
+            order="C",
+            subok=False,
         )
     except (TypeError, ValueError, OverflowError) as error:
         raise PreZeroEvidenceError(
-            "authoritative p_pre_zero score targets are invalid"
+            "authoritative p_pre_zero observed targets are invalid"
+        ) from error
+    try:
+        truth_array = (
+            None
+            if truth is None
+            else np.array(
+                _unmasked_array(truth, "authoritative p_pre_zero truth targets"),
+                dtype="<f8",
+                copy=True,
+                order="C",
+                subok=False,
+            )
+        )
+    except (TypeError, ValueError, OverflowError) as error:
+        raise PreZeroEvidenceError(
+            "authoritative p_pre_zero truth targets are invalid"
         ) from error
     if (
         observed_array.shape != expected_shape
@@ -675,7 +692,7 @@ def validate_stored_prezero_evidence(
         "storage",
     }:
         raise PreZeroEvidenceError("p_pre_zero evidence has the wrong schema")
-    if value.get("schema_version") != 1:
+    if type(value.get("schema_version")) is not int or value.get("schema_version") != 1:
         raise PreZeroEvidenceError("p_pre_zero evidence schema_version must be 1")
     identity = value.get("identity")
     canonical_identity = _json_copy(dict(expected_identity))
@@ -751,7 +768,8 @@ def validate_stored_prezero_evidence(
         if policy_sha256 != canonical_sha256(policy_value):
             raise PreZeroEvidenceError("p_pre_zero policy checksum differs")
         if (
-            policy.get("schema_version") != 2
+            type(policy.get("schema_version")) is not int
+            or policy.get("schema_version") != 2
             or policy.get("probability_semantics")
             != "pre_capture_count_is_zero_given_observed_counts"
             or policy.get("evaluation_domain") != "observed_zero_entries_only"
@@ -893,6 +911,7 @@ def validate_stored_prezero_evidence(
         or overall.get("label") != "all_observed_zeros"
         or overall.get("lower") is not None
         or overall.get("upper") is not None
+        or type(overall.get("n")) is not int
         or overall.get("n") != observed_zero_count
     ):
         raise PreZeroEvidenceError("p_pre_zero overall denominator differs")

@@ -14,6 +14,8 @@ from typing import Any
 
 import numpy as np
 
+from maskimpute.sparse_input import _unmasked_array
+
 
 TRUTH_KINDS = {
     "exact_pre_capture",
@@ -69,7 +71,13 @@ class MetricValue:
 
 
 def _metric(value: float, n: int) -> MetricValue:
-    return MetricValue(float(value), int(n), None)
+    try:
+        numeric = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return _unavailable(n, "nonfinite_metric")
+    if not np.isfinite(numeric):
+        return _unavailable(n, "nonfinite_metric")
+    return MetricValue(numeric, int(n), None)
 
 
 def _unavailable(n: int, reason: str) -> MetricValue:
@@ -90,7 +98,7 @@ def _as_matrix(
 ) -> np.ndarray:
     if value is None:
         raise ValueError(f"{name} is required")
-    array = np.asarray(value)
+    array = _unmasked_array(value, name)
     if not (
         np.issubdtype(array.dtype, np.integer)
         or np.issubdtype(array.dtype, np.floating)
@@ -104,7 +112,11 @@ def _as_matrix(
         raise ValueError(f"{name} must have at least one cell and one gene")
     if not np.all(np.isfinite(array)):
         raise ValueError(f"{name} must contain only finite values")
-    return array.astype(float, copy=False)
+    with np.errstate(over="ignore", invalid="ignore"):
+        converted = array.astype(float, copy=False)
+    if not np.all(np.isfinite(converted)):
+        raise ValueError(f"{name} must remain finite when represented as float64")
+    return converted
 
 
 def _as_probability_matrix(value: Any, shape: tuple[int, int]) -> np.ndarray:
@@ -123,7 +135,7 @@ def _gene_selector(
 ) -> np.ndarray:
     if selector is None:
         return np.full(n_genes, default_all, dtype=bool)
-    array = np.asarray(selector)
+    array = _unmasked_array(selector, name)
     if array.ndim != 1:
         raise ValueError(f"{name} must be one-dimensional")
     if np.issubdtype(array.dtype, np.bool_):
@@ -164,9 +176,10 @@ def _error_metric(
     if n == 0:
         return _unavailable(0, "no_entries")
     values = difference[mask]
-    if squared:
-        return _metric(np.mean(values * values), n)
-    return _metric(np.mean(np.abs(values)), n)
+    with np.errstate(over="ignore", invalid="ignore"):
+        if squared:
+            return _metric(np.mean(values * values), n)
+        return _metric(np.mean(np.abs(values)), n)
 
 
 def _gnrmse(
@@ -181,8 +194,9 @@ def _gnrmse(
     for gene in range(truth.shape[1]):
         selected = mask[:, gene]
         if np.any(selected):
-            rmse = np.sqrt(np.mean(difference[selected, gene] ** 2))
-            values.append(float(rmse / truth_sd[gene]))
+            with np.errstate(over="ignore", invalid="ignore"):
+                rmse = np.sqrt(np.mean(difference[selected, gene] ** 2))
+                values.append(float(rmse / truth_sd[gene]))
     return _metric(np.mean(values), len(values))
 
 
@@ -214,13 +228,16 @@ def _correlation_matrix_distortion(
 
     if n_variables < 2:
         return _unavailable(n_variables, reason), n_variables
-    constant = (np.std(selected_imputed, axis=standard_deviation_axis, ddof=0) == 0) | (
-        np.std(selected_truth, axis=standard_deviation_axis, ddof=0) == 0
-    )
+    imputed_reference = np.take(selected_imputed, [0], axis=standard_deviation_axis)
+    truth_reference = np.take(selected_truth, [0], axis=standard_deviation_axis)
+    constant = np.all(
+        selected_imputed == imputed_reference, axis=standard_deviation_axis
+    ) | np.all(selected_truth == truth_reference, axis=standard_deviation_axis)
     if np.any(constant):
         return _unavailable(n_variables, constant_reason), n_variables
-    corr_imputed = np.corrcoef(selected_imputed, rowvar=rowvar)
-    corr_truth = np.corrcoef(selected_truth, rowvar=rowvar)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        corr_imputed = np.corrcoef(selected_imputed, rowvar=rowvar)
+        corr_truth = np.corrcoef(selected_truth, rowvar=rowvar)
     upper = np.triu_indices(n_variables, k=1)
     differences = np.abs(corr_imputed[upper] - corr_truth[upper])
     if not np.all(np.isfinite(differences)):
@@ -239,9 +256,12 @@ def _pairwise_distance_distortion(
     offset = 0
     for first in range(n_cells - 1):
         count = n_cells - first - 1
-        truth_distance = np.linalg.norm(truth[first + 1 :] - truth[first], axis=1)
-        imputed_distance = np.linalg.norm(imputed[first + 1 :] - imputed[first], axis=1)
-        values[offset : offset + count] = np.abs(imputed_distance - truth_distance)
+        with np.errstate(over="ignore", invalid="ignore"):
+            truth_distance = np.linalg.norm(truth[first + 1 :] - truth[first], axis=1)
+            imputed_distance = np.linalg.norm(
+                imputed[first + 1 :] - imputed[first], axis=1
+            )
+            values[offset : offset + count] = np.abs(imputed_distance - truth_distance)
         offset += count
     return _metric(np.mean(values), n_pairs)
 
@@ -259,8 +279,9 @@ def _mean_gene_wasserstein_distance(
 
     sorted_imputed = np.sort(imputed, axis=0)
     sorted_truth = np.sort(truth, axis=0)
-    per_gene = np.mean(np.abs(sorted_imputed - sorted_truth), axis=0)
-    return _metric(np.mean(per_gene), truth.shape[1])
+    with np.errstate(over="ignore", invalid="ignore"):
+        per_gene = np.mean(np.abs(sorted_imputed - sorted_truth), axis=0)
+        return _metric(np.mean(per_gene), truth.shape[1])
 
 
 def _reconstruction_metric_names() -> list[str]:
@@ -347,12 +368,13 @@ def reconstruction_metrics(
         result[f"mae{suffix}"] = _error_metric(difference, mask, squared=False)
         result[f"gnrmse{suffix}"] = _gnrmse(difference, truth_array, mask)
 
-    mean_difference = np.abs(
-        np.mean(imputed_array, axis=0) - np.mean(truth_array, axis=0)
-    )
-    variance_difference = np.abs(
-        np.var(imputed_array, axis=0, ddof=0) - np.var(truth_array, axis=0, ddof=0)
-    )
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean_difference = np.abs(
+            np.mean(imputed_array, axis=0) - np.mean(truth_array, axis=0)
+        )
+        variance_difference = np.abs(
+            np.var(imputed_array, axis=0, ddof=0) - np.var(truth_array, axis=0, ddof=0)
+        )
     result["mean_distortion"] = _metric(np.mean(mean_difference), truth_array.shape[1])
     result["variance_distortion"] = _metric(
         np.mean(variance_difference), truth_array.shape[1]
@@ -544,18 +566,37 @@ def _reliability(
 def tie_aware_groups(values: np.ndarray, maximum_groups: int) -> list[np.ndarray]:
     """Target equal-frequency groups without splitting identical values."""
 
-    order = np.argsort(values, kind="stable")
-    sorted_values = values[order]
+    if not isinstance(maximum_groups, (int, np.integer)) or isinstance(
+        maximum_groups, (bool, np.bool_)
+    ):
+        raise TypeError("maximum_groups must be an integer")
+    if maximum_groups <= 0:
+        raise ValueError("maximum_groups must be positive")
+    array = _unmasked_array(values, "values")
+    if array.ndim != 1:
+        raise ValueError("values must be one-dimensional")
+    if array.size == 0:
+        raise ValueError("values must be non-empty")
+    if not (
+        np.issubdtype(array.dtype, np.integer)
+        or np.issubdtype(array.dtype, np.floating)
+    ):
+        raise TypeError("values must be real numeric values")
+    if not np.all(np.isfinite(array)):
+        raise ValueError("values must contain only finite values")
+
+    order = np.argsort(array, kind="stable")
+    sorted_values = array[order]
     value_groups: list[np.ndarray] = []
     start = 0
-    while start < values.size:
+    while start < array.size:
         stop = start + 1
-        while stop < values.size and sorted_values[stop] == sorted_values[start]:
+        while stop < array.size and sorted_values[stop] == sorted_values[start]:
             stop += 1
         value_groups.append(order[start:stop])
         start = stop
 
-    n_groups = min(maximum_groups, len(value_groups))
+    n_groups = min(int(maximum_groups), len(value_groups))
     if n_groups == 1:
         return [np.concatenate(value_groups)]
 
@@ -563,7 +604,7 @@ def tie_aware_groups(values: np.ndarray, maximum_groups: int) -> list[np.ndarray
     result: list[np.ndarray] = []
     previous_end = 0
     for split in range(1, n_groups):
-        target = split * values.size / n_groups
+        target = split * array.size / n_groups
         remaining_groups = n_groups - split
         latest_end = len(value_groups) - remaining_groups
         candidates = range(previous_end + 1, latest_end + 1)
