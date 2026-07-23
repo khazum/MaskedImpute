@@ -656,6 +656,26 @@ class _FixedResourceSampler:
         )
 
 
+class _RequiredGpuMeasurementSampler:
+    def __init__(self, *, rss: int | None, gpu: int | None) -> None:
+        self.rss = rss
+        self.gpu = gpu
+        self.gpu_required_calls: list[bool] = []
+
+    def sample(self, process_id: int, *, gpu_required: bool) -> ResourceSample:
+        self.gpu_required_calls.append(gpu_required)
+        return ResourceSample(
+            peak_rss_bytes=self.rss,
+            peak_gpu_bytes=self.gpu,
+            rss_provenance="mock_process_tree_rss",
+            gpu_provenance=(
+                "mock_process_tree_gpu"
+                if self.gpu is not None
+                else "nvidia_smi_measurement_unavailable"
+            ),
+        )
+
+
 def _synthetic_revision_numerical_fit(
     spec,
     method_input,
@@ -2640,6 +2660,47 @@ def test_gpu_execution_fails_closed_when_independent_gpu_measurement_is_missing(
     assert outcome.status == "infrastructure_error"
     assert outcome.reason == "resource_telemetry_unavailable"
     assert outcome.gpu_measurement == "mock_process_tree_gpu"
+
+
+@pytest.mark.parametrize(
+    ("gpu", "expected_status", "expected_reason"),
+    (
+        (1, "resource_exceeded", "peak_gpu_exceeded"),
+        (None, "infrastructure_error", "resource_telemetry_unavailable"),
+    ),
+)
+def test_cpu_execution_enforces_required_forbidden_gpu_measurement(
+    gpu: int | None,
+    expected_status: str,
+    expected_reason: str,
+) -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    sampler = _RequiredGpuMeasurementSampler(rss=123_456, gpu=gpu)
+
+    outcome = execute_adapter_in_spawned_process(
+        request,
+        _slow_marker_executor,
+        poll_interval_seconds=0.01,
+        resource_sampler=sampler,
+        require_gpu_measurement=True,
+    )
+
+    assert outcome.status == expected_status
+    assert outcome.reason == expected_reason
+    assert sampler.gpu_required_calls
+    assert all(sampler.gpu_required_calls)
 
 
 def test_calibrated_development_completion_requires_matching_lodo_fold_receipt() -> (

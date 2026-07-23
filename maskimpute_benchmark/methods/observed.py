@@ -25,6 +25,21 @@ if TYPE_CHECKING:
 
 
 _SAFE_RECEIPT_KEY = re.compile(r"[a-z][a-z0-9_]*\Z")
+_SAME_INPUT_SEED_CONTRACTS = {
+    "observed": (False, "not_applicable"),
+    "capacity-matched-ae": (True, "required"),
+    "maskimpute": (True, "required"),
+    "alra": (True, "required"),
+    "magic": (True, "required"),
+    "dca": (True, "required"),
+    "scvi": (True, "required"),
+    "saver": (True, "required"),
+    "scziva": (True, "required"),
+    "afmf": (True, "required"),
+    "biaeimpute": (True, "required"),
+    "sccr": (True, "required"),
+    "scsdae": (True, "required"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +141,19 @@ def require_method_spec(
     if spec.output_scale != output_scale:
         raise ValueError(
             f"method {expected_id} output scale must be {output_scale}, got {spec.output_scale}"
+        )
+    expected_seed_contract = _SAME_INPUT_SEED_CONTRACTS.get(expected_id)
+    if expected_seed_contract is None:
+        raise ValueError(f"method {expected_id} has no same-input seed contract")
+    expected_stochastic, expected_seed_policy = expected_seed_contract
+    if (
+        type(spec.stochastic) is not bool
+        or spec.stochastic is not expected_stochastic
+        or spec.seed_policy != expected_seed_policy
+    ):
+        raise ValueError(
+            f"method {expected_id} stochastic/seed contract must remain "
+            f"{expected_stochastic}/{expected_seed_policy}"
         )
 
 

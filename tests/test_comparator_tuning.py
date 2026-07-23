@@ -295,7 +295,7 @@ def complete_smoke_outcomes(smoke_bound_rows):
             peak_rss_bytes=1024,
             peak_gpu_bytes=0,
             rss_measurement="fixed_test_sampler",
-            gpu_measurement="fixed_test_sampler",
+            gpu_measurement="nvidia_smi_process_tree_used_memory",
         )
         for row in smoke_bound_rows
     )
@@ -1757,6 +1757,45 @@ def test_smoke_receipt_rejects_each_resource_cap_with_complete_denominator(
         )
 
 
+@pytest.mark.parametrize(
+    "gpu_measurement",
+    (
+        "gpu_measurement_unavailable",
+        "nvidia_smi_measurement_unavailable",
+        "not_applicable_cpu_only_method",
+        "executor_reported_unverified",
+    ),
+)
+def test_smoke_receipt_rejects_unverified_cpu_zero_gpu_measurement(
+    gpu_measurement: str,
+    complete_smoke_outcomes,
+    smoke_authority,
+    smoke_registry,
+    smoke_bound_rows,
+) -> None:
+    outcomes = list(complete_smoke_outcomes)
+    position = next(
+        index
+        for index, outcome in enumerate(outcomes)
+        if not smoke_registry.by_id(
+            outcome.configuration.configuration.method_id
+        ).resources.gpu_required
+    )
+    outcomes[position] = replace(
+        outcomes[position],
+        peak_gpu_bytes=0,
+        gpu_measurement=gpu_measurement,
+    )
+
+    with pytest.raises(ComparatorTuningError, match="GPU measurement"):
+        build_comparator_smoke_receipt(
+            outcomes,
+            authority=smoke_authority,
+            registry=smoke_registry,
+            bound_configurations=smoke_bound_rows,
+        )
+
+
 @pytest.mark.parametrize("gpu_required", (False, True), ids=("cpu", "gpu"))
 def test_smoke_receipt_rejects_projected_method_budget_with_complete_denominator(
     gpu_required: bool,
@@ -1834,7 +1873,7 @@ def test_smoke_run_uses_all_bound_rows_and_create_only_complete_bytes(
             peak_rss_bytes=1024,
             peak_gpu_bytes=0,
             rss_measurement="fixed_test_sampler",
-            gpu_measurement="fixed_test_sampler",
+            gpu_measurement="nvidia_smi_process_tree_used_memory",
         )
 
     receipt = run_comparator_tuning_smoke(
@@ -1931,8 +1970,9 @@ def test_spawned_smoke_request_retains_complete_fixed_fixture_descriptor(
     )
     captured = {}
 
-    def fake_spawn(direct_request, _executor, **_kwargs):
+    def fake_spawn(direct_request, _executor, **options):
         captured["request"] = direct_request
+        captured["options"] = options
         return AdapterOutcome.failed(
             "adapter_exception",
             runtime_seconds=1.0,
@@ -1953,6 +1993,7 @@ def test_spawned_smoke_request_retains_complete_fixed_fixture_descriptor(
     )
 
     inner = captured["request"]
+    assert captured["options"]["require_gpu_measurement"] is True
     assert inner.smoke_fixture == descriptor
     assert inner.timeout_seconds == float(request.method_spec.resources.timeout_seconds)
     assert inner.max_rss_bytes == request.method_spec.resources.max_rss_gib * 1024**3
@@ -1963,6 +2004,89 @@ def test_spawned_smoke_request_retains_complete_fixed_fixture_descriptor(
     changed = _with_negative_first_formula_zero(method_input)
     with pytest.raises(RunnerContractError, match="fixed input"):
         replace(inner, method_input=changed)
+
+
+def test_spawned_smoke_request_normalizes_fractional_gib_caps_to_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    smoke_authority,
+    smoke_bound_rows,
+    smoke_registry,
+) -> None:
+    configuration = next(
+        row
+        for row in smoke_bound_rows
+        if smoke_registry.by_id(row.configuration.method_id).resources.gpu_required
+    )
+    method_input = build_comparator_smoke_input()
+    descriptor = comparator_tuning_module.comparator_smoke_input_descriptor(
+        method_input
+    )
+    canonical = smoke_registry.by_id(configuration.configuration.method_id)
+    method_spec = replace(
+        canonical,
+        resources=replace(
+            canonical.resources,
+            max_rss_gib=1.5,
+            max_gpu_gib=0.5,
+        ),
+    )
+    request = comparator_tuning_module._ComparatorSmokeRequest(
+        configuration=configuration,
+        fixture=descriptor,
+        method_input=method_input,
+        method_spec=method_spec,
+        model_seed=42,
+        ordinal=1,
+    )
+    environments = ExecutionEnvironmentRegistry(
+        repository_root=ROOT.resolve(),
+        executable_paths=(),
+        lock_only_environment_ids=(),
+        registry_sha256="a" * 64,
+        runtime_lock_sha256=None,
+        runtime_lock_path=None,
+        benchmark_python=Path(sys.executable),
+        r_library_paths=(),
+        execution_environment_sha256="b" * 64,
+        python_spawn_search_path=(str(ROOT.resolve()),),
+        runtime_identity_snapshots=(),
+        runtime_closure_paths_sha256s=(),
+        runtime_snapshot=None,
+    )
+    dispatcher = RepositoryAdapterDispatcher(
+        ROOT,
+        environments,
+        comparator_tuning_authority=smoke_authority,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_spawn(direct_request, _executor, **_options):
+        captured["request"] = direct_request
+        return AdapterOutcome.failed(
+            "adapter_exception",
+            runtime_seconds=1.0,
+            peak_rss_bytes=1024,
+            peak_gpu_bytes=0,
+            rss_measurement="linux_proc_process_tree_rss",
+            gpu_measurement="nvidia_smi_process_tree_used_memory",
+        )
+
+    monkeypatch.setattr(
+        "maskimpute_benchmark.runner.execute_direct_adapter_in_spawned_process",
+        fake_spawn,
+    )
+
+    comparator_tuning_module._execute_smoke_request_in_spawned_dispatcher(
+        request,
+        dispatcher,
+        smoke_authority,
+    )
+
+    inner = captured["request"]
+    assert inner.max_rss_bytes == int(1.5 * 1024**3)
+    assert inner.max_gpu_bytes == int(0.5 * 1024**3)
+    assert type(inner.max_rss_bytes) is int
+    assert type(inner.max_gpu_bytes) is int
 
 
 def test_smoke_loader_recomputes_complete_receipt(

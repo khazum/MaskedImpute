@@ -109,6 +109,18 @@ def test_sctsi_config_matches_pinned_defaults_and_has_no_seed_parameter() -> Non
     assert "seed" not in inspect.signature(run_sctsi).parameters
 
 
+def test_sctsi_rejects_nonboolean_deterministic_flag() -> None:
+    method_input = _method_input()
+    spec = replace(_registry().by_id("sctsi"), stochastic=0)
+
+    with pytest.raises(ValueError, match="deterministic without a seed"):
+        finalize_sctsi_output(
+            spec,
+            method_input,
+            np.ones(method_input.shape, dtype=np.float64),
+        )
+
+
 @pytest.mark.parametrize(
     ("factory", "message"),
     [

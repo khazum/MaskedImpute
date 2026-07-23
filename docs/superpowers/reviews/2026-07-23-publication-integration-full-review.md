@@ -667,8 +667,8 @@ policy, runtime invocation, and failure translation:
   output policies; the separately declared full-denoising behavior remains
   explicit.
 - D3Impute and SCTSI remain external-reference-only with exact matched-bulk,
-  orientation, and scale handling. Preserved legacy provenance was not
-  modified.
+  orientation, scale, exact-boolean stochastic flags, and deterministic
+  no-seed contracts. Preserved legacy provenance was not modified.
 
 The direct competition plan has 2,896 scheduled rows: 16 observed controls,
 48 matched controls, 1,200 MaskImpute rows, and 1,632 comparator rows. Every
@@ -690,14 +690,17 @@ output was found.
 
 | ID | Severity | Finding | Root cause | Disposition |
 |---|---|---|---|---|
-| F-018 | Important | D3Impute accepted a method specification whose stochastic flag or seed policy drifted from its declared deterministic/no-seed contract. | Its adapter-specific specification guard checked identity, track, and scales but omitted the seed contract enforced by the sibling SCTSI external-reference adapter. | Closed test-first. The D3Impute boundary now rejects independent or combined stochastic/seed-policy drift before finalization or execution. |
-| F-019 | Important | Smoke execution granted all methods the global 14 GiB GPU ceiling, and smoke-receipt validation applied the same global ceiling. A CPU-only method could consume GPU memory and still satisfy the readiness gate despite its exact zero-GPU binding. | Request construction and receipt validation used authority-wide maxima instead of the `ResourceSpec` attached to the canonical method. | Closed test-first. Spawned smoke requests now use the method's exact timeout, RSS, and GPU limits; receipt validation enforces the exact method RSS/GPU limits, including zero GPU bytes for CPU-only methods. |
+| F-018 | Important | D3Impute accepted a method specification whose stochastic flag or seed policy drifted from its declared deterministic/no-seed contract. | Its adapter-specific specification guard checked identity, track, and scales but omitted the seed contract enforced by the sibling SCTSI external-reference adapter. | The initial correction rejected ordinary boolean/policy drift. F-021 completed the closure by requiring an exact boolean and auditing the same invariant across external-reference and shared same-input adapter guards. |
+| F-019 | Important | Smoke execution granted all methods the global 14 GiB GPU ceiling, and smoke-receipt validation applied the same global ceiling. A CPU-only method could consume GPU memory and still satisfy the readiness gate despite its exact zero-GPU binding. | Request construction and receipt validation used authority-wide maxima instead of the `ResourceSpec` attached to the canonical method. | The initial correction bound requests and receipt caps to each method's `ResourceSpec`. F-020 completed the closure by requiring live independent GPU telemetry and authoritative receipt evidence for the zero-GPU policy. |
+| F-020 | Important | The corrected zero-byte cap was not actually observed for CPU-declared smoke methods: the spawned runner skipped GPU sampling, initialized a synthetic zero, and allowed imported completed outcomes to label that zero unavailable or not applicable. | The sampler's `gpu_required` switch was also used as the decision to measure GPU use, conflating a method's scheduling mode with whether the smoke authority needed evidence that forbidden use was zero. Receipt validation required only a nonempty measurement string. | Closed test-first. Comparator smoke execution now requires independent GPU measurement for every row while preserving the CPU path's 50 ms sampling cadence. A nonzero CPU-method sample exceeds its exact zero cap; missing telemetry produces `resource_telemetry_unavailable`; and receipt construction/loading accepts completed outcomes only with the canonical process-tree GPU measurement code. A host unable to provide the required measurement cannot issue ready smoke evidence. |
+| F-021 | Important | Directly constructed `MethodSpec` values could bypass declared seed contracts. Integer zero passed the D3Impute and SCTSI truthiness checks, while observed and ALRA accepted self-consistent stochastic/seed-policy drift; all same-input adapters shared the latter incomplete guard. | External-reference guards used truthiness instead of an exact boolean check, and the shared same-input guard checked identity, track, and scales without checking the canonical seed contract. | Closed test-first. D3Impute and SCTSI require an exact false boolean with `not_applicable`; the one shared same-input guard now enforces the exact canonical stochastic/seed-policy pair for observed, the two in-tree learned methods, and all ten implemented same-input comparator adapters. |
+| F-022 | Minor | A directly constructed method resource specification with fractional GiB limits produced floating-point byte limits in the smoke request, unlike other direct request paths. | Smoke request construction multiplied GiB by bytes-per-GiB without applying the established integer normalization. | Closed test-first by normalizing both RSS and GPU limits to integer bytes at direct smoke request construction. |
 | O-003 | Minor | The inherited CUDA library path caused the initial runtime-environment suite failures. | The two inherited entries resolve through symlinks, which the runtime declaration intentionally rejects. | No code change. The authoritative rerun used the same sanitized environment constructed by the operational boundary. |
 
-No other adapter, tuning, plan, execution, checkpoint, or operational
-environment defect was demonstrated. The method-specific observed-value
-differences for scZiva, BiAEImpute, scSDAE, and full denoising are intentional
-declared policies covered by tests.
+After F-018 through F-022, no unresolved adapter, tuning, plan, execution,
+checkpoint, or operational-environment defect was demonstrated. The
+method-specific observed-value differences for scZiva, BiAEImpute, scSDAE,
+and full denoising are intentional declared policies covered by tests.
 
 ### Exact test-first and verification evidence
 
@@ -721,16 +724,53 @@ The complete two changed test files then passed:
 153 passed, 8 skipped in 204.47s
 ```
 
-The authoritative complete eleven-file suite was rerun without the inherited
-CUDA library path and passed:
+The independent review exposed the incomplete live-measurement, exact-boolean,
+shared seed-contract, and fractional-byte cases recorded as F-020 through
+F-022. The focused reviewer-correction invocation reported:
 
 ```text
-513 passed, 44 skipped in 1730.33s (0:28:50)
+14 failed, 3 passed in 3.44s
+```
+
+The failures were the expected missing seed-contract exceptions, unsupported
+required GPU-measurement mode, accepted unavailable/not-applicable completed
+CPU evidence, absent smoke measurement option, and floating-point byte limits.
+The identical invocation after the minimal corrections passed:
+
+```text
+17 passed in 4.57s
+```
+
+The complete five owning test files then passed:
+
+```text
+364 passed, 31 skipped in 1117.17s (0:18:37)
+```
+
+After self-review preserved the CPU-forbidden path's 50 ms sampling cadence,
+the affected telemetry and smoke nodes passed:
+
+```text
+6 passed in 7.36s
+```
+
+The complete eleven-file suite first passed after the reviewer corrections
+with the inherited CUDA library path removed:
+
+```text
+524 passed, 44 skipped in 1728.03s (0:28:48)
+```
+
+After the one-line cadence refinement, the exact same suite passed again at
+the final correction state:
+
+```text
+524 passed, 44 skipped in 1719.54s (0:28:39)
 ```
 
 Targeted Ruff lint reported all checks passed, and Ruff format checking
-reported all four changed Python files already formatted. Byte compilation of
-all scoped production modules and test files exited zero with no output.
+reported all ten changed Python files already formatted. Byte compilation of
+the scoped production modules and test files exited zero with no output.
 `git diff --check` also exited zero with no output.
 
 These checks establish the reviewed method binding, adapter, fixed-smoke,

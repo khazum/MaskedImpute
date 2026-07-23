@@ -3393,6 +3393,12 @@ def build_comparator_smoke_receipt(
         for row in rows
     ):
         raise ComparatorTuningError("smoke measurement is invalid")
+    if any(
+        row.gpu_measurement != "nvidia_smi_process_tree_used_memory" for row in rows
+    ):
+        raise ComparatorTuningError(
+            "smoke GPU measurement is not an authoritative process-tree measurement"
+        )
     projected: dict[str, float] = {}
     for row in rows:
         method_id = row.configuration.configuration.method_id
@@ -3742,8 +3748,8 @@ def _execute_smoke_request_in_spawned_dispatcher(
         method_spec=request.method_spec,
         method_input=request.method_input,
         timeout_seconds=float(request.method_spec.resources.timeout_seconds),
-        max_rss_bytes=request.method_spec.resources.max_rss_gib * 1024**3,
-        max_gpu_bytes=request.method_spec.resources.max_gpu_gib * 1024**3,
+        max_rss_bytes=int(request.method_spec.resources.max_rss_gib * 1024**3),
+        max_gpu_bytes=int(request.method_spec.resources.max_gpu_gib * 1024**3),
         smoke_fixture=request.fixture,
     )
     child_dispatcher = replace(
@@ -3763,6 +3769,7 @@ def _execute_smoke_request_in_spawned_dispatcher(
         direct_request,
         DirectRepositoryComparatorExecutor(child_dispatcher, authority),
         resource_sampler=sampler,
+        require_gpu_measurement=True,
         expected_spawn_executable=dispatcher.environments.benchmark_python,
         spawn_search_path=dispatcher.environments.python_spawn_search_path,
     )

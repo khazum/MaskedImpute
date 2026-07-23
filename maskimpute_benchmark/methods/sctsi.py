@@ -408,7 +408,11 @@ def _require_sctsi_spec(spec: MethodSpec) -> None:
         raise ValueError("sctsi input scale must be raw_counts")
     if spec.output_scale != "external_reference_adjusted":
         raise ValueError("sctsi output scale must be external_reference_adjusted")
-    if spec.stochastic or spec.seed_policy != "not_applicable":
+    if (
+        type(spec.stochastic) is not bool
+        or spec.stochastic
+        or spec.seed_policy != "not_applicable"
+    ):
         raise ValueError("sctsi must remain deterministic without a seed")
 
 

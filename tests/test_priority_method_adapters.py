@@ -786,10 +786,11 @@ def test_native_finalizers_retain_declared_scales_and_do_not_copy_entries() -> N
         (True, "required"),
         (False, "required"),
         (True, "not_applicable"),
+        (0, "not_applicable"),
     ),
 )
 def test_d3impute_rejects_deterministic_seed_contract_drift(
-    stochastic: bool,
+    stochastic: object,
     seed_policy: str,
 ) -> None:
     method_input = _method_input(cells=8, genes=6)

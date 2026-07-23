@@ -43,6 +43,7 @@ from maskimpute_benchmark.methods.observed import (
     AdapterUnavailableError,
     execute_pinned_command,
     log1p_cp10k,
+    require_method_spec,
     run_observed,
     verify_pinned_source,
     require_executable,
@@ -229,6 +230,36 @@ def test_observed_adapter_returns_exact_immutable_counts_without_subprocess() ->
         "observed_positive_policy",
         "evaluator_scale_conversion",
     ]
+
+
+@pytest.mark.parametrize(
+    ("method_id", "stochastic", "seed_policy"),
+    (
+        ("observed", True, "required"),
+        ("observed", 0, "not_applicable"),
+        ("alra", False, "not_applicable"),
+        ("alra", 1, "required"),
+    ),
+)
+def test_same_input_adapter_guard_rejects_exact_seed_contract_drift(
+    method_id: str,
+    stochastic: object,
+    seed_policy: str,
+) -> None:
+    canonical = _registry().by_id(method_id)
+    drifted = replace(
+        canonical,
+        stochastic=stochastic,
+        seed_policy=seed_policy,
+    )
+
+    with pytest.raises(ValueError, match="stochastic/seed contract"):
+        require_method_spec(
+            drifted,
+            method_id,
+            input_scale=canonical.input_scale,
+            output_scale=canonical.output_scale,
+        )
 
 
 def test_log1p_cp10k_conversion_is_exact_and_rejects_zero_library_cells() -> None:

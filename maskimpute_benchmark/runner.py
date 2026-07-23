@@ -9626,6 +9626,7 @@ def _execute_measured_spawn(
     *,
     poll_interval_seconds: float = 0.05,
     resource_sampler: ResourceSampler | None = None,
+    require_gpu_measurement: bool = False,
     expected_spawn_executable: Path | None = None,
     spawn_search_path: tuple[str, ...] | None = None,
     outcome_type: type = AdapterOutcome,
@@ -9707,6 +9708,8 @@ def _execute_measured_spawn(
         or poll_interval_seconds <= 0
     ):
         raise ValueError("poll_interval_seconds must be positive and finite")
+    if type(require_gpu_measurement) is not bool:
+        raise TypeError("require_gpu_measurement must be boolean")
     sampler = (
         LinuxProcessTreeResourceSampler()
         if resource_sampler is None
@@ -9741,12 +9744,15 @@ def _execute_measured_spawn(
     message: tuple[object, ...] | None = None
     deadline = started + request.timeout_seconds
     peak_rss: int | None = None
-    peak_gpu: int | None = 0 if not request.method_spec.resources.gpu_required else None
+    gpu_measurement_required = (
+        request.method_spec.resources.gpu_required or require_gpu_measurement
+    )
+    peak_gpu: int | None = None if gpu_measurement_required else 0
     rss_provenance = "rss_measurement_unavailable"
     gpu_provenance = (
-        "not_applicable_cpu_only_method"
-        if not request.method_spec.resources.gpu_required
-        else "gpu_measurement_unavailable"
+        "gpu_measurement_unavailable"
+        if gpu_measurement_required
+        else "not_applicable_cpu_only_method"
     )
     next_resource_sample = started
 
@@ -9755,7 +9761,7 @@ def _execute_measured_spawn(
         try:
             sample = sampler.sample(
                 process.pid,
-                gpu_required=request.method_spec.resources.gpu_required,
+                gpu_required=gpu_measurement_required,
             )
         except Exception:
             return None
@@ -9798,9 +9804,7 @@ def _execute_measured_spawn(
                 process.kill()
                 process.join(timeout=2)
             elapsed = max(0.0, time.monotonic() - started)
-            if peak_rss is None or (
-                request.method_spec.resources.gpu_required and peak_gpu is None
-            ):
+            if peak_rss is None or (gpu_measurement_required and peak_gpu is None):
                 return outcome_type.infrastructure_error(
                     "resource_telemetry_unavailable",
                     runtime_seconds=elapsed,
@@ -9827,9 +9831,7 @@ def _execute_measured_spawn(
             if process.is_alive():
                 process.kill()
             elapsed = max(0.0, time.monotonic() - started)
-            if peak_rss is None or (
-                request.method_spec.resources.gpu_required and peak_gpu is None
-            ):
+            if peak_rss is None or (gpu_measurement_required and peak_gpu is None):
                 return outcome_type.infrastructure_error(
                     "resource_telemetry_unavailable",
                     runtime_seconds=elapsed,
@@ -9847,9 +9849,7 @@ def _execute_measured_spawn(
             )
         process.join(timeout=2)
         elapsed = max(0.0, time.monotonic() - started)
-        if peak_rss is None or (
-            request.method_spec.resources.gpu_required and peak_gpu is None
-        ):
+        if peak_rss is None or (gpu_measurement_required and peak_gpu is None):
             return outcome_type.infrastructure_error(
                 "resource_telemetry_unavailable",
                 runtime_seconds=elapsed,

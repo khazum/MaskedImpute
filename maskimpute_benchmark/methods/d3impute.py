@@ -287,7 +287,11 @@ def _require_d3impute_spec(spec: MethodSpec) -> None:
         raise ValueError("d3impute input scale must be raw_counts")
     if spec.output_scale != "external_reference_adjusted":
         raise ValueError("d3impute output scale must be external_reference_adjusted")
-    if spec.stochastic or spec.seed_policy != "not_applicable":
+    if (
+        type(spec.stochastic) is not bool
+        or spec.stochastic
+        or spec.seed_policy != "not_applicable"
+    ):
         raise ValueError("d3impute must remain deterministic without a seed")
 
 
