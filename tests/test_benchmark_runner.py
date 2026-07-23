@@ -649,9 +649,15 @@ class _FixedResourceSampler:
         return ResourceSample(
             peak_rss_bytes=self.rss,
             peak_gpu_bytes=self.gpu if gpu_required else 0,
-            rss_provenance="mock_process_tree_rss",
+            rss_provenance="linux_proc_process_tree_rss",
             gpu_provenance=(
-                "mock_process_tree_gpu" if gpu_required else "not_applicable_cpu"
+                (
+                    "nvidia_smi_process_tree_used_memory"
+                    if self.gpu is not None
+                    else "nvidia_smi_measurement_unavailable"
+                )
+                if gpu_required
+                else "not_applicable_cpu_only_method"
             ),
         )
 
@@ -667,13 +673,46 @@ class _RequiredGpuMeasurementSampler:
         return ResourceSample(
             peak_rss_bytes=self.rss,
             peak_gpu_bytes=self.gpu,
-            rss_provenance="mock_process_tree_rss",
+            rss_provenance="linux_proc_process_tree_rss",
             gpu_provenance=(
-                "mock_process_tree_gpu"
+                "nvidia_smi_process_tree_used_memory"
                 if self.gpu is not None
                 else "nvidia_smi_measurement_unavailable"
             ),
         )
+
+
+class _SequencedResourceSampler:
+    def __init__(self, *samples: object) -> None:
+        if not samples:
+            raise ValueError("samples must be nonempty")
+        self.samples = samples
+        self.calls = 0
+        self.gpu_required_calls: list[bool] = []
+
+    def sample(self, process_id: int, *, gpu_required: bool) -> object:
+        self.gpu_required_calls.append(gpu_required)
+        position = min(self.calls, len(self.samples) - 1)
+        self.calls += 1
+        sample = self.samples[position]
+        if isinstance(sample, Exception):
+            raise sample
+        return sample
+
+
+def _canonical_resource_sample(
+    *,
+    rss: int | None = 123_456,
+    gpu: int | None = 0,
+    rss_provenance: str = "linux_proc_process_tree_rss",
+    gpu_provenance: str = "nvidia_smi_process_tree_used_memory",
+) -> ResourceSample:
+    return ResourceSample(
+        peak_rss_bytes=rss,
+        peak_gpu_bytes=gpu,
+        rss_provenance=rss_provenance,
+        gpu_provenance=gpu_provenance,
+    )
 
 
 def _synthetic_revision_numerical_fit(
@@ -2496,8 +2535,8 @@ def test_spawned_executor_uses_parent_sampled_resources_not_executor_claims() ->
 
     assert outcome.peak_rss_bytes == 123_456
     assert outcome.peak_gpu_bytes == 0
-    assert outcome.rss_measurement == "mock_process_tree_rss"
-    assert outcome.gpu_measurement == "not_applicable_cpu"
+    assert outcome.rss_measurement == "linux_proc_process_tree_rss"
+    assert outcome.gpu_measurement == "not_applicable_cpu_only_method"
 
 
 @pytest.mark.parametrize(
@@ -2659,7 +2698,7 @@ def test_gpu_execution_fails_closed_when_independent_gpu_measurement_is_missing(
 
     assert outcome.status == "infrastructure_error"
     assert outcome.reason == "resource_telemetry_unavailable"
-    assert outcome.gpu_measurement == "mock_process_tree_gpu"
+    assert outcome.gpu_measurement == "nvidia_smi_measurement_unavailable"
 
 
 @pytest.mark.parametrize(
@@ -2701,6 +2740,125 @@ def test_cpu_execution_enforces_required_forbidden_gpu_measurement(
     assert outcome.reason == expected_reason
     assert sampler.gpu_required_calls
     assert all(sampler.gpu_required_calls)
+
+
+@pytest.mark.parametrize(
+    "first_sample",
+    (
+        RuntimeError("sampler unavailable"),
+        object(),
+        _canonical_resource_sample(rss=None),
+        _canonical_resource_sample(rss_provenance="executor_reported_rss"),
+        _canonical_resource_sample(gpu=None),
+        _canonical_resource_sample(gpu_provenance="executor_reported_gpu"),
+    ),
+    ids=(
+        "sampler-exception",
+        "non-resource-sample",
+        "rss-missing",
+        "rss-noncanonical",
+        "gpu-missing",
+        "gpu-noncanonical",
+    ),
+)
+def test_required_resource_telemetry_gap_remains_fatal_after_later_recovery(
+    first_sample: object,
+) -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    sampler = _SequencedResourceSampler(
+        first_sample,
+        _canonical_resource_sample(),
+    )
+
+    outcome = execute_adapter_in_spawned_process(
+        request,
+        _slow_marker_executor,
+        poll_interval_seconds=0.01,
+        resource_sampler=sampler,
+        require_gpu_measurement=True,
+    )
+
+    assert sampler.calls >= 2
+    assert all(sampler.gpu_required_calls)
+    assert outcome.status == "infrastructure_error"
+    assert outcome.reason == "resource_telemetry_unavailable"
+
+
+def test_required_resource_telemetry_gap_precedes_later_resource_overage() -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    sampler = _SequencedResourceSampler(
+        RuntimeError("sampler unavailable"),
+        _canonical_resource_sample(rss=request.max_rss_bytes + 1),
+    )
+
+    outcome = execute_adapter_in_spawned_process(
+        request,
+        _slow_marker_executor,
+        poll_interval_seconds=0.01,
+        resource_sampler=sampler,
+        require_gpu_measurement=True,
+    )
+
+    assert outcome.status == "infrastructure_error"
+    assert outcome.reason == "resource_telemetry_unavailable"
+
+
+def test_cpu_execution_does_not_require_gpu_telemetry_outside_smoke() -> None:
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    request = ExecutionRequest.create(
+        spec,
+        _method_input(),
+        model_seed=None,
+        configuration=AuthorizedConfiguration.registry_default(spec),
+        authority=_authority(maskimpute_ready=True),
+        mechanism="symsim",
+        biological_id="draw-01",
+        technical_view="moderate",
+        dataset_id="dataset-test",
+        timeout_seconds=5,
+    )
+    sampler = _SequencedResourceSampler(
+        _canonical_resource_sample(
+            gpu=None,
+            gpu_provenance="nvidia_smi_measurement_unavailable",
+        )
+    )
+
+    outcome = execute_adapter_in_spawned_process(
+        request,
+        _slow_marker_executor,
+        poll_interval_seconds=0.01,
+        resource_sampler=sampler,
+    )
+
+    assert sampler.gpu_required_calls
+    assert not any(sampler.gpu_required_calls)
+    assert outcome.status == "unavailable"
+    assert outcome.reason == "child_completed"
 
 
 def test_calibrated_development_completion_requires_matching_lodo_fold_receipt() -> (
@@ -4172,8 +4330,8 @@ def test_production_revision_adapter_records_parent_measured_completion(
     assert outcome.runtime_seconds > 0.0
     assert outcome.peak_rss_bytes == 16384
     assert outcome.peak_gpu_bytes == gpu_peak
-    assert outcome.rss_measurement == "mock_process_tree_rss"
-    assert outcome.gpu_measurement == "mock_process_tree_gpu"
+    assert outcome.rss_measurement == "linux_proc_process_tree_rss"
+    assert outcome.gpu_measurement == "nvidia_smi_process_tree_used_memory"
 
 
 def test_production_revision_adapter_enforces_timeout(

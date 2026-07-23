@@ -694,13 +694,14 @@ output was found.
 |---|---|---|---|---|
 | F-018 | Important | D3Impute accepted a method specification whose stochastic flag or seed policy drifted from its declared deterministic/no-seed contract. | Its adapter-specific specification guard checked identity, track, and scales but omitted the seed contract enforced by the sibling SCTSI external-reference adapter. | The initial correction rejected ordinary boolean/policy drift. F-021 completed the closure by requiring an exact boolean and auditing the same invariant across external-reference and shared same-input adapter guards. |
 | F-019 | Important | Smoke execution granted all methods the global 14 GiB GPU ceiling, and smoke-receipt validation applied the same global ceiling. A CPU-only method could consume GPU memory and still satisfy the readiness gate despite its exact zero-GPU binding. | Request construction and receipt validation used authority-wide maxima instead of the `ResourceSpec` attached to the canonical method. | The initial correction bound requests and receipt caps to each method's `ResourceSpec`. F-020 completed the closure by requiring live independent GPU telemetry and authoritative receipt evidence for the zero-GPU policy. |
-| F-020 | Important | The corrected zero-byte cap was not actually observed for CPU-declared smoke methods: the spawned runner skipped GPU sampling, initialized a synthetic zero, and allowed imported completed outcomes to label that zero unavailable or not applicable. | The sampler's `gpu_required` switch was also used as the decision to measure GPU use, conflating a method's scheduling mode with whether the smoke authority needed evidence that forbidden use was zero. Receipt validation required only a nonempty measurement string. | Closed test-first. Comparator smoke execution now requires independent GPU measurement for every row while preserving the CPU path's 50 ms sampling cadence. A nonzero CPU-method sample exceeds its exact zero cap; missing telemetry produces `resource_telemetry_unavailable`; and receipt construction/loading accepts completed outcomes only with the canonical process-tree GPU measurement code. A host unable to provide the required measurement cannot issue ready smoke evidence. |
+| F-020 | Important | The corrected zero-byte cap was not actually observed for CPU-declared smoke methods: the spawned runner skipped GPU sampling, initialized a synthetic zero, and allowed imported completed outcomes to label that zero unavailable or not applicable. | The sampler's `gpu_required` switch was also used as the decision to measure GPU use, conflating a method's scheduling mode with whether the smoke authority needed evidence that forbidden use was zero. Receipt validation required only a nonempty measurement string. | The first test-first correction required independent GPU measurement for every smoke row, retained the CPU path's 50 ms cadence, enforced nonzero forbidden use against the zero cap, and required canonical completed-receipt GPU evidence. It detected telemetry that remained unavailable at the terminal check but did not retain an earlier transient gap; F-024 completes that live enforcement. |
 | F-021 | Important | Directly constructed `MethodSpec` values could bypass declared seed contracts. Integer zero passed the D3Impute and SCTSI truthiness checks, while observed and ALRA accepted self-consistent stochastic/seed-policy drift; all same-input adapters shared the latter incomplete guard. | External-reference guards used truthiness instead of an exact boolean check, and the shared same-input guard checked identity, track, and scales without checking the canonical seed contract. | Closed test-first. D3Impute and SCTSI require an exact false boolean with `not_applicable`; the one shared same-input guard now enforces the exact canonical stochastic/seed-policy pair for observed, the two in-tree learned methods, and all ten implemented same-input comparator adapters. |
 | F-022 | Minor | A directly constructed method resource specification with fractional GiB limits produced floating-point byte limits in the smoke request, unlike other direct request paths. | Smoke request construction multiplied GiB by bytes-per-GiB without applying the established integer normalization. | Closed test-first by normalizing both RSS and GPU limits to integer bytes at direct smoke request construction. |
 | F-023 | Important | A completed 34-row comparator-smoke population could use unavailable, not-applicable, or arbitrary nonempty RSS provenance and still produce ready imported evidence. | Receipt construction canonicalized GPU provenance after F-020 but continued to validate RSS provenance only as a nonempty string. | Closed test-first. Every completed smoke row must now use the canonical `linux_proc_process_tree_rss` measurement code. Synthetic completed fixtures use that same valid provenance, and receipt loading inherits the check through full receipt recomputation. |
+| F-024 | Important | A required telemetry observation could fail, return a non-`ResourceSample`, omit RSS or GPU, or carry noncanonical required provenance and then be followed by a valid canonical sample; the measured spawn could still complete or report a later resource overage. | The parent loop retained only accumulated peaks and the most recent provenance. It had no run-level record that a required observation interval was unmeasured or unauthoritative, so later values erased the terminal evidence of the gap. | Closed test-first. Any required RSS gap, required GPU gap, sampler exception, or invalid sample now sets a sticky run-level telemetry failure. Later samples may continue collecting peaks but cannot restore authority; `resource_telemetry_unavailable` takes precedence over a later cap result or child outcome. Exact process-tree provenance is required for live RSS and for GPU whenever GPU telemetry is required. GPU-unrequired non-smoke CPU execution remains valid, and CPU smoke sampling retains its 50 ms cadence. |
 | O-003 | Minor | The inherited CUDA library path caused the initial runtime-environment suite failures. | The two inherited entries resolve through symlinks, which the runtime declaration intentionally rejects. | No code change. The authoritative rerun used the same sanitized environment constructed by the operational boundary. |
 
-After F-018 through F-023, no unresolved adapter, tuning, plan, execution,
+After F-018 through F-024, no unresolved adapter, tuning, plan, execution,
 checkpoint, or operational-environment defect was demonstrated. The
 method-specific observed-value differences for scZiva, BiAEImpute, scSDAE,
 and full denoising are intentional declared policies covered by tests.
@@ -800,14 +801,64 @@ The complete owning comparator-tuning file passed:
 125 passed in 204.56s (0:03:24)
 ```
 
-The exact sanitized eleven-file Task 4 suite passed at the final formatted
-F-023 state:
+The next independent review exposed the transient telemetry recovery bypass
+recorded as F-024. Six cases covered sampler exceptions, invalid sample
+objects, missing required RSS or GPU values, and noncanonical required RSS or
+GPU provenance, each followed by valid canonical observations. A seventh case
+combined an initial telemetry gap with a later resource overage; the
+GPU-unrequired non-smoke CPU path served as the passing control. Before the
+production correction, the focused invocation reported:
 
 ```text
-527 passed, 44 skipped in 1797.30s (0:29:57)
+7 failed, 1 passed in 21.61s
 ```
 
-Targeted Ruff lint and formatting, byte compilation of the final changed
+After adding the sticky required-telemetry failure state, the identical
+invocation reported:
+
+```text
+8 passed in 21.18s
+```
+
+The expanded focused runner set, including the existing completion, timeout,
+RSS/GPU-cap, required-GPU, and direct-revision cases, then reported:
+
+```text
+19 passed in 33.82s
+```
+
+The complete owning runner and comparator-tuning files passed at the final
+formatted production state:
+
+```text
+281 passed in 1186.85s (0:19:46)
+```
+
+The first post-F-024 exact-suite attempt then exposed one stale test fixture:
+`_DirectFixedResourceSampler` still reported synthetic parent provenance, so
+the corrected live boundary properly returned `infrastructure_error` instead
+of the fixture's expected timeout. The otherwise complete invocation reported:
+
+```text
+1 failed, 526 passed, 44 skipped in 1769.07s (0:29:29)
+```
+
+The fixture was changed to the same canonical process-tree labels required of
+the other measured-spawn test samplers. Its timeout and required-GPU-missing
+nodes then reported:
+
+```text
+2 passed in 4.25s
+```
+
+The exact sanitized eleven-file Task 4 suite passed at the final formatted
+F-024 state:
+
+```text
+527 passed, 44 skipped in 1702.67s (0:28:22)
+```
+
+Targeted Ruff lint and formatting, byte compilation of all final changed
 production and test files, and `git diff --check` passed.
 
 These checks establish the reviewed method binding, adapter, fixed-smoke,

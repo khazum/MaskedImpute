@@ -394,9 +394,15 @@ class _DirectFixedResourceSampler:
         return ResourceSample(
             peak_rss_bytes=self.rss,
             peak_gpu_bytes=self.gpu if gpu_required else 0,
-            rss_provenance="synthetic_parent_rss",
+            rss_provenance="linux_proc_process_tree_rss",
             gpu_provenance=(
-                "synthetic_parent_gpu" if gpu_required else "not_applicable_cpu"
+                (
+                    "nvidia_smi_process_tree_used_memory"
+                    if self.gpu is not None
+                    else "nvidia_smi_measurement_unavailable"
+                )
+                if gpu_required
+                else "not_applicable_cpu_only_method"
             ),
         )
 
@@ -1062,7 +1068,7 @@ def test_direct_spawned_executor_enforces_deadline_with_parent_telemetry(
     assert outcome.status == "timeout"
     assert outcome.runtime_seconds >= 0.05
     assert outcome.peak_rss_bytes == 123_456
-    assert outcome.rss_measurement == "synthetic_parent_rss"
+    assert outcome.rss_measurement == "linux_proc_process_tree_rss"
 
 
 def test_direct_spawned_executor_fails_closed_without_required_gpu_telemetry(
