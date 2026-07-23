@@ -132,6 +132,20 @@ def test_inverse_normalization_rejects_masked_library_sizes_before_coercion():
         )
 
 
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).max <= np.finfo(np.float64).max,
+    reason="extended precision is unavailable",
+)
+def test_inverse_normalization_rejects_finite_target_outside_float64_range():
+    from maskimpute.train import invert_observed_normalization
+
+    target = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+    assert np.isfinite(target)
+
+    with pytest.raises(ValueError, match="target.*finite"):
+        invert_observed_normalization([[np.log1p(1.0)]], [1.0], target=target)
+
+
 def test_observed_normalization_keeps_maximum_finite_target_finite():
     from maskimpute.train import normalize_observed_counts
 

@@ -206,7 +206,7 @@ def normalize_observed_counts(
     if isinstance(target, bool) or not np.isfinite(target) or target <= 0:
         raise ValueError("target must be positive and finite")
     target_float = float(target)
-    if not np.isfinite(target_float):
+    if not np.isfinite(target_float) or target_float <= 0:
         raise ValueError("target must be positive and finite")
     library_sizes = counts.sum(axis=1, dtype=np.float64)
     np.divide(
@@ -242,7 +242,7 @@ def normalize_available_encoder_input(
     if isinstance(target, bool) or not np.isfinite(target) or target <= 0:
         raise ValueError("target must be positive and finite")
     target_float = float(target)
-    if not np.isfinite(target_float):
+    if not np.isfinite(target_float) or target_float <= 0:
         raise ValueError("target must be positive and finite")
 
     np.multiply(counts, available, out=counts)
@@ -284,8 +284,11 @@ def invert_observed_normalization(
         raise ValueError("library_sizes must be finite and nonnegative")
     if isinstance(target, bool) or not np.isfinite(target) or target <= 0:
         raise ValueError("target must be positive and finite")
+    target_float = float(target)
+    if not np.isfinite(target_float) or target_float <= 0:
+        raise ValueError("target must be positive and finite")
 
-    restored = np.expm1(normalized) * (libraries[:, None] / float(target))
+    restored = np.expm1(normalized) * (libraries[:, None] / target_float)
     restored[libraries == 0] = 0.0
     return restored
 
