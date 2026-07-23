@@ -119,6 +119,34 @@ def test_observed_library_normalization_has_an_explicit_inverse_contract():
     np.testing.assert_array_equal(restored[0], np.zeros(3))
 
 
+def test_observed_normalization_keeps_maximum_finite_target_finite():
+    from maskimpute.train import normalize_observed_counts
+
+    maximum = np.finfo(np.float64).max
+
+    normalized, library_sizes = normalize_observed_counts([[3]], target=maximum)
+
+    np.testing.assert_array_equal(library_sizes, [3.0])
+    np.testing.assert_allclose(normalized, [[np.log1p(maximum)]])
+    assert np.all(np.isfinite(normalized))
+
+
+def test_available_normalization_keeps_maximum_finite_target_finite():
+    from maskimpute.train import normalize_available_encoder_input
+
+    maximum = np.finfo(np.float64).max
+
+    normalized, library_sizes = normalize_available_encoder_input(
+        [[3]],
+        [[True]],
+        target=maximum,
+    )
+
+    np.testing.assert_array_equal(library_sizes, [3.0])
+    np.testing.assert_allclose(normalized, [[np.log1p(maximum)]])
+    assert np.all(np.isfinite(normalized))
+
+
 def test_corrupted_encoder_normalization_cannot_see_unavailable_target_magnitude():
     from maskimpute.model import ExplicitMaskAutoencoder
     from maskimpute.train import normalize_available_encoder_input

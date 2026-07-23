@@ -228,3 +228,106 @@ closed; deeper review may proceed under Tasks 2–10.
 
 No conclusion about whole-branch correctness, scientific competitiveness, or
 Genome Biology submission readiness is made here.
+
+## Task 2 model and numerical correctness audit
+
+### Environment and baseline
+
+Task 2 started from clean commit
+`36f4ca09a05b1c79df12759929fcd8e7ff6a7c03` in the linked
+`publication-integration` worktree. No dependency was installed or changed.
+
+The first focused-suite attempt used the existing `masked_imputation`
+interpreter and stopped during collection. Its enabled Python 3.10 user site
+loaded an `anndata`/`pandas` binary incompatible with the user-site NumPy ABI.
+Disabling the user site exposed that environment's NumPy 1.26.4, below the
+declared NumPy 2 floor, and removed pytest and `anndata`. This was classified as
+an environment failure rather than a model defect.
+
+The authoritative Task 2 interpreter was the existing
+`/tmp/maskimpute-scziva312/bin/python`: Python 3.12.7, NumPy 2.2.6, SciPy
+1.13.1, Torch 2.4.1, and pytest 8.4.2. It satisfies the declared Python,
+NumPy, SciPy, Torch, and pytest ranges. The unmodified focused baseline was:
+
+```text
+572 passed, 2 skipped in 24.65s
+```
+
+### Path and invariant coverage
+
+Every production path assigned by the Task 2 brief was inspected end to end:
+
+| Path | Reviewed model/numerical responsibilities | Disposition |
+|---|---|---|
+| `maskimpute/__init__.py` | Public exports and lazy Torch-backed API loading | Valid; no change |
+| `maskimpute/ablations.py` | Prespecified component changes, capacity parity, score resolution, gating, selective/full output, inference mode | Valid after shared finite-float64 boundary fix in `train.py` |
+| `maskimpute/calibration.py` | Probability/target/weight domains, monotone transforms, stable metrics, immutable retained artifact | Valid; no change |
+| `maskimpute/config.py` | Immutable finite hyperparameters, positive dimensions, bounded seed | Valid; no change |
+| `maskimpute/count_model.py` | Raw-count validation, dense/sparse parity, deterministic cross-fitting, stable NB zero probability, immutable score arrays | Valid; no change |
+| `maskimpute/impute.py` | Input-to-result flow, calibrated score support, eval/no-grad inference, finite outputs, observed-positive preservation | Valid; no change |
+| `maskimpute/model.py` | Explicit availability semantics, learned mask token, aligned shapes/devices, nonnegative decoder | Valid; no change |
+| `maskimpute/nb_model.py` | Float64 NB likelihood, dispersion estimation, library-size offset, zero-library behavior | F-006 closed |
+| `maskimpute/prezero.py` | Stable NB/Poisson Bayes posterior, broadcast/support validation, observed-positive zero score | Valid; no change |
+| `maskimpute/result.py` | Shape/domain validation and defensive immutable dense/sparse/diagnostic snapshots | Valid; no change |
+| `maskimpute/sparse_input.py` | Exact supported sparse storage, coordinate bounds/uniqueness, lossless snapshotting | Valid; no change |
+| `maskimpute/structure.py` | Observed-only variable-gene/neighborhood authority and finite differentiable penalties | Valid; no change |
+| `maskimpute/train.py` | Dense/sparse conversion, normalization/inverse, mask construction, seed propagation, RNG restoration, train/eval transitions | F-004 and F-005 closed |
+| `masked_imputation26.py` | Migration-only legacy wrapper that does not execute archived code | Valid; no change |
+
+Every assigned test path was also inspected and executed:
+
+| Path | Coverage classification |
+|---|---|
+| `tests/test_count_model.py` | Count-model domains, dense/sparse equivalence, cross-fit invariants, stability, immutability |
+| `tests/test_maskimpute_ablations.py` | Capacity/mask/gate/output controls and verified score/calibration execution; F-005 regression |
+| `tests/test_maskimpute_api.py` | Config/result/pre-zero shape, support, sparse, dtype, finite, and immutability contracts |
+| `tests/test_maskimpute_v27.py` | Normalization, masks, seeds, RNG scope, train/eval behavior, zero libraries, public result invariants; F-004 regressions |
+| `tests/test_maskimpute_v28.py` | NB likelihood oracle, float64/device contract, dispersion, zero-library gradients; F-006 regression |
+| `tests/test_maskimpute_v29.py` | Observed-only structure authority, differentiability, fixed validation exclusion |
+| `tests/test_prezero_calibration.py` | Monotone calibration, stable metrics, retention semantics, immutable artifact |
+| `tests/test_prezero_evidence.py` | Realized-score evidence binding, defensive matrices, checkpoint/recovery dispositions |
+
+The requested cross-cutting classifications are:
+
+| Invariant | Evidence and disposition |
+|---|---|
+| Shape validation | Two-dimensional/nonempty count and score boundaries, aligned Torch shapes, result row/shape contracts; covered and valid |
+| Sparse/dense parity | Shared coordinate snapshot boundary and equivalent count/score behavior; covered and valid |
+| Dtype/device changes | Exact numeric input checks, explicit float32 model tensors, float64 NB likelihood, aligned Torch devices, post-cast finite check; F-005 closed |
+| Finite values | Checked at external arrays, fitted parameters, losses, decoder/latent/count outputs, and result construction; F-004/F-005 closed |
+| Zero library sizes | Preserved as all-zero normalized/count rows and excluded safely from exposure gradients; covered and valid |
+| Mask meaning | Observed positives are available, natural zeros unavailable, validation/training masks select observed positives only, unavailable payload is irrelevant; F-006 closed at the library-size nuisance boundary |
+| Seed propagation | Bounded config seed, independent NumPy seed streams, scoped Torch deterministic state, caller RNG restoration; covered and valid |
+| Train/eval transitions | Training mode per epoch, eval/no-grad validation and inference, best checkpoint restored in eval mode; covered and valid |
+| Result immutability | Dense, sparse, latent, probability, and nested diagnostics are snapshotted and freshly materialized read-only views; covered and valid |
+
+### Task 2 findings and dispositions
+
+| ID | Severity | Finding | Root cause | Disposition |
+|---|---|---|---|---|
+| O-002 | Minor | The first Task 2 interpreter stopped in collection with a NumPy/pandas ABI mismatch and proved below the declared NumPy floor when isolated. | Enabled user-site packages overrode an older environment and mixed incompatible binaries. | Closed as environmental; authoritative tests use the existing declared-compatible Python 3.12 environment. |
+| F-004 | Important | Both observed-count and corrupted-availability normalization could return `inf` for a valid finite normalization target. | Computing `target / library` first can round upward; multiplying the result by the count then overflowed even though `count / library * target` is mathematically bounded by `target`. | Closed test-first by evaluating proportions before multiplying by the target. No hyperparameter or estimand changed. |
+| F-005 | Important | A finite extended-precision candidate outside float64 range could be cast to `inf` and returned by the full-ungated ablation output. | `_numeric_matrix_to_dense` checked finiteness only before its float64 conversion. | Closed test-first with a post-conversion finite check at the shared dense boundary. |
+| F-006 | Important | NB dispersion estimation silently accepted a masked `library_sizes` vector. | `np.asarray` discarded the mask before validation. | Closed test-first by rejecting a masked library-size vector before coercion. |
+
+### Regression evidence
+
+Each regression was run alone before its production correction and failed for
+the demonstrated invariant:
+
+| Pytest node | RED | GREEN |
+|---|---|---|
+| `tests/test_maskimpute_v27.py::test_observed_normalization_keeps_maximum_finite_target_finite` | Failed: actual `inf`, expected finite `log1p(target)` | 1 passed |
+| `tests/test_maskimpute_v27.py::test_available_normalization_keeps_maximum_finite_target_finite` | Failed: actual `inf`, expected finite `log1p(target)` | 1 passed |
+| `tests/test_maskimpute_ablations.py::test_ablation_output_rejects_finite_candidates_not_representable_in_float64` | Failed: did not raise and returned post-cast `inf` | 1 passed |
+| `tests/test_maskimpute_v28.py::test_gene_dispersion_rejects_masked_library_sizes` | Failed: did not raise after mask erasure | 1 passed |
+
+The complete post-correction Task 2 suite passed:
+
+```text
+576 passed, 2 skipped in 29.14s
+```
+
+The two skips are the existing CUDA smoke checks on a host where CUDA is
+unavailable. No real scientific workload, empirical comparison, parameter
+retuning, new provenance mechanism, or human/publication metadata was added.

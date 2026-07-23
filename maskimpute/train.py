@@ -119,11 +119,20 @@ def _numeric_matrix_to_dense(value: object, name: str) -> tuple[np.ndarray, np.n
         raise TypeError(f"{name} must contain real numeric values")
     if not np.all(np.isfinite(entries)):
         raise ValueError(f"{name} must contain only finite values")
-    if is_sparse:
-        dense = np.zeros(shape, dtype=np.float64, order="C")
-        dense[rows, columns] = entries
-    else:
-        dense = np.array(matrix, dtype=np.float64, copy=True, order="C", subok=False)
+    with np.errstate(over="ignore", invalid="ignore"):
+        if is_sparse:
+            dense = np.zeros(shape, dtype=np.float64, order="C")
+            dense[rows, columns] = entries
+        else:
+            dense = np.array(
+                matrix,
+                dtype=np.float64,
+                copy=True,
+                order="C",
+                subok=False,
+            )
+    if not np.all(np.isfinite(dense)):
+        raise ValueError(f"{name} must be representable as finite float64 values")
     return dense, entries
 
 
@@ -197,9 +206,14 @@ def normalize_observed_counts(
     if isinstance(target, bool) or not np.isfinite(target) or target <= 0:
         raise ValueError("target must be positive and finite")
     library_sizes = counts.sum(axis=1, dtype=np.float64)
-    scale = np.zeros_like(library_sizes)
-    np.divide(float(target), library_sizes, out=scale, where=library_sizes > 0)
-    normalized = np.log1p(counts * scale[:, None])
+    proportions = np.zeros_like(counts)
+    np.divide(
+        counts,
+        library_sizes[:, None],
+        out=proportions,
+        where=library_sizes[:, None] > 0,
+    )
+    normalized = np.log1p(proportions * float(target))
     return normalized, library_sizes
 
 
@@ -227,14 +241,14 @@ def normalize_available_encoder_input(
 
     visible_counts = np.where(available, counts, 0.0)
     visible_library_sizes = visible_counts.sum(axis=1, dtype=np.float64)
-    scale = np.zeros_like(visible_library_sizes)
+    proportions = np.zeros_like(visible_counts)
     np.divide(
-        float(target),
-        visible_library_sizes,
-        out=scale,
-        where=visible_library_sizes > 0,
+        visible_counts,
+        visible_library_sizes[:, None],
+        out=proportions,
+        where=visible_library_sizes[:, None] > 0,
     )
-    normalized = np.log1p(visible_counts * scale[:, None])
+    normalized = np.log1p(proportions * float(target))
     return normalized, visible_library_sizes
 
 

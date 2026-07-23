@@ -171,6 +171,8 @@ def estimate_shrunk_gene_dispersion(
     if type(config) is not NegativeBinomialDecoderConfig:
         raise TypeError("config must be an exact NegativeBinomialDecoderConfig")
     counts = validate_observed_counts(observed_counts)
+    if np.ma.isMaskedArray(library_sizes):
+        raise TypeError("library_sizes must not be a masked array")
     libraries = np.asarray(library_sizes)
     if (
         libraries.ndim != 1

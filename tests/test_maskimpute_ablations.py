@@ -435,6 +435,29 @@ def test_ablation_outputs_isolate_gate_and_selective_copying():
     )
 
 
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).max <= np.finfo(np.float64).max,
+    reason="extended precision is unavailable",
+)
+def test_ablation_output_rejects_finite_candidates_not_representable_in_float64():
+    from maskimpute.ablations import apply_ablation_output, load_ablation_registry
+
+    maximum = np.longdouble(np.finfo(np.float64).max)
+    candidates = np.array([[maximum * np.longdouble(2)]], dtype=np.longdouble)
+    spec = load_ablation_registry(Path("study/ablations.json")).by_id[
+        "capacity-matched-ae"
+    ]
+
+    with pytest.raises(ValueError, match="finite float64"):
+        apply_ablation_output(
+            candidates,
+            np.array([[0]], dtype=np.int64),
+            np.array([[0.0]], dtype=np.float64),
+            spec,
+            gamma=1.0,
+        )
+
+
 def test_retained_reference_and_direct_score_ablation_use_only_count_score():
     from maskimpute.ablations import load_ablation_registry, resolve_score
     from maskimpute.calibration import ScoreCalibrator

@@ -174,6 +174,19 @@ def test_gene_dispersion_is_robust_bounded_shrunk_and_deterministic() -> None:
     )
 
 
+def test_gene_dispersion_rejects_masked_library_sizes() -> None:
+    from maskimpute.nb_model import estimate_shrunk_gene_dispersion
+
+    counts = np.array([[3, 0], [0, 1]], dtype=np.int64)
+    libraries = np.ma.array(
+        counts.sum(axis=1, dtype=np.float64),
+        mask=[True, False],
+    )
+
+    with pytest.raises(TypeError, match="masked"):
+        estimate_shrunk_gene_dispersion(counts, libraries)
+
+
 def test_nb_decoder_uses_explicit_mask_and_library_size_offset() -> None:
     from maskimpute.nb_model import (
         NegativeBinomialMaskAutoencoder,
