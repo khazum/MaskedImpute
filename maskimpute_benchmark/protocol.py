@@ -11,6 +11,29 @@ from typing import Any
 
 
 FINAL_MECHANISMS = ("symsim", "sergio", "sparsim", "semisynthetic")
+_PROTOCOL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "legacy_data_role",
+        "development",
+        "final",
+        "primary_metrics",
+        "final_timeout_seconds",
+        "max_rss_gib",
+        "max_gpu_gib",
+    }
+)
+_DEVELOPMENT_FIELDS = frozenset({"namespace", "draws_per_condition", "cells", "genes"})
+_FINAL_FIELDS = frozenset(
+    {
+        "namespace",
+        "mechanisms",
+        "draws_per_condition",
+        "model_seeds",
+        "cells",
+        "genes",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +112,11 @@ def _mapping(value: object, name: str) -> dict[str, Any]:
     return value
 
 
+def _exact_fields(value: dict[str, Any], expected: frozenset[str], name: str) -> None:
+    if set(value) != expected:
+        raise ValueError(f"{name} fields must match the version-1 schema exactly")
+
+
 def _positive_int(value: object, name: str) -> int:
     if type(value) is not int or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
@@ -147,6 +175,8 @@ def load_protocol(path: Path) -> Protocol:
         for mechanism in mechanisms_value
     ):
         raise ValueError("Splatter is development-only and cannot be a final mechanism")
+    _exact_fields(data, _PROTOCOL_FIELDS, "protocol")
+    _exact_fields(final_data, _FINAL_FIELDS, "final")
     if not isinstance(mechanisms_value, list) or not all(
         isinstance(mechanism, str) for mechanism in mechanisms_value
     ):
@@ -156,12 +186,13 @@ def load_protocol(path: Path) -> Protocol:
         raise ValueError(f"final.mechanisms must be {FINAL_MECHANISMS!r} in that order")
 
     development_data = _mapping(data.get("development"), "development")
+    _exact_fields(development_data, _DEVELOPMENT_FIELDS, "development")
     development_namespace = _namespace(
         development_data.get("namespace"), "development.namespace"
     )
     final_namespace = _namespace(final_data.get("namespace"), "final.namespace")
-    if development_namespace == final_namespace:
-        raise ValueError("development and final namespaces must be disjoint")
+    if development_namespace != "dev" or final_namespace != "final":
+        raise ValueError("development and final namespaces must be dev and final")
 
     legacy_data_role = data.get("legacy_data_role")
     if legacy_data_role != "development_only":
@@ -176,6 +207,8 @@ def load_protocol(path: Path) -> Protocol:
         )
     ):
         raise ValueError("primary_metrics must be a nonempty list of strings")
+    if len(primary_metrics_value) != len(set(primary_metrics_value)):
+        raise ValueError("primary_metrics must be unique")
 
     development = DevelopmentProtocol(
         namespace=development_namespace,

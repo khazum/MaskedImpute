@@ -86,6 +86,28 @@ def test_trajectory_authority_rejects_binding_tampering(tmp_path) -> None:
         load_trajectory_authority(path)
 
 
+def test_trajectory_authority_rejects_duplicate_json_keys(tmp_path: Path) -> None:
+    import pytest
+
+    from maskimpute_benchmark.trajectory_dataset import (
+        TrajectoryAuthorityError,
+        default_trajectory_authority_path,
+        load_trajectory_authority,
+    )
+
+    text = default_trajectory_authority_path().read_text(encoding="utf-8")
+    duplicated = text.replace(
+        '"schema_version": "trajectory-panel-v1",',
+        '"schema_version": "trajectory-panel-v1",\n'
+        '  "schema_version": "trajectory-panel-v1",',
+    )
+    path = tmp_path / "trajectory_panel.json"
+    path.write_text(duplicated, encoding="utf-8")
+
+    with pytest.raises(TrajectoryAuthorityError, match="duplicate JSON key"):
+        load_trajectory_authority(path)
+
+
 def test_registered_trajectory_preparation_persists_only_evaluator_targets(
     tmp_path: Path,
 ) -> None:

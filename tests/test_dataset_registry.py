@@ -331,6 +331,19 @@ def test_tracked_development_panel_is_exact_and_development_only() -> None:
     assert panel.genes == protocol.development.genes
 
 
+def test_development_panel_rejects_boolean_schema_version(tmp_path: Path) -> None:
+    protocol = load_protocol(Path("study/protocol.json"))
+    panel = json.loads(Path("study/development_panel.json").read_text(encoding="utf-8"))
+    panel["schema_version"] = True
+    path = tmp_path / "development_panel.json"
+    path.write_text(
+        json.dumps(panel, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(DatasetRegistryError, match="schema_version"):
+        load_development_panel(path, protocol)
+
+
 def test_development_receipts_retain_the_existing_path_free_schema(
     panel_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1107,6 +1120,45 @@ def test_status_rejects_noncanonical_json_bytes(
 
     with pytest.raises(DatasetRegistryError, match="not canonical JSON"):
         validate_dataset_status(status_path, repo=panel_repo)
+
+
+def test_dataset_status_rejects_boolean_schema_version(
+    panel_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    status, _calls = _generate_dev(panel_repo, monkeypatch)
+    status["schema_version"] = True
+    status["manifest_sha256"] = canonical_sha256(
+        {key: value for key, value in status.items() if key != "manifest_sha256"}
+    )
+    status_path = panel_repo / "artifacts/study/development/results/dataset_status.json"
+    status_path.write_text(
+        json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(DatasetRegistryError, match="schema_version"):
+        validate_dataset_status(status_path, repo=panel_repo)
+
+
+def test_dataset_pair_receipt_rejects_boolean_schema_version(
+    panel_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _status, _calls = _generate_dev(panel_repo, monkeypatch)
+    status_path = panel_repo / "artifacts/study/development/results/dataset_status.json"
+    status_path.unlink()
+    receipt_path = (
+        panel_repo / "artifacts/study/development/results/receipts/symsim/draw-01.json"
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["schema_version"] = True
+    receipt["receipt_sha256"] = canonical_sha256(
+        {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    )
+    receipt_path.write_text(
+        json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(DatasetRegistryError, match="schema_version"):
+        generate_dataset_panel(repo=panel_repo, namespace="dev")
 
 
 def test_final_rejects_wrong_seed_count(

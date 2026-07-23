@@ -1664,7 +1664,8 @@ def _validate_result_journal(
         entry_payload = dict(entry)
         entry_payload.pop("entry_sha256", None)
         if (
-            entry.get("schema_version") != 1
+            type(entry.get("schema_version")) is not int
+            or entry["schema_version"] != 1
             or entry.get("round_id") != round_dir.name
             or entry.get("state") != "running"
             or entry.get("execution_claim_id") != execution.get("execution_claim_id")

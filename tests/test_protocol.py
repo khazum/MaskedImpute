@@ -58,3 +58,41 @@ def test_protocol_rejects_duplicate_object_keys(tmp_path):
 
     with pytest.raises(ValueError, match="duplicate JSON key"):
         load_protocol(path)
+
+
+@pytest.mark.parametrize("section", [None, "development", "final"])
+def test_protocol_rejects_unknown_fields(tmp_path: Path, section: str | None) -> None:
+    protocol = json.loads(Path("study/protocol.json").read_text(encoding="utf-8"))
+    target = protocol if section is None else protocol[section]
+    target["unexpected"] = "not-authoritative"
+    path = tmp_path / "protocol.json"
+    path.write_text(json.dumps(protocol), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fields"):
+        load_protocol(path)
+
+
+@pytest.mark.parametrize(
+    ("section", "namespace"),
+    [("development", "development"), ("final", "publication-final")],
+)
+def test_protocol_namespaces_match_the_execution_contract(
+    tmp_path: Path, section: str, namespace: str
+) -> None:
+    protocol = json.loads(Path("study/protocol.json").read_text(encoding="utf-8"))
+    protocol[section]["namespace"] = namespace
+    path = tmp_path / "protocol.json"
+    path.write_text(json.dumps(protocol), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="namespace"):
+        load_protocol(path)
+
+
+def test_protocol_primary_metrics_are_unique(tmp_path: Path) -> None:
+    protocol = json.loads(Path("study/protocol.json").read_text(encoding="utf-8"))
+    protocol["primary_metrics"].append(protocol["primary_metrics"][0])
+    path = tmp_path / "protocol.json"
+    path.write_text(json.dumps(protocol), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unique"):
+        load_protocol(path)

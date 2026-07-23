@@ -393,3 +393,173 @@ Final pre-commit run with the mapping-value compatibility check:
 The two skips are the existing CUDA smoke checks on a host where CUDA is
 unavailable. No real scientific workload, empirical comparison, parameter
 retuning, new provenance mechanism, or human/publication metadata was added.
+
+## Task 3: Study schemas, datasets, and simulator contracts
+
+### Environment and bounded execution
+
+The audit ran in the isolated `codex/publication-integration` worktree from
+base `3e61a88ffc288bbb7d3343c63bafdc39e8577a7b` with
+`/tmp/maskimpute-scziva312/bin/python`. The requested Ruff commands used
+`PYTHONPATH=/tmp/publication-integration-review-tools-task1`. No package was
+installed and no real dataset, simulator, or scientific workload was run.
+
+The exact requested pre-change suite passed:
+
+```text
+586 passed, 5 skipped in 250.35s (0:04:10)
+```
+
+The five skips are the suite's existing real-runtime smoke tests. They were
+not enabled because this review was limited to JSON parsing and bounded
+fixtures.
+
+The Step 1 parser loaded all 17 tracked study documents exactly once. A second
+strict parse rejected duplicate object keys and non-finite JSON constants; all
+17 documents also passed that stricter parse.
+
+### Path and invariant coverage
+
+Every assigned production path was inspected:
+
+| Path | Coverage and disposition |
+|---|---|
+| `maskimpute_benchmark/config.py` | Absent at both the review base and current tree; no file could be inspected or modified. The repository's similarly named configuration model is `maskimpute/config.py`, which was already in Task 2 scope. Recorded as O-003. |
+| `maskimpute_benchmark/schema.py` | Dataset/truth schema construction, required arrays, dimensions, finite and integer count domains, axis labels, optional metadata, and legacy outer provenance compatibility; covered and valid |
+| `maskimpute_benchmark/protocol.py` | Required and exact keys, schema version, registry agreement, namespace identity, mechanisms, draws, views, seeds, non-empty identifiers, primary metric uniqueness, and Splatter exclusion; F-012 closed |
+| `maskimpute_benchmark/study.py` | Study roots, atomic JSON state, ledger/result-journal schemas, dataset/source/view/mechanism binding, append-only identity, ordering, and recovery behavior; F-015 closed |
+| `maskimpute_benchmark/datasets.py` | Development panel, dataset registry, pair receipts, status documents, scaling/calibration declarations, dimensions, mechanisms, views, paths, and bool-versus-int rejection; F-013 closed |
+| `maskimpute_benchmark/sources.py` | Exact source document schema, unique source IDs, allowed roles, repository-relative paths, runtime declarations, and source/runtime agreement; covered and valid |
+| `maskimpute_benchmark/trajectory_dataset.py` | Separate trajectory authority, exact schema, duplicate-key handling, dimensions, identifiers, truth agreement, finite values, and output immutability; F-014 closed |
+| `maskimpute_benchmark/simulators/__init__.py` | Public simulator adapter surface; covered and valid |
+| `maskimpute_benchmark/simulators/base.py` | Contract dataclasses, exact file populations, moderate/severe view populations, paired seeds/truth, input domains, and receipt agreement; covered and valid |
+| `maskimpute_benchmark/simulators/native.py` | Native simulator bounded fixture and truth contract; covered and valid |
+| `maskimpute_benchmark/simulators/runtime_assets.py` | Runtime asset declarations, exact source IDs/roles, repository paths, environment agreement, and missing-asset rejection; covered and valid |
+| `maskimpute_benchmark/simulators/semisynthetic.py` | Semi-synthetic source selection, deterministic bounded generation, view population, truth preservation, and receipt construction; covered and valid |
+| `maskimpute_benchmark/simulators/sergio.py` | SERGIO adapter inputs, runtime/source binding, exact output population, paired truth/seeds, and fail-closed fixture boundaries; covered and valid |
+| `maskimpute_benchmark/simulators/sparsim.py` | SPARSim adapter inputs, runtime/source binding, exact output population, paired truth/seeds, and fail-closed fixture boundaries; covered and valid |
+| `maskimpute_benchmark/simulators/symsim.py` | SymSim adapter inputs, runtime/source binding, exact output population, paired truth/seeds, and fail-closed fixture boundaries; covered and valid |
+
+Every assigned test path was inspected and executed:
+
+| Path | Coverage classification |
+|---|---|
+| `tests/test_dataset_registry.py` | Development-panel, registry, pair-receipt, status, path, mechanism/view/draw, and schema-version contracts; F-013 regressions |
+| `tests/test_dataset_schema.py` | Dataset/truth shapes, domains, labels, metadata, immutability, and failure boundaries |
+| `tests/test_protocol.py` | Exact protocol schema, registry coverage, namespaces, mechanisms, views, draws, seeds, metrics, and excluded final simulators; F-012 regressions |
+| `tests/test_sources.py` | Exact source ledger, source IDs, roles, paths, and runtime agreement |
+| `tests/test_study_state.py` | Study roots, ledgers, result journal, recovery, identity binding, ordering, and schema versions; F-015 regression |
+| `tests/test_trajectory_dataset.py` | Trajectory authority schema, JSON parsing, dimensions, truth, values, immutability, and duplicate keys; F-014 regression |
+| `tests/test_semisynthetic_adapter.py` | Deterministic semi-synthetic fixture, exact output population, truth, views, and receipts |
+| `tests/test_sergio_adapter.py` | SERGIO source/runtime binding, paired outputs, seeds, truth, populations, and invalid outputs |
+| `tests/test_simulator_contract.py` | Shared simulator inputs, exact file sets, dimensions, seeds, truth, views, and receipt contract |
+| `tests/test_simulator_runtime_assets.py` | Runtime declarations, source binding, repository paths, environments, and missing assets |
+| `tests/test_sparsim_adapter.py` | SPARSim source/runtime binding, paired outputs, seeds, truth, populations, and invalid outputs |
+| `tests/test_symsim_adapter.py` | SymSim source/runtime binding, paired outputs, seeds, truth, populations, and invalid outputs |
+
+The 17 parsed JSON paths were:
+
+```text
+study/ablations.json
+study/calibration_contract.json
+study/comparator_tuning.json
+study/development_panel.json
+study/development_search.json
+study/method-attempts/scgimpute.json
+study/method-attempts/sczn.json
+study/methods.json
+study/protocol.json
+study/scaling_panel.json
+study/selection_contract.json
+study/simulator_r_environment.lock.json
+study/simulator_runtime_assets.json
+study/sources.json
+study/trajectory_panel.json
+study/v28_revision.json
+study/v29_revision.json
+```
+
+Cross-document checks established exact agreement between the protocol and
+development registries for all four mechanisms; the `moderate` and `severe`
+technical views; the two declared development draws; the four runtime roles
+and source IDs (`baron`, `sergio`, `sparsim`, and `symsim`); and the final
+trajectory dimensions. List identity fields were non-empty and unique for
+ablation variants, comparator configurations, development-search
+configurations, methods, comparator method/environment bindings, orthogonal
+endpoints, and source IDs. Declared tracked inputs existed. Generated artifact,
+cache, and receipt paths were absent before workloads, as expected, and were
+not treated as defects.
+
+### Task 3 findings and dispositions
+
+| ID | Severity | Finding | Root cause | Disposition |
+|---|---|---|---|---|
+| O-003 | Minor | The Task 3 brief lists `maskimpute_benchmark/config.py`, but that path does not exist at the review base or current tree and has no tracked history available in this repository. | The brief names a path outside the implemented benchmark package surface. | Recorded without inventing a replacement. `maskimpute/config.py` is a different, previously reviewed Task 2 path. |
+| F-012 | Important | Protocol authorities accepted unknown top-level, development, and final fields; arbitrary development/final namespaces; and a duplicate primary metric. | The parser checked required fields and individual value domains but did not enforce version-1 exact field populations, fixed execution namespaces, or metric uniqueness. | Closed test-first with exact version-1 fields, `dev`/`final` namespace agreement, and unique primary metrics. The established explicit Splatter rejection remains prior to structural validation so its public error remains stable. |
+| F-013 | Important | Development-panel, dataset-status, and dataset-pair-receipt authorities accepted boolean schema versions because `True == 1`. | These three parsers used equality without first requiring an exact integer type. | Closed test-first by requiring `type(schema_version) is int` at each owning boundary. |
+| F-014 | Important | A trajectory authority accepted a duplicate JSON key when both occurrences had the same value. | The loader used ordinary `json.loads`, which silently retained the last duplicate member before schema validation. | Closed test-first with duplicate-member rejection during trajectory JSON decoding. |
+| F-015 | Important | Result-journal entries accepted a boolean schema version when the entry's existing binding fields were updated consistently. | Journal validation used equality without first requiring an exact integer type. | Closed test-first by requiring an exact integer schema version before accepting an entry. |
+
+No source declaration, study JSON document, runtime asset declaration,
+simulator adapter, scientific parameter, estimand, legacy outer provenance
+field, or human/publication metadata was changed.
+
+### Exact mutation evidence
+
+The original RED invocation grouped the eight new test functions and their 11
+parameterized nodes. Before production changes it reported:
+
+```text
+11 failed in 6.93s
+```
+
+Because that first run was grouped, it is not described as isolated RED
+evidence. Isolation was reconstructed afterward in a temporary detached
+worktree at the exact review base
+`3e61a88ffc288bbb7d3343c63bafdc39e8577a7b`. Only the four changed test files
+were applied there; production remained at the base. Each node below was then
+invoked by itself and exited 1 because the expected exception was not raised.
+The temporary worktree was removed after the reconstruction. Each node was
+also invoked by itself in the corrected tree and exited 0:
+
+| Pytest node | Reconstructed isolated RED | Corrected isolated GREEN |
+|---|---|---|
+| `tests/test_protocol.py::test_protocol_rejects_unknown_fields[None]` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_protocol.py::test_protocol_rejects_unknown_fields[development]` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_protocol.py::test_protocol_rejects_unknown_fields[final]` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_protocol.py::test_protocol_namespaces_match_the_execution_contract[development-development]` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_protocol.py::test_protocol_namespaces_match_the_execution_contract[final-publication-final]` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_protocol.py::test_protocol_primary_metrics_are_unique` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_dataset_registry.py::test_development_panel_rejects_boolean_schema_version` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_dataset_registry.py::test_dataset_status_rejects_boolean_schema_version` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_dataset_registry.py::test_dataset_pair_receipt_rejects_boolean_schema_version` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_trajectory_dataset.py::test_trajectory_authority_rejects_duplicate_json_keys` | 1 failed; exit 1 | 1 passed; exit 0 |
+| `tests/test_study_state.py::test_result_journal_rejects_boolean_schema_version` | 1 failed; exit 1 | 1 passed; exit 0 |
+
+The first complete post-fix suite exposed one compatibility regression:
+`test_protocol_rejects_splatter_as_final` received the new structural error
+before its established explicit Splatter error:
+
+```text
+1 failed, 596 passed, 5 skipped in 240.15s
+```
+
+The cause was validation precedence, not missing strictness. Moving the
+explicit excluded-simulator check ahead of exact-field validation preserved
+the established error while retaining every new fail-closed check. The
+focused protocol check then passed:
+
+```text
+7 passed in 0.04s
+```
+
+The fresh complete Task 3 rerun passed:
+
+```text
+597 passed, 5 skipped in 249.14s (0:04:09)
+```
+
+Targeted Ruff checking and formatting, scoped byte compilation, and
+`git diff --check` also passed. These results establish the reviewed schema
+and bounded-fixture contracts only; they do not establish real simulator
+availability or scientific readiness.

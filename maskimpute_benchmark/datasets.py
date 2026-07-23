@@ -283,7 +283,7 @@ def load_development_panel(path: Path, protocol: Protocol) -> DevelopmentPanel:
         "master_seed",
     }:
         raise DatasetRegistryError("development seed derivation has wrong schema")
-    if payload.get("schema_version") != 1:
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
         raise DatasetRegistryError("development panel schema_version must be 1")
     if payload.get("role") != "development_only":
         raise DatasetRegistryError("development panel role must be development_only")
@@ -1265,6 +1265,10 @@ def _validate_receipt(
         expected_keys.add("runtime_assets_sha256")
     if set(receipt) != expected_keys:
         raise DatasetRegistryError("dataset pair receipt has wrong schema")
+    if type(receipt.get("schema_version")) is not int:
+        raise DatasetRegistryError(
+            "dataset pair receipt schema_version must be an integer"
+        )
     expected_hash = canonical_sha256(
         {key: value for key, value in receipt.items() if key != "receipt_sha256"}
     )
@@ -1880,6 +1884,8 @@ def _validate_dataset_status_payload(
         expected_status_keys.update({"runtime_assets_sha256", "runtime_assets_receipt"})
     if set(payload) != expected_status_keys:
         raise DatasetRegistryError("dataset status manifest has wrong schema")
+    if type(payload.get("schema_version")) is not int:
+        raise DatasetRegistryError("dataset status schema_version must be an integer")
     results_root, expected_path = _paths(repository, namespace, round_dir)
     if path.absolute() != expected_path.absolute():
         raise DatasetRegistryError("dataset status path is not canonical")

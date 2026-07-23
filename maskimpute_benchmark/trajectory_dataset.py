@@ -61,6 +61,15 @@ class TrajectoryAuthorityError(ValueError):
     """Raised when the tracked trajectory authority or binding is invalid."""
 
 
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise TrajectoryAuthorityError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class TrajectoryAuthority:
     authority_sha256: str
@@ -203,7 +212,12 @@ def load_trajectory_authority(
 
     authority_path = default_trajectory_authority_path() if path is None else Path(path)
     try:
-        payload = json.loads(authority_path.read_text(encoding="utf-8"))
+        payload = json.loads(
+            authority_path.read_text(encoding="utf-8"),
+            object_pairs_hook=_unique_json_object,
+        )
+    except TrajectoryAuthorityError:
+        raise
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise TrajectoryAuthorityError("trajectory authority cannot be read") from error
     if not isinstance(payload, dict) or set(payload) != _AUTHORITY_FIELDS:
