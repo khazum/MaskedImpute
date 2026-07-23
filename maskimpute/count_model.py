@@ -19,7 +19,7 @@ from scipy.special import expit
 from maskimpute.prezero import p_pre_zero_from_counts
 from maskimpute.sparse_input import (
     SUPPORTED_SPARSE_TYPES as _SUPPORTED_SPARSE_TYPES,
-    contains_masked_array as _contains_masked_array,
+    _unmasked_array,
     sparse_coordinate_snapshot,
 )
 
@@ -183,11 +183,7 @@ def _validated_counts(observed_counts: object) -> np.ndarray:
         counts = np.zeros(shape, dtype=np.float64, order="C")
         counts[rows, columns] = entries
     else:
-        if _contains_masked_array(observed_counts):
-            raise TypeError("observed_counts must not contain masked arrays")
-        coerced = np.asanyarray(observed_counts)
-        if np.ma.isMaskedArray(coerced):
-            raise TypeError("observed_counts must not contain masked arrays")
+        coerced = _unmasked_array(observed_counts, "observed_counts")
         if coerced.ndim != 2:
             raise ValueError("observed_counts must be a two-dimensional matrix")
         if 0 in coerced.shape:

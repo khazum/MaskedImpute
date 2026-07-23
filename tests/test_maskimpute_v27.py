@@ -164,6 +164,25 @@ def test_inverse_normalization_rejects_protocol_masked_normalized_expression():
         )
 
 
+def test_inverse_normalization_rejects_nested_protocol_masked_row():
+    from maskimpute.train import invert_observed_normalization
+
+    normalized_expression = [
+        _MaskedArrayProtocol(
+            [np.log1p(1_000.0), 0.0],
+            [True, False],
+        ),
+        [0.0, np.log1p(1_000.0)],
+    ]
+
+    with pytest.raises(TypeError, match="normalized_expression.*masked"):
+        invert_observed_normalization(
+            normalized_expression,
+            [1.0, 1.0],
+            target=1_000.0,
+        )
+
+
 def test_inverse_normalization_rejects_protocol_masked_library_sizes():
     from maskimpute.train import invert_observed_normalization
 
@@ -303,6 +322,19 @@ def test_encoder_availability_is_single_snapshot_and_rejects_hidden_masks():
         normalize_available_encoder_input(counts, nested, target=1_000.0)
 
 
+def test_available_normalization_rejects_nested_protocol_masked_row():
+    from maskimpute.train import normalize_available_encoder_input
+
+    counts = np.array([[1, 2], [3, 4]], dtype=np.int64)
+    availability = [
+        _MaskedArrayProtocol([True, False], [True, False]),
+        [False, True],
+    ]
+
+    with pytest.raises(TypeError, match="availability.*masked"):
+        normalize_available_encoder_input(counts, availability, target=1_000.0)
+
+
 @pytest.mark.parametrize(
     "invalid_counts",
     [
@@ -317,6 +349,56 @@ def test_normalization_enforces_the_raw_integral_unmasked_count_contract(
 
     with pytest.raises((TypeError, ValueError)):
         normalize_observed_counts(invalid_counts, target=1_000.0)
+
+
+def test_observed_counts_reject_nested_protocol_masked_row():
+    from maskimpute.train import validate_observed_counts
+
+    observed_counts = [
+        _MaskedArrayProtocol([1, 0], [True, False]),
+        [0, 2],
+    ]
+
+    with pytest.raises(TypeError, match="observed_counts.*masked"):
+        validate_observed_counts(observed_counts)
+
+
+def test_observed_counts_snapshot_nested_stateful_protocol_once():
+    from maskimpute.train import validate_observed_counts
+
+    row = _ChangingArrayProtocol(
+        np.array([1, 0], dtype=np.int64),
+        np.array([-1, 0], dtype=np.int64),
+    )
+
+    counts = validate_observed_counts([row, [0, 2]])
+
+    assert row.calls == 1
+    np.testing.assert_array_equal(counts, [[1.0, 0.0], [0.0, 2.0]])
+
+
+def test_observed_counts_reject_cyclic_nested_sequence_before_coercion():
+    from maskimpute.train import validate_observed_counts
+
+    observed_counts = []
+    observed_counts.append(observed_counts)
+
+    with pytest.raises(TypeError, match="observed_counts.*cyclic"):
+        validate_observed_counts(observed_counts)
+
+
+def test_observed_counts_do_not_invoke_protocols_in_mapping_values():
+    from maskimpute.train import validate_observed_counts
+
+    hidden = _ChangingArrayProtocol(
+        np.array([1, 0], dtype=np.int64),
+        np.array([-1, 0], dtype=np.int64),
+    )
+
+    with pytest.raises(ValueError, match="two-dimensional"):
+        validate_observed_counts([{"hidden": hidden}, {"hidden": hidden}])
+
+    assert hidden.calls == 0
 
 
 def test_validation_holdout_is_deterministic_and_stratified_over_log_counts():
@@ -396,6 +478,25 @@ def test_epoch_mask_rejects_protocol_masked_validation_mask():
         [[False, False], [False, True]],
         [[True, False], [False, False]],
     )
+
+    with pytest.raises(TypeError, match="validation_mask.*masked"):
+        make_epoch_training_mask(
+            counts,
+            validation_mask=validation,
+            fraction=0.5,
+            log_count_bin_edges=(np.log1p(1.5),),
+            rng=np.random.default_rng(22),
+        )
+
+
+def test_epoch_mask_rejects_nested_protocol_masked_validation_row():
+    from maskimpute.train import make_epoch_training_mask
+
+    counts = np.array([[1, 1], [2, 2]], dtype=np.int64)
+    validation = [
+        _MaskedArrayProtocol([False, False], [True, False]),
+        [False, True],
+    ]
 
     with pytest.raises(TypeError, match="validation_mask.*masked"):
         make_epoch_training_mask(

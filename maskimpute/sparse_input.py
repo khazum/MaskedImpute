@@ -105,12 +105,104 @@ def contains_masked_array(value: object, seen: set[int] | None = None) -> bool:
     return False
 
 
+def _snapshot_nested_array_protocols(
+    value: object,
+    name: str,
+    *,
+    inspect_array_protocol: bool,
+    snapshots: dict[int, object],
+    active: set[int],
+) -> object:
+    """Materialize nested array protocols once before outer coercion."""
+
+    if np.ma.isMaskedArray(value):
+        raise TypeError(f"{name} must not contain masked arrays")
+    if sparse.issparse(value):
+        return value
+
+    identity = id(value)
+    if isinstance(value, np.ndarray) and value.dtype.hasobject:
+        if identity in active:
+            raise TypeError(f"{name} must not contain cyclic containers")
+        if identity in snapshots:
+            return snapshots[identity]
+        active.add(identity)
+        try:
+            prepared = np.empty(value.shape, dtype=object)
+            for index, item in np.ndenumerate(value):
+                prepared[index] = _snapshot_nested_array_protocols(
+                    item,
+                    name,
+                    inspect_array_protocol=True,
+                    snapshots=snapshots,
+                    active=active,
+                )
+        finally:
+            active.remove(identity)
+        snapshots[identity] = prepared
+        return prepared
+
+    if isinstance(value, (list, tuple)):
+        if identity in active:
+            raise TypeError(f"{name} must not contain cyclic containers")
+        if identity in snapshots:
+            return snapshots[identity]
+        active.add(identity)
+        try:
+            items = [
+                _snapshot_nested_array_protocols(
+                    item,
+                    name,
+                    inspect_array_protocol=True,
+                    snapshots=snapshots,
+                    active=active,
+                )
+                for item in value
+            ]
+        finally:
+            active.remove(identity)
+        prepared = items if isinstance(value, list) else tuple(items)
+        snapshots[identity] = prepared
+        return prepared
+
+    array_protocol = getattr(type(value), "__array__", None)
+    if inspect_array_protocol and callable(array_protocol):
+        if identity in active:
+            raise TypeError(f"{name} must not contain cyclic array protocols")
+        if identity in snapshots:
+            return snapshots[identity]
+        active.add(identity)
+        try:
+            coerced = np.asanyarray(value)
+            if np.ma.isMaskedArray(coerced):
+                raise TypeError(f"{name} must not contain masked arrays")
+            prepared = _snapshot_nested_array_protocols(
+                coerced,
+                name,
+                inspect_array_protocol=False,
+                snapshots=snapshots,
+                active=active,
+            )
+            snapshot = np.array(prepared, copy=True, order="C", subok=False)
+        finally:
+            active.remove(identity)
+        snapshots[identity] = snapshot
+        return snapshot
+
+    return value
+
+
 def _unmasked_array(value: object, name: str) -> np.ndarray:
     """Coerce a dense array-like only after preserving and rejecting masks."""
 
-    if contains_masked_array(value):
-        raise TypeError(f"{name} must not contain masked arrays")
-    coerced = np.asanyarray(value)
+    prepared = _snapshot_nested_array_protocols(
+        value,
+        name,
+        inspect_array_protocol=False,
+        snapshots={},
+        active=set(),
+    )
+    coerced = np.asanyarray(prepared)
     if np.ma.isMaskedArray(coerced):
         raise TypeError(f"{name} must not contain masked arrays")
     return np.asarray(coerced)

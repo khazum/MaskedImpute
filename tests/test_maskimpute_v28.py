@@ -231,6 +231,23 @@ def test_gene_dispersion_rejects_protocol_masked_estimation_mask() -> None:
         )
 
 
+def test_gene_dispersion_rejects_nested_protocol_masked_estimation_row() -> None:
+    from maskimpute.nb_model import estimate_shrunk_gene_dispersion
+
+    counts = np.array([[3, 0], [0, 1]], dtype=np.int64)
+    estimation_mask = [
+        _MaskedArrayProtocol([True, True], [True, False]),
+        [True, True],
+    ]
+
+    with pytest.raises(TypeError, match="estimation_mask.*masked"):
+        estimate_shrunk_gene_dispersion(
+            counts,
+            counts.sum(axis=1, dtype=np.float64),
+            estimation_mask=estimation_mask,
+        )
+
+
 def test_nb_decoder_uses_explicit_mask_and_library_size_offset() -> None:
     from maskimpute.nb_model import (
         NegativeBinomialMaskAutoencoder,

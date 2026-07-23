@@ -260,29 +260,29 @@ Every production path assigned by the Task 2 brief was inspected end to end:
 | Path | Reviewed model/numerical responsibilities | Disposition |
 |---|---|---|
 | `maskimpute/__init__.py` | Public exports and lazy Torch-backed API loading | Valid; no change |
-| `maskimpute/ablations.py` | Prespecified component changes, capacity parity, score resolution, gating, selective/full output, inference mode | Valid after shared finite-float64 boundary fix in `train.py` |
+| `maskimpute/ablations.py` | Prespecified component changes, capacity parity, score resolution, gating, selective/full output, inference mode | F-005 finite-output correction and shared F-010/F-011 validation-mask coercion closed |
 | `maskimpute/calibration.py` | Probability/target/weight domains, monotone transforms, stable metrics, immutable retained artifact | Valid; no change |
 | `maskimpute/config.py` | Immutable finite hyperparameters, positive dimensions, bounded seed | Valid; no change |
-| `maskimpute/count_model.py` | Raw-count validation, dense/sparse parity, deterministic cross-fitting, stable NB zero probability, immutable score arrays | Valid; no change |
+| `maskimpute/count_model.py` | Raw-count validation, dense/sparse parity, deterministic cross-fitting, stable NB zero probability, immutable score arrays | Valid; F-011 consolidated its dense path onto the shared coercion boundary without changing the sparse path |
 | `maskimpute/impute.py` | Input-to-result flow, calibrated score support, eval/no-grad inference, finite outputs, observed-positive preservation | Valid; no change |
 | `maskimpute/model.py` | Explicit availability semantics, learned mask token, aligned shapes/devices, nonnegative decoder | Valid; no change |
-| `maskimpute/nb_model.py` | Float64 NB likelihood, dispersion estimation, library-size offset, zero-library behavior | F-006 closed |
+| `maskimpute/nb_model.py` | Float64 NB likelihood, dispersion estimation, library-size offset, zero-library behavior | F-006 and shared F-010/F-011 mask coercion closed |
 | `maskimpute/prezero.py` | Stable NB/Poisson Bayes posterior, broadcast/support validation, observed-positive zero score | Valid; no change |
 | `maskimpute/result.py` | Shape/domain validation and defensive immutable dense/sparse/diagnostic snapshots | Valid; no change |
-| `maskimpute/sparse_input.py` | Exact supported sparse storage, coordinate bounds/uniqueness, lossless snapshotting | Valid; no change |
+| `maskimpute/sparse_input.py` | Exact supported sparse storage, coordinate bounds/uniqueness, lossless snapshotting, shared dense mask-preserving coercion | Sparse path remains valid and unchanged; F-010 introduced the dense helper and F-011 made its nested protocol traversal cycle-safe and single-snapshot |
 | `maskimpute/structure.py` | Observed-only variable-gene/neighborhood authority and finite differentiable penalties | Valid; no change |
-| `maskimpute/train.py` | Dense/sparse conversion, normalization/inverse, mask construction, seed propagation, RNG restoration, train/eval transitions | F-004, F-005, F-007, F-008, and F-009 closed |
+| `maskimpute/train.py` | Dense/sparse conversion, normalization/inverse, mask construction, seed propagation, RNG restoration, train/eval transitions | F-004, F-005, and F-007 through F-011 closed |
 | `masked_imputation26.py` | Migration-only legacy wrapper that does not execute archived code | Valid; no change |
 
 Every assigned test path was also inspected and executed:
 
 | Path | Coverage classification |
 |---|---|
-| `tests/test_count_model.py` | Count-model domains, dense/sparse equivalence, cross-fit invariants, stability, immutability |
-| `tests/test_maskimpute_ablations.py` | Capacity/mask/gate/output controls and verified score/calibration execution; F-005 regression |
+| `tests/test_count_model.py` | Count-model domains, dense/sparse equivalence, array-protocol single-snapshot behavior, cross-fit invariants, stability, immutability |
+| `tests/test_maskimpute_ablations.py` | Capacity/mask/gate/output controls and verified score/calibration execution; F-005, F-010, and F-011 regressions |
 | `tests/test_maskimpute_api.py` | Config/result/pre-zero shape, support, sparse, dtype, finite, and immutability contracts |
-| `tests/test_maskimpute_v27.py` | Normalization, masks, seeds, RNG scope, train/eval behavior, zero libraries, public result invariants; F-004, F-007, F-008, and F-009 regressions |
-| `tests/test_maskimpute_v28.py` | NB likelihood oracle, float64/device contract, dispersion, zero-library gradients; F-006 regression |
+| `tests/test_maskimpute_v27.py` | Normalization, masks, seeds, RNG scope, train/eval behavior, zero libraries, public result invariants; F-004, F-007 through F-011 regressions |
+| `tests/test_maskimpute_v28.py` | NB likelihood oracle, float64/device contract, dispersion, zero-library gradients; F-006, F-010, and F-011 regressions |
 | `tests/test_maskimpute_v29.py` | Observed-only structure authority, differentiability, fixed validation exclusion |
 | `tests/test_prezero_calibration.py` | Monotone calibration, stable metrics, retention semantics, immutable artifact |
 | `tests/test_prezero_evidence.py` | Realized-score evidence binding, defensive matrices, checkpoint/recovery dispositions |
@@ -296,7 +296,7 @@ The requested cross-cutting classifications are:
 | Dtype/device changes | Exact numeric input checks, explicit float32 model tensors, float64 NB likelihood, aligned Torch devices, post-cast finite checks; F-005, F-008, and F-009 closed |
 | Finite values | Checked at external arrays and scalars, fitted parameters, losses, decoder/latent/count outputs, and result construction; F-004, F-005, F-008, and F-009 closed |
 | Zero library sizes | Preserved as all-zero normalized/count rows and excluded safely from exposure gradients; covered and valid |
-| Mask meaning | Observed positives are available, natural zeros unavailable, validation/training masks select observed positives only, unavailable payload is irrelevant; F-006 and F-007 cover the original direct masked vectors, while F-010 closes protocol-produced masks at every demonstrated dense model boundary |
+| Mask meaning | Observed positives are available, natural zeros unavailable, validation/training masks select observed positives only, unavailable payload is irrelevant; F-006/F-007 cover original direct masked vectors, F-010 covers root protocol-produced masks, and F-011 closes nested protocol-produced masks at every demonstrated dense model boundary |
 | Seed propagation | Bounded config seed, independent NumPy seed streams, scoped Torch deterministic state, caller RNG restoration; covered and valid |
 | Train/eval transitions | Training mode per epoch, eval/no-grad validation and inference, best checkpoint restored in eval mode; covered and valid |
 | Result immutability | Dense, sparse, latent, probability, and nested diagnostics are snapshotted and freshly materialized read-only views; covered and valid |
@@ -312,7 +312,8 @@ The requested cross-cutting classifications are:
 | F-007 | Important | Inverse normalization silently accepted a directly masked `library_sizes` vector. | `invert_observed_normalization` called `np.asarray` before checking mask semantics, which erased the mask. | The original direct-input regression remains closed. F-010 supersedes its boundary-local guard with shared mask-preserving coercion and separately covers both inverse inputs. |
 | F-008 | Minor | Both direct forward-normalization helpers accepted a finite extended-precision target outside float64 range and returned `inf`. | The helpers checked finiteness before converting the scalar to float64, but did not validate the converted scalar before arithmetic. | Closed test-first with a post-conversion finite check before normalization arithmetic; the valid float64 maximum remains accepted. |
 | F-009 | Minor | Inverse normalization accepted a finite extended-precision target outside float64 range after it converted to `inf`. | `invert_observed_normalization` validated the original scalar but used `float(target)` without validating that conversion. | Closed test-first with the same post-conversion finite-and-positive guard used at all three normalization boundaries. |
-| F-010 | Important | Dense array-like inputs whose array protocol produced masked data bypassed boundary-local direct-mask guards; inverse normalized expression also accepted a direct masked array. Reachable affected inputs were inverse normalized expression and library sizes, dispersion library sizes and estimation mask, and epoch/ablation validation masks. | Ordinary `np.asarray` coercion discarded `MaskedArray` semantics before the owning boundary validated them. | Closed test-first with one private shared coercion boundary that uses mask-preserving coercion, rejects direct, nested, and protocol-produced masks, and only then returns an ordinary ndarray. Seven focused nodes cover every demonstrated reachable defect. |
+| F-010 | Important | Root dense array-like inputs whose array protocol produced masked data bypassed boundary-local direct-mask guards; inverse normalized expression also accepted a direct masked array. Reachable affected inputs were inverse normalized expression and library sizes, dispersion library sizes and estimation mask, and epoch/ablation validation masks. | Ordinary `np.asarray` coercion discarded `MaskedArray` semantics before the owning boundary validated them. | Closed test-first for direct and root protocol inputs with one private shared coercion boundary. Its original claim to cover arbitrary nested protocol objects was incorrect and is superseded by F-011. |
+| F-011 | Important | Protocol objects nested in accepted Python sequences could return masked rows that were erased by the outer NumPy conversion. Reachable acceptance was demonstrated for observed counts, available-input normalization, inverse normalized expression, dispersion estimation masks, and epoch/ablation validation masks. | The F-010 pre-scan recursed into containers but stopped at arbitrary nested protocol objects. A first attempt that merely inspected each protocol would also have invoked stateful objects again during outer coercion. | Closed test-first by making the one private recursive boundary replace every nested protocol object with one validated ordinary-ndarray snapshot, reuse repeated-object snapshots, reject masks and cycles before outer coercion, and leave root ndarray/protocol and exact sparse paths unchanged. |
 
 ### Regression evidence
 
@@ -324,7 +325,8 @@ later in a detached checkout of pre-fix production commit `93105ac`, with only
 the 41-line test addition from `4728945` applied. `git diff --name-only` listed
 only `tests/test_maskimpute_v27.py`, and each node then failed alone because
 the expected exception was not raised. F-009 used a conventional isolated
-RED/GREEN cycle at the integration head.
+RED/GREEN cycle at the integration head. F-010 and F-011 also used
+conventional isolated RED/GREEN cycles for every defect-regression node.
 
 | Pytest node | Isolated RED provenance and result | Isolated GREEN |
 |---|---|---|
@@ -343,6 +345,14 @@ RED/GREEN cycle at the integration head.
 | `tests/test_maskimpute_v28.py::test_gene_dispersion_rejects_protocol_masked_estimation_mask` | Original TDD at the F-010 parent: did not raise after protocol-produced mask erasure | 1 passed |
 | `tests/test_maskimpute_v27.py::test_epoch_mask_rejects_protocol_masked_validation_mask` | Original TDD at the F-010 parent: did not raise after protocol-produced mask erasure | 1 passed |
 | `tests/test_maskimpute_ablations.py::test_uniform_masking_rejects_protocol_masked_validation_mask` | Original TDD at the F-010 parent: did not raise after protocol-produced mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_observed_counts_reject_nested_protocol_masked_row` | Original TDD at the F-011 parent: did not raise after nested protocol mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_available_normalization_rejects_nested_protocol_masked_row` | Original TDD at the F-011 parent: did not raise after nested protocol mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_inverse_normalization_rejects_nested_protocol_masked_row` | Original TDD at the F-011 parent: did not raise after nested protocol mask erasure | 1 passed |
+| `tests/test_maskimpute_v28.py::test_gene_dispersion_rejects_nested_protocol_masked_estimation_row` | Original TDD at the F-011 parent: did not raise after nested protocol mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_epoch_mask_rejects_nested_protocol_masked_validation_row` | Original TDD at the F-011 parent: did not raise after nested protocol mask erasure | 1 passed |
+| `tests/test_maskimpute_ablations.py::test_uniform_masking_rejects_nested_protocol_masked_validation_row` | Original TDD at the F-011 parent: did not raise after nested protocol mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_observed_counts_snapshot_nested_stateful_protocol_once` | Original TDD at the F-011 parent: a second protocol call supplied different invalid counts | 1 passed with one protocol call |
+| `tests/test_maskimpute_v27.py::test_observed_counts_reject_cyclic_nested_sequence_before_coercion` | Original TDD at the F-011 parent: NumPy reached its 64-dimension recursion bound instead of boundary rejection | 1 passed with bounded pre-coercion rejection |
 
 The complete post-correction Task 2 suite passed:
 
@@ -369,6 +379,15 @@ suite passed:
 ```text
 587 passed, 2 skipped in 28.02s
 Final pre-commit rerun: 587 passed, 2 skipped in 23.66s
+```
+
+After F-011 corrected nested protocol snapshotting, the same complete suite
+passed:
+
+```text
+Initial post-fix run: 595 passed, 2 skipped in 27.18s
+Final pre-commit run with the mapping-value compatibility check:
+596 passed, 2 skipped in 21.21s
 ```
 
 The two skips are the existing CUDA smoke checks on a host where CUDA is

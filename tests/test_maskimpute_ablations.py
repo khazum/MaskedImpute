@@ -342,6 +342,24 @@ def test_uniform_masking_rejects_protocol_masked_validation_mask():
         )
 
 
+def test_uniform_masking_rejects_nested_protocol_masked_validation_row():
+    from maskimpute.ablations import make_uniform_positive_mask
+
+    counts = np.array([[1, 1], [2, 2]], dtype=np.int64)
+    validation = [
+        _MaskedArrayProtocol([False, False], [True, False]),
+        [False, True],
+    ]
+
+    with pytest.raises(TypeError, match="validation_mask.*masked"):
+        make_uniform_positive_mask(
+            counts,
+            validation_mask=validation,
+            fraction=0.5,
+            rng=np.random.default_rng(71),
+        )
+
+
 def test_named_variants_do_not_change_optimizer_or_architecture_budget():
     from maskimpute import MaskImputeConfig
     from maskimpute.ablations import (
