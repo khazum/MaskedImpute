@@ -4873,8 +4873,9 @@ def _dense_evaluator_matrix(value: object, name: str) -> np.ndarray:
         array = (
             value.toarray() if sparse.issparse(value) else _unmasked_array(value, name)
         )
-        dense = np.array(array, dtype=np.float64, copy=True, order="C")
-    except (TypeError, ValueError, OverflowError) as error:
+        with np.errstate(over="raise", invalid="raise"):
+            dense = np.array(array, dtype=np.float64, copy=True, order="C")
+    except (TypeError, ValueError, OverflowError, FloatingPointError) as error:
         raise RunnerContractError(f"{name} cannot be represented as float64") from error
     if dense.ndim != 2 or not np.isfinite(dense).all() or bool((dense < 0).any()):
         raise RunnerContractError(
@@ -5537,13 +5538,19 @@ def evaluate_adapter_outcome(
         native_output_scale = snapshot.output_scale
         try:
             converted = output_converter(prepared.method_input, outcome.execution)
-            evaluator_output = np.array(
-                _unmasked_array(converted, "common-scale output"),
-                dtype=np.float64,
-                copy=True,
-                order="C",
-                subok=False,
-            )
+            try:
+                with np.errstate(over="raise", invalid="raise"):
+                    evaluator_output = np.array(
+                        _unmasked_array(converted, "common-scale output"),
+                        dtype=np.float64,
+                        copy=True,
+                        order="C",
+                        subok=False,
+                    )
+            except FloatingPointError as error:
+                raise ValueError(
+                    "common-scale output cannot be represented as float64"
+                ) from error
             if (
                 evaluator_output.shape != prepared.method_input.shape
                 or not np.isfinite(evaluator_output).all()

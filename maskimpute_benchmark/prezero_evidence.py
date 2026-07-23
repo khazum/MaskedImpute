@@ -621,30 +621,32 @@ def validate_stored_prezero_evidence(
     """Validate one persisted evidence record and its bounded matrix bytes."""
 
     try:
-        observed_array = np.array(
-            _unmasked_array(observed, "authoritative p_pre_zero observed targets"),
-            dtype="<f8",
-            copy=True,
-            order="C",
-            subok=False,
-        )
-    except (TypeError, ValueError, OverflowError) as error:
-        raise PreZeroEvidenceError(
-            "authoritative p_pre_zero observed targets are invalid"
-        ) from error
-    try:
-        truth_array = (
-            None
-            if truth is None
-            else np.array(
-                _unmasked_array(truth, "authoritative p_pre_zero truth targets"),
+        with np.errstate(over="raise", invalid="raise"):
+            observed_array = np.array(
+                _unmasked_array(observed, "authoritative p_pre_zero observed targets"),
                 dtype="<f8",
                 copy=True,
                 order="C",
                 subok=False,
             )
-        )
-    except (TypeError, ValueError, OverflowError) as error:
+    except (TypeError, ValueError, OverflowError, FloatingPointError) as error:
+        raise PreZeroEvidenceError(
+            "authoritative p_pre_zero observed targets are invalid"
+        ) from error
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            truth_array = (
+                None
+                if truth is None
+                else np.array(
+                    _unmasked_array(truth, "authoritative p_pre_zero truth targets"),
+                    dtype="<f8",
+                    copy=True,
+                    order="C",
+                    subok=False,
+                )
+            )
+    except (TypeError, ValueError, OverflowError, FloatingPointError) as error:
         raise PreZeroEvidenceError(
             "authoritative p_pre_zero truth targets are invalid"
         ) from error

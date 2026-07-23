@@ -893,12 +893,16 @@ and orthogonal evidence is reconstructed independently from typed authority.
 | F-028 | Minor | Whitespace-only result statuses passed nonempty validation and canonicalized to an empty status. | Validation preceded `strip().lower()`. | Closed test-first by requiring every identity/status string to contain a non-whitespace character before canonicalization. |
 | F-029 | Important | Pre-zero outer/policy schema versions and metric/overall denominators could accept Boolean integer aliases. | Equality checks relied on Python's Boolean/integer equivalence. | Closed test-first with exact built-in integer checks. Existing reliability-bin and stratum exact-type checks remain. No checksum or provenance mechanism changed. |
 | F-030 | Important | A SciPy sparse evaluator target whose internal `.data` was a `MaskedArray` reached `toarray()` before mask validation; densification silently returned the underlying stored values. Completed evaluation and terminal-attempt pre-zero evidence could therefore consume a masked authority as ordinary data. | The F-025 dense snapshot guard was applied only after the sparse/dense dispatch, while SciPy's densifier erased the sparse storage mask. | Closed test-first. The evaluator inspects sparse storage with the foundational mask boundary before any `toarray()` call. Direct conversion, completed public evaluation, and terminal-attempt pre-zero target extraction reject the masked CSR; valid sparse behavior and import layering are unchanged. |
-| F-031 | Important | The F-026 fallback mislabeled representable endpoints as unavailable or zero: the published gNRMSE probe returned zero instead of `7.866824069956793e-309`, opposite-sign finite inputs overflowed during subtraction, standard deviation, norms, and reductions, and a raw difference, square, or sum could overflow even when the final mean or ratio fit float64. | Reconstruction materialized raw float64 intermediates before division, averaging, cancellation, or normalization established the range of the final estimand. Suppressing the warning did not recover the lost value. | Closed test-first with normalized mantissa/exponent terms owned by the metric module. MSE, MAE, RMSE/SD ratios, mean and variance distortion, correlations, cell distances, empirical Wasserstein distance, and both library-strata paths now defer materialization until the final endpoint. A provably overflow-safe ordinary branch preserves the existing checkpoint literals exactly. `nonfinite_metric` is retained only when the completed endpoint is undefined or not representable; no input or output is clipped or sanitized. |
+| F-031 | Important | The F-026 fallback mislabeled representable endpoints as unavailable or zero: the published gNRMSE probe returned zero instead of `7.866824069956793e-309`, opposite-sign finite inputs overflowed during subtraction, standard deviation, norms, and reductions, and a raw difference, square, or sum could overflow even when the final mean or ratio fit float64. | Reconstruction materialized raw float64 intermediates before division, averaging, cancellation, or normalization established the range of the final estimand. Suppressing the warning did not recover the lost value. | The first test-first correction introduced normalized mantissa/exponent terms and closed the demonstrated overflow cases. Its claim that conservative magnitude gates preserved all safe ordinary formulas was too broad: F-032 and F-034 complete the underflow and exact-legacy guarantees. |
+| F-032 | Important | The conservative ordinary gNRMSE and correlation branches did not distinguish underflow from safe execution. A two-cell error at `finfo(float64).tiny` raised or collapsed to zero instead of the positive representable `1.5733648139913584e-300`; tiny nonconstant correlations and mixed-scale scaled reductions could raise under `np.errstate(all="raise")`. | The ordinary branch proved only overflow bounds, then executed underflow-prone squares and covariance reductions. The scaled branch also allowed expected normalization underflow to inherit a caller's strict floating-point state. | Closed test-first. Every ordinary endpoint is attempted under a strict local error state and accepted only when it completes finite; otherwise the scaled route is used. Scaling permits underflow only at the specific dimensionless normalization, square, and centering operations where terms below relative float64 precision cannot alter the representable reduction. Tiny gNRMSE remains positive at the required value, tiny correlations complete, and mixed-scale routes do not leak floating-point exceptions. |
+| F-033 | Important | `log1p_cp10k` and `count_equivalent_to_log2_cp10k` summed raw nonnegative rows before normalization. `[DBL_MAX, DBL_MAX]` therefore overflowed and could warn or become two zeros instead of two `log1p(5000)` or `log2(5001)` values. The same raw sum in `observed_library_sizes` leaked the arithmetic failure. | The evaluator materialized an unrepresentable total even though CP10k needs only row proportions. The observed-library owner did not translate a genuinely unrepresentable total into its declared adapter failure contract. | Closed test-first with row-local exact-first normalization. Rows whose legacy operations complete finite retain their exact values; only a signaled/nonfinite row uses maximum-scaled proportions before the CP10k transform. Observed library sizes retain the exact legacy finite sum, fail explicitly with `unrepresentable_library_size` when the total itself cannot fit, and preserve `zero_library_cell` precedence even when another row overflows. |
+| F-034 | Important | Stable arithmetic changed ordinary finite metric serialization broadly: deterministic bounded probes differed from the legacy NumPy result for MSE, MAE, mean and variance distortion, Wasserstein distance, and pairwise distance. Unconditional `fsum` also changed library-size tie membership from `[[0, 2], [1], [3]]` to `[[2], [0, 1], [3]]` in a representable legacy reduction. | The scaled and compensated algorithms ran even when the exact established NumPy formula had completed without an overflow, underflow, invalid, or divide signal and yielded a finite endpoint. Conservative magnitude gates covered only gNRMSE and correlation. | Closed test-first by making the established NumPy formula the strict first branch for each MSE, MAE, per-gene gNRMSE, mean, variance, correlation, pairwise-distance, Wasserstein, and row-library endpoint. Scaling is now a fallback only for a signaled or nonfinite endpoint; mean and variance decide independently. One hundred seeded ordinary fixtures match every legacy scalar exactly, and the exact legacy tie group is retained. |
+| F-035 | Minor | Finite extended-precision values outside float64 range leaked `RuntimeWarning` or `FloatingPointError` from evaluator-target, common-scale-output, and stored pre-zero target casts under warnings-as-errors. | The boundaries caught Python conversion exceptions but not NumPy's floating-point signal from an overflowing cast. | Closed test-first with narrow `over`/`invalid` cast trapping. Evaluator targets enter `RunnerContractError`, common-scale output enters the existing reason-coded unavailable path, and both stored pre-zero target roles enter `PreZeroEvidenceError`; no warning or floating-point exception crosses the public contract. |
 | O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
 
 No unresolved metric-domain, statistical-independence, evaluation-row,
 external-reference, manifest, or pre-zero evidence defect was demonstrated
-after F-025 through F-031. Legacy runtime-lock, filesystem-hardening, and
+after F-025 through F-035. Legacy runtime-lock, filesystem-hardening, and
 outer-provenance mechanisms were not redesigned or extended.
 
 ### Task 5 test-first and verification evidence
@@ -971,6 +975,29 @@ correction state:
 
 ```text
 343 passed, 1 skipped in 973.31s (0:16:13)
+```
+
+A second independent review demonstrated F-032 through F-035. Its focused
+pre-correction invocation produced all eleven expected failures: three
+underflow/strict-state failures, ordinary-value and tie drift, two CP10k
+library failures, two runner cast failures, and both stored-target cast
+failures. After the exact-first correction, the expanded focused set reported:
+
+```text
+13 passed in 2.57s
+```
+
+The complete metrics, observed-method, and pre-zero owning files reported:
+
+```text
+185 passed, 14 skipped in 18.88s
+```
+
+The exact sanitized five-file Task 5 suite passed at the final formatted
+production state:
+
+```text
+353 passed, 1 skipped in 969.12s (0:16:09)
 ```
 
 Targeted Ruff lint and formatting, byte compilation of all changed production

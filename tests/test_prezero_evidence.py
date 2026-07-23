@@ -748,6 +748,60 @@ def test_stored_score_rejects_masked_authoritative_observed_targets() -> None:
         )
 
 
+@pytest.mark.parametrize("target", ["observed", "truth"])
+def test_stored_score_rejects_unrepresentable_authoritative_targets_without_fp_errors(
+    target: str,
+) -> None:
+    if np.finfo(np.longdouble).max <= np.finfo(np.float64).max:
+        pytest.skip("longdouble has no wider finite range on this platform")
+    from maskimpute_benchmark.prezero_evidence import (
+        PreZeroEvidenceError,
+        validate_stored_prezero_evidence,
+    )
+
+    prepared = _prepared()
+    record, compressed = _encoded_completed_score(prepared)
+    truth_layer = prepared.evaluator_dataset.uns["primary_truth_layer"]
+    observed = np.asarray(prepared.evaluator_dataset.X, dtype=np.longdouble)
+    truth = np.asarray(
+        prepared.evaluator_dataset.layers[truth_layer],
+        dtype=np.longdouble,
+    )
+    outside_float64 = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+    if target == "observed":
+        observed[0, 0] = outside_float64
+    else:
+        truth[0, 0] = outside_float64
+
+    with np.errstate(all="raise"):
+        with pytest.raises(
+            PreZeroEvidenceError,
+            match=f"authoritative p_pre_zero {target} targets are invalid",
+        ):
+            validate_stored_prezero_evidence(
+                record,
+                expected_identity=record["identity"],
+                run_status="completed",
+                run_reason=None,
+                observed_zero_count=6,
+                expected_shape=prepared.method_input.shape,
+                requires_count_score=True,
+                requires_calibration=True,
+                expected_calibration_file_sha256="7" * 64,
+                compressed=compressed,
+                observed=observed,
+                truth=truth,
+                truth_kind="exact_pre_capture",
+                expected_score_input_sha256=_score_input_sha256(prepared),
+                expected_score_config_sha256="6" * 64,
+                expected_matrix_present=True,
+                expected_probability=np.frombuffer(
+                    zlib.decompress(compressed), dtype="<f8"
+                ).reshape(prepared.method_input.shape),
+                expected_policy=dict(record["policy"]),
+            )
+
+
 def test_stored_score_validation_rejects_rehashed_metric_drift() -> None:
     from maskimpute_benchmark.prezero_evidence import PreZeroEvidenceError
 

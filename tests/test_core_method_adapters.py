@@ -41,8 +41,10 @@ from maskimpute_benchmark.methods.magic import (
 )
 from maskimpute_benchmark.methods.observed import (
     AdapterUnavailableError,
+    count_equivalent_to_log2_cp10k,
     execute_pinned_command,
     log1p_cp10k,
+    observed_library_sizes,
     require_method_spec,
     run_observed,
     verify_pinned_source,
@@ -397,6 +399,58 @@ def test_every_core_method_uses_explicit_count_inverse_and_one_common_log_scale(
 
     with pytest.raises(AdapterUnavailableError, match="zero-library") as captured:
         core_methods.count_equivalent_to_log2_cp10k(np.array([[0.0, 0.0], [1.0, 2.0]]))
+    assert captured.value.reason_code == "zero_library_cell"
+
+
+def test_common_scale_normalization_handles_unrepresentable_raw_row_totals() -> None:
+    maximum = np.finfo(np.float64).max
+    counts = np.array([[maximum, maximum], [2.0, 3.0]])
+    safe_log1p = np.log1p(counts[1] / np.sum(counts[1]) * 10_000.0)
+    safe_log2 = np.log2(1.0 + counts[1] / np.sum(counts[1]) * 10_000.0)
+
+    with np.errstate(all="raise"):
+        log1p_result = log1p_cp10k(counts)
+        log2_result = count_equivalent_to_log2_cp10k(counts)
+
+    np.testing.assert_array_equal(
+        log1p_result[0],
+        np.full(2, np.log1p(5_000.0)),
+    )
+    np.testing.assert_array_equal(
+        log2_result[0],
+        np.full(2, np.log2(5_001.0)),
+    )
+    np.testing.assert_array_equal(log1p_result[1], safe_log1p)
+    np.testing.assert_array_equal(log2_result[1], safe_log2)
+
+
+def test_observed_library_sizes_reject_unrepresentable_totals_without_fp_errors() -> (
+    None
+):
+    maximum = np.finfo(np.float64).max
+    method_input = _method_input(counts=np.array([[maximum, maximum]]))
+
+    with np.errstate(all="raise"):
+        with pytest.raises(AdapterUnavailableError, match="representable") as captured:
+            observed_library_sizes(method_input)
+
+    assert captured.value.reason_code == "unrepresentable_library_size"
+
+
+def test_common_scale_zero_row_reason_precedes_another_row_overflow() -> None:
+    maximum = np.finfo(np.float64).max
+    counts = np.array([[maximum, maximum], [0.0, 0.0]])
+    method_input = _method_input(counts=counts)
+
+    for conversion in (log1p_cp10k, count_equivalent_to_log2_cp10k):
+        with np.errstate(all="raise"):
+            with pytest.raises(AdapterUnavailableError) as captured:
+                conversion(counts)
+        assert captured.value.reason_code == "zero_library_cell"
+
+    with np.errstate(all="raise"):
+        with pytest.raises(AdapterUnavailableError) as captured:
+            observed_library_sizes(method_input)
     assert captured.value.reason_code == "zero_library_cell"
 
 

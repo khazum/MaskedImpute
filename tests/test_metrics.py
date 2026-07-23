@@ -5,6 +5,7 @@ from dataclasses import FrozenInstanceError
 import numpy as np
 import pytest
 
+import maskimpute_benchmark.metrics as metrics_module
 from maskimpute_benchmark.metrics import (
     MetricValue,
     entry_masks,
@@ -146,6 +147,133 @@ def test_gnrmse_preserves_representable_subnormal_ratio() -> None:
     assert result["gnrmse"].reason is None
 
 
+def test_gnrmse_preserves_tiny_representable_error_with_strict_fp_errors() -> None:
+    tiny = np.finfo(np.float64).tiny
+    truth = np.zeros((2, 1))
+    imputed = np.array([[tiny], [0.0]])
+
+    with np.errstate(all="raise"):
+        result = reconstruction_metrics(imputed, truth, truth)
+
+    assert result["gnrmse"] == MetricValue(
+        tiny / np.sqrt(2.0) / 1e-8,
+        1,
+        None,
+    )
+
+
+def test_tiny_nonconstant_correlations_use_a_scaled_route_without_fp_errors() -> None:
+    tiny = np.finfo(np.float64).tiny
+    truth = tiny * np.array([[1.0, 4.0], [2.0, 2.0], [4.0, 1.0]])
+    imputed = tiny * np.array([[1.0, 3.0], [3.0, 2.0], [4.0, 1.0]])
+
+    with np.errstate(all="raise"):
+        result = reconstruction_metrics(imputed, truth, truth)
+
+    expected_gene = np.abs(
+        np.corrcoef(imputed / tiny, rowvar=False)[0, 1]
+        - np.corrcoef(truth / tiny, rowvar=False)[0, 1]
+    )
+    assert result["corr_err"].value == pytest.approx(
+        expected_gene,
+        rel=0.0,
+        abs=2e-16,
+    )
+    assert result["corr_err"].n == 1
+    assert result["corr_err"].reason is None
+
+
+def test_mixed_scale_fallbacks_complete_with_strict_fp_errors() -> None:
+    maximum = np.finfo(np.float64).max
+    tiny = np.finfo(np.float64).tiny
+    truth = np.zeros((3, 2))
+    imputed = np.array([[maximum, tiny], [0.0, 0.0], [maximum, 2.0 * tiny]])
+
+    with np.errstate(all="raise"):
+        result = reconstruction_metrics(imputed, truth, truth)
+
+    assert result["mse"] == MetricValue(None, 6, "nonfinite_metric")
+    assert result["mae"].value == pytest.approx(maximum / 3.0)
+    assert result["mean_distortion"].value == pytest.approx(maximum / 3.0)
+    assert result["mean_gene_wasserstein_distance"].value == pytest.approx(
+        maximum / 3.0
+    )
+    assert result["cell_distance_distortion"].reason is None
+
+
+def test_safe_mean_keeps_legacy_value_when_variance_requires_scaled_route() -> None:
+    value = 1.1 * np.sqrt(np.finfo(np.float64).max)
+    truth = np.zeros((2, 1))
+    imputed = np.array([[value], [0.0]])
+    expected_mean = np.mean(np.abs(np.mean(imputed, axis=0) - np.mean(truth, axis=0)))
+
+    with np.errstate(all="raise"):
+        result = reconstruction_metrics(imputed, truth, truth)
+
+    assert result["mean_distortion"] == MetricValue(expected_mean, 1, None)
+    assert result["variance_distortion"].reason is None
+    assert result["variance_distortion"].value is not None
+
+
+def test_random_ordinary_reconstruction_values_are_exactly_legacy_numpy() -> None:
+    rng = np.random.default_rng(20260723)
+    for _ in range(100):
+        truth = rng.uniform(0.25, 20.0, size=(5, 4))
+        imputed = rng.uniform(0.25, 20.0, size=(5, 4))
+        difference = imputed - truth
+        result = reconstruction_metrics(imputed, truth, truth)
+
+        expected_mse = np.mean(difference * difference)
+        expected_mae = np.mean(np.abs(difference))
+        truth_sd = np.maximum(np.std(truth, axis=0, ddof=0), 1e-8)
+        expected_gnrmse = np.mean(
+            [
+                np.sqrt(np.mean(difference[:, gene] ** 2)) / truth_sd[gene]
+                for gene in range(truth.shape[1])
+            ]
+        )
+        expected_mean = np.mean(
+            np.abs(np.mean(imputed, axis=0) - np.mean(truth, axis=0))
+        )
+        expected_variance = np.mean(
+            np.abs(np.var(imputed, axis=0, ddof=0) - np.var(truth, axis=0, ddof=0))
+        )
+        expected_wasserstein = np.mean(
+            np.mean(
+                np.abs(np.sort(imputed, axis=0) - np.sort(truth, axis=0)),
+                axis=0,
+            )
+        )
+        pairwise = []
+        for first in range(truth.shape[0] - 1):
+            truth_distance = np.linalg.norm(
+                truth[first + 1 :] - truth[first],
+                axis=1,
+            )
+            imputed_distance = np.linalg.norm(
+                imputed[first + 1 :] - imputed[first],
+                axis=1,
+            )
+            pairwise.extend(np.abs(imputed_distance - truth_distance))
+        expected_pairwise = np.mean(np.asarray(pairwise))
+        upper = np.triu_indices(truth.shape[1], k=1)
+        expected_correlation = np.mean(
+            np.abs(
+                np.corrcoef(imputed, rowvar=False)[upper]
+                - np.corrcoef(truth, rowvar=False)[upper]
+            )
+        )
+
+        assert result["mse"].value == expected_mse
+        assert result["mae"].value == expected_mae
+        assert result["gnrmse"].value == expected_gnrmse
+        assert result["mean_distortion"].value == expected_mean
+        assert result["variance_distortion"].value == expected_variance
+        assert result["mean_gene_wasserstein_distance"].value == expected_wasserstein
+        assert result["cell_distance_distortion"].value == expected_pairwise
+        assert result["corr_err"].value == expected_correlation
+
+
 def test_reconstruction_extremes_are_stable_with_warnings_as_errors() -> None:
     maximum = np.finfo(np.float64).max
     truth = np.array([[-maximum, -maximum], [maximum, maximum]])
@@ -231,6 +359,25 @@ def test_stratified_scores_stabilize_representable_extreme_library_sums() -> Non
         (3.0, 3.0),
         (maximum, maximum),
     ]
+
+
+def test_library_strata_preserve_exact_legacy_sum_tie_membership() -> None:
+    magnitude = float(2**53)
+    observed = np.array(
+        [
+            [magnitude, 1.0, -magnitude],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ]
+    )
+
+    with np.errstate(all="raise"):
+        library_sizes = metrics_module._stable_library_sizes(observed)
+        groups = tie_aware_groups(library_sizes, 4)
+
+    np.testing.assert_array_equal(library_sizes, np.sum(observed, axis=1))
+    assert [group.tolist() for group in groups] == [[0, 2], [1], [3]]
 
 
 def test_tie_aware_groups_requires_nonempty_finite_one_dimensional_values() -> None:

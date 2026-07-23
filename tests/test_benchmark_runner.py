@@ -4803,6 +4803,48 @@ def test_evaluator_rejects_masked_common_scale_output() -> None:
     assert all(metric.reason == evaluated.run.reason for metric in evaluated.metrics)
 
 
+def test_evaluator_reason_codes_unrepresentable_common_scale_output() -> None:
+    if np.finfo(np.longdouble).max <= np.finfo(np.float64).max:
+        pytest.skip("longdouble has no wider finite range on this platform")
+    prepared = _prepared_truth_dataset()
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    execution = run_observed(spec, prepared.method_input)
+    outside_float64 = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+
+    def unrepresentable_converter(method_input, adapter_execution):
+        return np.full(method_input.shape, outside_float64, dtype=np.longdouble)
+
+    with np.errstate(all="raise"):
+        evaluated = evaluate_adapter_outcome(
+            _entry_for(prepared, "observed", seed=None),
+            prepared,
+            AdapterOutcome.completed(
+                execution,
+                runtime_seconds=1,
+                peak_rss_bytes=1,
+                peak_gpu_bytes=0,
+            ),
+            output_converter=unrepresentable_converter,
+        )
+
+    assert evaluated.run.status == "unavailable"
+    assert evaluated.run.reason is not None
+    assert evaluated.run.reason.startswith("evaluator_conversion_valueerror_detail_")
+    assert evaluated.evaluator_output is None
+    assert all(metric.reason == evaluated.run.reason for metric in evaluated.metrics)
+
+
+def test_dense_evaluator_reason_codes_unrepresentable_float64_data() -> None:
+    if np.finfo(np.longdouble).max <= np.finfo(np.float64).max:
+        pytest.skip("longdouble has no wider finite range on this platform")
+    outside_float64 = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+    value = np.array([[outside_float64]], dtype=np.longdouble)
+
+    with np.errstate(all="raise"):
+        with pytest.raises(RunnerContractError, match="represented as float64"):
+            runner_module._dense_evaluator_matrix(value, "extended precision")
+
+
 def test_dense_evaluator_rejects_masked_sparse_storage_before_densification() -> None:
     from scipy import sparse
 

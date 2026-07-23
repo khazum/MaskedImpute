@@ -164,16 +164,60 @@ def log1p_cp10k(counts: np.ndarray) -> np.ndarray:
         raise TypeError("counts must be an exact two-dimensional ndarray")
     if counts.dtype.kind not in {"i", "u", "f"}:
         raise ValueError("counts must be numeric")
-    numeric = np.array(counts, dtype=np.float64, copy=True, order="C", subok=False)
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            numeric = np.array(
+                counts,
+                dtype=np.float64,
+                copy=True,
+                order="C",
+                subok=False,
+            )
+    except FloatingPointError as error:
+        raise ValueError("counts must be representable as float64") from error
     if not np.isfinite(numeric).all() or bool((numeric < 0).any()):
         raise ValueError("counts must be finite and nonnegative")
-    library_sizes = numeric.sum(axis=1, keepdims=True)
-    if bool((library_sizes == 0).any()):
+    if bool(np.all(numeric == 0.0, axis=1).any()):
         raise AdapterUnavailableError(
             "zero_library_cell",
             "log1p CP10k is undefined for a zero-library cell",
         )
-    return np.log1p(numeric / library_sizes * 10_000.0)
+    return _cp10k_transform(numeric, log_base=1)
+
+
+def _cp10k_transform(values: np.ndarray, *, log_base: int) -> np.ndarray:
+    """Normalize rows exactly when safe, otherwise through scaled proportions."""
+
+    converted = np.empty_like(values)
+    for index, row in enumerate(values):
+        try:
+            with np.errstate(all="raise"):
+                library_size = np.sum(row)
+                proportions = row / library_size
+                if log_base == 1:
+                    converted_row = np.log1p(proportions * 10_000.0)
+                elif log_base == 2:
+                    converted_row = np.log2(1.0 + proportions * 10_000.0)
+                else:  # pragma: no cover - private programming error
+                    raise AssertionError(log_base)
+        except FloatingPointError:
+            scale = float(np.max(row))
+            if scale == 0.0:  # guarded by each public caller
+                raise AssertionError("zero row reached CP10k scaling")
+            # Underflow here means a row member is below float64 precision
+            # relative to its maximum; retaining the rounded subnormal or zero
+            # is the correctly representable proportion.
+            with np.errstate(under="ignore"):
+                scaled = row / scale
+                proportions = scaled / np.sum(scaled)
+                if log_base == 1:
+                    converted_row = np.log1p(proportions * 10_000.0)
+                else:
+                    converted_row = np.log2(1.0 + proportions * 10_000.0)
+        if not np.isfinite(converted_row).all():
+            raise ValueError("CP10k transformation did not remain finite")
+        converted[index] = converted_row
+    return converted
 
 
 def _validated_native_matrix(
@@ -212,11 +256,24 @@ def observed_library_sizes(method_input: MethodInput) -> np.ndarray:
 
     if not isinstance(method_input, MethodInput):
         raise TypeError("method_input must be a MethodInput")
-    libraries = np.sum(method_input.counts, axis=1, dtype=np.float64)
-    if bool((libraries == 0).any()):
+    counts = method_input.counts
+    if bool(np.all(counts == 0.0, axis=1).any()):
         raise AdapterUnavailableError(
             "zero_library_cell",
             "evaluator scale conversion is undefined for a zero-library cell",
+        )
+    try:
+        with np.errstate(all="raise"):
+            libraries = np.sum(counts, axis=1, dtype=np.float64)
+    except FloatingPointError as error:
+        raise AdapterUnavailableError(
+            "unrepresentable_library_size",
+            "an observed library size is not representable as float64",
+        ) from error
+    if not np.isfinite(libraries).all():
+        raise AdapterUnavailableError(
+            "unrepresentable_library_size",
+            "an observed library size is not representable as float64",
         )
     libraries.setflags(write=False)
     return libraries
@@ -277,16 +334,27 @@ def count_equivalent_to_log2_cp10k(counts: object) -> np.ndarray:
         raise TypeError("count equivalents must be an exact two-dimensional ndarray")
     if counts.dtype.kind not in {"i", "u", "f"}:
         raise ValueError("count equivalents must be numeric")
-    values = np.array(counts, dtype=np.float64, copy=True, order="C", subok=False)
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            values = np.array(
+                counts,
+                dtype=np.float64,
+                copy=True,
+                order="C",
+                subok=False,
+            )
+    except FloatingPointError as error:
+        raise ValueError(
+            "count equivalents must be representable as float64"
+        ) from error
     if not np.isfinite(values).all() or bool((values < 0).any()):
         raise ValueError("count equivalents must be finite and nonnegative")
-    library_sizes = values.sum(axis=1, keepdims=True)
-    if bool((library_sizes == 0).any()):
+    if bool(np.all(values == 0.0, axis=1).any()):
         raise AdapterUnavailableError(
             "zero_library_cell",
             "log2 CP10k is undefined for a zero-library count-equivalent row",
         )
-    converted = np.log2(1.0 + values / library_sizes * 10_000.0)
+    converted = _cp10k_transform(values, log_base=2)
     converted.setflags(write=False)
     return converted
 
