@@ -900,12 +900,13 @@ and orthogonal evidence is reconstructed independently from typed authority.
 | F-035 | Minor | Finite extended-precision values outside float64 range leaked `RuntimeWarning` or `FloatingPointError` from evaluator-target, common-scale-output, and stored pre-zero target casts under warnings-as-errors. | The boundaries caught Python conversion exceptions but not NumPy's floating-point signal from an overflowing cast. | Closed test-first with narrow `over`/`invalid` cast trapping. Evaluator targets enter `RunnerContractError`, common-scale output enters the existing reason-coded unavailable path, and both stored pre-zero target roles enter `PreZeroEvidenceError`; no warning or floating-point exception crosses the public contract. |
 | F-036 | Important | The scaled variance and pairwise-distance fallbacks could still lose a representable final difference by independently rounding two unrepresentable or nearly equal endpoints before subtraction. For adjacent extreme profiles, an exact population-variance distortion of `0x1.8p+1023` became unavailable; an exact cell-distance distortion of `0x1.6a09e667f3bcdp+971` became `0x1p+972`. | Variances were formed by separately squaring two rounded scaled standard deviations, and pair distances by separately rounding two scaled norms. Subtracting those rounded endpoints discarded the low-order difference the metric is defined to retain. | Closed test-first in both operand orders. The strict established NumPy branches remain unchanged. The variance fallback now common-scales each aligned gene profile and sums centered square differences directly through `(a-b)*(a+b)` using exact rational arithmetic in linear time. The distance fallback common-scales both pair-difference vectors and evaluates `abs(sum(u²-v²))/(||u||+||v||)` before either norm is rounded. Exact-hex warnings-as-errors regressions lock both reviewed endpoints, and the obsolete subtract-after-rounded helpers were removed. |
 | F-037 | Minor | The native-output matrix boundary leaked `FloatingPointError` or a promoted `RuntimeWarning` when a finite `longdouble` lay outside float64 range. | Unlike the other reviewed conversion boundaries, `_validated_native_matrix` performed its narrowing cast outside a local NumPy error-translation boundary. | Closed test-first for both raw-count and log1p-CP10k native-output converters. Only `over` and `invalid` signals from the narrowing cast are translated to the established `ValueError` contract; ordinary float64 conversion and subsequent nonnegative/finite validation are unchanged. |
-| F-038 | Important | The F-036 joint fallbacks still classified two positive, representable minimum-subnormal endpoints as unavailable. The exact variance difference `2^-1075 + 2^-1128` and a pairwise norm difference slightly above one half of the minimum subnormal both had to round upward, but instead became `nonfinite_metric` in both operand orders. | Each completed exact or high-precision endpoint was converted to a float mantissa before `ldexp` restored its scale. That first rounding erased the increment above the half-subnormal boundary, so the second rounding tied to zero. | Closed test-first in both operand orders. Variance differences remain exact through the across-gene `Fraction` mean and are converted directly once. Unsafe pair distances remain high-precision `Decimal` values through the across-pair mean and are converted directly once with pair-count guard precision. Positive exact endpoints that round to zero and overflowing endpoints remain reason-coded unavailable; exact zero remains available. The obsolete exact-rational-to-scaled-term path was removed. |
+| F-038 | Important | The F-036 joint fallbacks still classified two positive, representable minimum-subnormal endpoints as unavailable. The exact variance difference `2^-1075 + 2^-1128` and a pairwise norm difference slightly above one half of the minimum subnormal both had to round upward, but instead became `nonfinite_metric` in both operand orders. | Each completed exact or high-precision endpoint was converted to a float mantissa before `ldexp` restored its scale. That first rounding erased the increment above the half-subnormal boundary, so the second rounding tied to zero. | Closed test-first in both operand orders. The reviewed variance and pairwise results remain exact or high precision through their completed aggregates and are converted directly once. Positive endpoints that round to zero and overflowing endpoints remain reason-coded unavailable; exact zero remains available. F-039 replaces the initial whole-endpoint exact implementation with bounded wider blocks while retaining exact `Fraction`/`Decimal` state for every ambiguity. The obsolete exact-rational-to-scaled-term path remains removed. |
+| F-039 | Important | One floating-point signal in pairwise distance switched the complete endpoint to exact `Fraction`/`Decimal` work for every cell pair and gene, then retained every pair value until the mean. The 2,700-cell by 1,200-gene final design would therefore require about 3.64 million exact pair constructions and 4.37 billion Python-level component operations. The analogous variance route exact-recomputed every gene after one signal. | F-036 and F-038 correctly preserved cancellation and single rounding, but used exact arithmetic as the whole-endpoint fallback rather than as a narrow ambiguity resolver. The pairwise implementation also materialized an all-pair `Decimal` list. | Closed test-first without changing the ordinary NumPy branch or either exact endpoint. Platforms whose `longdouble` precision and exponent range can represent binary64 products now common-scale bounded pair/gene blocks, form cancellation-preserving extended-precision intervals, and stream their lower and upper totals with compensated accumulation. Only intervals whose cancellation is within a conservative 128-fold error margin use the existing exact pair/gene helper. A completed aggregate that still straddles a binary64 rounding boundary is recomputed exactly and incrementally. Platforms without a genuinely wider type use the same bounded-memory incremental exact route. The 20-by-128, 60-by-16, 100-by-16, and 300-by-96 unsafe probes make no exact safe-pair calls; an independent 128-gene oracle verifies exact escalation for the reviewed adjacent-extreme pair. The variance route applies the same bounded vectorization and ambiguity-only exact escalation. |
 | O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
 
 No unresolved metric-domain, statistical-independence, evaluation-row,
 external-reference, manifest, or pre-zero evidence defect was demonstrated
-after F-025 through F-038. Legacy runtime-lock, filesystem-hardening, and
+after F-025 through F-039. Legacy runtime-lock, filesystem-hardening, and
 outer-provenance mechanisms were not redesigned or extended.
 
 ### Task 5 test-first and verification evidence
@@ -1065,6 +1066,60 @@ tests correctly rejected command-level nondefault Python warning/no-user-site
 flags. Neither attempt demonstrated a production or test defect. The final
 command retained default interpreter flags and removed only the diagnosed
 inherited CUDA library path.
+
+The final performance review then demonstrated F-039. Its focused pre-change
+run produced all six expected failures in 27.33 seconds: the interval
+classifier was absent, the 20-by-128, 60-by-16, 100-by-16, and 300-by-96
+unsafe pairwise probes made 190, 1,770, 4,950, and 44,850 exact calls, and the
+unsafe variance probe exact-recomputed all 128 genes. The identical focused
+set passed after bounded block evaluation and ambiguity-only escalation:
+
+```text
+6 passed in 0.55s
+```
+
+The prior large/subnormal endpoints in both operand orders, ordinary exact
+serialization, warnings-as-errors extremes, and the hand-calculated endpoint
+then passed together:
+
+```text
+17 passed in 0.82s
+```
+
+The complete metric file passed:
+
+```text
+73 passed in 1.02s
+```
+
+A separate portable-route memory regression reconstructed the removed
+all-pair collection at a 1,549,047-byte traced peak and failed its 256,000-byte
+bound. The incremental exact route passed the same node in 4.69 seconds.
+
+Formatting and static gates were completed before the single final suite:
+
+```text
+Ruff check: All checks passed
+Ruff format --check: 2 files already formatted
+Scoped compileall: exit 0
+git diff --check: exit 0
+```
+
+The metrics, statistics, core-method adapter, and pre-zero owning files then
+passed:
+
+```text
+234 passed, 14 skipped in 26.05s
+```
+
+The single final correctly sanitized five-file Task 5 suite reported:
+
+```text
+368 passed, 1 skipped in 980.11s (0:16:20)
+```
+
+No production or test file changed after the formatting/static gates or this
+exact final suite.
 
 These checks establish bounded-fixture evaluation contracts only. No real
 scientific or comparator workload ran, and no empirical competitiveness,

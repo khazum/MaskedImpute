@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from decimal import Decimal, localcontext
+from fractions import Fraction
+import time
+import tracemalloc
 import warnings
 
 import numpy as np
@@ -386,6 +390,218 @@ def test_cell_distance_distortion_rounds_exact_subnormal_difference_once(
     expected = MetricValue(t, 1, None)
     assert result["cell_distance_distortion"] == expected
     assert result["pairwise_cell_distance_distortion"] == expected
+
+
+def _independent_decimal_norm_difference(
+    imputed_difference: np.ndarray,
+    truth_difference: np.ndarray,
+) -> Decimal:
+    with localcontext() as context:
+        context.prec = 180
+        imputed_squared = sum(
+            (
+                Decimal.from_float(float(value)) * Decimal.from_float(float(value))
+                for value in imputed_difference
+            ),
+            start=Decimal(),
+        )
+        truth_squared = sum(
+            (
+                Decimal.from_float(float(value)) * Decimal.from_float(float(value))
+                for value in truth_difference
+            ),
+            start=Decimal(),
+        )
+        return abs(imputed_squared.sqrt() - truth_squared.sqrt())
+
+
+def test_extended_pair_intervals_escalate_only_rounding_ambiguous_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not metrics_module._WIDE_LONGDOUBLE:
+        pytest.skip("longdouble cannot represent all float64 products")
+    maximum = np.finfo(np.float64).max
+    x = float.fromhex("0x1.1999999999999p+1023")
+    y = np.nextafter(x, np.inf)
+    imputed_difference = np.zeros((2, 128), dtype=np.longdouble)
+    truth_difference = np.zeros_like(imputed_difference)
+    imputed_difference[0, :2] = y
+    truth_difference[0, :2] = x
+    imputed_difference[1, 0] = maximum
+
+    lower, upper, ambiguous = metrics_module._longdouble_norm_difference_intervals(  # type: ignore[attr-defined]
+        imputed_difference,
+        truth_difference,
+    )
+
+    oracle = _independent_decimal_norm_difference(
+        np.asarray(imputed_difference[0], dtype=np.float64),
+        np.asarray(truth_difference[0], dtype=np.float64),
+    )
+    oracle_longdouble = np.longdouble(str(oracle))
+    assert lower[0] <= oracle_longdouble <= upper[0]
+    assert ambiguous.tolist() == [True, False]
+    assert float(lower[1]) == float(upper[1]) == maximum
+
+    truth = np.vstack(
+        (
+            np.zeros(128),
+            np.asarray(truth_difference[0], dtype=np.float64),
+        )
+    )
+    imputed = np.vstack(
+        (
+            np.zeros(128),
+            np.asarray(imputed_difference[0], dtype=np.float64),
+        )
+    )
+    original = metrics_module._euclidean_norm_difference_decimal
+    exact_calls = 0
+
+    def counted_exact(*args: np.ndarray) -> Decimal:
+        nonlocal exact_calls
+        exact_calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_euclidean_norm_difference_decimal",
+        counted_exact,
+    )
+    result = metrics_module._pairwise_distance_distortion(imputed, truth)
+    assert result == MetricValue(float(oracle), 1, None)
+    assert exact_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("n_cells", "n_genes"),
+    [(20, 128), (60, 16), (100, 16)],
+)
+def test_pairwise_fallback_does_not_exactly_recompute_every_safe_pair(
+    monkeypatch: pytest.MonkeyPatch,
+    n_cells: int,
+    n_genes: int,
+) -> None:
+    if not metrics_module._WIDE_LONGDOUBLE:
+        pytest.skip("longdouble cannot represent all float64 products")
+    maximum = np.finfo(np.float64).max
+    truth = np.zeros((n_cells, n_genes))
+    imputed = truth.copy()
+    imputed[0, 0] = maximum
+    original = metrics_module._euclidean_norm_difference_decimal
+    exact_calls = 0
+
+    def counted_exact(*args: np.ndarray) -> Decimal:
+        nonlocal exact_calls
+        exact_calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_euclidean_norm_difference_decimal",
+        counted_exact,
+    )
+
+    result = metrics_module._pairwise_distance_distortion(imputed, truth)
+
+    expected = float(Fraction.from_float(maximum) * 2 / n_cells)
+    assert result == MetricValue(
+        expected,
+        n_cells * (n_cells - 1) // 2,
+        None,
+    )
+    assert exact_calls == 0
+
+
+def test_large_unsafe_pairwise_fallback_is_bounded_and_vectorized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not metrics_module._WIDE_LONGDOUBLE:
+        pytest.skip("longdouble cannot represent all float64 products")
+    n_cells = 300
+    n_genes = 96
+    maximum = np.finfo(np.float64).max
+    truth = np.zeros((n_cells, n_genes))
+    imputed = truth.copy()
+    imputed[0, 0] = maximum
+    original = metrics_module._euclidean_norm_difference_decimal
+    exact_calls = 0
+
+    def counted_exact(*args: np.ndarray) -> Decimal:
+        nonlocal exact_calls
+        exact_calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_euclidean_norm_difference_decimal",
+        counted_exact,
+    )
+    started = time.perf_counter()
+    result = metrics_module._pairwise_distance_distortion(imputed, truth)
+    elapsed = time.perf_counter() - started
+
+    assert result.value == float(Fraction.from_float(maximum) * 2 / n_cells)
+    assert result.reason is None
+    assert exact_calls == 0
+    assert elapsed < 10.0
+
+
+def test_portable_exact_pairwise_fallback_does_not_retain_all_pair_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    n_cells = 160
+    n_genes = 16
+    maximum = np.finfo(np.float64).max
+    truth = np.zeros((n_cells, n_genes))
+    imputed = truth.copy()
+    imputed[0, 0] = maximum
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", False)
+
+    tracemalloc.start()
+    try:
+        result = metrics_module._pairwise_distance_distortion(imputed, truth)
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert result.value == float(Fraction.from_float(maximum) * 2 / n_cells)
+    assert result.reason is None
+    assert peak_bytes < 256_000
+
+
+def test_variance_fallback_escalates_only_ambiguous_genes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not metrics_module._WIDE_LONGDOUBLE:
+        pytest.skip("longdouble cannot represent all float64 products")
+    n_cells = 100
+    n_genes = 128
+    value = 2.0 * np.sqrt(np.finfo(np.float64).max)
+    truth = np.zeros((n_cells, n_genes))
+    imputed = truth.copy()
+    imputed[0, 0] = value
+    original = metrics_module._variance_difference_fraction
+    exact_calls = 0
+
+    def counted_exact(*args: np.ndarray) -> Fraction:
+        nonlocal exact_calls
+        exact_calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_variance_difference_fraction",
+        counted_exact,
+    )
+
+    result = reconstruction_metrics(imputed, truth, truth)
+
+    expected = float(
+        Fraction.from_float(value) ** 2 * (n_cells - 1) / (n_cells * n_cells * n_genes)
+    )
+    assert result["variance_distortion"] == MetricValue(expected, n_genes, None)
+    assert exact_calls == 0
 
 
 def test_reconstruction_returns_representable_mean_after_raw_difference_overflow() -> (
