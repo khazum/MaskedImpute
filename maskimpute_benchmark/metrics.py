@@ -216,6 +216,30 @@ def _metric_from_high_precision(value: Fraction | Decimal, n: int) -> MetricValu
     return MetricValue(numeric, int(n), None)
 
 
+def _metric_if_interval_rounds_together(
+    lower: Fraction | Decimal,
+    upper: Fraction | Decimal,
+    n: int,
+) -> MetricValue | None:
+    """Return a metric only when both conservative endpoints round alike."""
+
+    try:
+        lower_float = float(lower)
+    except (OverflowError, ValueError):
+        lower_float = math.inf
+    try:
+        upper_float = float(upper)
+    except (OverflowError, ValueError):
+        upper_float = math.inf
+    if lower_float != upper_float:
+        return None
+    if not math.isfinite(lower_float):
+        return _unavailable(n, "nonfinite_metric")
+    if lower_float == 0.0 and upper > 0:
+        return _unavailable(n, "nonfinite_metric")
+    return MetricValue(lower_float, int(n), None)
+
+
 def _fraction_to_decimal(value: Fraction) -> Decimal:
     return Decimal(value.numerator) / Decimal(value.denominator)
 
@@ -452,13 +476,17 @@ def _longdouble_variance_difference_intervals(
         1,
         math.ceil(math.log2(max(1, left_values.shape[0]))),
     )
-    error_factor = np.longdouble(24 + 6 * reduction_depth)
+    # Unlike a relative bound on the two computed variances, this absolute
+    # bound also covers normalization, mean formation, centering, squaring,
+    # and reduction.  Those steps can dominate when a profile is almost
+    # constant and both computed variances are themselves inaccurate.
+    error_factor = np.longdouble(32 + 12 * reduction_depth)
     with np.errstate(under="ignore"):
         error = (
             error_factor
             * np.longdouble(_LONGDOUBLE_INFO.eps)
             * squared_scale
-            * (left_variance + right_variance)
+            * (np.longdouble(1.0) + left_variance + right_variance)
         )
         lower = np.maximum(estimate - error, np.longdouble(0.0))
         upper = estimate + error
@@ -539,6 +567,158 @@ def _exact_pairwise_distance_distortion(
                     truth[first],
                 )
         mean_value = total / Decimal(n_pairs)
+    return _metric_from_high_precision(mean_value, n_pairs)
+
+
+def _float64_norm_difference_intervals(
+    imputed_difference: np.ndarray,
+    truth_difference: np.ndarray,
+    *,
+    active: np.ndarray,
+    exact_zero: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Bound normalized norm differences using portable float64 arithmetic."""
+
+    imputed_values = np.array(
+        imputed_difference,
+        dtype=np.float64,
+        copy=True,
+        order="C",
+        subok=False,
+    )
+    truth_values = np.array(
+        truth_difference,
+        dtype=np.float64,
+        copy=True,
+        order="C",
+        subok=False,
+    )
+    if (
+        imputed_values.ndim != 2
+        or truth_values.shape != imputed_values.shape
+        or active.shape != imputed_values.shape[:1]
+        or exact_zero.shape != active.shape
+    ):
+        raise ValueError("portable norm-difference blocks must be aligned")
+
+    with np.errstate(under="ignore"):
+        np.square(imputed_values, out=imputed_values)
+        np.square(truth_values, out=truth_values)
+        imputed_squared_norm = np.sum(
+            imputed_values,
+            axis=1,
+            dtype=np.float64,
+        )
+        truth_squared_norm = np.sum(
+            truth_values,
+            axis=1,
+            dtype=np.float64,
+        )
+        imputed_norm = np.sqrt(imputed_squared_norm)
+        truth_norm = np.sqrt(truth_squared_norm)
+        denominator = imputed_norm + truth_norm
+        estimate = np.zeros(active.shape, dtype=np.float64)
+        np.divide(
+            np.abs(imputed_squared_norm - truth_squared_norm),
+            denominator,
+            out=estimate,
+            where=denominator != 0,
+        )
+
+    reduction_depth = max(
+        1,
+        math.ceil(math.log2(max(1, imputed_values.shape[1]))),
+    )
+    # Inputs have already been divided by one exact float64 common scale.
+    # The absolute term covers that division, subtraction, squaring, pairwise
+    # reduction, roots, and the cancellation-preserving quotient.
+    error_factor = float(40 + 12 * reduction_depth)
+    with np.errstate(under="ignore"):
+        error = (
+            error_factor * float(_FLOAT64_INFO.eps) * (1.0 + imputed_norm + truth_norm)
+        )
+        error[exact_zero] = 0.0
+        lower = np.maximum(estimate - error, 0.0)
+        upper = estimate + error
+    ambiguous = active & ~exact_zero & ((error > 0.0) & (estimate <= 128.0 * error))
+    return estimate, lower, upper, ambiguous
+
+
+def _portable_pairwise_distance_distortion(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+    n_pairs: int,
+) -> MetricValue:
+    """Use bounded float64 blocks and exact arithmetic only for ambiguity."""
+
+    common_scale = float(
+        max(
+            np.max(np.abs(imputed)),
+            np.max(np.abs(truth)),
+        )
+    )
+    if common_scale == 0.0:
+        return MetricValue(0.0, n_pairs, None)
+    with np.errstate(under="ignore"):
+        imputed_scaled = imputed / common_scale
+        truth_scaled = truth / common_scale
+
+    approximate_total = 0.0
+    approximate_correction = 0.0
+    with localcontext() as context:
+        context.prec = 120 + len(str(n_pairs))
+        exact_total = Decimal()
+        for first in range(truth.shape[0] - 1):
+            for start in range(
+                first + 1,
+                truth.shape[0],
+                _PAIRWISE_DISTANCE_BLOCK_SIZE,
+            ):
+                stop = min(
+                    start + _PAIRWISE_DISTANCE_BLOCK_SIZE,
+                    truth.shape[0],
+                )
+                with np.errstate(under="ignore"):
+                    imputed_difference = (
+                        imputed_scaled[start:stop] - imputed_scaled[first]
+                    )
+                    truth_difference = truth_scaled[start:stop] - truth_scaled[first]
+                active = np.any(
+                    (imputed[start:stop] != imputed[first])
+                    | (truth[start:stop] != truth[first]),
+                    axis=1,
+                )
+                exact_zero = np.all(
+                    (imputed[start:stop] == truth[start:stop])
+                    & (imputed[first] == truth[first]),
+                    axis=1,
+                )
+                estimate, _, _, ambiguous = _float64_norm_difference_intervals(
+                    imputed_difference,
+                    truth_difference,
+                    active=active,
+                    exact_zero=exact_zero,
+                )
+                safe_total = math.fsum(float(value) for value in estimate[~ambiguous])
+                updated = approximate_total + safe_total
+                if abs(approximate_total) >= abs(safe_total):
+                    approximate_correction += (approximate_total - updated) + safe_total
+                else:
+                    approximate_correction += (safe_total - updated) + approximate_total
+                approximate_total = updated
+                for offset in np.flatnonzero(ambiguous):
+                    second = start + int(offset)
+                    exact_total += _euclidean_norm_difference_decimal(
+                        imputed[second],
+                        imputed[first],
+                        truth[second],
+                        truth[first],
+                    )
+
+        approximate = Decimal.from_float(
+            approximate_total + approximate_correction
+        ) * Decimal.from_float(common_scale)
+        mean_value = (approximate + exact_total) / Decimal(n_pairs)
     return _metric_from_high_precision(mean_value, n_pairs)
 
 
@@ -656,6 +836,145 @@ def _exact_variance_distortion(
     )
 
 
+def _float64_variance_difference_intervals(
+    left: np.ndarray,
+    right: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Bound normalized per-gene variance differences in float64 blocks."""
+
+    left_values = np.array(
+        left,
+        dtype=np.float64,
+        copy=True,
+        order="C",
+        subok=False,
+    )
+    right_values = np.array(
+        right,
+        dtype=np.float64,
+        copy=True,
+        order="C",
+        subok=False,
+    )
+    if left_values.ndim != 2 or right_values.shape != left_values.shape:
+        raise ValueError("portable variance-difference blocks must be aligned")
+
+    scale = np.maximum(
+        np.max(np.abs(left_values), axis=0),
+        np.max(np.abs(right_values), axis=0),
+    )
+    nonzero_scale = scale != 0.0
+    with np.errstate(under="ignore"):
+        np.divide(
+            left_values,
+            scale[None, :],
+            out=left_values,
+            where=nonzero_scale[None, :],
+        )
+        np.divide(
+            right_values,
+            scale[None, :],
+            out=right_values,
+            where=nonzero_scale[None, :],
+        )
+        left_values -= np.mean(left_values, axis=0, dtype=np.float64)
+        right_values -= np.mean(right_values, axis=0, dtype=np.float64)
+        np.square(left_values, out=left_values)
+        np.square(right_values, out=right_values)
+        left_variance = np.mean(left_values, axis=0, dtype=np.float64)
+        right_variance = np.mean(right_values, axis=0, dtype=np.float64)
+        estimate = np.abs(left_variance - right_variance)
+
+    reduction_depth = max(
+        1,
+        math.ceil(math.log2(max(1, left_values.shape[0]))),
+    )
+    error_factor = float(32 + 12 * reduction_depth)
+    with np.errstate(under="ignore"):
+        error = (
+            error_factor
+            * float(_FLOAT64_INFO.eps)
+            * (1.0 + left_variance + right_variance)
+        )
+        lower = np.maximum(estimate - error, 0.0)
+        upper = estimate + error
+    ambiguous = nonzero_scale & (error > 0.0) & (estimate <= 128.0 * error)
+    return estimate, lower, upper, ambiguous, scale
+
+
+def _portable_variance_distortion(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+) -> MetricValue:
+    """Vectorize portable variance estimates and exactly resolve ambiguity."""
+
+    n_genes = truth.shape[1]
+    exact_total = Fraction()
+    uncertain: list[tuple[int, Fraction, Fraction]] = []
+    for start in range(0, n_genes, _VARIANCE_GENE_BLOCK_SIZE):
+        stop = min(start + _VARIANCE_GENE_BLOCK_SIZE, n_genes)
+        _, lower, upper, ambiguous, scale = _float64_variance_difference_intervals(
+            imputed[:, start:stop],
+            truth[:, start:stop],
+        )
+        for offset in np.flatnonzero(~ambiguous):
+            if scale[offset] == 0.0 or upper[offset] == 0.0:
+                continue
+            squared_scale = Fraction.from_float(float(scale[offset])) ** 2
+            uncertain.append(
+                (
+                    start + int(offset),
+                    squared_scale * Fraction.from_float(float(lower[offset])),
+                    squared_scale * Fraction.from_float(float(upper[offset])),
+                )
+            )
+        for offset in np.flatnonzero(ambiguous):
+            gene = start + int(offset)
+            exact_total += _variance_difference_fraction(
+                imputed[:, gene],
+                truth[:, gene],
+            )
+
+    lower_total = exact_total + sum(
+        (lower for _, lower, _ in uncertain),
+        start=Fraction(),
+    )
+    upper_total = exact_total + sum(
+        (upper for _, _, upper in uncertain),
+        start=Fraction(),
+    )
+    metric = _metric_if_interval_rounds_together(
+        lower_total / n_genes,
+        upper_total / n_genes,
+        n_genes,
+    )
+    if metric is not None:
+        return metric
+
+    # Refine only the widest unresolved gene intervals.  A safe approximate
+    # gene is not exact-recomputed unless its uncertainty prevents the final
+    # binary64 result from being certified.
+    for gene, lower, upper in sorted(
+        uncertain,
+        key=lambda item: item[2] - item[1],
+        reverse=True,
+    ):
+        exact = _variance_difference_fraction(
+            imputed[:, gene],
+            truth[:, gene],
+        )
+        lower_total += exact - lower
+        upper_total += exact - upper
+        metric = _metric_if_interval_rounds_together(
+            lower_total / n_genes,
+            upper_total / n_genes,
+            n_genes,
+        )
+        if metric is not None:
+            return metric
+    return _metric_from_high_precision(lower_total / n_genes, n_genes)
+
+
 def _wide_variance_distortion(
     imputed: np.ndarray,
     truth: np.ndarray,
@@ -665,11 +984,8 @@ def _wide_variance_distortion(
     n_genes = truth.shape[1]
     imputed_wide = np.asarray(imputed, dtype=np.longdouble)
     truth_wide = np.asarray(truth, dtype=np.longdouble)
-    lower_total = np.longdouble(0.0)
-    lower_correction = np.longdouble(0.0)
-    upper_total = np.longdouble(0.0)
-    upper_correction = np.longdouble(0.0)
     exact_total = Fraction()
+    uncertain: list[tuple[int, Fraction, Fraction]] = []
     for start in range(0, n_genes, _VARIANCE_GENE_BLOCK_SIZE):
         stop = min(start + _VARIANCE_GENE_BLOCK_SIZE, n_genes)
         lower, upper, ambiguous = _longdouble_variance_difference_intervals(
@@ -677,20 +993,16 @@ def _wide_variance_distortion(
             truth_wide[:, start:stop],
         )
         safe = ~ambiguous
-        if np.any(safe):
-            with np.errstate(under="ignore"):
-                lower_block = np.sum(lower[safe], dtype=np.longdouble)
-                upper_block = np.sum(upper[safe], dtype=np.longdouble)
-                lower_total, lower_correction = _compensated_add(
-                    lower_total,
-                    lower_correction,
-                    lower_block,
+        for offset in np.flatnonzero(safe):
+            if upper[offset] == 0:
+                continue
+            uncertain.append(
+                (
+                    start + int(offset),
+                    Fraction(*lower[offset].as_integer_ratio()),
+                    Fraction(*upper[offset].as_integer_ratio()),
                 )
-                upper_total, upper_correction = _compensated_add(
-                    upper_total,
-                    upper_correction,
-                    upper_block,
-                )
+            )
         for offset in np.flatnonzero(ambiguous):
             gene = start + int(offset)
             exact_total += _variance_difference_fraction(
@@ -698,32 +1010,40 @@ def _wide_variance_distortion(
                 truth[:, gene],
             )
 
-    lower_sum, upper_sum = _widen_accumulated_interval(
-        max(lower_total + lower_correction, np.longdouble(0.0)),
-        max(
-            upper_total + upper_correction,
-            lower_total + lower_correction,
-        ),
+    lower_total = exact_total + sum(
+        (lower for _, lower, _ in uncertain),
+        start=Fraction(),
     )
-    lower_mean = (exact_total + Fraction(*lower_sum.as_integer_ratio())) / n_genes
-    upper_mean = (exact_total + Fraction(*upper_sum.as_integer_ratio())) / n_genes
-    try:
-        lower_float = float(lower_mean)
-    except OverflowError:
-        lower_float = math.inf
-    try:
-        upper_float = float(upper_mean)
-    except OverflowError:
-        upper_float = math.inf
-    if lower_float == upper_float:
-        if not math.isfinite(lower_float):
-            return _unavailable(n_genes, "nonfinite_metric")
-        if lower_float == 0.0:
-            if exact_total > 0 or upper_sum > 0:
-                return _unavailable(n_genes, "nonfinite_metric")
-            return MetricValue(0.0, n_genes, None)
-        return MetricValue(lower_float, n_genes, None)
-    return _exact_variance_distortion(imputed, truth)
+    upper_total = exact_total + sum(
+        (upper for _, _, upper in uncertain),
+        start=Fraction(),
+    )
+    metric = _metric_if_interval_rounds_together(
+        lower_total / n_genes,
+        upper_total / n_genes,
+        n_genes,
+    )
+    if metric is not None:
+        return metric
+    for gene, lower, upper in sorted(
+        uncertain,
+        key=lambda item: item[2] - item[1],
+        reverse=True,
+    ):
+        exact = _variance_difference_fraction(
+            imputed[:, gene],
+            truth[:, gene],
+        )
+        lower_total += exact - lower
+        upper_total += exact - upper
+        metric = _metric_if_interval_rounds_together(
+            lower_total / n_genes,
+            upper_total / n_genes,
+            n_genes,
+        )
+        if metric is not None:
+            return metric
+    return _metric_from_high_precision(lower_total / n_genes, n_genes)
 
 
 def _scaled_signed_differences(
@@ -1110,7 +1430,7 @@ def _pairwise_distance_distortion(
         return MetricValue(float(ordinary_value), n_pairs, None)
 
     if not _WIDE_LONGDOUBLE:
-        return _exact_pairwise_distance_distortion(imputed, truth, n_pairs)
+        return _portable_pairwise_distance_distortion(imputed, truth, n_pairs)
     return _wide_pairwise_distance_distortion(imputed, truth, n_pairs)
 
 
@@ -1295,7 +1615,7 @@ def reconstruction_metrics(
                 truth_array,
             )
         else:
-            result["variance_distortion"] = _exact_variance_distortion(
+            result["variance_distortion"] = _portable_variance_distortion(
                 imputed_array,
                 truth_array,
             )

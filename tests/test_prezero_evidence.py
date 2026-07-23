@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import warnings
 import zlib
 
 import anndata as ad
@@ -982,6 +983,52 @@ def test_adapter_exposes_realized_p_pre_zero_as_a_defensive_matrix() -> None:
         first[0, 0] = 0.0
 
     np.testing.assert_array_equal(execution.realized_p_pre_zero, expected)
+
+
+def test_evaluator_translates_unrepresentable_probability_cast_signals() -> None:
+    if np.finfo(np.longdouble).max <= np.finfo(np.float64).max:
+        pytest.skip("longdouble has no wider finite range on this platform")
+    from maskimpute_benchmark.prezero_evidence import (
+        PreZeroEvidenceError,
+        evaluate_prezero_evidence,
+    )
+
+    class _Execution:
+        realized_p_pre_zero = np.full(
+            (2, 4),
+            np.longdouble(np.finfo(np.float64).max) * np.longdouble(2),
+            dtype=np.longdouble,
+        )
+        realized_p_pre_zero_policy = {
+            "source": "retained_calibrator",
+            "score_artifact_sha256": "4" * 64,
+            "score_input_sha256": "5" * 64,
+            "score_config_sha256": "6" * 64,
+            "calibration_file_sha256": "7" * 64,
+            "calibration_payload_sha256": "8" * 64,
+            "retained_calibrator": "identity",
+            "calibration_scope": "leave_one_biological_draw_out",
+            "equivalence_reason": "retained_identity_calibrator_equals_direct_score",
+        }
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            with pytest.raises(
+                PreZeroEvidenceError,
+                match="cannot be represented as float64",
+            ):
+                evaluate_prezero_evidence(
+                    identity={},
+                    method_shape=(2, 4),
+                    method_id="maskimpute",
+                    execution=_Execution(),
+                    run_status="completed",
+                    run_reason=None,
+                    observed=np.zeros((2, 4)),
+                    truth=np.zeros((2, 4)),
+                    truth_kind="exact_pre_capture",
+                )
 
 
 def test_evaluator_binds_realized_matrix_policy_and_machine_readable_metrics() -> None:

@@ -427,6 +427,27 @@ def test_common_scale_normalization_handles_unrepresentable_raw_row_totals() -> 
     np.testing.assert_array_equal(log2_result[1], safe_log2)
 
 
+def test_common_scale_normalization_retains_tiny_cp10k_terms_until_conversion() -> None:
+    counts = np.array(
+        [
+            [
+                np.finfo(np.float64).max,
+                np.finfo(np.float64).max,
+                2.0**-51,
+            ]
+        ]
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            log1p_result = log1p_cp10k(counts)
+            log2_result = count_equivalent_to_log2_cp10k(counts)
+
+    assert log1p_result[0, 2].hex() == "0x0.00000000009c4p-1022"
+    assert log2_result[0, 2].hex() == "0x0.0000000000e17p-1022"
+
+
 def test_observed_library_sizes_reject_unrepresentable_totals_without_fp_errors() -> (
     None
 ):

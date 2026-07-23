@@ -346,6 +346,75 @@ def test_variance_distortion_rounds_exact_subnormal_difference_once(
 
 
 @pytest.mark.parametrize("reverse", [False, True])
+def test_variance_interval_covers_centering_error_before_accepting_gene(
+    reverse: bool,
+) -> None:
+    minimum_subnormal = float.fromhex("0x0.0000000000001p-1022")
+    imputed = np.array(
+        [
+            [float.fromhex("0x1.ffffffffffffap+0"), 0.0],
+            [float.fromhex("0x1.0000000000003p+1"), minimum_subnormal],
+            [float.fromhex("0x1.ffffffffffffap+0"), 0.0],
+        ]
+    )
+    truth = np.array(
+        [
+            [float.fromhex("0x1.0000000000000p+1"), 0.0],
+            [float.fromhex("0x1.0000000000002p+1"), minimum_subnormal],
+            [float.fromhex("0x1.0000000000000p+1"), 0.0],
+        ]
+    )
+    if reverse:
+        imputed, truth = truth, imputed
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result["variance_distortion"] == MetricValue(
+        float.fromhex("0x1.c71c71c71c71cp-101"),
+        2,
+        None,
+    )
+
+
+def test_variance_intervals_contain_fraction_oracle_for_near_constant_genes() -> None:
+    rng = np.random.default_rng(20260723)
+    left = np.empty((17, 48), dtype=np.float64)
+    right = np.empty_like(left)
+    for gene in range(left.shape[1]):
+        base = float(rng.uniform(0.5, 2.0))
+        spacing = np.spacing(base)
+        left[:, gene] = base + rng.integers(-4, 5, left.shape[0]) * spacing
+        right[:, gene] = base + rng.integers(-4, 5, right.shape[0]) * spacing
+
+    lower, upper, _ = metrics_module._longdouble_variance_difference_intervals(  # type: ignore[attr-defined]
+        left,
+        right,
+    )
+
+    for gene in range(left.shape[1]):
+        oracle = metrics_module._variance_difference_fraction(  # type: ignore[attr-defined]
+            left[:, gene],
+            right[:, gene],
+        )
+        lower_fraction = Fraction(*lower[gene].as_integer_ratio())
+        upper_fraction = Fraction(*upper[gene].as_integer_ratio())
+        assert lower_fraction <= oracle <= upper_fraction
+        with localcontext() as context:
+            context.prec = 320
+            oracle_decimal = Decimal(oracle.numerator) / Decimal(oracle.denominator)
+            lower_decimal = Decimal(lower_fraction.numerator) / Decimal(
+                lower_fraction.denominator
+            )
+            upper_decimal = Decimal(upper_fraction.numerator) / Decimal(
+                upper_fraction.denominator
+            )
+        assert lower_decimal <= oracle_decimal <= upper_decimal
+
+
+@pytest.mark.parametrize("reverse", [False, True])
 def test_cell_distance_distortion_preserves_adjacent_extreme_norm_cancellation(
     reverse: bool,
 ) -> None:
@@ -468,7 +537,10 @@ def test_extended_pair_intervals_escalate_only_rounding_ambiguous_pairs(
         "_euclidean_norm_difference_decimal",
         counted_exact,
     )
-    result = metrics_module._pairwise_distance_distortion(imputed, truth)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = metrics_module._pairwise_distance_distortion(imputed, truth)
     assert result == MetricValue(float(oracle), 1, None)
     assert exact_calls == 1
 
@@ -502,7 +574,10 @@ def test_pairwise_fallback_does_not_exactly_recompute_every_safe_pair(
         counted_exact,
     )
 
-    result = metrics_module._pairwise_distance_distortion(imputed, truth)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = metrics_module._pairwise_distance_distortion(imputed, truth)
 
     expected = float(Fraction.from_float(maximum) * 2 / n_cells)
     assert result == MetricValue(
@@ -570,6 +645,168 @@ def test_portable_exact_pairwise_fallback_does_not_retain_all_pair_values(
     assert peak_bytes < 256_000
 
 
+@pytest.mark.parametrize(
+    ("n_cells", "n_genes", "maximum_seconds"),
+    [(300, 96, 10.0), (900, 8, 15.0)],
+)
+def test_portable_pairwise_fallback_is_vectorized_for_unambiguous_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+    n_cells: int,
+    n_genes: int,
+    maximum_seconds: float,
+) -> None:
+    maximum = np.finfo(np.float64).max
+    truth = np.zeros((n_cells, n_genes))
+    imputed = truth.copy()
+    imputed[0, 0] = maximum
+    exact_calls = 0
+
+    def counted_exact(*args: np.ndarray) -> Decimal:
+        nonlocal exact_calls
+        exact_calls += 1
+        raise AssertionError("unambiguous portable pair used exact arithmetic")
+
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", False)
+    monkeypatch.setattr(
+        metrics_module,
+        "_euclidean_norm_difference_decimal",
+        counted_exact,
+    )
+    started = time.perf_counter()
+    result = metrics_module._pairwise_distance_distortion(imputed, truth)
+    elapsed = time.perf_counter() - started
+
+    assert result == MetricValue(
+        float(Fraction.from_float(maximum) * 2 / n_cells),
+        n_cells * (n_cells - 1) // 2,
+        None,
+    )
+    assert exact_calls == 0
+    assert elapsed < maximum_seconds
+
+
+def test_portable_pairwise_fallback_escalates_only_ambiguous_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    x = float.fromhex("0x1.1999999999999p+1023")
+    y = np.nextafter(x, np.inf)
+    truth = np.array([[0.0, 0.0], [x, x]])
+    imputed = np.array([[0.0, 0.0], [y, y]])
+    original = metrics_module._euclidean_norm_difference_decimal
+    exact_calls = 0
+
+    def counted_exact(*args: np.ndarray) -> Decimal:
+        nonlocal exact_calls
+        exact_calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", False)
+    monkeypatch.setattr(
+        metrics_module,
+        "_euclidean_norm_difference_decimal",
+        counted_exact,
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = metrics_module._pairwise_distance_distortion(imputed, truth)
+
+    assert result == MetricValue(
+        float.fromhex("0x1.6a09e667f3bcdp+971"),
+        1,
+        None,
+    )
+    assert exact_calls == 1
+
+
+def test_portable_pairwise_fallback_preserves_subnormal_rounding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    minimum_subnormal = np.nextafter(0.0, np.inf)
+    m = 94_906_265
+    n = m * m - 1
+    truth = np.array([[0.0, 0.0], [n * minimum_subnormal, 0.0]])
+    imputed = np.array([[0.0, 0.0], [n * minimum_subnormal, m * minimum_subnormal]])
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", False)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = metrics_module._pairwise_distance_distortion(imputed, truth)
+
+    assert result == MetricValue(minimum_subnormal, 1, None)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_portable_variance_fallback_preserves_reviewed_centering_edge(
+    monkeypatch: pytest.MonkeyPatch,
+    reverse: bool,
+) -> None:
+    minimum_subnormal = float.fromhex("0x0.0000000000001p-1022")
+    imputed = np.array(
+        [
+            [float.fromhex("0x1.ffffffffffffap+0"), 0.0],
+            [float.fromhex("0x1.0000000000003p+1"), minimum_subnormal],
+            [float.fromhex("0x1.ffffffffffffap+0"), 0.0],
+        ]
+    )
+    truth = np.array(
+        [
+            [float.fromhex("0x1.0000000000000p+1"), 0.0],
+            [float.fromhex("0x1.0000000000002p+1"), minimum_subnormal],
+            [float.fromhex("0x1.0000000000000p+1"), 0.0],
+        ]
+    )
+    if reverse:
+        imputed, truth = truth, imputed
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", False)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result["variance_distortion"] == MetricValue(
+        float.fromhex("0x1.c71c71c71c71cp-101"),
+        2,
+        None,
+    )
+
+
+def test_portable_variance_fallback_escalates_only_ambiguous_genes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    n_cells = 100
+    n_genes = 128
+    value = 2.0 * np.sqrt(np.finfo(np.float64).max)
+    truth = np.zeros((n_cells, n_genes))
+    imputed = truth.copy()
+    imputed[0, 0] = value
+    original = metrics_module._variance_difference_fraction
+    exact_calls = 0
+
+    def counted_exact(*args: np.ndarray) -> Fraction:
+        nonlocal exact_calls
+        exact_calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", False)
+    monkeypatch.setattr(
+        metrics_module,
+        "_variance_difference_fraction",
+        counted_exact,
+    )
+
+    result = reconstruction_metrics(imputed, truth, truth)
+
+    expected = float(
+        Fraction.from_float(value) ** 2 * (n_cells - 1) / (n_cells * n_cells * n_genes)
+    )
+    assert result["variance_distortion"] == MetricValue(expected, n_genes, None)
+    assert exact_calls <= 1
+
+
 def test_variance_fallback_escalates_only_ambiguous_genes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -601,7 +838,7 @@ def test_variance_fallback_escalates_only_ambiguous_genes(
         Fraction.from_float(value) ** 2 * (n_cells - 1) / (n_cells * n_cells * n_genes)
     )
     assert result["variance_distortion"] == MetricValue(expected, n_genes, None)
-    assert exact_calls == 0
+    assert exact_calls <= 1
 
 
 def test_reconstruction_returns_representable_mean_after_raw_difference_overflow() -> (

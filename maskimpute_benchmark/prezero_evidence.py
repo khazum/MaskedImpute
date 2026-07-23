@@ -168,8 +168,15 @@ def _probability_matrix(value: object, shape: tuple[int, int]) -> np.ndarray:
     if type(value) is not np.ndarray:
         raise PreZeroEvidenceError("realized p_pre_zero must be an exact NumPy ndarray")
     try:
-        probability = np.array(value, dtype="<f8", copy=True, order="C", subok=False)
-    except (TypeError, ValueError, OverflowError) as error:
+        with np.errstate(over="raise", invalid="raise"):
+            probability = np.array(
+                value,
+                dtype="<f8",
+                copy=True,
+                order="C",
+                subok=False,
+            )
+    except (FloatingPointError, TypeError, ValueError, OverflowError) as error:
         raise PreZeroEvidenceError(
             "realized p_pre_zero cannot be represented as float64"
         ) from error

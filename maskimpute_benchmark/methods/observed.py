@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import math
 import os
 from pathlib import Path
 import re
@@ -201,23 +202,42 @@ def _cp10k_transform(values: np.ndarray, *, log_base: int) -> np.ndarray:
                 else:  # pragma: no cover - private programming error
                     raise AssertionError(log_base)
         except FloatingPointError:
-            scale = float(np.max(row))
-            if scale == 0.0:  # guarded by each public caller
+            maximum = float(np.max(row))
+            if maximum == 0.0:  # guarded by each public caller
                 raise AssertionError("zero row reached CP10k scaling")
-            # Underflow here means a row member is below float64 precision
-            # relative to its maximum; retaining the rounded subnormal or zero
-            # is the correctly representable proportion.
+            _, maximum_exponent = math.frexp(maximum)
+            scaled_total = math.fsum(
+                math.ldexp(*_cp10k_scaled_component(float(value), maximum_exponent))
+                for value in row
+            )
+            cp10k = np.empty_like(row)
+            for column, value in enumerate(row):
+                if value == 0.0:
+                    cp10k[column] = 0.0
+                    continue
+                mantissa, exponent = math.frexp(float(value))
+                cp10k[column] = math.ldexp(
+                    mantissa * (10_000.0 / scaled_total),
+                    exponent - maximum_exponent,
+                )
             with np.errstate(under="ignore"):
-                scaled = row / scale
-                proportions = scaled / np.sum(scaled)
                 if log_base == 1:
-                    converted_row = np.log1p(proportions * 10_000.0)
+                    converted_row = np.log1p(cp10k)
                 else:
-                    converted_row = np.log2(1.0 + proportions * 10_000.0)
+                    converted_row = np.log1p(cp10k) / np.log(2.0)
         if not np.isfinite(converted_row).all():
             raise ValueError("CP10k transformation did not remain finite")
         converted[index] = converted_row
     return converted
+
+
+def _cp10k_scaled_component(value: float, maximum_exponent: int) -> tuple[float, int]:
+    """Represent one row member relative to the row's largest exponent."""
+
+    if value == 0.0:
+        return 0.0, 0
+    mantissa, exponent = math.frexp(value)
+    return mantissa, exponent - maximum_exponent
 
 
 def _validated_native_matrix(
