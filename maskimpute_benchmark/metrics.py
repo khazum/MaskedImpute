@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
 from fractions import Fraction
+import heapq
 import math
 from typing import Any
 
@@ -92,7 +93,9 @@ _ZERO_TERM: _ScaledTerm = (0.0, 0)
 _FLOAT64_MAX = np.finfo(np.float64).max
 _FLOAT64_INFO = np.finfo(np.float64)
 _LONGDOUBLE_INFO = np.finfo(np.longdouble)
-_PAIRWISE_DISTANCE_BLOCK_SIZE = 256
+_PAIRWISE_DISTANCE_BLOCK_SIZE = 128
+_PAIRWISE_REFINEMENT_BATCH_SIZE = 64
+_PAIRWISE_MAX_REFINEMENTS = 1_024
 _VARIANCE_GENE_BLOCK_SIZE = 256
 
 
@@ -576,6 +579,7 @@ def _float64_norm_difference_intervals(
     *,
     active: np.ndarray,
     exact_zero: np.ndarray,
+    exact_unit: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Bound normalized norm differences using portable float64 arithmetic."""
 
@@ -598,6 +602,7 @@ def _float64_norm_difference_intervals(
         or truth_values.shape != imputed_values.shape
         or active.shape != imputed_values.shape[:1]
         or exact_zero.shape != active.shape
+        or exact_unit.shape != active.shape
     ):
         raise ValueError("portable norm-difference blocks must be aligned")
 
@@ -640,8 +645,238 @@ def _float64_norm_difference_intervals(
         error[exact_zero] = 0.0
         lower = np.maximum(estimate - error, 0.0)
         upper = estimate + error
+        lower = np.nextafter(lower, -np.inf)
+        upper = np.nextafter(upper, np.inf)
+        lower = np.maximum(lower, 0.0)
+        lower[exact_zero] = 0.0
+        upper[exact_zero] = 0.0
+        estimate[exact_unit] = 1.0
+        lower[exact_unit] = 1.0
+        upper[exact_unit] = 1.0
     ambiguous = active & ~exact_zero & ((error > 0.0) & (estimate <= 128.0 * error))
+    ambiguous[exact_unit] = False
     return estimate, lower, upper, ambiguous
+
+
+def _float64_compensated_add(
+    total: float,
+    correction: float,
+    value: float,
+) -> tuple[float, float]:
+    """Neumaier-add one finite nonnegative block total."""
+
+    updated = total + value
+    if abs(total) >= abs(value):
+        correction += (total - updated) + value
+    else:
+        correction += (value - updated) + total
+    return updated, correction
+
+
+def _float64_accumulated_interval(
+    lower: float,
+    lower_correction: float,
+    upper: float,
+    upper_correction: float,
+) -> tuple[Decimal, Decimal]:
+    """Convert a compensated binary64 interval to exact outward bounds."""
+
+    lower_estimate = max(lower + lower_correction, 0.0)
+    upper_estimate = max(upper + upper_correction, lower_estimate)
+    magnitude = max(abs(lower_estimate), abs(upper_estimate))
+    rounding_error = 8.0 * float(_FLOAT64_INFO.eps) * magnitude
+    lower_bound = max(
+        math.nextafter(lower_estimate - rounding_error, -math.inf),
+        0.0,
+    )
+    upper_bound = math.nextafter(upper_estimate + rounding_error, math.inf)
+    return Decimal.from_float(lower_bound), Decimal.from_float(upper_bound)
+
+
+def _portable_pairwise_blocks(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+    imputed_scaled: np.ndarray,
+    truth_scaled: np.ndarray,
+    common_scale: float,
+):
+    """Yield portable interval blocks together with their original row indices."""
+
+    for first in range(truth.shape[0] - 1):
+        for start in range(
+            first + 1,
+            truth.shape[0],
+            _PAIRWISE_DISTANCE_BLOCK_SIZE,
+        ):
+            stop = min(
+                start + _PAIRWISE_DISTANCE_BLOCK_SIZE,
+                truth.shape[0],
+            )
+            with np.errstate(under="ignore"):
+                imputed_difference = imputed_scaled[start:stop] - imputed_scaled[first]
+                truth_difference = truth_scaled[start:stop] - truth_scaled[first]
+            active = np.any(
+                (imputed[start:stop] != imputed[first])
+                | (truth[start:stop] != truth[first]),
+                axis=1,
+            )
+            exact_zero = np.all(
+                (imputed[start:stop] == truth[start:stop])
+                & (imputed[first] == truth[first]),
+                axis=1,
+            )
+            imputed_changed = imputed[start:stop] != imputed[first]
+            truth_changed = truth[start:stop] != truth[first]
+            imputed_scale_axis = (
+                (imputed[start:stop] == 0.0) & (np.abs(imputed[first]) == common_scale)
+            ) | (
+                (imputed[first] == 0.0) & (np.abs(imputed[start:stop]) == common_scale)
+            )
+            truth_scale_axis = (
+                (truth[start:stop] == 0.0) & (np.abs(truth[first]) == common_scale)
+            ) | ((truth[first] == 0.0) & (np.abs(truth[start:stop]) == common_scale))
+            exact_unit = (
+                (
+                    (np.count_nonzero(imputed_changed, axis=1) == 1)
+                    & np.all(~imputed_changed | imputed_scale_axis, axis=1)
+                    & ~np.any(truth_changed, axis=1)
+                )
+                | (
+                    (np.count_nonzero(truth_changed, axis=1) == 1)
+                    & np.all(~truth_changed | truth_scale_axis, axis=1)
+                    & ~np.any(imputed_changed, axis=1)
+                )
+            ) & active
+            _, lower, upper, ambiguous = _float64_norm_difference_intervals(
+                imputed_difference,
+                truth_difference,
+                active=active,
+                exact_zero=exact_zero,
+                exact_unit=exact_unit,
+            )
+            yield first, start, lower, upper, ambiguous
+
+
+def _portable_pairwise_interval(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+    imputed_scaled: np.ndarray,
+    truth_scaled: np.ndarray,
+    common_scale: float,
+) -> tuple[Decimal, Decimal, Decimal, int, Decimal]:
+    """Stream aggregate pair bounds and exact cancellation-only contributions."""
+
+    lower_total = 0.0
+    lower_correction = 0.0
+    upper_total = 0.0
+    upper_correction = 0.0
+    fixed_total = Decimal()
+    refinable_count = 0
+    exact_total = Decimal()
+    for first, start, lower, upper, ambiguous in _portable_pairwise_blocks(
+        imputed,
+        truth,
+        imputed_scaled,
+        truth_scaled,
+        common_scale,
+    ):
+        safe = ~ambiguous
+        exact_unit = safe & (lower == 1.0) & (upper == 1.0)
+        fixed_total += Decimal(int(np.count_nonzero(exact_unit)))
+        approximate = safe & ~exact_unit
+        if np.any(approximate):
+            fixed = approximate & (upper == lower)
+            fixed_total += sum(
+                (Decimal.from_float(float(value)) for value in lower[fixed]),
+                start=Decimal(),
+            )
+            ranged = approximate & ~fixed
+            refinable_count += int(np.count_nonzero(ranged))
+            lower_block = math.fsum(float(value) for value in lower[ranged])
+            upper_block = math.fsum(float(value) for value in upper[ranged])
+            lower_total, lower_correction = _float64_compensated_add(
+                lower_total,
+                lower_correction,
+                lower_block,
+            )
+            upper_total, upper_correction = _float64_compensated_add(
+                upper_total,
+                upper_correction,
+                upper_block,
+            )
+        for offset in np.flatnonzero(ambiguous):
+            second = start + int(offset)
+            exact_total += _euclidean_norm_difference_decimal(
+                imputed[second],
+                imputed[first],
+                truth[second],
+                truth[first],
+            )
+
+    if lower_total == 0.0 and upper_total == 0.0:
+        lower_bound = upper_bound = fixed_total
+    else:
+        lower_bound, upper_bound = _float64_accumulated_interval(
+            lower_total,
+            lower_correction,
+            upper_total,
+            upper_correction,
+        )
+        lower_bound += fixed_total
+        upper_bound += fixed_total
+    return lower_bound, upper_bound, exact_total, refinable_count, fixed_total
+
+
+def _portable_pairwise_refinement_candidates(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+    imputed_scaled: np.ndarray,
+    truth_scaled: np.ndarray,
+    common_scale: float,
+) -> list[tuple[float, float, int, int, float]]:
+    """Retain only the most influential unresolved intervals in a second pass."""
+
+    candidates: list[tuple[float, float, int, int, float]] = []
+    for first, start, lower, upper, ambiguous in _portable_pairwise_blocks(
+        imputed,
+        truth,
+        imputed_scaled,
+        truth_scaled,
+        common_scale,
+    ):
+        for offset in np.flatnonzero(~ambiguous & ~((lower == 1.0) & (upper == 1.0))):
+            lower_value = float(lower[offset])
+            upper_value = float(upper[offset])
+            width = upper_value - lower_value
+            if width <= 0.0:
+                continue
+            candidate = (
+                width,
+                upper_value,
+                first,
+                start + int(offset),
+                lower_value,
+            )
+            if len(candidates) < _PAIRWISE_MAX_REFINEMENTS:
+                heapq.heappush(candidates, candidate)
+            elif candidate > candidates[0]:
+                heapq.heapreplace(candidates, candidate)
+    return sorted(candidates, reverse=True)
+
+
+def _portable_pairwise_certified_metric(
+    lower_dimensionless: Decimal,
+    upper_dimensionless: Decimal,
+    exact_total: Decimal,
+    common_scale: float,
+    n_pairs: int,
+) -> MetricValue | None:
+    """Certify one binary64 rounding cell from exact Decimal interval endpoints."""
+
+    scale = Decimal.from_float(common_scale)
+    lower_mean = (exact_total + lower_dimensionless * scale) / Decimal(n_pairs)
+    upper_mean = (exact_total + upper_dimensionless * scale) / Decimal(n_pairs)
+    return _metric_if_interval_rounds_together(lower_mean, upper_mean, n_pairs)
 
 
 def _portable_pairwise_distance_distortion(
@@ -663,63 +898,71 @@ def _portable_pairwise_distance_distortion(
         imputed_scaled = imputed / common_scale
         truth_scaled = truth / common_scale
 
-    approximate_total = 0.0
-    approximate_correction = 0.0
     with localcontext() as context:
         context.prec = 120 + len(str(n_pairs))
-        exact_total = Decimal()
-        for first in range(truth.shape[0] - 1):
-            for start in range(
-                first + 1,
-                truth.shape[0],
-                _PAIRWISE_DISTANCE_BLOCK_SIZE,
-            ):
-                stop = min(
-                    start + _PAIRWISE_DISTANCE_BLOCK_SIZE,
-                    truth.shape[0],
-                )
-                with np.errstate(under="ignore"):
-                    imputed_difference = (
-                        imputed_scaled[start:stop] - imputed_scaled[first]
-                    )
-                    truth_difference = truth_scaled[start:stop] - truth_scaled[first]
-                active = np.any(
-                    (imputed[start:stop] != imputed[first])
-                    | (truth[start:stop] != truth[first]),
-                    axis=1,
-                )
-                exact_zero = np.all(
-                    (imputed[start:stop] == truth[start:stop])
-                    & (imputed[first] == truth[first]),
-                    axis=1,
-                )
-                estimate, _, _, ambiguous = _float64_norm_difference_intervals(
-                    imputed_difference,
-                    truth_difference,
-                    active=active,
-                    exact_zero=exact_zero,
-                )
-                safe_total = math.fsum(float(value) for value in estimate[~ambiguous])
-                updated = approximate_total + safe_total
-                if abs(approximate_total) >= abs(safe_total):
-                    approximate_correction += (approximate_total - updated) + safe_total
-                else:
-                    approximate_correction += (safe_total - updated) + approximate_total
-                approximate_total = updated
-                for offset in np.flatnonzero(ambiguous):
-                    second = start + int(offset)
-                    exact_total += _euclidean_norm_difference_decimal(
-                        imputed[second],
-                        imputed[first],
-                        truth[second],
-                        truth[first],
-                    )
+        lower_total, upper_total, exact_total, refinable_count, fixed_total = (
+            _portable_pairwise_interval(
+                imputed,
+                truth,
+                imputed_scaled,
+                truth_scaled,
+                common_scale,
+            )
+        )
+        metric = _portable_pairwise_certified_metric(
+            lower_total,
+            upper_total,
+            exact_total,
+            common_scale,
+            n_pairs,
+        )
+        if metric is not None:
+            return metric
 
-        approximate = Decimal.from_float(
-            approximate_total + approximate_correction
-        ) * Decimal.from_float(common_scale)
-        mean_value = (approximate + exact_total) / Decimal(n_pairs)
-    return _metric_from_high_precision(mean_value, n_pairs)
+        # A bounded second pass keeps only the widest or largest unresolved
+        # intervals.  Refine those pairs exactly in small batches and certify
+        # the completed mean after every batch.
+        candidates = _portable_pairwise_refinement_candidates(
+            imputed,
+            truth,
+            imputed_scaled,
+            truth_scaled,
+            common_scale,
+        )
+        refined_count = 0
+        for start in range(0, len(candidates), _PAIRWISE_REFINEMENT_BATCH_SIZE):
+            for _, upper, first, second, lower in candidates[
+                start : start + _PAIRWISE_REFINEMENT_BATCH_SIZE
+            ]:
+                exact = _euclidean_norm_difference_decimal(
+                    imputed[second],
+                    imputed[first],
+                    truth[second],
+                    truth[first],
+                )
+                exact_total += exact
+                lower_total -= Decimal.from_float(lower)
+                upper_total -= Decimal.from_float(upper)
+                refined_count += 1
+            if refined_count == refinable_count:
+                lower_total = fixed_total
+                upper_total = fixed_total
+            else:
+                lower_total = max(lower_total, Decimal())
+                upper_total = max(upper_total, lower_total)
+            metric = _portable_pairwise_certified_metric(
+                lower_total,
+                upper_total,
+                exact_total,
+                common_scale,
+                n_pairs,
+            )
+            if metric is not None:
+                return metric
+
+    # Last bounded-memory correctness path. It is reached only after aggregate
+    # interval certification and the capped ambiguity refinement are exhausted.
+    return _exact_pairwise_distance_distortion(imputed, truth, n_pairs)
 
 
 def _wide_pairwise_distance_distortion(

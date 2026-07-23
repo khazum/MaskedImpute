@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal, localcontext
+from fractions import Fraction
 import hashlib
 import json
 from pathlib import Path
@@ -446,6 +448,61 @@ def test_common_scale_normalization_retains_tiny_cp10k_terms_until_conversion() 
 
     assert log1p_result[0, 2].hex() == "0x0.00000000009c4p-1022"
     assert log2_result[0, 2].hex() == "0x0.0000000000e17p-1022"
+
+
+def _independent_decimal_cp10k_log(value: float, total: Fraction, base: int) -> float:
+    exact_term = Fraction.from_float(value) * 10_000 / total
+    with localcontext() as context:
+        context.prec = 800
+        term = Decimal(exact_term.numerator) / Decimal(exact_term.denominator)
+        logged = (Decimal(1) + term).ln()
+        if base == 2:
+            logged /= Decimal(2).ln()
+        return float(logged)
+
+
+def test_log2_cp10k_carries_a_below_float64_term_through_the_logarithm() -> None:
+    tiny_count = float.fromhex("0x1.41418faa57d52p-64")
+    maximum = np.finfo(np.float64).max
+    counts = np.array([[maximum, maximum, tiny_count]])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            log1p_result = log1p_cp10k(counts)
+            log2_result = count_equivalent_to_log2_cp10k(counts)
+
+    assert log1p_result[0, 2].hex() == "0x0.0p+0"
+    assert log2_result[0, 2].hex() == "0x0.0000000000001p-1022"
+
+
+def test_cp10k_threshold_terms_match_high_precision_logarithm_oracles() -> None:
+    rng = np.random.default_rng(20260723)
+    maximum = np.finfo(np.float64).max
+    tiny_counts = np.ldexp(rng.uniform(0.25, 1.0, size=1_024), -63)
+    counts = np.column_stack(
+        (
+            np.full(tiny_counts.shape, maximum),
+            np.full(tiny_counts.shape, maximum),
+            tiny_counts,
+        )
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            log1p_result = log1p_cp10k(counts)
+            log2_result = count_equivalent_to_log2_cp10k(counts)
+
+    for index, value in enumerate(tiny_counts):
+        total = sum(
+            (Fraction.from_float(float(member)) for member in counts[index]),
+            start=Fraction(),
+        )
+        expected_log1p = _independent_decimal_cp10k_log(float(value), total, 1)
+        expected_log2 = _independent_decimal_cp10k_log(float(value), total, 2)
+        assert log1p_result[index, 2].hex() == expected_log1p.hex()
+        assert log2_result[index, 2].hex() == expected_log2.hex()
 
 
 def test_observed_library_sizes_reject_unrepresentable_totals_without_fp_errors() -> (

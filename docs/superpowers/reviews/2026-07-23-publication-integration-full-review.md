@@ -903,14 +903,16 @@ and orthogonal evidence is reconstructed independently from typed authority.
 | F-038 | Important | The F-036 joint fallbacks still classified two positive, representable minimum-subnormal endpoints as unavailable. The exact variance difference `2^-1075 + 2^-1128` and a pairwise norm difference slightly above one half of the minimum subnormal both had to round upward, but instead became `nonfinite_metric` in both operand orders. | Each completed exact or high-precision endpoint was converted to a float mantissa before `ldexp` restored its scale. That first rounding erased the increment above the half-subnormal boundary, so the second rounding tied to zero. | Closed test-first in both operand orders. The reviewed variance and pairwise results remain exact or high precision through their completed aggregates and are converted directly once. Positive endpoints that round to zero and overflowing endpoints remain reason-coded unavailable; exact zero remains available. F-039 replaces the initial whole-endpoint exact implementation with bounded wider blocks while retaining exact `Fraction`/`Decimal` state for every ambiguity. The obsolete exact-rational-to-scaled-term path remains removed. |
 | F-039 | Important | One floating-point signal in pairwise distance switched the complete endpoint to exact `Fraction`/`Decimal` work for every cell pair and gene, then retained every pair value until the mean. The 2,700-cell by 1,200-gene final design would therefore require about 3.64 million exact pair constructions and 4.37 billion Python-level component operations. The analogous variance route exact-recomputed every gene after one signal. | F-036 and F-038 correctly preserved cancellation and single rounding, but used exact arithmetic as the whole-endpoint fallback rather than as a narrow ambiguity resolver. The pairwise implementation also materialized an all-pair `Decimal` list. | Closed test-first on wider-`longdouble` platforms without changing the ordinary NumPy branch or either exact endpoint. Those platforms common-scale bounded pair/gene blocks, form cancellation-preserving extended-precision intervals, and use the existing exact pair/gene helper only for ambiguous intervals or unresolved final rounding. The original portable path remained bounded-memory but exact-recomputed every pair or gene; F-042 completes the same approximate/interval/escalation architecture for float64-only platforms. |
 | F-040 | Important | The variance interval accepted an inaccurate near-constant gene as safe. In the exact reviewed two-gene fixture, the first gene was rounded to `0x1.c71c71c00000bp-101` while a minimum-subnormal second gene forced fallback; the required aggregate is `0x1.c71c71c71c71cp-101` in both operand orders. | Its error bound was relative only to the two already-computed variances. It omitted absolute normalization, mean, centering, division, squaring, and reduction error, which dominates when both profiles are nearly constant. | Closed test-first with an absolute common-scale-and-cell-count bound covering every fallback stage. Ambiguous genes remain exact through final rounding, while certified genes retain bounded vectorized evaluation. The public two-order fixture and a 48-gene, 320-digit/Fraction near-constant oracle are exact. |
-| F-041 | Important | CP10k fallback turned the third entry of `[DBL_MAX, DBL_MAX, 2^-51]` into zero. The representable log1p and log2 results are respectively `0x0.00000000009c4p-1022` and `0x0.0000000000e17p-1022`. | The first fallback divided each count by the maximum and total before multiplying by 10,000. The tiny entry underflowed during that intermediate proportion even though its final CP10k value is representable. The log2 expression also formed `1 + x`, which discards subnormal `x`. | Closed test-first by retaining each nonzero count as a mantissa/exponent term through scaling, division by the scaled row total, and multiplication by 10,000, followed by one float conversion. Log2 uses `log1p(x) / log(2)`. Exact established rows and zero-row precedence are unchanged. |
-| F-042 | Important | On platforms where `longdouble` is not genuinely wider than float64, one unsafe endpoint still exact-recomputed every pair and every variance component. This made the portable route computationally incompatible with the bounded final design even though the wider-platform route was vectorized. | F-039 deliberately left the portable branch as an incremental exact memory fix; dispatch still bypassed its interval architecture entirely. | Closed test-first with common-scaled float64 blocks, conservative float64-epsilon intervals, and exact escalation only for cancellation or unresolved final rounding. The 300-by-96 and 900-by-8 pair probes complete in bounded time with no exact calls; the 100-by-128 variance probe certifies the oracle with at most one exact gene; reviewed adjacent-extreme, centering, and subnormal endpoints remain exact. Streaming memory remains bounded. |
+| F-041 | Important | CP10k fallback turned the third entry of `[DBL_MAX, DBL_MAX, 2^-51]` into zero. The representable log1p and log2 results are respectively `0x0.00000000009c4p-1022` and `0x0.0000000000e17p-1022`. | The first fallback divided each count by the maximum and total before multiplying by 10,000. The tiny entry underflowed during that intermediate proportion even though its final CP10k value is representable. The log2 expression also formed `1 + x`, which discards subnormal `x`. | The first test-first correction retained each nonzero count as a mantissa/exponent term through multiplication by 10,000 and used `log1p(x) / log(2)`, closing the demonstrated fixture. It still materialized the completed CP10k term as float64 before the logarithm; F-045 completes the rounding guarantee at the smaller threshold where the log-base conversion changes the final float64 result. |
+| F-042 | Important | On platforms where `longdouble` is not genuinely wider than float64, one unsafe endpoint still exact-recomputed every pair and every variance component. This made the portable route computationally incompatible with the bounded final design even though the wider-platform route was vectorized. | F-039 deliberately left the portable branch as an incremental exact memory fix; dispatch still bypassed its interval architecture entirely. | The first test-first correction added common-scaled float64 blocks, conservative float64-epsilon pair intervals, and exact escalation for cancellation. It closed the reviewed 300-by-96 and 900-by-8 pair performance probes, the 100-by-128 variance probe, the reviewed adjacent-extreme, centering, and subnormal endpoints, and bounded-memory behavior. The pairwise aggregate nevertheless discarded every safe pair's lower/upper bounds before final rounding; F-044 completes that final certification and extends the zero-exact-call performance lock to 1,200 by 64. |
 | F-043 | Minor | A finite out-of-range `longdouble` p-pre-zero matrix leaked `FloatingPointError` or a promoted cast warning instead of the declared `PreZeroEvidenceError`. | `_probability_matrix` caught ordinary conversion exceptions but performed its narrowing cast outside a local floating-point translation boundary. | Closed test-first by trapping only cast overflow/invalid signals and translating them to the existing representability error. Shape, finite-range, and probability-domain validation are unchanged. |
+| F-044 | Important | With `_WIDE_LONGDOUBLE=False`, the portable pairwise fallback returned `0x1.5ae5a5656fbbbp+755` for the reviewed two-cell fixture instead of the exact `0x1.5ae5a5656fbbcp+755`. A seeded 1,000-fixture exponent audit had 169 analogous exact-hex mismatches. | The per-pair float64 fallback computed conservative lower and upper bounds, but the aggregate discarded both bounds, summed only the approximate estimate, multiplied by the common scale, and converted that approximate mean directly to float64. | Closed test-first. The portable path streams outward lower/upper totals with compensated block accumulation, combines them with exact cancellation-only contributions as exact `Decimal` endpoints, and certifies that the complete mean occupies one binary64 rounding cell. If not certified, one bounded second pass retains at most 1,024 widest/most influential unresolved intervals, exact-refines them in batches of 64, updates the aggregate bounds, and repeats certification. Whole-endpoint exact evaluation is the final bounded-memory correctness path only after that cap. A post-suite diff audit rejected an initially overbroad exact-unit shortcut: fixed unit contributions now require original-coordinate proof of one `{0, ±common_scale}` axis and an exactly unchanged opposing vector. The reviewed fixture certifies after exactly one pair refinement; 1,024 seeded small exponent fixtures match a 320-digit whole oracle exactly; 300-by-96, 900-by-8, and 1,200-by-64 probes use zero exact pair calls; and the portable memory bound remains closed. |
+| F-045 | Important | For `[DBL_MAX, DBL_MAX, 0x1.41418faa57d52p-64]`, the third log2(CP10k+1) result was zero, although the exact endpoint rounds to the minimum float64 subnormal; the exact natural-log endpoint correctly rounds to zero. A 20,000-case threshold audit had 5,547 log-base rounding mismatches. | The scaled fallback rounded the CP10k term to float64 before evaluating either logarithm. Information below the CP10k float64 threshold was therefore unavailable to the division by `ln(2)`, even when that completed logarithm was representable. | Closed test-first. Unsafe rows retain the exact binary-rational count and row total through multiplication by 10,000, evaluate `ln(1+x)` and the optional division by `ln(2)` at dynamically sufficient decimal precision, and convert only the completed logarithm to float64. The reviewed log1p result remains zero while log2 is the minimum subnormal. The previous tiny log1p/log2 exact hex values and every exact legacy safe row remain unchanged. A committed 1,024-case threshold oracle and an independent 20,000-case, 800-digit audit report zero hex mismatches for both bases without warning suppression. |
 | O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
 
 No unresolved metric-domain, statistical-independence, evaluation-row,
 external-reference, manifest, or pre-zero evidence defect was demonstrated
-after F-025 through F-043. Legacy runtime-lock, filesystem-hardening, and
+after F-025 through F-045. Legacy runtime-lock, filesystem-hardening, and
 outer-provenance mechanisms were not redesigned or extended.
 
 ### Task 5 test-first and verification evidence
@@ -1174,6 +1176,103 @@ The single final correctly sanitized five-file Task 5 suite reported:
 
 No production or test file changed after those formatting/static gates or the
 final suite.
+
+A final portable-aggregation and transform-threshold review then demonstrated
+F-044 and F-045. The focused pre-change invocation produced the four expected
+failures and one already-correct aggregation control pass: the reviewed
+portable pair endpoint was one ULP low, the seeded portable oracle stopped at
+its first mismatch, and both the exact log2 threshold fixture and randomized
+threshold oracle exposed premature zero. After the initial corrections, the reviewed
+fixture, 1,024 seeded 320-digit whole pairwise oracles, aggregation control,
+exact log-base threshold, and 1,024 seeded 800-digit threshold oracles
+reported:
+
+```text
+5 passed in 27.29s
+```
+
+The complete metric file, including portable bounded-memory and zero-exact-call
+performance probes at 300-by-96, 900-by-8, and 1,200-by-64, reported:
+
+```text
+88 passed in 8.04s
+```
+
+The expanded metrics, core-method adapter, and pre-zero owning set initially
+reported:
+
+```text
+220 passed, 14 skipped in 43.92s
+```
+
+An independent 20,000-case threshold audit compared both transforms against an
+800-digit decimal oracle in bounded 1,000-row chunks and reported:
+
+```text
+20,000 audited, 0 mismatches
+```
+
+Formatting and the scoped static gates were completed before the one final
+sanitized suite:
+
+```text
+Ruff check: All checks passed
+Ruff format --check: 4 files already formatted
+Scoped compileall: exit 0
+git diff --check: exit 0
+```
+
+The first sanitized five-file Task 5 suite then reported:
+
+```text
+383 passed, 1 skipped in 977.91s (0:16:17)
+```
+
+Mandatory post-suite diff inspection then demonstrated that the new exact-unit
+performance shortcut was too broad. For original imputed coordinates
+`[1.5, -3*2^-54]` and an unchanged zero truth vector, scaled subtraction rounds
+to exactly one although the original-coordinate distance must round upward to
+`0x1.8000000000001p+0`. The isolated test produced the expected failure:
+
+```text
+1 failed in 0.45s
+```
+
+The shortcut now requires proof from original coordinates that the changing
+vector has exactly one `{0, ±common_scale}` axis and that the opposing vector
+is exactly unchanged. The corrected exact-unit node, reviewer fixture,
+1,024-fixture whole oracle, aggregation control, and both threshold-log tests
+reported:
+
+```text
+6 passed in 25.21s
+```
+
+The corrected expanded owning set reported:
+
+```text
+221 passed, 14 skipped in 46.50s
+```
+
+Formatting and scoped static gates were repeated after the exact-unit
+correction and before the replacement authoritative suite:
+
+```text
+Ruff check: All checks passed
+Ruff format --check: 4 files already formatted
+Scoped compileall: exit 0
+git diff --check: exit 0
+```
+
+The replacement final-state sanitized five-file Task 5 suite reported:
+
+```text
+384 passed, 1 skipped in 973.79s (0:16:13)
+```
+
+No production or test file changed after those replacement formatting/static
+gates or the final-state suite. Only this ledger evidence and the ignored
+scratch correction report followed.
 
 These checks establish bounded-fixture evaluation contracts only. No real
 scientific or comparator workload ran, and no empirical competitiveness,

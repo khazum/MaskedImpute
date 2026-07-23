@@ -484,6 +484,155 @@ def _independent_decimal_norm_difference(
         return abs(imputed_squared.sqrt() - truth_squared.sqrt())
 
 
+def _independent_decimal_pairwise_mean(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+) -> float:
+    n_pairs = truth.shape[0] * (truth.shape[0] - 1) // 2
+    with localcontext() as context:
+        context.prec = 320
+        total = Decimal()
+        for first in range(truth.shape[0] - 1):
+            for second in range(first + 1, truth.shape[0]):
+                imputed_squared = sum(
+                    (
+                        (
+                            Decimal.from_float(float(imputed[second, gene]))
+                            - Decimal.from_float(float(imputed[first, gene]))
+                        )
+                        ** 2
+                        for gene in range(truth.shape[1])
+                    ),
+                    start=Decimal(),
+                )
+                truth_squared = sum(
+                    (
+                        (
+                            Decimal.from_float(float(truth[second, gene]))
+                            - Decimal.from_float(float(truth[first, gene]))
+                        )
+                        ** 2
+                        for gene in range(truth.shape[1])
+                    ),
+                    start=Decimal(),
+                )
+                total += abs(imputed_squared.sqrt() - truth_squared.sqrt())
+        return float(total / Decimal(n_pairs))
+
+
+def test_portable_pairwise_fallback_certifies_the_completed_rounding_cell(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    imputed = np.array(
+        [
+            [-2.5680628659534687e227],
+            [1.0187633289789258e222],
+        ]
+    )
+    truth = np.array(
+        [
+            [-1.390238389223195e-277],
+            [2.408636628766748e173],
+        ]
+    )
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", False)
+    original = metrics_module._euclidean_norm_difference_decimal
+    exact_calls = 0
+
+    def counted_exact(*args: np.ndarray) -> Decimal:
+        nonlocal exact_calls
+        exact_calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_euclidean_norm_difference_decimal",
+        counted_exact,
+    )
+
+    result = metrics_module._pairwise_distance_distortion(imputed, truth)
+
+    assert result == MetricValue(float.fromhex("0x1.5ae5a5656fbbcp+755"), 1, None)
+    assert exact_calls == 1
+
+
+def test_portable_pairwise_fallback_matches_seeded_whole_decimal_oracles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rng = np.random.default_rng(20260723)
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", False)
+
+    for _ in range(1_024):
+        n_cells = int(rng.integers(2, 6))
+        n_genes = int(rng.integers(1, 5))
+        imputed = np.ldexp(
+            rng.uniform(0.5, 1.0, size=(n_cells, n_genes))
+            * rng.choice((-1.0, 1.0), size=(n_cells, n_genes)),
+            rng.integers(-1_000, 1_001, size=(n_cells, n_genes)),
+        )
+        truth = np.ldexp(
+            rng.uniform(0.5, 1.0, size=(n_cells, n_genes))
+            * rng.choice((-1.0, 1.0), size=(n_cells, n_genes)),
+            rng.integers(-1_000, 1_001, size=(n_cells, n_genes)),
+        )
+
+        n_pairs = n_cells * (n_cells - 1) // 2
+        result = metrics_module._portable_pairwise_distance_distortion(  # type: ignore[attr-defined]
+            imputed,
+            truth,
+            n_pairs,
+        )
+        expected = _independent_decimal_pairwise_mean(imputed, truth)
+
+        assert result.reason is None
+        assert result.value is not None
+        assert result.value.hex() == expected.hex()
+
+
+def test_portable_pairwise_fallback_certifies_aggregated_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    imputed = np.array(
+        [
+            [-2.5680628659534687e227, 0.0],
+            [1.0187633289789258e222, float.fromhex("0x1p-512")],
+            [2.5680628659534687e227, -float.fromhex("0x1p-512")],
+            [0.0, float.fromhex("0x1.fffffffffffffp+511")],
+        ]
+    )
+    truth = np.array(
+        [
+            [-1.390238389223195e-277, 0.0],
+            [2.408636628766748e173, 0.0],
+            [2.408636628766748e173, float.fromhex("0x1p-512")],
+            [0.0, float.fromhex("0x1.ffffffffffffep+511")],
+        ]
+    )
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", False)
+
+    result = metrics_module._pairwise_distance_distortion(imputed, truth)
+    expected = _independent_decimal_pairwise_mean(imputed, truth)
+
+    assert result == MetricValue(expected, 6, None)
+
+
+def test_portable_pairwise_exact_unit_fast_path_requires_original_scale_pair() -> None:
+    scale = 1.5
+    offset = 3.0 * 2.0**-54
+    imputed = np.array([[scale], [-offset]])
+    truth = np.zeros_like(imputed)
+
+    result = metrics_module._portable_pairwise_distance_distortion(  # type: ignore[attr-defined]
+        imputed,
+        truth,
+        1,
+    )
+
+    expected = float(Fraction.from_float(scale) + Fraction.from_float(offset))
+    assert result == MetricValue(expected, 1, None)
+    assert expected.hex() == "0x1.8000000000001p+0"
+
+
 def test_extended_pair_intervals_escalate_only_rounding_ambiguous_pairs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -647,7 +796,7 @@ def test_portable_exact_pairwise_fallback_does_not_retain_all_pair_values(
 
 @pytest.mark.parametrize(
     ("n_cells", "n_genes", "maximum_seconds"),
-    [(300, 96, 10.0), (900, 8, 15.0)],
+    [(300, 96, 10.0), (900, 8, 15.0), (1_200, 64, 30.0)],
 )
 def test_portable_pairwise_fallback_is_vectorized_for_unambiguous_pairs(
     monkeypatch: pytest.MonkeyPatch,
