@@ -205,16 +205,19 @@ def normalize_observed_counts(
     counts = validate_observed_counts(observed_counts)
     if isinstance(target, bool) or not np.isfinite(target) or target <= 0:
         raise ValueError("target must be positive and finite")
+    target_float = float(target)
+    if not np.isfinite(target_float):
+        raise ValueError("target must be positive and finite")
     library_sizes = counts.sum(axis=1, dtype=np.float64)
-    proportions = np.zeros_like(counts)
     np.divide(
         counts,
         library_sizes[:, None],
-        out=proportions,
+        out=counts,
         where=library_sizes[:, None] > 0,
     )
-    normalized = np.log1p(proportions * float(target))
-    return normalized, library_sizes
+    np.multiply(counts, target_float, out=counts)
+    np.log1p(counts, out=counts)
+    return counts, library_sizes
 
 
 def normalize_available_encoder_input(
@@ -238,18 +241,21 @@ def normalize_available_encoder_input(
         raise ValueError("availability must be boolean with the count-matrix shape")
     if isinstance(target, bool) or not np.isfinite(target) or target <= 0:
         raise ValueError("target must be positive and finite")
+    target_float = float(target)
+    if not np.isfinite(target_float):
+        raise ValueError("target must be positive and finite")
 
-    visible_counts = np.where(available, counts, 0.0)
-    visible_library_sizes = visible_counts.sum(axis=1, dtype=np.float64)
-    proportions = np.zeros_like(visible_counts)
+    np.multiply(counts, available, out=counts)
+    visible_library_sizes = counts.sum(axis=1, dtype=np.float64)
     np.divide(
-        visible_counts,
+        counts,
         visible_library_sizes[:, None],
-        out=proportions,
+        out=counts,
         where=visible_library_sizes[:, None] > 0,
     )
-    normalized = np.log1p(proportions * float(target))
-    return normalized, visible_library_sizes
+    np.multiply(counts, target_float, out=counts)
+    np.log1p(counts, out=counts)
+    return counts, visible_library_sizes
 
 
 def invert_observed_normalization(
@@ -266,6 +272,8 @@ def invert_observed_normalization(
     """
 
     normalized = _finite_matrix(normalized_expression, "normalized_expression")
+    if np.ma.isMaskedArray(library_sizes):
+        raise TypeError("library_sizes must not be a masked array")
     libraries = np.asarray(library_sizes)
     if libraries.ndim != 1 or libraries.shape[0] != normalized.shape[0]:
         raise ValueError("library_sizes must have one entry per cell")

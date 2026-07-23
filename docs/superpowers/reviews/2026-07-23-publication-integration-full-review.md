@@ -271,7 +271,7 @@ Every production path assigned by the Task 2 brief was inspected end to end:
 | `maskimpute/result.py` | Shape/domain validation and defensive immutable dense/sparse/diagnostic snapshots | Valid; no change |
 | `maskimpute/sparse_input.py` | Exact supported sparse storage, coordinate bounds/uniqueness, lossless snapshotting | Valid; no change |
 | `maskimpute/structure.py` | Observed-only variable-gene/neighborhood authority and finite differentiable penalties | Valid; no change |
-| `maskimpute/train.py` | Dense/sparse conversion, normalization/inverse, mask construction, seed propagation, RNG restoration, train/eval transitions | F-004 and F-005 closed |
+| `maskimpute/train.py` | Dense/sparse conversion, normalization/inverse, mask construction, seed propagation, RNG restoration, train/eval transitions | F-004, F-005, F-007, and F-008 closed |
 | `masked_imputation26.py` | Migration-only legacy wrapper that does not execute archived code | Valid; no change |
 
 Every assigned test path was also inspected and executed:
@@ -281,7 +281,7 @@ Every assigned test path was also inspected and executed:
 | `tests/test_count_model.py` | Count-model domains, dense/sparse equivalence, cross-fit invariants, stability, immutability |
 | `tests/test_maskimpute_ablations.py` | Capacity/mask/gate/output controls and verified score/calibration execution; F-005 regression |
 | `tests/test_maskimpute_api.py` | Config/result/pre-zero shape, support, sparse, dtype, finite, and immutability contracts |
-| `tests/test_maskimpute_v27.py` | Normalization, masks, seeds, RNG scope, train/eval behavior, zero libraries, public result invariants; F-004 regressions |
+| `tests/test_maskimpute_v27.py` | Normalization, masks, seeds, RNG scope, train/eval behavior, zero libraries, public result invariants; F-004, F-007, and F-008 regressions |
 | `tests/test_maskimpute_v28.py` | NB likelihood oracle, float64/device contract, dispersion, zero-library gradients; F-006 regression |
 | `tests/test_maskimpute_v29.py` | Observed-only structure authority, differentiability, fixed validation exclusion |
 | `tests/test_prezero_calibration.py` | Monotone calibration, stable metrics, retention semantics, immutable artifact |
@@ -293,10 +293,10 @@ The requested cross-cutting classifications are:
 |---|---|
 | Shape validation | Two-dimensional/nonempty count and score boundaries, aligned Torch shapes, result row/shape contracts; covered and valid |
 | Sparse/dense parity | Shared coordinate snapshot boundary and equivalent count/score behavior; covered and valid |
-| Dtype/device changes | Exact numeric input checks, explicit float32 model tensors, float64 NB likelihood, aligned Torch devices, post-cast finite check; F-005 closed |
-| Finite values | Checked at external arrays, fitted parameters, losses, decoder/latent/count outputs, and result construction; F-004/F-005 closed |
+| Dtype/device changes | Exact numeric input checks, explicit float32 model tensors, float64 NB likelihood, aligned Torch devices, post-cast finite checks; F-005 and F-008 closed |
+| Finite values | Checked at external arrays and scalars, fitted parameters, losses, decoder/latent/count outputs, and result construction; F-004, F-005, and F-008 closed |
 | Zero library sizes | Preserved as all-zero normalized/count rows and excluded safely from exposure gradients; covered and valid |
-| Mask meaning | Observed positives are available, natural zeros unavailable, validation/training masks select observed positives only, unavailable payload is irrelevant; F-006 closed at the library-size nuisance boundary |
+| Mask meaning | Observed positives are available, natural zeros unavailable, validation/training masks select observed positives only, unavailable payload is irrelevant; F-006 and F-007 close the dispersion and inverse-normalization library-size boundaries |
 | Seed propagation | Bounded config seed, independent NumPy seed streams, scoped Torch deterministic state, caller RNG restoration; covered and valid |
 | Train/eval transitions | Training mode per epoch, eval/no-grad validation and inference, best checkpoint restored in eval mode; covered and valid |
 | Result immutability | Dense, sparse, latent, probability, and nested diagnostics are snapshotted and freshly materialized read-only views; covered and valid |
@@ -309,6 +309,8 @@ The requested cross-cutting classifications are:
 | F-004 | Important | Both observed-count and corrupted-availability normalization could return `inf` for a valid finite normalization target. | Computing `target / library` first can round upward; multiplying the result by the count then overflowed even though `count / library * target` is mathematically bounded by `target`. | Closed test-first by evaluating proportions before multiplying by the target. No hyperparameter or estimand changed. |
 | F-005 | Important | A finite extended-precision candidate outside float64 range could be cast to `inf` and returned by the full-ungated ablation output. | `_numeric_matrix_to_dense` checked finiteness only before its float64 conversion. | Closed test-first with a post-conversion finite check at the shared dense boundary. |
 | F-006 | Important | NB dispersion estimation silently accepted a masked `library_sizes` vector. | `np.asarray` discarded the mask before validation. | Closed test-first by rejecting a masked library-size vector before coercion. |
+| F-007 | Important | Inverse normalization silently accepted a masked `library_sizes` vector. | `invert_observed_normalization` called `np.asarray` before checking mask semantics, which erased the mask. | Closed test-first by rejecting a masked vector before coercion at this separate library-size boundary. |
+| F-008 | Minor | Both direct forward-normalization helpers accepted a finite extended-precision target outside float64 range and returned `inf`. | The helpers checked finiteness before converting the scalar to float64, but did not validate the converted scalar before arithmetic. | Closed test-first with a post-conversion finite check before normalization arithmetic; the valid float64 maximum remains accepted. |
 
 ### Regression evidence
 
@@ -321,11 +323,21 @@ the demonstrated invariant:
 | `tests/test_maskimpute_v27.py::test_available_normalization_keeps_maximum_finite_target_finite` | Failed: actual `inf`, expected finite `log1p(target)` | 1 passed |
 | `tests/test_maskimpute_ablations.py::test_ablation_output_rejects_finite_candidates_not_representable_in_float64` | Failed: did not raise and returned post-cast `inf` | 1 passed |
 | `tests/test_maskimpute_v28.py::test_gene_dispersion_rejects_masked_library_sizes` | Failed: did not raise after mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_inverse_normalization_rejects_masked_library_sizes_before_coercion` | Failed: did not raise after mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_observed_normalization_rejects_finite_target_outside_float64_range` | Failed: did not raise and returned `inf` | 1 passed |
+| `tests/test_maskimpute_v27.py::test_available_normalization_rejects_finite_target_outside_float64_range` | Failed: did not raise and returned `inf` | 1 passed |
 
 The complete post-correction Task 2 suite passed:
 
 ```text
 576 passed, 2 skipped in 29.14s
+```
+
+After the Task 2 review fix wave and the bounded in-place algebra refactor, the
+same complete suite passed:
+
+```text
+579 passed, 2 skipped in 27.53s
 ```
 
 The two skips are the existing CUDA smoke checks on a host where CUDA is

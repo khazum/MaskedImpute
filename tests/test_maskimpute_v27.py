@@ -119,6 +119,19 @@ def test_observed_library_normalization_has_an_explicit_inverse_contract():
     np.testing.assert_array_equal(restored[0], np.zeros(3))
 
 
+def test_inverse_normalization_rejects_masked_library_sizes_before_coercion():
+    from maskimpute.train import invert_observed_normalization
+
+    library_sizes = np.ma.array([3.0], mask=[True])
+
+    with pytest.raises(TypeError, match="library_sizes.*masked"):
+        invert_observed_normalization(
+            [[np.log1p(1_000.0)]],
+            library_sizes,
+            target=1_000.0,
+        )
+
+
 def test_observed_normalization_keeps_maximum_finite_target_finite():
     from maskimpute.train import normalize_observed_counts
 
@@ -129,6 +142,20 @@ def test_observed_normalization_keeps_maximum_finite_target_finite():
     np.testing.assert_array_equal(library_sizes, [3.0])
     np.testing.assert_allclose(normalized, [[np.log1p(maximum)]])
     assert np.all(np.isfinite(normalized))
+
+
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).max <= np.finfo(np.float64).max,
+    reason="extended precision is unavailable",
+)
+def test_observed_normalization_rejects_finite_target_outside_float64_range():
+    from maskimpute.train import normalize_observed_counts
+
+    target = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+    assert np.isfinite(target)
+
+    with pytest.raises(ValueError, match="target.*finite"):
+        normalize_observed_counts([[1]], target=target)
 
 
 def test_available_normalization_keeps_maximum_finite_target_finite():
@@ -145,6 +172,20 @@ def test_available_normalization_keeps_maximum_finite_target_finite():
     np.testing.assert_array_equal(library_sizes, [3.0])
     np.testing.assert_allclose(normalized, [[np.log1p(maximum)]])
     assert np.all(np.isfinite(normalized))
+
+
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).max <= np.finfo(np.float64).max,
+    reason="extended precision is unavailable",
+)
+def test_available_normalization_rejects_finite_target_outside_float64_range():
+    from maskimpute.train import normalize_available_encoder_input
+
+    target = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+    assert np.isfinite(target)
+
+    with pytest.raises(ValueError, match="target.*finite"):
+        normalize_available_encoder_input([[1]], [[True]], target=target)
 
 
 def test_corrupted_encoder_normalization_cannot_see_unavailable_target_magnitude():
