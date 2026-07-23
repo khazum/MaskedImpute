@@ -17,7 +17,7 @@ from scipy import sparse
 
 from maskimpute.sparse_input import (
     SUPPORTED_SPARSE_TYPES as _SUPPORTED_SPARSE_TYPES,
-    contains_masked_array as _contains_masked_array,
+    _unmasked_array,
     sparse_coordinate_snapshot,
 )
 
@@ -101,12 +101,7 @@ def _numeric_matrix_to_dense(value: object, name: str) -> tuple[np.ndarray, np.n
             raise TypeError(f"{name} dtype metadata is not supported")
         entries, rows, columns, shape = _unsummed_sparse_coordinates(value, name)
     else:
-        if _contains_masked_array(value):
-            raise TypeError(f"{name} must not contain masked arrays")
-        coerced = np.asanyarray(value)
-        if np.ma.isMaskedArray(coerced):
-            raise TypeError(f"{name} must not contain masked arrays")
-        matrix = np.asarray(coerced)
+        matrix = _unmasked_array(value, name)
         if matrix.ndim != 2:
             raise ValueError(f"{name} must be a two-dimensional matrix")
         if matrix.dtype.metadata is not None:
@@ -169,7 +164,7 @@ def validate_p_pre_zero(
 
 
 def _finite_matrix(value: object, name: str) -> np.ndarray:
-    matrix = np.asarray(value)
+    matrix = _unmasked_array(value, name)
     if matrix.ndim != 2:
         raise ValueError(f"{name} must be a two-dimensional matrix")
     if matrix.dtype.kind not in "iuf" or matrix.dtype.kind == "b":
@@ -229,14 +224,10 @@ def normalize_available_encoder_input(
     """Normalize only the count payload visible in a corrupted encoder view."""
 
     counts = validate_observed_counts(observed_counts)
-    if _contains_masked_array(availability):
-        raise TypeError("availability must not contain masked arrays")
-    coerced = np.asanyarray(availability)
-    if np.ma.isMaskedArray(coerced):
-        raise TypeError("availability must not contain masked arrays")
-    if coerced.dtype.metadata is not None:
+    available_array = _unmasked_array(availability, "availability")
+    if available_array.dtype.metadata is not None:
         raise TypeError("availability dtype metadata is not supported")
-    available = np.array(coerced, copy=True, order="C", subok=False)
+    available = np.array(available_array, copy=True, order="C", subok=False)
     if available.dtype != np.bool_ or available.shape != counts.shape:
         raise ValueError("availability must be boolean with the count-matrix shape")
     if isinstance(target, bool) or not np.isfinite(target) or target <= 0:
@@ -272,9 +263,7 @@ def invert_observed_normalization(
     """
 
     normalized = _finite_matrix(normalized_expression, "normalized_expression")
-    if np.ma.isMaskedArray(library_sizes):
-        raise TypeError("library_sizes must not be a masked array")
-    libraries = np.asarray(library_sizes)
+    libraries = _unmasked_array(library_sizes, "library_sizes")
     if libraries.ndim != 1 or libraries.shape[0] != normalized.shape[0]:
         raise ValueError("library_sizes must have one entry per cell")
     if libraries.dtype.kind not in "iuf" or libraries.dtype.kind == "b":
@@ -386,7 +375,7 @@ def make_epoch_training_mask(
     """Mask only observed positives not reserved for fixed validation."""
 
     counts = validate_observed_counts(observed_counts)
-    validation = np.asarray(validation_mask)
+    validation = _unmasked_array(validation_mask, "validation_mask")
     if validation.dtype != np.bool_ or validation.shape != counts.shape:
         raise ValueError("validation_mask must be boolean with the count-matrix shape")
     mask_fraction = _fraction(fraction, "fraction")

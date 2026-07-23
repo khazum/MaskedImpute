@@ -11,6 +11,20 @@ from scipy.stats import nbinom
 import torch
 
 
+class _MaskedArrayProtocol:
+    def __init__(self, values, mask):
+        self._values = values
+        self._mask = mask
+
+    def __array__(self, dtype=None, copy=None):
+        return np.ma.array(
+            self._values,
+            mask=self._mask,
+            dtype=dtype,
+            copy=False if copy is None else copy,
+        )
+
+
 def test_negative_binomial_nll_matches_scipy_mean_size_parameterization() -> None:
     from maskimpute.nb_model import negative_binomial_nll
 
@@ -185,6 +199,36 @@ def test_gene_dispersion_rejects_masked_library_sizes() -> None:
 
     with pytest.raises(TypeError, match="masked"):
         estimate_shrunk_gene_dispersion(counts, libraries)
+
+
+def test_gene_dispersion_rejects_protocol_masked_library_sizes() -> None:
+    from maskimpute.nb_model import estimate_shrunk_gene_dispersion
+
+    counts = np.array([[3, 0], [0, 1]], dtype=np.int64)
+    libraries = _MaskedArrayProtocol(
+        counts.sum(axis=1, dtype=np.float64),
+        [True, False],
+    )
+
+    with pytest.raises(TypeError, match="library_sizes.*masked"):
+        estimate_shrunk_gene_dispersion(counts, libraries)
+
+
+def test_gene_dispersion_rejects_protocol_masked_estimation_mask() -> None:
+    from maskimpute.nb_model import estimate_shrunk_gene_dispersion
+
+    counts = np.array([[3, 0], [0, 1]], dtype=np.int64)
+    estimation_mask = _MaskedArrayProtocol(
+        [[True, True], [True, True]],
+        [[True, False], [False, False]],
+    )
+
+    with pytest.raises(TypeError, match="estimation_mask.*masked"):
+        estimate_shrunk_gene_dispersion(
+            counts,
+            counts.sum(axis=1, dtype=np.float64),
+            estimation_mask=estimation_mask,
+        )
 
 
 def test_nb_decoder_uses_explicit_mask_and_library_size_offset() -> None:

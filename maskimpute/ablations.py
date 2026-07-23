@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from maskimpute.config import MaskImputeConfig
+from maskimpute.sparse_input import _unmasked_array
 from maskimpute.train import (
     _train_with_policies,
     _numeric_matrix_to_dense,
@@ -443,9 +444,7 @@ def make_uniform_positive_mask(
     """Uniformly mask training positives for the capacity-matched control."""
 
     counts = validate_observed_counts(observed_counts)
-    if np.ma.isMaskedArray(validation_mask):
-        raise TypeError("validation_mask must not be a masked array")
-    validation = np.asarray(validation_mask)
+    validation = _unmasked_array(validation_mask, "validation_mask")
     if validation.dtype != np.bool_ or validation.shape != counts.shape:
         raise ValueError("validation_mask must be boolean with the count-matrix shape")
     if isinstance(fraction, bool) or not isinstance(fraction, (int, float, np.number)):

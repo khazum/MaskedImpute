@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from maskimpute.sparse_input import _unmasked_array
+
 
 MAX_V28_COUNT_OR_LIBRARY = 10_000_000.0
 MIN_V28_INVERSE_DISPERSION = 1e-2
@@ -145,9 +147,7 @@ class GeneDispersionEstimate:
 def _estimation_mask(value: object | None, shape: tuple[int, int]) -> np.ndarray:
     if value is None:
         return np.ones(shape, dtype=np.bool_)
-    if np.ma.isMaskedArray(value):
-        raise TypeError("estimation_mask must not be a masked array")
-    mask = np.asarray(value)
+    mask = _unmasked_array(value, "estimation_mask")
     if mask.dtype != np.bool_ or mask.shape != shape:
         raise ValueError("estimation_mask must be boolean with the count shape")
     return np.array(mask, copy=True, order="C")
@@ -171,9 +171,7 @@ def estimate_shrunk_gene_dispersion(
     if type(config) is not NegativeBinomialDecoderConfig:
         raise TypeError("config must be an exact NegativeBinomialDecoderConfig")
     counts = validate_observed_counts(observed_counts)
-    if np.ma.isMaskedArray(library_sizes):
-        raise TypeError("library_sizes must not be a masked array")
-    libraries = np.asarray(library_sizes)
+    libraries = _unmasked_array(library_sizes, "library_sizes")
     if (
         libraries.ndim != 1
         or libraries.shape[0] != counts.shape[0]

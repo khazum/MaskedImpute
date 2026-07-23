@@ -105,6 +105,17 @@ def contains_masked_array(value: object, seen: set[int] | None = None) -> bool:
     return False
 
 
+def _unmasked_array(value: object, name: str) -> np.ndarray:
+    """Coerce a dense array-like only after preserving and rejecting masks."""
+
+    if contains_masked_array(value):
+        raise TypeError(f"{name} must not contain masked arrays")
+    coerced = np.asanyarray(value)
+    if np.ma.isMaskedArray(coerced):
+        raise TypeError(f"{name} must not contain masked arrays")
+    return np.asarray(coerced)
+
+
 def _reject_callable_instance_shadows(value: object, name: str) -> None:
     namespace = object.__getattribute__(value, "__dict__")
     shadows = sorted(key for key, item in namespace.items() if callable(item))

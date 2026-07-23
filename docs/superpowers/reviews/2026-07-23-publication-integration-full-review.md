@@ -296,7 +296,7 @@ The requested cross-cutting classifications are:
 | Dtype/device changes | Exact numeric input checks, explicit float32 model tensors, float64 NB likelihood, aligned Torch devices, post-cast finite checks; F-005, F-008, and F-009 closed |
 | Finite values | Checked at external arrays and scalars, fitted parameters, losses, decoder/latent/count outputs, and result construction; F-004, F-005, F-008, and F-009 closed |
 | Zero library sizes | Preserved as all-zero normalized/count rows and excluded safely from exposure gradients; covered and valid |
-| Mask meaning | Observed positives are available, natural zeros unavailable, validation/training masks select observed positives only, unavailable payload is irrelevant; F-006 and F-007 close the dispersion and inverse-normalization library-size boundaries |
+| Mask meaning | Observed positives are available, natural zeros unavailable, validation/training masks select observed positives only, unavailable payload is irrelevant; F-006 and F-007 cover the original direct masked vectors, while F-010 closes protocol-produced masks at every demonstrated dense model boundary |
 | Seed propagation | Bounded config seed, independent NumPy seed streams, scoped Torch deterministic state, caller RNG restoration; covered and valid |
 | Train/eval transitions | Training mode per epoch, eval/no-grad validation and inference, best checkpoint restored in eval mode; covered and valid |
 | Result immutability | Dense, sparse, latent, probability, and nested diagnostics are snapshotted and freshly materialized read-only views; covered and valid |
@@ -308,10 +308,11 @@ The requested cross-cutting classifications are:
 | O-002 | Minor | The first Task 2 interpreter stopped in collection with a NumPy/pandas ABI mismatch and proved below the declared NumPy floor when isolated. | Enabled user-site packages overrode an older environment and mixed incompatible binaries. | Closed as environmental; authoritative tests use the existing declared-compatible Python 3.12 environment. |
 | F-004 | Important | Both observed-count and corrupted-availability normalization could return `inf` for a valid finite normalization target. | Computing `target / library` first can round upward; multiplying the result by the count then overflowed even though `count / library * target` is mathematically bounded by `target`. | Closed test-first by evaluating proportions before multiplying by the target. No hyperparameter or estimand changed. |
 | F-005 | Important | A finite extended-precision candidate outside float64 range could be cast to `inf` and returned by the full-ungated ablation output. | `_numeric_matrix_to_dense` checked finiteness only before its float64 conversion. | Closed test-first with a post-conversion finite check at the shared dense boundary. |
-| F-006 | Important | NB dispersion estimation silently accepted a masked `library_sizes` vector. | `np.asarray` discarded the mask before validation. | Closed test-first by rejecting a masked library-size vector before coercion. |
-| F-007 | Important | Inverse normalization silently accepted a masked `library_sizes` vector. | `invert_observed_normalization` called `np.asarray` before checking mask semantics, which erased the mask. | Closed test-first by rejecting a masked vector before coercion at this separate library-size boundary. |
+| F-006 | Important | NB dispersion estimation silently accepted a directly masked `library_sizes` vector. | `np.asarray` discarded the mask before validation. | The original direct-input regression remains closed. F-010 supersedes its boundary-local guard with shared mask-preserving coercion and separately covers protocol-produced masks. |
+| F-007 | Important | Inverse normalization silently accepted a directly masked `library_sizes` vector. | `invert_observed_normalization` called `np.asarray` before checking mask semantics, which erased the mask. | The original direct-input regression remains closed. F-010 supersedes its boundary-local guard with shared mask-preserving coercion and separately covers both inverse inputs. |
 | F-008 | Minor | Both direct forward-normalization helpers accepted a finite extended-precision target outside float64 range and returned `inf`. | The helpers checked finiteness before converting the scalar to float64, but did not validate the converted scalar before arithmetic. | Closed test-first with a post-conversion finite check before normalization arithmetic; the valid float64 maximum remains accepted. |
 | F-009 | Minor | Inverse normalization accepted a finite extended-precision target outside float64 range after it converted to `inf`. | `invert_observed_normalization` validated the original scalar but used `float(target)` without validating that conversion. | Closed test-first with the same post-conversion finite-and-positive guard used at all three normalization boundaries. |
+| F-010 | Important | Dense array-like inputs whose array protocol produced masked data bypassed boundary-local direct-mask guards; inverse normalized expression also accepted a direct masked array. Reachable affected inputs were inverse normalized expression and library sizes, dispersion library sizes and estimation mask, and epoch/ablation validation masks. | Ordinary `np.asarray` coercion discarded `MaskedArray` semantics before the owning boundary validated them. | Closed test-first with one private shared coercion boundary that uses mask-preserving coercion, rejects direct, nested, and protocol-produced masks, and only then returns an ordinary ndarray. Seven focused nodes cover every demonstrated reachable defect. |
 
 ### Regression evidence
 
@@ -335,6 +336,13 @@ RED/GREEN cycle at the integration head.
 | `tests/test_maskimpute_v27.py::test_observed_normalization_rejects_finite_target_outside_float64_range` | Reconstructed at `93105ac`: did not raise after float64 overflow | 1 passed |
 | `tests/test_maskimpute_v27.py::test_available_normalization_rejects_finite_target_outside_float64_range` | Reconstructed at `93105ac`: did not raise after float64 overflow | 1 passed |
 | `tests/test_maskimpute_v27.py::test_inverse_normalization_rejects_finite_target_outside_float64_range` | Original TDD at `4728945`: did not raise after float64 overflow | 1 passed |
+| `tests/test_maskimpute_v27.py::test_inverse_normalization_rejects_masked_normalized_expression` | Original TDD at the F-010 parent: did not raise after direct mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_inverse_normalization_rejects_protocol_masked_normalized_expression` | Original TDD at the F-010 parent: did not raise after protocol-produced mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_inverse_normalization_rejects_protocol_masked_library_sizes` | Original TDD at the F-010 parent: did not raise after protocol-produced mask erasure | 1 passed |
+| `tests/test_maskimpute_v28.py::test_gene_dispersion_rejects_protocol_masked_library_sizes` | Original TDD at the F-010 parent: did not raise after protocol-produced mask erasure | 1 passed |
+| `tests/test_maskimpute_v28.py::test_gene_dispersion_rejects_protocol_masked_estimation_mask` | Original TDD at the F-010 parent: did not raise after protocol-produced mask erasure | 1 passed |
+| `tests/test_maskimpute_v27.py::test_epoch_mask_rejects_protocol_masked_validation_mask` | Original TDD at the F-010 parent: did not raise after protocol-produced mask erasure | 1 passed |
+| `tests/test_maskimpute_ablations.py::test_uniform_masking_rejects_protocol_masked_validation_mask` | Original TDD at the F-010 parent: did not raise after protocol-produced mask erasure | 1 passed |
 
 The complete post-correction Task 2 suite passed:
 
@@ -353,6 +361,14 @@ After F-009 and the evidence correction, the same complete suite passed:
 
 ```text
 580 passed, 2 skipped in 26.66s
+```
+
+After F-010 centralized the masked-aware coercion boundary, the same complete
+suite passed:
+
+```text
+587 passed, 2 skipped in 28.02s
+Final pre-commit rerun: 587 passed, 2 skipped in 23.66s
 ```
 
 The two skips are the existing CUDA smoke checks on a host where CUDA is

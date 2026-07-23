@@ -9,6 +9,20 @@ import numpy as np
 import pytest
 
 
+class _MaskedArrayProtocol:
+    def __init__(self, values, mask):
+        self._values = values
+        self._mask = mask
+
+    def __array__(self, dtype=None, copy=None):
+        return np.ma.array(
+            self._values,
+            mask=self._mask,
+            dtype=dtype,
+            copy=False if copy is None else copy,
+        )
+
+
 EXPECTED_VARIANTS = (
     "capacity-matched-ae",
     "no-gate",
@@ -308,6 +322,24 @@ def test_uniform_masking_control_is_deterministic_and_uses_training_positives_on
     assert np.count_nonzero(first) == 2
     assert not np.any(first & validation)
     assert not np.any(first & (counts == 0))
+
+
+def test_uniform_masking_rejects_protocol_masked_validation_mask():
+    from maskimpute.ablations import make_uniform_positive_mask
+
+    counts = np.array([[1, 1], [2, 2]], dtype=np.int64)
+    validation = _MaskedArrayProtocol(
+        [[False, False], [False, True]],
+        [[True, False], [False, False]],
+    )
+
+    with pytest.raises(TypeError, match="validation_mask.*masked"):
+        make_uniform_positive_mask(
+            counts,
+            validation_mask=validation,
+            fraction=0.5,
+            rng=np.random.default_rng(71),
+        )
 
 
 def test_named_variants_do_not_change_optimizer_or_architecture_budget():

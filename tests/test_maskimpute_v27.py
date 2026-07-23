@@ -132,6 +132,51 @@ def test_inverse_normalization_rejects_masked_library_sizes_before_coercion():
         )
 
 
+def test_inverse_normalization_rejects_masked_normalized_expression():
+    from maskimpute.train import invert_observed_normalization
+
+    normalized_expression = np.ma.array(
+        [[np.log1p(1_000.0)]],
+        mask=[[True]],
+    )
+
+    with pytest.raises(TypeError, match="normalized_expression.*masked"):
+        invert_observed_normalization(
+            normalized_expression,
+            [1.0],
+            target=1_000.0,
+        )
+
+
+def test_inverse_normalization_rejects_protocol_masked_normalized_expression():
+    from maskimpute.train import invert_observed_normalization
+
+    normalized_expression = _MaskedArrayProtocol(
+        [[np.log1p(1_000.0)]],
+        [[True]],
+    )
+
+    with pytest.raises(TypeError, match="normalized_expression.*masked"):
+        invert_observed_normalization(
+            normalized_expression,
+            [1.0],
+            target=1_000.0,
+        )
+
+
+def test_inverse_normalization_rejects_protocol_masked_library_sizes():
+    from maskimpute.train import invert_observed_normalization
+
+    library_sizes = _MaskedArrayProtocol([1.0], [True])
+
+    with pytest.raises(TypeError, match="library_sizes.*masked"):
+        invert_observed_normalization(
+            [[np.log1p(1_000.0)]],
+            library_sizes,
+            target=1_000.0,
+        )
+
+
 @pytest.mark.skipif(
     np.finfo(np.longdouble).max <= np.finfo(np.float64).max,
     reason="extended precision is unavailable",
@@ -341,6 +386,25 @@ def test_epoch_mask_is_stratified_across_populated_log_count_bins():
 
     for value in (1, 2, 4, 8):
         assert np.count_nonzero(epoch_mask & (counts == value)) == 1
+
+
+def test_epoch_mask_rejects_protocol_masked_validation_mask():
+    from maskimpute.train import make_epoch_training_mask
+
+    counts = np.array([[1, 1], [2, 2]], dtype=np.int64)
+    validation = _MaskedArrayProtocol(
+        [[False, False], [False, True]],
+        [[True, False], [False, False]],
+    )
+
+    with pytest.raises(TypeError, match="validation_mask.*masked"):
+        make_epoch_training_mask(
+            counts,
+            validation_mask=validation,
+            fraction=0.5,
+            log_count_bin_edges=(np.log1p(1.5),),
+            rng=np.random.default_rng(22),
+        )
 
 
 def test_mask_helpers_enforce_the_raw_integral_count_contract():
