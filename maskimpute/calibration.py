@@ -828,9 +828,7 @@ def _validated_thresholds(value: object) -> CalibrationThresholds:
     if type(value) is not CalibrationThresholds:
         raise TypeError("thresholds must be an exact CalibrationThresholds value")
     return CalibrationThresholds(
-        minimum_exact_mechanisms_improved=(
-            value.minimum_exact_mechanisms_improved
-        ),
+        minimum_exact_mechanisms_improved=(value.minimum_exact_mechanisms_improved),
         minimum_biological_draws_improved=value.minimum_biological_draws_improved,
         minimum_technical_records_improved=value.minimum_technical_records_improved,
         brier_improvement_epsilon=value.brier_improvement_epsilon,
@@ -866,7 +864,10 @@ class CandidateEvaluation:
             names = [identifier for identifier, _metric in metrics]
             if (
                 not names
-                or any(not isinstance(identifier, str) or not identifier for identifier in names)
+                or any(
+                    not isinstance(identifier, str) or not identifier
+                    for identifier in names
+                )
                 or names != sorted(names)
                 or len(set(names)) != len(names)
             ):
@@ -915,12 +916,10 @@ class CandidateEvaluation:
                 name: metric.to_dict() for name, metric in self.mechanism_metrics
             },
             "biological_draw_metrics": {
-                name: metric.to_dict()
-                for name, metric in self.biological_draw_metrics
+                name: metric.to_dict() for name, metric in self.biological_draw_metrics
             },
             "technical_record_metrics": {
-                name: metric.to_dict()
-                for name, metric in self.technical_record_metrics
+                name: metric.to_dict() for name, metric in self.technical_record_metrics
             },
             "aggregate_metrics": self.aggregate_metrics.to_dict(),
             "fit_failures": list(self.fit_failures),
@@ -1112,13 +1111,9 @@ def retention_reasons(
             f"{len(improved_draws)}<"
             f"{thresholds.minimum_biological_draws_improved}"
         )
-    missing_draws = tuple(
-        sorted(set(identity_draw_metrics).difference(improved_draws))
-    )
+    missing_draws = tuple(sorted(set(identity_draw_metrics).difference(improved_draws)))
     if missing_draws:
-        reasons.append(
-            "not_all_biological_draws_improved:" + ",".join(missing_draws)
-        )
+        reasons.append("not_all_biological_draws_improved:" + ",".join(missing_draws))
     if len(identity_record_metrics) < thresholds.minimum_technical_records_improved:
         reasons.append(
             "insufficient_nested_technical_records:"
@@ -1423,6 +1418,7 @@ def _candidate_from_dict(value: object) -> CandidateEvaluation:
         },
         "candidate",
     )
+
     def metric_group(field: str) -> tuple[tuple[str, CalibrationMetrics], ...]:
         values = payload[field]
         if not isinstance(values, dict) or not values:
@@ -1635,8 +1631,7 @@ def _validate_artifact_payload(
     ):
         raise ValueError("candidate mechanisms contradict exact-truth eligibility")
     expected_draw_ids = tuple(
-        f"symsim/{biological_id}"
-        for biological_id in _DEVELOPMENT_BIOLOGICAL_IDS
+        f"symsim/{biological_id}" for biological_id in _DEVELOPMENT_BIOLOGICAL_IDS
     )
     expected_record_ids = tuple(
         sorted(
@@ -1666,10 +1661,14 @@ def _validate_artifact_payload(
         record_entry_count = sum(
             metric.n for _name, metric in candidate.technical_record_metrics
         )
-        if candidate.aggregate_metrics.n not in {
-            draw_entry_count,
-            record_entry_count,
-        } or draw_entry_count != record_entry_count:
+        if (
+            candidate.aggregate_metrics.n
+            not in {
+                draw_entry_count,
+                record_entry_count,
+            }
+            or draw_entry_count != record_entry_count
+        ):
             raise ValueError(
                 "candidate aggregate count contradicts draw or technical record metrics"
             )
@@ -1742,8 +1741,7 @@ def _validate_artifact_payload(
         if (
             candidate.eligible is not (not expected_reasons)
             or candidate.eligibility_reasons != expected_reasons
-            or candidate.brier_improved_mechanisms
-            != expected_improved_mechanisms
+            or candidate.brier_improved_mechanisms != expected_improved_mechanisms
             or candidate.brier_improved_biological_draws != expected_improved_draws
             or candidate.brier_improved_technical_records != expected_improved_records
         ):
@@ -1987,7 +1985,9 @@ def _validate_artifact_payload(
             or tuple(sorted(training_manifests)) != training_manifests
             or len(set(held_out)) != len(held_out)
             or len(set(training_manifests)) != len(training_manifests)
-            or any(not _SHA256.fullmatch(item) for item in (*held_out, *training_manifests))
+            or any(
+                not _SHA256.fullmatch(item) for item in (*held_out, *training_manifests)
+            )
         ):
             raise ValueError("development holdout fold manifests are not canonical")
         if held_out != group_manifests_by_key[key]:
@@ -2121,7 +2121,9 @@ def _verify_tracked_calibration_contract() -> None:
     try:
         contract_bytes = path.read_bytes()
     except OSError as exc:
-        raise RuntimeError("tracked calibration retention contract is unavailable") from exc
+        raise RuntimeError(
+            "tracked calibration retention contract is unavailable"
+        ) from exc
     if hashlib.sha256(contract_bytes).hexdigest() != CALIBRATION_CONTRACT_SHA256:
         raise ValueError("tracked calibration retention contract digest differs")
 

@@ -9,9 +9,7 @@ from pathlib import Path
 import sys
 
 
-ARCHIVED_IMPLEMENTATION = Path(
-    "historical/v26_neurips/code/masked_imputation26.py"
-)
+ARCHIVED_IMPLEMENTATION = Path("historical/v26_neurips/code/masked_imputation26.py")
 
 
 def _parser() -> argparse.ArgumentParser:

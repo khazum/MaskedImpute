@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 from .FourierKAN import NaiveFourierKANLayer as FourierKANLayer
 from .KAN import KANLinear as KANLayer

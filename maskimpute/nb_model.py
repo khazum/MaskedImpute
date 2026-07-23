@@ -178,7 +178,9 @@ def estimate_shrunk_gene_dispersion(
         or libraries.dtype.kind not in "iuf"
         or libraries.dtype.kind == "b"
     ):
-        raise ValueError("library_sizes must be a numeric vector with one value per cell")
+        raise ValueError(
+            "library_sizes must be a numeric vector with one value per cell"
+        )
     libraries = np.asarray(libraries, dtype=np.float64)
     if not np.all(np.isfinite(libraries)) or np.any(libraries < 0):
         raise ValueError("library_sizes must be finite and nonnegative")
@@ -225,9 +227,7 @@ def estimate_shrunk_gene_dispersion(
 
     valid_raw = raw[np.isfinite(raw) & (raw > 0)]
     global_dispersion = (
-        float(np.median(valid_raw))
-        if valid_raw.size
-        else float(config.min_dispersion)
+        float(np.median(valid_raw)) if valid_raw.size else float(config.min_dispersion)
     )
     global_dispersion = float(
         np.clip(
@@ -248,8 +248,7 @@ def estimate_shrunk_gene_dispersion(
     if config.dispersion_prior_strength == 0:
         weight = np.where(effective > 0, 1.0, 0.0)
     shrunk = np.exp(
-        weight * np.log(usable_raw)
-        + (1.0 - weight) * math.log(global_dispersion)
+        weight * np.log(usable_raw) + (1.0 - weight) * math.log(global_dispersion)
     )
     shrunk = np.clip(
         shrunk,
@@ -349,9 +348,7 @@ def negative_binomial_nll(
     )
     losses = -log_probability
     if not torch.isfinite(losses).all() or torch.any(losses < 0):
-        raise FloatingPointError(
-            "negative-binomial likelihood produced invalid losses"
-        )
+        raise FloatingPointError("negative-binomial likelihood produced invalid losses")
     if reduction == "none":
         return losses
     if reduction == "sum":

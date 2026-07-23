@@ -18,6 +18,9 @@ EXCLUDED_EXACT_PATHS = {
     # These binding policy documents must name the terminology they prohibit.
     "docs/superpowers/plans/2026-07-12-method-competition.md",
     "docs/superpowers/specs/2026-07-12-genome-biology-study-design.md",
+    # Raw Git inventories must retain exact archived path names as review evidence.
+    "docs/superpowers/reviews/2026-07-23-publication-integration-baseline-name-status.txt",
+    "docs/superpowers/reviews/2026-07-23-publication-integration-baseline-numstat.txt",
 }
 
 OBSOLETE_PATTERNS = {

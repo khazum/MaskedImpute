@@ -19,5 +19,8 @@ test = ["pytest>=8,<9", "tomli>=2,<3; python_version < '3.11'"]
 [tool.setuptools.packages.find]
 include = ["maskimpute*", "maskimpute_benchmark*"]
 
+[tool.ruff]
+extend-exclude = ["historical"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

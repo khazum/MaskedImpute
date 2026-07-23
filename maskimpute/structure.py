@@ -155,9 +155,7 @@ def build_structure_authority(
     normalized, _libraries = normalize_observed_counts(counts, target=10_000.0)
     variances = np.var(normalized, axis=0, ddof=0)
     gene_order = np.lexsort((np.arange(n_genes, dtype=np.int64), -variances))
-    selected = tuple(
-        int(value) for value in gene_order[: config.variable_gene_count]
-    )
+    selected = tuple(int(value) for value in gene_order[: config.variable_gene_count])
     panel = normalized[:, selected]
     squared_norm = np.sum(panel * panel, axis=1, keepdims=True)
     squared_distances = squared_norm + squared_norm.T - 2.0 * (panel @ panel.T)
@@ -227,9 +225,7 @@ def structure_preservation_loss(
         denominator = float(prediction.shape[0] - 1)
         predicted_covariance = predicted_centered.T @ predicted_centered / denominator
         target_covariance = target_centered.T @ target_centered / denominator
-        covariance_loss = torch.mean(
-            (predicted_covariance - target_covariance) ** 2
-        )
+        covariance_loss = torch.mean((predicted_covariance - target_covariance) ** 2)
     local_by_global = {int(global_row): local for local, global_row in enumerate(rows)}
     source_indices: list[int] = []
     neighbor_indices: list[int] = []

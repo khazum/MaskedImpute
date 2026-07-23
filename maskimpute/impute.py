@@ -81,9 +81,7 @@ def impute_counts(
         from maskimpute.calibration import CalibrationArtifact
 
         if type(calibration_artifact) is not CalibrationArtifact:
-            raise TypeError(
-                "calibration_artifact must be an exact CalibrationArtifact"
-            )
+            raise TypeError("calibration_artifact must be an exact CalibrationArtifact")
         if type(p_pre_zero) is not PreZeroCountModelScore:
             raise TypeError(
                 "retained calibration requires an exact PreZeroCountModelScore"

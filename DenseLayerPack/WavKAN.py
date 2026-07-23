@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import math
 
 
@@ -122,7 +121,6 @@ class KANLinear(nn.Module):
         # wav_output = F.linear(wavelet_output, self.weight)
         # base_output = F.linear(self.base_activation(x), self.weight1)
 
-        base_output = F.linear(x, self.weight1)
         combined_output = wavelet_output  # + base_output
 
         # Apply batch normalization

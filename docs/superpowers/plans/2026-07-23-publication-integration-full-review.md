@@ -166,7 +166,7 @@ git diff --check main...HEAD
 
 Expected: test collection completes, Ruff and compilation exit zero, and Git
 reports no whitespace errors. A failure becomes the first finding and is
-diagnosed under Task 8 before proceeding.
+diagnosed under Task 9 before proceeding.
 
 - [ ] **Step 5: Commit the baseline ledger**
 

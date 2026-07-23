@@ -34,18 +34,30 @@ $ git rev-list --count main..HEAD
 278
 ```
 
-The exact path inventories were created successfully with:
+The exact raw path inventories are retained as tracked review artifacts:
+
+- [baseline name-status inventory](2026-07-23-publication-integration-baseline-name-status.txt)
+- [baseline numstat inventory](2026-07-23-publication-integration-baseline-numstat.txt)
+
+They were generated directly by Git from the fixed merge base through baseline
+commit `391efcb3bf1b1b07a2bb159fade049528fad149b`:
 
 ```text
-$ git -c diff.renameLimit=20000 diff --name-status main...HEAD > /tmp/publication-integration-name-status.txt
-$ git -c diff.renameLimit=20000 diff --numstat main...HEAD > /tmp/publication-integration-numstat.txt
+$ git -c diff.renameLimit=20000 diff --name-status 3813a7e4a665b6e2a5c6e33d53e45c4290eb7f1f..391efcb3bf1b1b07a2bb159fade049528fad149b > docs/superpowers/reviews/2026-07-23-publication-integration-baseline-name-status.txt
+$ git -c diff.renameLimit=20000 diff --numstat 3813a7e4a665b6e2a5c6e33d53e45c4290eb7f1f..391efcb3bf1b1b07a2bb159fade049528fad149b > docs/superpowers/reviews/2026-07-23-publication-integration-baseline-numstat.txt
 ```
 
-Both commands exited zero and each inventory contains exactly 7,336 records.
+Both commands exited zero. Each retained inventory contains the original 7,336
+records.
 The canonical name-status inventory contains 246 added paths, 3 modified paths,
 6,034 deleted paths, and 1,053 paths renamed at 100% similarity. The numstat
 inventory records 207,365 added lines, 1,764,787 deleted lines, and 319 binary
 paths.
+
+One prohibited checksum diagnostic was run transiently against the temporary
+inventories during the original Task 1 investigation. This is closed as
+procedural deviation P-001: every resulting value was discarded immediately,
+none was used as review evidence, and no value or artifact was retained.
 
 `git diff --summary main...HEAD` exited zero and emitted 7,333 summary records.
 It also emitted these exact diagnostics:
@@ -92,10 +104,17 @@ loaded pandas 2.0.3 binaries built for the older ABI. With user-site packages
 disabled, the environment's NumPy 1.26.4 and pandas 2.1.4 import together, but
 that environment does not contain `anndata`.
 
-The authoritative checks therefore use the existing `magic311` environment
-with `PYTHONNOUSERSITE=1`. It provides Python 3.11.14, pytest 8.4.2, the
-project's declared `anndata` range, and Torch. Ruff 0.14.4 was installed only
-into `/tmp/publication-integration-review-tools-task1` and exposed through
+The authoritative checks therefore use the existing `magic311` environment.
+Every isolated Python invocation in the verification ledger spells out this
+exact prefix:
+
+```text
+PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m
+```
+
+It provides Python 3.11.14, pytest 8.4.2, the project's declared `anndata`
+range, and Torch. Ruff 0.14.4 was installed only into
+`/tmp/publication-integration-review-tools-task1` and exposed through
 `PYTHONPATH`; neither repository content nor an existing environment was
 changed.
 
@@ -126,9 +145,11 @@ Task 10 owns final whole-branch verification and disposition.
 
 | ID | Severity | Summary | Disposition |
 |---|---|---|---|
-| O-001 | Minor observation | The invoking shell lacks the declared test tools; the first alternate environment leaked incompatible user-site NumPy/pandas packages. | Diagnosed as environment selection rather than a repository defect. Authoritative collection passed in isolated Python 3.11. Recheck the intended release environment in Task 10. |
-| F-001 | Minor | Repository-wide Ruff lint exits 1 with 261 violations: 259 in `historical/v26_neurips` and 2 in unchanged `DenseLayerPack` source. | Open for Task 8. The active integration packages, scripts, and tests produced no lint violation. Diagnose whether archival/legacy scope should be explicitly excluded or made compliant; no baseline-task fix. |
-| F-002 | Minor | Ruff formatting exits 1: 59 files would be reformatted (53 historical files, `masked_imputation26.py`, and five `maskimpute` modules). | Open for Task 8. Diagnose and correct the active formatting surface without rewriting preserved history unless review policy explicitly requires it; no baseline-task fix. |
+| O-001 | Minor | The invoking shell lacks the declared test tools; the first alternate environment leaked incompatible user-site NumPy/pandas packages. | Diagnosed as environment selection rather than a repository defect. Authoritative collection passed in isolated Python 3.11. Recheck the intended release environment in Task 10. |
+| F-001 | Important | Repository-wide Ruff lint exited 1 with 261 violations: 259 in preserved `historical/v26_neurips` material and 2 in active `DenseLayerPack` source. | Closed before deeper review. `pyproject.toml` excludes only `historical`; the unused DenseLayerPack import and dead local computation were removed. Repository-wide Ruff lint now exits zero. |
+| F-002 | Important | Ruff formatting exited 1: 59 files would be reformatted (53 historical files and six active files). | Closed before deeper review. Only `masked_imputation26.py` and the five identified `maskimpute` modules were mechanically formatted; preserved history was not rewritten. Repository-wide Ruff format checking now exits zero. |
+| F-003 | Minor | Once tracked, the exact raw inventories caused the active-terminology hygiene test to interpret archived path names as active prose. | Closed test-first. The two exact evidence artifacts are excluded by exact path from that terminology scan; their raw content remains unchanged. |
+| P-001 | Minor | A prohibited transient checksum diagnostic was run against temporary inventories during the original baseline investigation. | Closed procedural deviation. Resulting values were discarded, never used, and no value or artifact was retained. The authoritative evidence is the two tracked raw Git inventories linked above. |
 
 ### Critical
 
@@ -136,14 +157,17 @@ None identified by the Task 1 baseline and static checks.
 
 ### Important
 
-None identified by the Task 1 baseline and static checks.
+- F-001 and F-002 blocked the repository-wide static gate. Both are closed by
+  the corrections and exact verification recorded below.
 
 ### Minor
 
 - O-001: environment-selection variance described in the findings table. No
   repository correction is warranted in this task.
-- F-001: the repository-wide Ruff lint gate is not clean.
-- F-002: the repository-wide Ruff formatting gate is not clean.
+- F-003: the exact-path terminology-test exclusion preserves both the hygiene
+  contract and the raw inventory evidence.
+- P-001: the transient procedural deviation is recorded and closed with no
+  retained value or artifact.
 
 ### Human and scientific blockers
 
@@ -157,27 +181,50 @@ None identified by the Task 1 baseline and static checks.
 
 ## Corrections
 
-Task 1 creates only this review ledger. It makes no production, test,
-manuscript, dependency, or environment correction.
+- Retained the exact raw baseline name-status and numstat inventories as the
+  two linked tracked review artifacts.
+- Excluded only preserved `historical` material from repository-wide Ruff
+  discovery after isolating all archival lint and formatting noise there.
+- Removed the unused `torch` import from `DenseLayerPack/DenseLayer.py` and the
+  dead `base_output` computation plus now-unused functional import from
+  `DenseLayerPack/WavKAN.py`.
+- Mechanically formatted only `masked_imputation26.py`,
+  `maskimpute/calibration.py`, `maskimpute/impute.py`,
+  `maskimpute/nb_model.py`, `maskimpute/structure.py`, and
+  `maskimpute/train.py`.
+- Corrected the full-review plan so baseline failures route to Task 9 in the
+  current 10-task plan.
+- Excluded the two raw inventory artifacts by exact path from the active
+  terminology scan after the newly tracked files produced the expected RED
+  hygiene failure.
+- Closed F-001, F-002, F-003, and P-001 before deeper review. No historical
+  content, manuscript, dependency, existing environment, scientific result, or
+  human metadata was changed.
 
 ## Verification ledger
 
-| Command | Environment | Result |
+| Exact command | Phase | Result |
 |---|---|---|
-| `python -m pytest --collect-only -q` | `masked_imputation`, Python 3.10.19 | Exit 2: 1,065 tests collected before 28 imports failed with one NumPy/pandas ABI mismatch; diagnosed as user-site leakage. |
-| `python -m pytest --collect-only -q` | isolated `magic311`, Python 3.11.14, pytest 8.4.2 | Exit 0: 2,782 tests collected in 30.10 seconds. |
-| `python -m ruff check .` | isolated `magic311`, Ruff 0.14.4 | Exit 1: 261 violations across 39 files; 259 violations are historical and 2 are in unchanged `DenseLayerPack` source. Finding F-001. |
-| `python -m ruff format --check .` | isolated `magic311`, Ruff 0.14.4 | Exit 1: 59 files would be reformatted and 158 are already formatted; 53 affected files are historical and 6 are active. Finding F-002. |
-| `python -m compileall -q maskimpute maskimpute_benchmark scripts tests` | isolated `magic311`, Python 3.11.14 | Exit 0 with empty output. |
-| `git diff --check main...HEAD` | worktree | Exit 0 with no whitespace errors; Git repeated the rename-limit warning recorded above. |
-| `git -c diff.renameLimit=20000 diff --check main...HEAD` | worktree | Supplemental exit 0 with empty output. |
+| `/home/marcinmaleclocal/miniconda3/envs/masked_imputation/bin/python -m pytest --collect-only -q` | Baseline diagnosis | Exit 2: 1,065 tests collected before 28 imports failed with one NumPy/pandas ABI mismatch caused by enabled user-site packages. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m pytest --collect-only -q` | Baseline at `391efcb3bf1b1b07a2bb159fade049528fad149b` | Exit 0: 2,782 tests collected in 30.10 seconds. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m ruff check .` | Baseline at `391efcb3bf1b1b07a2bb159fade049528fad149b` | Exit 1: 261 violations; 259 were in preserved history and 2 were in active DenseLayerPack source. Finding F-001. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m ruff format --check .` | Baseline at `391efcb3bf1b1b07a2bb159fade049528fad149b` | Exit 1: 59 files would be reformatted; 53 were historical and 6 were active. Finding F-002. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m ruff format masked_imputation26.py maskimpute/calibration.py maskimpute/impute.py maskimpute/nb_model.py maskimpute/structure.py maskimpute/train.py` | Correction | Exit 0: exactly six active files reformatted. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m ruff check .` | Correction verification | Exit 0: all checks passed. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m ruff format --check .` | Correction verification | Exit 0: 164 files already formatted. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m compileall -q DenseLayerPack masked_imputation26.py maskimpute maskimpute_benchmark scripts tests` | Correction verification | Exit 0 with empty output. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m pytest -q tests/test_obsolete_terms.py tests/test_maskimpute_v28.py tests/test_maskimpute_v29.py tests/test_prezero_calibration.py tests/test_maskimpute_v27.py::test_public_imputation_signature_has_no_evaluator_side_channels tests/test_maskimpute_v27.py::test_inference_marks_exactly_natural_observed_zeros_unavailable tests/test_maskimpute_v27.py::test_power_complement_gate_is_monotone_in_pre_zero_probability tests/test_maskimpute_v27.py::test_power_complement_gate_rejects_ambiguous_direct_inputs` | Correction verification | Exit 0: 151 focused tests passed in 6.96 seconds. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m pytest -q tests/test_obsolete_terms.py tests/test_maskimpute_v28.py tests/test_maskimpute_v29.py tests/test_prezero_calibration.py tests/test_maskimpute_v27.py::test_public_imputation_signature_has_no_evaluator_side_channels tests/test_maskimpute_v27.py::test_inference_marks_exactly_natural_observed_zeros_unavailable tests/test_maskimpute_v27.py::test_power_complement_gate_is_monotone_in_pre_zero_probability tests/test_maskimpute_v27.py::test_power_complement_gate_rejects_ambiguous_direct_inputs` | F-003 RED at the first committed head | Exit 1: 1 failed and 150 passed in 6.96 seconds; both exact evidence artifacts contained archived path names. |
+| `PYTHONNOUSERSITE=1 PYTHONPATH=/tmp/publication-integration-review-tools-task1 /home/marcinmaleclocal/miniconda3/envs/magic311/bin/python -m pytest -q tests/test_obsolete_terms.py` | F-003 GREEN | Exit 0: 2 tests passed in 0.76 seconds. |
+| `git diff --check` | Correction verification | Exit 0 with empty output. |
 
 ## Final disposition
 
-Task 1 established the exact branch baseline and changed-path ledger. Test
-collection, Python compilation, and whitespace checks pass in the diagnosed
-environment. Findings F-001 and F-002 remain open for Task 8, so the branch
-does not yet satisfy its complete static-check acceptance criteria.
+Task 1 established the exact branch baseline and changed-path ledger, now with
+the exact raw inventories retained as tracked artifacts. Test collection,
+Python compilation, repository-wide Ruff lint and format checks, and whitespace
+checks pass in the diagnosed environment. F-001, F-002, F-003, and P-001 are
+closed; deeper review may proceed under Tasks 2–10.
 
 No conclusion about whole-branch correctness, scientific competitiveness, or
 Genome Biology submission readiness is made here.

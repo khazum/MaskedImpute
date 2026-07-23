@@ -704,7 +704,9 @@ def _train_with_policies(
                     rows_numpy,
                 )
                 if not isinstance(additional, torch.Tensor) or additional.ndim != 0:
-                    raise TypeError("additional_training_loss must return a scalar tensor")
+                    raise TypeError(
+                        "additional_training_loss must return a scalar tensor"
+                    )
                 loss = loss + additional
             if not torch.isfinite(loss):
                 raise FloatingPointError("nonfinite masked-model training loss")
@@ -829,9 +831,7 @@ def train_v28(
     )
 
     if type(decoder_config) is not NegativeBinomialDecoderConfig:
-        raise TypeError(
-            "decoder_config must be an exact NegativeBinomialDecoderConfig"
-        )
+        raise TypeError("decoder_config must be an exact NegativeBinomialDecoderConfig")
     counts = validate_observed_counts(observed_counts)
     library_sizes = counts.sum(axis=1, dtype=np.float64)
     if np.any(counts > MAX_V28_COUNT_OR_LIBRARY) or np.any(
@@ -912,13 +912,9 @@ def train_v29(
     )
 
     if type(decoder_config) is not NegativeBinomialDecoderConfig:
-        raise TypeError(
-            "decoder_config must be an exact NegativeBinomialDecoderConfig"
-        )
+        raise TypeError("decoder_config must be an exact NegativeBinomialDecoderConfig")
     if type(structure_config) is not StructurePenaltyConfig:
-        raise TypeError(
-            "structure_config must be an exact StructurePenaltyConfig"
-        )
+        raise TypeError("structure_config must be an exact StructurePenaltyConfig")
     counts = validate_observed_counts(observed_counts)
     library_sizes = counts.sum(axis=1, dtype=np.float64)
     if np.any(counts > MAX_V28_COUNT_OR_LIBRARY) or np.any(
