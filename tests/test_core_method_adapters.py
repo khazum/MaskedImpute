@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import warnings
 
 import anndata as ad
 import numpy as np
@@ -44,7 +45,9 @@ from maskimpute_benchmark.methods.observed import (
     count_equivalent_to_log2_cp10k,
     execute_pinned_command,
     log1p_cp10k,
+    log1p_cp10k_to_count_equivalent,
     observed_library_sizes,
+    raw_output_to_count_equivalent,
     require_method_spec,
     run_observed,
     verify_pinned_source,
@@ -435,6 +438,26 @@ def test_observed_library_sizes_reject_unrepresentable_totals_without_fp_errors(
             observed_library_sizes(method_input)
 
     assert captured.value.reason_code == "unrepresentable_library_size"
+
+
+@pytest.mark.parametrize(
+    "conversion",
+    [raw_output_to_count_equivalent, log1p_cp10k_to_count_equivalent],
+)
+def test_native_output_conversion_rejects_unrepresentable_longdouble_without_warning(
+    conversion,
+) -> None:
+    if np.finfo(np.longdouble).max <= np.finfo(np.float64).max:
+        pytest.skip("longdouble has no wider finite range on this platform")
+    method_input = _method_input()
+    native_output = np.ones(method_input.shape, dtype=np.longdouble)
+    native_output[0, 0] = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            with pytest.raises(ValueError, match="representable as float64"):
+                conversion(method_input, native_output)
 
 
 def test_common_scale_zero_row_reason_precedes_another_row_overflow() -> None:

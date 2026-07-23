@@ -234,13 +234,17 @@ def _validated_native_matrix(
         raise ValueError(f"{name} must match the method-input shape")
     if native_output.dtype.kind not in {"i", "u", "f"}:
         raise ValueError(f"{name} must be numeric")
-    values = np.array(
-        native_output,
-        dtype=np.float64,
-        copy=True,
-        order="C",
-        subok=False,
-    )
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            values = np.array(
+                native_output,
+                dtype=np.float64,
+                copy=True,
+                order="C",
+                subok=False,
+            )
+    except (FloatingPointError, RuntimeWarning) as error:
+        raise ValueError(f"{name} must be representable as float64") from error
     if not np.isfinite(values).all() or bool((values < 0).any()):
         raise ValueError(f"{name} must be finite and nonnegative")
     return values

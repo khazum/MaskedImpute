@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import warnings
 
 import numpy as np
 import pytest
@@ -292,6 +293,54 @@ def test_reconstruction_extremes_are_stable_with_warnings_as_errors() -> None:
     assert result["mean_gene_wasserstein_distance"] == MetricValue(0.0, 2, None)
     assert result["corr_err"] == MetricValue(0.0, 1, None)
     assert result["cell_distance_distortion"] == MetricValue(0.0, 1, None)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_variance_distortion_preserves_adjacent_extreme_variance_cancellation(
+    reverse: bool,
+) -> None:
+    x = float.fromhex("0x1.8p+537")
+    y = np.nextafter(x, np.inf)
+    truth = np.array([[-x], [x]])
+    imputed = np.array([[-y], [y]])
+    if reverse:
+        truth, imputed = imputed, truth
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result["variance_distortion"] == MetricValue(
+        float.fromhex("0x1.8p+1023"),
+        1,
+        None,
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_cell_distance_distortion_preserves_adjacent_extreme_norm_cancellation(
+    reverse: bool,
+) -> None:
+    x = float.fromhex("0x1.1999999999999p+1023")
+    y = np.nextafter(x, np.inf)
+    truth = np.array([[0.0, 0.0], [x, x]])
+    imputed = np.array([[0.0, 0.0], [y, y]])
+    if reverse:
+        truth, imputed = imputed, truth
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    expected = MetricValue(
+        float.fromhex("0x1.6a09e667f3bcdp+971"),
+        1,
+        None,
+    )
+    assert result["cell_distance_distortion"] == expected
+    assert result["pairwise_cell_distance_distortion"] == expected
 
 
 def test_reconstruction_returns_representable_mean_after_raw_difference_overflow() -> (

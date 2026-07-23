@@ -10,6 +10,8 @@ local to log-loss computation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, localcontext
+from fractions import Fraction
 import math
 from typing import Any
 
@@ -126,29 +128,6 @@ def _term_from_scaled(
     )
 
 
-def _term_power(term: _ScaledTerm, power: int) -> _ScaledTerm:
-    mantissa, exponent = term
-    if mantissa == 0.0:
-        return _ZERO_TERM
-    return _normalize_term(mantissa**power, exponent * power)
-
-
-def _term_difference(left: _ScaledTerm, right: _ScaledTerm) -> _ScaledTerm:
-    left_mantissa, left_exponent = left
-    right_mantissa, right_exponent = right
-    if left_mantissa == 0.0:
-        return right
-    if right_mantissa == 0.0:
-        return left
-    if left_exponent < right_exponent:
-        left_mantissa, right_mantissa = right_mantissa, left_mantissa
-        left_exponent, right_exponent = right_exponent, left_exponent
-    difference = abs(
-        left_mantissa - math.ldexp(right_mantissa, right_exponent - left_exponent)
-    )
-    return _normalize_term(difference, left_exponent)
-
-
 def _term_ratio(numerator: _ScaledTerm, denominator: _ScaledTerm) -> _ScaledTerm:
     numerator_mantissa, numerator_exponent = numerator
     denominator_mantissa, denominator_exponent = denominator
@@ -200,6 +179,117 @@ def _metric_from_term(term: _ScaledTerm, n: int) -> MetricValue:
     if value is None:
         return _unavailable(n, "nonfinite_metric")
     return MetricValue(value, int(n), None)
+
+
+def _term_from_fraction(value: Fraction) -> _ScaledTerm:
+    """Retain one positive exact rational without materializing its magnitude."""
+
+    if value < 0:
+        raise ValueError("scaled terms require nonnegative values")
+    if value == 0:
+        return _ZERO_TERM
+    exponent = value.numerator.bit_length() - value.denominator.bit_length()
+    if exponent >= 0:
+        coefficient = value / Fraction(1 << exponent)
+    else:
+        coefficient = value * Fraction(1 << -exponent)
+    return _normalize_term(float(coefficient), exponent)
+
+
+def _fraction_to_decimal(value: Fraction) -> Decimal:
+    return Decimal(value.numerator) / Decimal(value.denominator)
+
+
+def _variance_difference_fraction(
+    left: np.ndarray,
+    right: np.ndarray,
+) -> Fraction:
+    """Return an exact population-variance difference in linear time."""
+
+    left_values = [Fraction.from_float(float(value)) for value in left]
+    right_values = [Fraction.from_float(float(value)) for value in right]
+    common_scale = max(
+        (abs(value) for value in (*left_values, *right_values)),
+        default=Fraction(),
+    )
+    if common_scale == 0:
+        return Fraction()
+
+    left_scaled = [value / common_scale for value in left_values]
+    right_scaled = [value / common_scale for value in right_values]
+    count = len(left_scaled)
+    left_mean = sum(left_scaled, start=Fraction()) / count
+    right_mean = sum(right_scaled, start=Fraction()) / count
+    centered_left = [value - left_mean for value in left_scaled]
+    centered_right = [value - right_mean for value in right_scaled]
+    scaled_difference = sum(
+        (
+            (left_value - right_value) * (left_value + right_value)
+            for left_value, right_value in zip(
+                centered_left,
+                centered_right,
+                strict=True,
+            )
+        ),
+        start=Fraction(),
+    )
+    return abs(scaled_difference) * common_scale * common_scale / count
+
+
+def _euclidean_norm_difference_term(
+    imputed_left: np.ndarray,
+    imputed_right: np.ndarray,
+    truth_left: np.ndarray,
+    truth_right: np.ndarray,
+) -> _ScaledTerm:
+    """Compute ``abs(||u|| - ||v||)`` before either norm is rounded."""
+
+    imputed_difference = [
+        Fraction.from_float(float(left)) - Fraction.from_float(float(right))
+        for left, right in zip(imputed_left, imputed_right, strict=True)
+    ]
+    truth_difference = [
+        Fraction.from_float(float(left)) - Fraction.from_float(float(right))
+        for left, right in zip(truth_left, truth_right, strict=True)
+    ]
+    common_scale = max(
+        (abs(value) for value in (*imputed_difference, *truth_difference)),
+        default=Fraction(),
+    )
+    if common_scale == 0:
+        return _ZERO_TERM
+
+    imputed_scaled = [value / common_scale for value in imputed_difference]
+    truth_scaled = [value / common_scale for value in truth_difference]
+    squared_norm_difference = abs(
+        sum(
+            (
+                (imputed_value - truth_value) * (imputed_value + truth_value)
+                for imputed_value, truth_value in zip(
+                    imputed_scaled,
+                    truth_scaled,
+                    strict=True,
+                )
+            ),
+            start=Fraction(),
+        )
+    )
+    if squared_norm_difference == 0:
+        return _ZERO_TERM
+    imputed_squared_norm = sum(
+        (value * value for value in imputed_scaled),
+        start=Fraction(),
+    )
+    truth_squared_norm = sum(
+        (value * value for value in truth_scaled),
+        start=Fraction(),
+    )
+    with localcontext() as context:
+        context.prec = 120
+        denominator = _fraction_to_decimal(imputed_squared_norm).sqrt()
+        denominator += _fraction_to_decimal(truth_squared_norm).sqrt()
+        coefficient = _fraction_to_decimal(squared_norm_difference) / denominator
+    return _term_from_fraction(common_scale * Fraction(coefficient))
 
 
 def _scaled_signed_differences(
@@ -260,49 +350,6 @@ def _root_mean_square_term(left: np.ndarray, right: np.ndarray) -> _ScaledTerm:
             normalized.size
         )
     return _term_from_scaled(scale, coefficient)
-
-
-def _euclidean_distance_terms(
-    left: np.ndarray,
-    right: np.ndarray,
-) -> list[_ScaledTerm]:
-    """Vectorized stable Euclidean distances from rows in ``left`` to ``right``."""
-
-    left_values = np.asarray(left, dtype=np.float64)
-    right_values = np.asarray(right, dtype=np.float64)
-    left_magnitude = np.abs(left_values)
-    right_magnitude = np.abs(right_values)[None, :]
-    same_sign = np.signbit(left_values) == np.signbit(right_values)[None, :]
-    safe = same_sign | (left_magnitude <= (_FLOAT64_MAX - right_magnitude))
-    safe_differences = np.zeros(left_values.shape, dtype=np.float64)
-    broadcast_right = np.broadcast_to(right_values, left_values.shape)
-    safe_differences[safe] = left_values[safe] - broadcast_right[safe]
-    maximum_safe = np.max(np.abs(safe_differences), axis=1)
-    maximum_unsafe = np.maximum(
-        np.max(np.where(safe, 0.0, left_magnitude), axis=1),
-        np.max(np.where(safe, 0.0, right_magnitude), axis=1),
-    )
-    scales = np.maximum(maximum_safe, maximum_unsafe)
-    normalized = np.zeros(left_values.shape, dtype=np.float64)
-    nonzero_rows = scales != 0.0
-    if np.any(nonzero_rows):
-        safe_nonzero = safe & nonzero_rows[:, None]
-        unsafe_nonzero = (~safe) & nonzero_rows[:, None]
-        row_scales = np.broadcast_to(scales[:, None], left_values.shape)
-        with np.errstate(under="ignore"):
-            normalized[safe_nonzero] = (
-                safe_differences[safe_nonzero] / row_scales[safe_nonzero]
-            )
-            normalized[unsafe_nonzero] = (
-                left_values[unsafe_nonzero] / row_scales[unsafe_nonzero]
-                - broadcast_right[unsafe_nonzero] / row_scales[unsafe_nonzero]
-            )
-    with np.errstate(under="ignore"):
-        coefficients = np.sqrt(np.sum(normalized * normalized, axis=1))
-    return [
-        _term_from_scaled(float(scale), float(coefficient))
-        for scale, coefficient in zip(scales, coefficients, strict=True)
-    ]
 
 
 def _standard_deviation_term(values: np.ndarray) -> _ScaledTerm:
@@ -630,21 +677,14 @@ def _pairwise_distance_distortion(
 
     values: list[_ScaledTerm] = []
     for first in range(n_cells - 1):
-        truth_distances = _euclidean_distance_terms(
-            truth[first + 1 :],
-            truth[first],
-        )
-        imputed_distances = _euclidean_distance_terms(
-            imputed[first + 1 :],
-            imputed[first],
-        )
         values.extend(
-            _term_difference(imputed_distance, truth_distance)
-            for imputed_distance, truth_distance in zip(
-                imputed_distances,
-                truth_distances,
-                strict=True,
+            _euclidean_norm_difference_term(
+                imputed[second],
+                imputed[first],
+                truth[second],
+                truth[first],
             )
+            for second in range(first + 1, n_cells)
         )
     return _metric_from_term(_term_mean(values), n_pairs)
 
@@ -824,18 +864,19 @@ def reconstruction_metrics(
             None,
         )
     else:
-        variance_differences: list[_ScaledTerm] = []
-        for gene in range(truth_array.shape[1]):
-            imputed_sd = _standard_deviation_term(imputed_array[:, gene])
-            truth_sd = _standard_deviation_term(truth_array[:, gene])
-            variance_differences.append(
-                _term_difference(
-                    _term_power(imputed_sd, 2),
-                    _term_power(truth_sd, 2),
-                )
+        variance_differences = [
+            _variance_difference_fraction(
+                imputed_array[:, gene],
+                truth_array[:, gene],
             )
+            for gene in range(truth_array.shape[1])
+        ]
+        variance_mean = sum(
+            variance_differences,
+            start=Fraction(),
+        ) / len(variance_differences)
         result["variance_distortion"] = _metric_from_term(
-            _term_mean(variance_differences),
+            _term_from_fraction(variance_mean),
             truth_array.shape[1],
         )
     result["mean_gene_wasserstein_distance"] = _mean_gene_wasserstein_distance(
