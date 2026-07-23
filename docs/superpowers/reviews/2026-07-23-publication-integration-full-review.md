@@ -887,16 +887,18 @@ and orthogonal evidence is reconstructed independently from typed authority.
 
 | ID | Severity | Finding | Root cause | Disposition |
 |---|---|---|---|---|
-| F-025 | Important | Direct and nested masks at metric inputs, a common-scale converter result, and stored pre-zero authoritative targets were silently accepted as ordinary dense values. | Ordinary NumPy conversion erased masked-array semantics before the owning boundary validated the resulting matrix. | Closed test-first. Metrics, evaluator targets and converter output, and stored-score targets now reuse the approved unmasked snapshot boundary, which rejects direct, nested, and protocol-produced masks before coercion. |
-| F-026 | Important | A finite extended-precision matrix outside float64 range became infinity after validation, while finite float64 inputs could overflow derived metric arithmetic and abort the complete metric row. | Finiteness was checked only before float64 conversion, and the strict public scalar dataclass received unrepresentable derived values directly. | Closed test-first. Matrices are rechecked after float64 conversion; unrepresentable derived endpoints retain their denominator and become unavailable with `nonfinite_metric`. Overflow-prone constant-profile detection now uses exact equality, and intentional overflow paths do not emit warnings. No value is clipped or rescaled. |
+| F-025 | Important | Direct and nested dense masks at metric inputs, a common-scale converter result, and stored pre-zero authoritative targets were silently accepted as ordinary dense values. | Ordinary NumPy conversion erased masked-array semantics before the owning dense boundary validated the resulting matrix. | Closed test-first for direct, nested, and protocol-produced dense masks. Metrics, evaluator targets and converter output, and stored-score targets reuse the approved unmasked dense snapshot boundary. F-030 separately closes masked storage inside an already sparse container. |
+| F-026 | Important | A finite extended-precision matrix outside float64 range became infinity after validation, while finite float64 inputs could overflow derived metric arithmetic and abort the complete metric row. | Finiteness was checked only before float64 conversion, and the strict public scalar dataclass received a nonfinite derived value directly. | Closed test-first for post-conversion finiteness and complete reason-coded metric rows. Its first arithmetic correction classified nonfinite intermediates as `nonfinite_metric` even when a scaled final estimand was representable; F-031 completes that numerical guarantee. |
 | F-027 | Minor | Exported tie-aware grouping accepted zero/negative maximum group counts and lacked explicit empty, dimensional, numeric, and finite input checks. | The public helper assumed already validated internal callers. | Closed test-first by enforcing a nonempty finite one-dimensional real vector and an exact positive integer maximum. The stable tie-preserving partition is unchanged. |
 | F-028 | Minor | Whitespace-only result statuses passed nonempty validation and canonicalized to an empty status. | Validation preceded `strip().lower()`. | Closed test-first by requiring every identity/status string to contain a non-whitespace character before canonicalization. |
 | F-029 | Important | Pre-zero outer/policy schema versions and metric/overall denominators could accept Boolean integer aliases. | Equality checks relied on Python's Boolean/integer equivalence. | Closed test-first with exact built-in integer checks. Existing reliability-bin and stratum exact-type checks remain. No checksum or provenance mechanism changed. |
+| F-030 | Important | A SciPy sparse evaluator target whose internal `.data` was a `MaskedArray` reached `toarray()` before mask validation; densification silently returned the underlying stored values. Completed evaluation and terminal-attempt pre-zero evidence could therefore consume a masked authority as ordinary data. | The F-025 dense snapshot guard was applied only after the sparse/dense dispatch, while SciPy's densifier erased the sparse storage mask. | Closed test-first. The evaluator inspects sparse storage with the foundational mask boundary before any `toarray()` call. Direct conversion, completed public evaluation, and terminal-attempt pre-zero target extraction reject the masked CSR; valid sparse behavior and import layering are unchanged. |
+| F-031 | Important | The F-026 fallback mislabeled representable endpoints as unavailable or zero: the published gNRMSE probe returned zero instead of `7.866824069956793e-309`, opposite-sign finite inputs overflowed during subtraction, standard deviation, norms, and reductions, and a raw difference, square, or sum could overflow even when the final mean or ratio fit float64. | Reconstruction materialized raw float64 intermediates before division, averaging, cancellation, or normalization established the range of the final estimand. Suppressing the warning did not recover the lost value. | Closed test-first with normalized mantissa/exponent terms owned by the metric module. MSE, MAE, RMSE/SD ratios, mean and variance distortion, correlations, cell distances, empirical Wasserstein distance, and both library-strata paths now defer materialization until the final endpoint. A provably overflow-safe ordinary branch preserves the existing checkpoint literals exactly. `nonfinite_metric` is retained only when the completed endpoint is undefined or not representable; no input or output is clipped or sanitized. |
 | O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
 
 No unresolved metric-domain, statistical-independence, evaluation-row,
 external-reference, manifest, or pre-zero evidence defect was demonstrated
-after F-025 through F-029. Legacy runtime-lock, filesystem-hardening, and
+after F-025 through F-031. Legacy runtime-lock, filesystem-hardening, and
 outer-provenance mechanisms were not redesigned or extended.
 
 ### Task 5 test-first and verification evidence
@@ -928,6 +930,47 @@ state:
 
 ```text
 335 passed, 1 skipped in 976.13s (0:16:16)
+```
+
+The independent correction began with six focused RED nodes for sparse
+storage and stable derived arithmetic:
+
+```text
+6 failed in 2.57s
+```
+
+The identical focused set then passed:
+
+```text
+6 passed in 1.62s
+```
+
+The warnings-as-errors metrics, pre-zero, and public sparse-boundary set
+passed at the final production state:
+
+```text
+131 passed in 16.74s
+```
+
+The first exact correction suite exposed only an ordinary-data checkpoint
+rounding difference after all new semantic nodes had passed:
+
+```text
+1 failed, 342 passed, 1 skipped in 971.34s (0:16:11)
+```
+
+The safe ordinary gNRMSE/correlation branch restored the established literals,
+and the previously failing checkpoint node passed:
+
+```text
+1 passed in 144.89s (0:02:24)
+```
+
+The exact sanitized five-file Task 5 suite then passed at the final formatted
+correction state:
+
+```text
+343 passed, 1 skipped in 973.31s (0:16:13)
 ```
 
 Targeted Ruff lint and formatting, byte compilation of all changed production

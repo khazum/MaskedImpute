@@ -4865,8 +4865,10 @@ def _default_output_converter(
 def _dense_evaluator_matrix(value: object, name: str) -> np.ndarray:
     from scipy import sparse
 
-    from maskimpute.sparse_input import _unmasked_array
+    from maskimpute.sparse_input import _unmasked_array, contains_masked_array
 
+    if sparse.issparse(value) and contains_masked_array(value):
+        raise RunnerContractError(f"{name} must not contain masked arrays")
     try:
         array = (
             value.toarray() if sparse.issparse(value) else _unmasked_array(value, name)

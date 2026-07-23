@@ -4803,6 +4803,61 @@ def test_evaluator_rejects_masked_common_scale_output() -> None:
     assert all(metric.reason == evaluated.run.reason for metric in evaluated.metrics)
 
 
+def test_dense_evaluator_rejects_masked_sparse_storage_before_densification() -> None:
+    from scipy import sparse
+
+    value = sparse.csr_matrix([[1.0, 0.0], [0.0, 2.0]])
+    value.data = np.ma.array(value.data, mask=[True, False])
+
+    with pytest.raises(RunnerContractError, match="masked arrays"):
+        runner_module._dense_evaluator_matrix(value, "masked sparse")
+
+
+def test_public_evaluator_rejects_masked_sparse_authoritative_targets() -> None:
+    from scipy import sparse
+
+    prepared = _prepared_truth_dataset()
+    observed = sparse.csr_matrix(prepared.evaluator_dataset.X)
+    observed.data = np.ma.array(
+        observed.data,
+        mask=np.arange(observed.data.size) == 0,
+    )
+    prepared.evaluator_dataset.X = observed
+    spec = load_method_registry(METHODS_PATH).by_id("observed")
+    execution = run_observed(spec, prepared.method_input)
+
+    with pytest.raises(RunnerContractError, match="masked arrays"):
+        evaluate_adapter_outcome(
+            _entry_for(prepared, "observed", seed=None),
+            prepared,
+            AdapterOutcome.completed(
+                execution,
+                runtime_seconds=1,
+                peak_rss_bytes=1,
+                peak_gpu_bytes=0,
+            ),
+        )
+
+
+def test_prezero_boundary_rejects_masked_sparse_targets_for_terminal_attempt() -> None:
+    from scipy import sparse
+
+    prepared = _prepared_truth_dataset()
+    observed = sparse.csr_matrix(prepared.evaluator_dataset.X)
+    observed.data = np.ma.array(
+        observed.data,
+        mask=np.arange(observed.data.size) == 0,
+    )
+    prepared.evaluator_dataset.X = observed
+
+    with pytest.raises(RunnerContractError, match="masked arrays"):
+        evaluate_adapter_outcome(
+            _entry_for(prepared, "observed", seed=None),
+            prepared,
+            AdapterOutcome.timeout(),
+        )
+
+
 @pytest.mark.parametrize("method_id", ["maskimpute", "capacity-matched-ae"])
 def test_in_tree_adapter_contracts_require_score_evidence_before_shared_conversion(
     method_id: str,

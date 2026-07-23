@@ -130,6 +130,109 @@ def test_finite_metric_inputs_keep_overflow_reason_coded() -> None:
     )
 
 
+def test_gnrmse_preserves_representable_subnormal_ratio() -> None:
+    maximum = np.finfo(np.float64).max
+    truth = np.array([[0.0], [maximum]])
+    imputed = np.array([[1.0], [maximum]])
+
+    result = reconstruction_metrics(imputed, truth, truth)
+
+    assert result["gnrmse"].value == pytest.approx(
+        7.866824069956793e-309,
+        rel=1e-15,
+        abs=0.0,
+    )
+    assert result["gnrmse"].n == 1
+    assert result["gnrmse"].reason is None
+
+
+def test_reconstruction_extremes_are_stable_with_warnings_as_errors() -> None:
+    maximum = np.finfo(np.float64).max
+    truth = np.array([[-maximum, -maximum], [maximum, maximum]])
+    imputed = -truth
+
+    with np.errstate(all="raise"):
+        result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result["mae"] == MetricValue(None, 4, "nonfinite_metric")
+    assert result["mse"] == MetricValue(None, 4, "nonfinite_metric")
+    assert result["gnrmse"].value == pytest.approx(2.0)
+    assert result["gnrmse"].n == 2
+    assert result["gnrmse"].reason is None
+    assert result["mean_distortion"] == MetricValue(0.0, 2, None)
+    assert result["variance_distortion"] == MetricValue(0.0, 2, None)
+    assert result["mean_gene_wasserstein_distance"] == MetricValue(0.0, 2, None)
+    assert result["corr_err"] == MetricValue(0.0, 1, None)
+    assert result["cell_distance_distortion"] == MetricValue(0.0, 1, None)
+
+
+def test_reconstruction_returns_representable_mean_after_raw_difference_overflow() -> (
+    None
+):
+    maximum = np.finfo(np.float64).max
+    truth = np.array([[-maximum], [0.0], [0.0]])
+    imputed = np.array([[maximum], [0.0], [0.0]])
+
+    with np.errstate(all="raise"):
+        result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result["mae"].value == pytest.approx(maximum * (2.0 / 3.0))
+    assert result["mae"].n == 3
+    assert result["mae"].reason is None
+
+    square_root = np.sqrt(maximum)
+    squared_truth = np.zeros((2, 1))
+    squared_imputed = np.array([[1.1 * square_root], [0.0]])
+    with np.errstate(all="raise"):
+        squared_result = reconstruction_metrics(
+            squared_imputed,
+            squared_truth,
+            squared_truth,
+        )
+
+    assert squared_result["mse"].value == pytest.approx(maximum * (1.1**2 / 2.0))
+    assert squared_result["mse"].n == 2
+    assert squared_result["mse"].reason is None
+
+
+def test_gnrmse_uses_representable_rmse_after_one_difference_exceeds_float64() -> None:
+    maximum = np.finfo(np.float64).max
+    truth = np.array([[-maximum], [0.0], [0.0], [0.0]])
+    imputed = np.array([[maximum], [0.0], [0.0], [0.0]])
+
+    with np.errstate(all="raise"):
+        result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result["gnrmse"].value == pytest.approx(4.0 / np.sqrt(3.0))
+    assert result["gnrmse"].n == 1
+    assert result["gnrmse"].reason is None
+
+
+def test_stratified_scores_stabilize_representable_extreme_library_sums() -> None:
+    maximum = np.finfo(np.float64).max
+    observed = np.array(
+        [
+            [maximum, maximum, -maximum, 0.0],
+            [maximum, -maximum, 1.0, 0.0],
+            [2.0, 0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0, 0.0],
+        ]
+    )
+    truth = np.zeros_like(observed)
+    probability = np.full_like(observed, 0.5)
+
+    with np.errstate(all="raise"):
+        result = stratified_zero_score_metrics(probability, observed, truth)
+
+    records = result["library_size_quartiles"]
+    assert [(record["lower"], record["upper"]) for record in records] == [
+        (1.0, 1.0),
+        (2.0, 2.0),
+        (3.0, 3.0),
+        (maximum, maximum),
+    ]
+
+
 def test_tie_aware_groups_requires_nonempty_finite_one_dimensional_values() -> None:
     for values in (
         np.array([]),

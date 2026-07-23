@@ -16,6 +16,7 @@ from maskimpute.sparse_input import _unmasked_array
 
 from .metrics import (
     MetricValue,
+    _stable_library_sizes,
     stratified_zero_score_metrics,
     tie_aware_groups,
     zero_score_metrics,
@@ -263,7 +264,7 @@ def _score_report(
                 observed_zero_count, unavailable_status, unavailable_reason
             ),
         }
-        library_size = np.sum(observed, axis=1)
+        library_size = _stable_library_sizes(observed)
         cell_chunks = tie_aware_groups(library_size, 4)
         cell_chunks.extend(np.array([], dtype=int) for _ in range(4 - len(cell_chunks)))
         library_records: list[dict[str, object]] = []

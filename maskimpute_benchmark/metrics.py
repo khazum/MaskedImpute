@@ -10,6 +10,7 @@ local to log-loss computation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import numpy as np
@@ -82,6 +83,288 @@ def _metric(value: float, n: int) -> MetricValue:
 
 def _unavailable(n: int, reason: str) -> MetricValue:
     return MetricValue(None, int(n), reason)
+
+
+_ScaledTerm = tuple[float, int]
+_ZERO_TERM: _ScaledTerm = (0.0, 0)
+_FLOAT64_MAX = np.finfo(np.float64).max
+
+
+def _normalize_term(mantissa: float, exponent: int) -> _ScaledTerm:
+    if mantissa == 0.0:
+        return _ZERO_TERM
+    normalized_mantissa, adjustment = math.frexp(float(mantissa))
+    return normalized_mantissa, int(exponent) + adjustment
+
+
+def _term_from_float(value: float) -> _ScaledTerm:
+    if value < 0.0 or not math.isfinite(value):
+        raise ValueError("scaled terms require finite nonnegative values")
+    return _normalize_term(value, 0)
+
+
+def _term_from_scaled(
+    scale: float,
+    coefficient: float,
+    *,
+    power: int = 1,
+) -> _ScaledTerm:
+    if (
+        scale < 0.0
+        or coefficient < 0.0
+        or not math.isfinite(scale)
+        or not math.isfinite(coefficient)
+    ):
+        raise ValueError("scaled terms require finite nonnegative factors")
+    if scale == 0.0 or coefficient == 0.0:
+        return _ZERO_TERM
+    scale_mantissa, scale_exponent = math.frexp(scale)
+    coefficient_mantissa, coefficient_exponent = math.frexp(coefficient)
+    return _normalize_term(
+        coefficient_mantissa * scale_mantissa**power,
+        coefficient_exponent + power * scale_exponent,
+    )
+
+
+def _term_power(term: _ScaledTerm, power: int) -> _ScaledTerm:
+    mantissa, exponent = term
+    if mantissa == 0.0:
+        return _ZERO_TERM
+    return _normalize_term(mantissa**power, exponent * power)
+
+
+def _term_difference(left: _ScaledTerm, right: _ScaledTerm) -> _ScaledTerm:
+    left_mantissa, left_exponent = left
+    right_mantissa, right_exponent = right
+    if left_mantissa == 0.0:
+        return right
+    if right_mantissa == 0.0:
+        return left
+    if left_exponent < right_exponent:
+        left_mantissa, right_mantissa = right_mantissa, left_mantissa
+        left_exponent, right_exponent = right_exponent, left_exponent
+    difference = abs(
+        left_mantissa - math.ldexp(right_mantissa, right_exponent - left_exponent)
+    )
+    return _normalize_term(difference, left_exponent)
+
+
+def _term_ratio(numerator: _ScaledTerm, denominator: _ScaledTerm) -> _ScaledTerm:
+    numerator_mantissa, numerator_exponent = numerator
+    denominator_mantissa, denominator_exponent = denominator
+    if denominator_mantissa == 0.0:
+        raise ZeroDivisionError("scaled-term denominator must be positive")
+    if numerator_mantissa == 0.0:
+        return _ZERO_TERM
+    return _normalize_term(
+        numerator_mantissa / denominator_mantissa,
+        numerator_exponent - denominator_exponent,
+    )
+
+
+def _term_mean(terms: list[_ScaledTerm]) -> _ScaledTerm:
+    nonzero = [term for term in terms if term[0] != 0.0]
+    if not nonzero:
+        return _ZERO_TERM
+    maximum_exponent = max(exponent for _, exponent in nonzero)
+    aligned = math.fsum(
+        math.ldexp(mantissa, exponent - maximum_exponent)
+        for mantissa, exponent in nonzero
+    )
+    return _normalize_term(aligned / len(terms), maximum_exponent)
+
+
+def _term_is_less(left: _ScaledTerm, right: _ScaledTerm) -> bool:
+    if left[0] == 0.0:
+        return right[0] != 0.0
+    if right[0] == 0.0:
+        return False
+    return left[1] < right[1] or (left[1] == right[1] and left[0] < right[0])
+
+
+def _term_to_float(term: _ScaledTerm) -> float | None:
+    mantissa, exponent = term
+    if mantissa == 0.0:
+        return 0.0
+    try:
+        value = math.ldexp(mantissa, exponent)
+    except OverflowError:
+        return None
+    if not math.isfinite(value) or value == 0.0:
+        return None
+    return value
+
+
+def _metric_from_term(term: _ScaledTerm, n: int) -> MetricValue:
+    value = _term_to_float(term)
+    if value is None:
+        return _unavailable(n, "nonfinite_metric")
+    return MetricValue(value, int(n), None)
+
+
+def _scaled_signed_differences(
+    left: np.ndarray,
+    right: np.ndarray,
+) -> tuple[float, np.ndarray]:
+    """Return ``left - right`` divided by a safe common magnitude."""
+
+    left_values = np.asarray(left, dtype=np.float64).reshape(-1)
+    right_values = np.asarray(right, dtype=np.float64).reshape(-1)
+    if left_values.shape != right_values.shape:
+        raise ValueError("difference operands must have the same shape")
+    if left_values.size == 0:
+        return 0.0, np.empty(0, dtype=np.float64)
+
+    left_magnitude = np.abs(left_values)
+    right_magnitude = np.abs(right_values)
+    same_sign = np.signbit(left_values) == np.signbit(right_values)
+    safe_opposite = left_magnitude <= (_FLOAT64_MAX - right_magnitude)
+    safe = same_sign | safe_opposite
+    safe_differences = np.empty(left_values.size, dtype=np.float64)
+    safe_differences[safe] = left_values[safe] - right_values[safe]
+
+    maximum_safe = (
+        float(np.max(np.abs(safe_differences[safe]))) if np.any(safe) else 0.0
+    )
+    unsafe = ~safe
+    maximum_unsafe = (
+        float(
+            max(
+                np.max(left_magnitude[unsafe]),
+                np.max(right_magnitude[unsafe]),
+            )
+        )
+        if np.any(unsafe)
+        else 0.0
+    )
+    scale = max(maximum_safe, maximum_unsafe)
+    if scale == 0.0:
+        return 0.0, np.zeros(left_values.size, dtype=np.float64)
+
+    normalized = np.empty(left_values.size, dtype=np.float64)
+    normalized[safe] = safe_differences[safe] / scale
+    normalized[unsafe] = left_values[unsafe] / scale - right_values[unsafe] / scale
+    return scale, normalized
+
+
+def _root_mean_square_term(left: np.ndarray, right: np.ndarray) -> _ScaledTerm:
+    scale, normalized = _scaled_signed_differences(left, right)
+    if scale == 0.0:
+        return _ZERO_TERM
+    coefficient = math.sqrt(float(np.mean(normalized * normalized)))
+    return _term_from_scaled(scale, coefficient)
+
+
+def _euclidean_distance_terms(
+    left: np.ndarray,
+    right: np.ndarray,
+) -> list[_ScaledTerm]:
+    """Vectorized stable Euclidean distances from rows in ``left`` to ``right``."""
+
+    left_values = np.asarray(left, dtype=np.float64)
+    right_values = np.asarray(right, dtype=np.float64)
+    left_magnitude = np.abs(left_values)
+    right_magnitude = np.abs(right_values)[None, :]
+    same_sign = np.signbit(left_values) == np.signbit(right_values)[None, :]
+    safe = same_sign | (left_magnitude <= (_FLOAT64_MAX - right_magnitude))
+    safe_differences = np.zeros(left_values.shape, dtype=np.float64)
+    broadcast_right = np.broadcast_to(right_values, left_values.shape)
+    safe_differences[safe] = left_values[safe] - broadcast_right[safe]
+    maximum_safe = np.max(np.abs(safe_differences), axis=1)
+    maximum_unsafe = np.maximum(
+        np.max(np.where(safe, 0.0, left_magnitude), axis=1),
+        np.max(np.where(safe, 0.0, right_magnitude), axis=1),
+    )
+    scales = np.maximum(maximum_safe, maximum_unsafe)
+    normalized = np.zeros(left_values.shape, dtype=np.float64)
+    nonzero_rows = scales != 0.0
+    if np.any(nonzero_rows):
+        safe_nonzero = safe & nonzero_rows[:, None]
+        unsafe_nonzero = (~safe) & nonzero_rows[:, None]
+        row_scales = np.broadcast_to(scales[:, None], left_values.shape)
+        normalized[safe_nonzero] = (
+            safe_differences[safe_nonzero] / row_scales[safe_nonzero]
+        )
+        normalized[unsafe_nonzero] = (
+            left_values[unsafe_nonzero] / row_scales[unsafe_nonzero]
+            - broadcast_right[unsafe_nonzero] / row_scales[unsafe_nonzero]
+        )
+    coefficients = np.sqrt(np.sum(normalized * normalized, axis=1))
+    return [
+        _term_from_scaled(float(scale), float(coefficient))
+        for scale, coefficient in zip(scales, coefficients, strict=True)
+    ]
+
+
+def _standard_deviation_term(values: np.ndarray) -> _ScaledTerm:
+    vector = np.asarray(values, dtype=np.float64).reshape(-1)
+    scale = float(np.max(np.abs(vector)))
+    if scale == 0.0:
+        return _ZERO_TERM
+    normalized = vector / scale
+    mean = math.fsum(float(value) for value in normalized) / normalized.size
+    centered = normalized - mean
+    coefficient = math.sqrt(float(np.mean(centered * centered)))
+    return _term_from_scaled(scale, coefficient)
+
+
+def _ordinary_gnrmse_value(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+    selected: np.ndarray,
+) -> float | None:
+    """Use the legacy formula only when every intermediate is overflow-safe."""
+
+    selected_imputed = imputed[selected]
+    selected_truth = truth[selected]
+    same_sign = np.signbit(selected_imputed) == np.signbit(selected_truth)
+    safe_opposite = np.abs(selected_imputed) <= (_FLOAT64_MAX - np.abs(selected_truth))
+    if not np.all(same_sign | safe_opposite):
+        return None
+    difference = selected_imputed - selected_truth
+    selected_count = difference.size
+    maximum_difference = float(np.max(np.abs(difference)))
+    if maximum_difference > math.sqrt(_FLOAT64_MAX / selected_count):
+        return None
+
+    truth_count = truth.size
+    maximum_truth = float(np.max(np.abs(truth)))
+    standard_deviation_limit = min(
+        _FLOAT64_MAX / truth_count,
+        0.5 * math.sqrt(_FLOAT64_MAX / truth_count),
+    )
+    if maximum_truth > standard_deviation_limit:
+        return None
+    rmse = np.sqrt(np.mean(difference**2))
+    truth_sd = max(float(np.std(truth, ddof=0)), 1e-8)
+    return float(rmse / truth_sd)
+
+
+def _stable_library_sizes(observed: np.ndarray) -> np.ndarray:
+    """Sum each row without overflowing a representable library size."""
+
+    sizes = np.empty(observed.shape[0], dtype=np.float64)
+    for index, row in enumerate(observed):
+        values = [float(value) for value in row]
+        try:
+            value = math.fsum(values)
+        except OverflowError:
+            from fractions import Fraction
+
+            exact = sum(
+                (Fraction.from_float(value) for value in values),
+                start=Fraction(),
+            )
+            try:
+                value = float(exact)
+            except OverflowError as error:
+                raise ValueError(
+                    "library size is not representable as float64"
+                ) from error
+        if not math.isfinite(value):
+            raise ValueError("library size is not representable as float64")
+        sizes[index] = value
+    return sizes
 
 
 def _validate_truth_kind(truth_kind: str) -> None:
@@ -167,7 +450,8 @@ def entry_masks(observed: Any, truth: Any) -> dict[str, np.ndarray]:
 
 
 def _error_metric(
-    difference: np.ndarray,
+    imputed: np.ndarray,
+    truth: np.ndarray,
     mask: np.ndarray,
     *,
     squared: bool,
@@ -175,29 +459,49 @@ def _error_metric(
     n = int(mask.sum())
     if n == 0:
         return _unavailable(0, "no_entries")
-    values = difference[mask]
-    with np.errstate(over="ignore", invalid="ignore"):
-        if squared:
-            return _metric(np.mean(values * values), n)
-        return _metric(np.mean(np.abs(values)), n)
+    scale, normalized = _scaled_signed_differences(imputed[mask], truth[mask])
+    power = 2 if squared else 1
+    coefficient = float(np.mean(np.abs(normalized) ** power))
+    return _metric_from_term(
+        _term_from_scaled(scale, coefficient, power=power),
+        n,
+    )
 
 
 def _gnrmse(
-    difference: np.ndarray,
+    imputed: np.ndarray,
     truth: np.ndarray,
     mask: np.ndarray,
 ) -> MetricValue:
     if not np.any(mask):
         return _unavailable(0, "no_entries")
-    truth_sd = np.maximum(np.std(truth, axis=0, ddof=0), 1e-8)
-    values: list[float] = []
+    floor = _term_from_float(1e-8)
+    values: list[_ScaledTerm] = []
+    ordinary_values: list[float] = []
+    all_ordinary = True
     for gene in range(truth.shape[1]):
         selected = mask[:, gene]
         if np.any(selected):
-            with np.errstate(over="ignore", invalid="ignore"):
-                rmse = np.sqrt(np.mean(difference[selected, gene] ** 2))
-                values.append(float(rmse / truth_sd[gene]))
-    return _metric(np.mean(values), len(values))
+            ordinary = _ordinary_gnrmse_value(
+                imputed[:, gene],
+                truth[:, gene],
+                selected,
+            )
+            if ordinary is not None:
+                ordinary_values.append(ordinary)
+                values.append(_term_from_float(ordinary))
+                continue
+            all_ordinary = False
+            rmse = _root_mean_square_term(
+                imputed[selected, gene],
+                truth[selected, gene],
+            )
+            truth_sd = _standard_deviation_term(truth[:, gene])
+            denominator = floor if _term_is_less(truth_sd, floor) else truth_sd
+            values.append(_term_ratio(rmse, denominator))
+    if all_ordinary:
+        return _metric(np.mean(ordinary_values), len(ordinary_values))
+    return _metric_from_term(_term_mean(values), len(values))
 
 
 def _correlation_matrix_distortion(
@@ -235,9 +539,28 @@ def _correlation_matrix_distortion(
     ) | np.all(selected_truth == truth_reference, axis=standard_deviation_axis)
     if np.any(constant):
         return _unavailable(n_variables, constant_reason), n_variables
-    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
-        corr_imputed = np.corrcoef(selected_imputed, rowvar=rowvar)
-        corr_truth = np.corrcoef(selected_truth, rowvar=rowvar)
+
+    def stable_correlation(value: np.ndarray) -> np.ndarray | None:
+        variables_by_observation = value if rowvar else value.T
+        observation_count = variables_by_observation.shape[1]
+        maximum = float(np.max(np.abs(variables_by_observation)))
+        ordinary_limit = min(
+            _FLOAT64_MAX / observation_count,
+            0.5 * math.sqrt(_FLOAT64_MAX / observation_count),
+        )
+        if maximum <= ordinary_limit:
+            correlation = np.corrcoef(value, rowvar=rowvar)
+        else:
+            scales = np.max(np.abs(variables_by_observation), axis=1)
+            normalized = variables_by_observation / scales[:, None]
+            correlation = np.corrcoef(normalized, rowvar=True)
+        return correlation if np.all(np.isfinite(correlation)) else None
+
+    corr_imputed = stable_correlation(selected_imputed)
+    corr_truth = stable_correlation(selected_truth)
+    if corr_imputed is None or corr_truth is None:
+        pair_count = n_variables * (n_variables - 1) // 2
+        return _unavailable(pair_count, "nonfinite_correlation"), n_variables
     upper = np.triu_indices(n_variables, k=1)
     differences = np.abs(corr_imputed[upper] - corr_truth[upper])
     if not np.all(np.isfinite(differences)):
@@ -252,18 +575,25 @@ def _pairwise_distance_distortion(
     n_pairs = n_cells * (n_cells - 1) // 2
     if n_pairs == 0:
         return _unavailable(0, "fewer_than_two_cells")
-    values = np.empty(n_pairs, dtype=float)
-    offset = 0
+    values: list[_ScaledTerm] = []
     for first in range(n_cells - 1):
-        count = n_cells - first - 1
-        with np.errstate(over="ignore", invalid="ignore"):
-            truth_distance = np.linalg.norm(truth[first + 1 :] - truth[first], axis=1)
-            imputed_distance = np.linalg.norm(
-                imputed[first + 1 :] - imputed[first], axis=1
+        truth_distances = _euclidean_distance_terms(
+            truth[first + 1 :],
+            truth[first],
+        )
+        imputed_distances = _euclidean_distance_terms(
+            imputed[first + 1 :],
+            imputed[first],
+        )
+        values.extend(
+            _term_difference(imputed_distance, truth_distance)
+            for imputed_distance, truth_distance in zip(
+                imputed_distances,
+                truth_distances,
+                strict=True,
             )
-            values[offset : offset + count] = np.abs(imputed_distance - truth_distance)
-        offset += count
-    return _metric(np.mean(values), n_pairs)
+        )
+    return _metric_from_term(_term_mean(values), n_pairs)
 
 
 def _mean_gene_wasserstein_distance(
@@ -279,9 +609,14 @@ def _mean_gene_wasserstein_distance(
 
     sorted_imputed = np.sort(imputed, axis=0)
     sorted_truth = np.sort(truth, axis=0)
-    with np.errstate(over="ignore", invalid="ignore"):
-        per_gene = np.mean(np.abs(sorted_imputed - sorted_truth), axis=0)
-        return _metric(np.mean(per_gene), truth.shape[1])
+    scale, normalized = _scaled_signed_differences(
+        sorted_imputed,
+        sorted_truth,
+    )
+    return _metric_from_term(
+        _term_from_scaled(scale, float(np.mean(np.abs(normalized)))),
+        truth.shape[1],
+    )
 
 
 def _reconstruction_metric_names() -> list[str]:
@@ -343,7 +678,6 @@ def reconstruction_metrics(
         "corr_gene_mask", corr_gene_mask, truth_array.shape[1], default_all=True
     )
 
-    difference = imputed_array - truth_array
     result: dict[str, MetricValue] = {}
     for subset in _SUBSETS:
         suffix = "" if subset == "overall" else f"_{subset}"
@@ -364,20 +698,47 @@ def reconstruction_metrics(
             for metric in ("mse", "mae", "gnrmse"):
                 result[f"{metric}{suffix}"] = _unavailable(n, reason)
             continue
-        result[f"mse{suffix}"] = _error_metric(difference, mask, squared=True)
-        result[f"mae{suffix}"] = _error_metric(difference, mask, squared=False)
-        result[f"gnrmse{suffix}"] = _gnrmse(difference, truth_array, mask)
+        result[f"mse{suffix}"] = _error_metric(
+            imputed_array,
+            truth_array,
+            mask,
+            squared=True,
+        )
+        result[f"mae{suffix}"] = _error_metric(
+            imputed_array,
+            truth_array,
+            mask,
+            squared=False,
+        )
+        result[f"gnrmse{suffix}"] = _gnrmse(imputed_array, truth_array, mask)
 
-    with np.errstate(over="ignore", invalid="ignore"):
-        mean_difference = np.abs(
-            np.mean(imputed_array, axis=0) - np.mean(truth_array, axis=0)
+    mean_differences: list[_ScaledTerm] = []
+    variance_differences: list[_ScaledTerm] = []
+    for gene in range(truth_array.shape[1]):
+        mean_scale, normalized_difference = _scaled_signed_differences(
+            imputed_array[:, gene],
+            truth_array[:, gene],
         )
-        variance_difference = np.abs(
-            np.var(imputed_array, axis=0, ddof=0) - np.var(truth_array, axis=0, ddof=0)
+        mean_coefficient = abs(
+            math.fsum(float(value) for value in normalized_difference)
+            / normalized_difference.size
         )
-    result["mean_distortion"] = _metric(np.mean(mean_difference), truth_array.shape[1])
-    result["variance_distortion"] = _metric(
-        np.mean(variance_difference), truth_array.shape[1]
+        mean_differences.append(_term_from_scaled(mean_scale, mean_coefficient))
+        imputed_sd = _standard_deviation_term(imputed_array[:, gene])
+        truth_sd = _standard_deviation_term(truth_array[:, gene])
+        variance_differences.append(
+            _term_difference(
+                _term_power(imputed_sd, 2),
+                _term_power(truth_sd, 2),
+            )
+        )
+    result["mean_distortion"] = _metric_from_term(
+        _term_mean(mean_differences),
+        truth_array.shape[1],
+    )
+    result["variance_distortion"] = _metric_from_term(
+        _term_mean(variance_differences),
+        truth_array.shape[1],
     )
     result["mean_gene_wasserstein_distance"] = _mean_gene_wasserstein_distance(
         imputed_array, truth_array
@@ -760,7 +1121,7 @@ def stratified_zero_score_metrics(
         truth_array = _as_matrix("truth", truth, shape=observed_array.shape)
 
     observed_zero = observed_array == 0
-    library_size = np.sum(observed_array, axis=1)
+    library_size = _stable_library_sizes(observed_array)
     cell_chunks = tie_aware_groups(library_size, 4)
     cell_chunks.extend(np.array([], dtype=int) for _ in range(4 - len(cell_chunks)))
     library_records: list[dict[str, Any]] = []
