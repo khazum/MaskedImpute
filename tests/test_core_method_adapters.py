@@ -634,6 +634,23 @@ def test_inverse_log1p_cp10k_rounds_a_risky_representable_endpoint_once() -> Non
     assert converted.flags.writeable is False
 
 
+def test_inverse_log1p_cp10k_retains_representable_native_value_above_1000() -> None:
+    minimum_subnormal = float.fromhex("0x0.0000000000001p-1022")
+    native = np.array([[1_001.0]], dtype=np.float64)
+    libraries = np.array([minimum_subnormal], dtype=np.float64)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            converted = observed_adapter._inverse_log1p_observed_library(
+                native,
+                libraries,
+                target_sum=10_000,
+            )
+
+    assert converted[0, 0].hex() == "0x1.cd72a103bf4cdp+356"
+
+
 def test_inverse_log1p_cpm_uses_the_same_risky_endpoint_boundary() -> None:
     maximum = np.finfo(np.float64).max
     method_input = _method_input(counts=np.array([[maximum]], dtype=np.float64))
@@ -653,6 +670,65 @@ def test_inverse_log1p_cpm_uses_the_same_risky_endpoint_boundary() -> None:
 
     assert converted[0, 0] == expected
     assert converted.flags.writeable is False
+
+
+def test_inverse_log1p_cpm_retains_representable_native_value_above_1000() -> None:
+    minimum_subnormal = float.fromhex("0x0.0000000000001p-1022")
+    native = np.array([[1_001.0]], dtype=np.float64)
+    libraries = np.array([minimum_subnormal], dtype=np.float64)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            converted = observed_adapter._inverse_log1p_observed_library(
+                native,
+                libraries,
+                target_sum=1_000_000,
+            )
+
+    assert converted[0, 0].hex() == "0x1.27539a3fd6979p+350"
+
+
+def test_inverse_log1p_large_native_randomized_oracle_and_rejection_bound() -> None:
+    rng = np.random.default_rng(20260724)
+    native = rng.uniform(1_000.0, 1_200.0, size=(128, 1))
+    libraries = np.ldexp(rng.uniform(0.5, 1.0, size=128), -1_073)
+
+    converted = observed_adapter._inverse_log1p_observed_library(
+        native,
+        libraries,
+        target_sum=10_000,
+    )
+
+    with localcontext() as context:
+        context.prec = 1_000
+        expected = np.array(
+            [
+                float(
+                    (Decimal.from_float(float(value)).exp() - Decimal(1))
+                    * Decimal.from_float(float(library))
+                    / Decimal(10_000)
+                )
+                for value, library in zip(native[:, 0], libraries, strict=True)
+            ]
+        )
+    np.testing.assert_array_equal(converted[:, 0], expected)
+
+    absurd_native = np.full((32, 32), np.finfo(np.float64).max)
+    minimum_libraries = np.full(
+        32,
+        float.fromhex("0x0.0000000000001p-1022"),
+    )
+    started = time.perf_counter()
+    rejected = observed_adapter._inverse_log1p_observed_library(
+        absurd_native,
+        minimum_libraries,
+        target_sum=10_000,
+    )
+    elapsed = time.perf_counter() - started
+
+    assert np.isnan(rejected).all()
+    assert elapsed < 0.5
 
 
 def test_scsdae_native_output_rejects_unrepresentable_longdouble_without_warning() -> (

@@ -801,6 +801,64 @@ def test_portable_pairwise_fallback_certifies_the_completed_rounding_cell(
     assert exact_calls == 1
 
 
+@pytest.mark.parametrize("wide_longdouble", [True, False])
+def test_pairwise_fallback_adapts_precision_until_exact_rounding_cell(
+    monkeypatch: pytest.MonkeyPatch,
+    wide_longdouble: bool,
+) -> None:
+    imputed = np.array(
+        [
+            [float.fromhex("0x1.bf1ba5891b9c4p+1021")],
+            [-float.fromhex("0x1.d7e4281718e0cp-854")],
+        ]
+    )
+    truth = np.array(
+        [
+            [-float.fromhex("0x1.364bdfb78a59ap+577")],
+            [float.fromhex("0x1.d727a70cd47c8p+1017")],
+        ]
+    )
+    monkeypatch.setattr(metrics_module, "_WIDE_LONGDOUBLE", wide_longdouble)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = metrics_module._pairwise_distance_distortion(imputed, truth)
+
+    assert result == MetricValue(
+        float.fromhex("0x1.a1a92b184e547p+1021"),
+        1,
+        None,
+    )
+
+
+def test_pairwise_identity_returns_zero_without_exact_fallback_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rng = np.random.default_rng(20260723)
+    matrix = np.ldexp(
+        rng.uniform(0.5, 1.0, size=(100, 48)) * rng.choice((-1.0, 1.0), size=(100, 48)),
+        rng.integers(-1_000, 1_001, size=(100, 48)),
+    )
+    exact_calls = 0
+
+    def counted_exact(*_args: np.ndarray) -> Decimal:
+        nonlocal exact_calls
+        exact_calls += 1
+        return Decimal()
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_euclidean_norm_difference_decimal",
+        counted_exact,
+    )
+
+    result = metrics_module._pairwise_distance_distortion(matrix, matrix.copy())
+
+    assert result == MetricValue(0.0, 4_950, None)
+    assert exact_calls == 0
+
+
 def test_portable_pairwise_fallback_matches_seeded_whole_decimal_oracles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1618,6 +1676,41 @@ def test_score_metrics_with_ties_are_hand_calculated_and_calibrated() -> None:
     )
     assert low["wilson_lower"] == pytest.approx(0.0455872608)
     assert low["wilson_upper"] == pytest.approx(0.6993581574)
+
+
+def test_extreme_calibration_optimizer_failure_is_reason_coded_under_strict_state() -> (
+    None
+):
+    probability = np.array(
+        [
+            [
+                float.fromhex("0x0.0000000000001p-1022"),
+                np.nextafter(1.0, 0.0),
+            ]
+        ]
+    )
+    observed = np.zeros_like(probability)
+    truth = np.array([[0.0, 1.0]])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = zero_score_metrics(probability, observed, truth)
+
+    assert result["n"] == 2
+    assert result["calibration_intercept"] == MetricValue(
+        None,
+        2,
+        "calibration_fit_failed",
+    )
+    assert result["calibration_slope"] == MetricValue(
+        None,
+        2,
+        "calibration_fit_failed",
+    )
+    assert result["brier"].reason is None
+    assert result["log_loss"].reason is None
+    assert len(result["reliability_bins"]) == 2
 
 
 def test_average_rank_auroc_and_average_precision_handle_mixed_tie() -> None:

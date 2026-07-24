@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, localcontext
+from decimal import Decimal, DecimalException, ROUND_CEILING, ROUND_FLOOR, localcontext
 from fractions import Fraction
 import hashlib
 import math
@@ -483,26 +483,51 @@ def _decimal_inverse_log1p_endpoint(
 ) -> float | None:
     """Certify one risky expm1-scaled endpoint with outward decimal bounds."""
 
-    # Even division by the largest supported target cannot make exp(1000)
-    # representable in binary64. This also avoids impractical Decimal work for
-    # arbitrary finite native values far outside the meaningful input range.
-    if value > 1_000.0:
+    if not (
+        math.isfinite(value)
+        and value >= 0.0
+        and math.isfinite(library)
+        and library > 0.0
+    ):
         return None
+    if value == 0.0:
+        return 0.0
+
+    # Bound the completed endpoint before asking Decimal to evaluate exp().
+    # For value >= log(2), expm1(value) exceeds exp(value - 1).  The extra
+    # log(2) margin proves that the result lies above the binary64 overflow
+    # rounding boundary, while allowing a large native value to remain valid
+    # when a correspondingly tiny observed library brings the product back
+    # into range.
+    if value >= math.log(2.0):
+        combined_log_lower = (
+            value - 1.0 + math.log(library) - math.log(float(target_sum))
+        )
+        if combined_log_lower > math.log(_FLOAT64_PRODUCT_LIMIT) + math.log(2.0):
+            return None
+
     exact_value = Decimal.from_float(value)
     exact_library = Decimal.from_float(library)
     denominator = Decimal(target_sum)
-    for precision in (120, 240, 480, 960):
-        with localcontext() as context:
-            context.prec = precision
-            approximation = (
-                (exact_value.exp() - Decimal(1)) * exact_library / denominator
-            )
-            if not approximation.is_finite() or approximation < 0:
-                return None
-            decimal_ulp = Decimal(1).scaleb(approximation.adjusted() - precision + 1)
-            error = decimal_ulp * 32
-            lower = max(approximation - error, Decimal())
-            upper = approximation + error
+    precision = 80
+    while precision <= 10_240:
+        try:
+            with localcontext() as context:
+                context.prec = precision
+                exponential = exact_value.exp()
+                exponential_lower = context.next_minus(exponential)
+                exponential_upper = context.next_plus(exponential)
+
+                context.rounding = ROUND_FLOOR
+                lower = (exponential_lower - Decimal(1)) * exact_library / denominator
+                lower = max(lower, Decimal())
+
+                context.rounding = ROUND_CEILING
+                upper = (exponential_upper - Decimal(1)) * exact_library / denominator
+        except DecimalException:
+            return None
+        if not upper.is_finite() or upper < 0:
+            return None
         try:
             lower_float = float(lower)
             upper_float = float(upper)
@@ -514,6 +539,7 @@ def _decimal_inverse_log1p_endpoint(
             and lower_float >= 0.0
         ):
             return lower_float
+        precision *= 2
     return None
 
 

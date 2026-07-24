@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from fractions import Fraction
 import math
 
 import numpy as np
 import pytest
 
+import maskimpute_benchmark.statistics as statistics_module
 from maskimpute_benchmark.statistics import (
     BootstrapResult,
     hierarchical_paired_bootstrap,
@@ -343,6 +345,77 @@ def test_extreme_finite_effect_aggregation_and_intervals_remain_finite() -> None
     assert result.ci_upper == pytest.approx(1e308)
     assert len(result.bootstrap_distribution) == 100
     _assert_bootstrap_numbers_are_finite(result)
+
+
+def test_three_view_extreme_cancellation_retains_small_effect_everywhere() -> None:
+    maximum = np.finfo(np.float64).max
+    epsilon = float.fromhex("0x1p-52")
+    records = []
+    for view, method_value in (
+        ("positive-maximum", maximum),
+        ("negative-maximum", -maximum),
+        ("small-residual", 1.0 + epsilon),
+    ):
+        records.extend(
+            (
+                _record(
+                    "mechanism",
+                    "draw",
+                    view,
+                    view,
+                    "maskimpute",
+                    1,
+                    method_value,
+                ),
+                _record("mechanism", "draw", view, view, "dca", 1, 1.0),
+            )
+        )
+    expected = float.fromhex("0x1.5555555555555p-54")
+
+    with np.errstate(all="raise"):
+        result = hierarchical_paired_bootstrap(
+            records,
+            "maskimpute",
+            "dca",
+            "mse",
+            n_boot=32,
+            seed=7,
+        )
+
+    assert result.median_effect == expected
+    assert result.ci_lower == expected
+    assert result.ci_upper == expected
+    assert result.bootstrap_distribution == (expected,) * 32
+    assert result.probability_effect_lt_zero == 0.0
+    assert result.two_sided_sign_probability == 0.0
+    assert (result.n_wins, result.n_ties, result.n_losses) == (0, 1, 0)
+    _assert_bootstrap_numbers_are_finite(result)
+
+
+def test_stable_mean_matches_randomized_exact_cancellation_oracle() -> None:
+    maximum = np.finfo(np.float64).max
+    rng = np.random.default_rng(20260724)
+    residuals = np.ldexp(
+        rng.uniform(0.5, 1.0, size=256),
+        rng.integers(-1_074, 1_001, size=256),
+    )
+
+    for residual in residuals:
+        values = [maximum, -maximum, float(residual)]
+        rng.shuffle(values)
+        expected = float(
+            sum(
+                (Fraction.from_float(value) for value in values),
+                start=Fraction(),
+            )
+            / len(values)
+        )
+
+        assert statistics_module._finite_mean(values) == expected
+
+    assert statistics_module._finite_mean((1.0, 2.0, 3.0)) == 2.0
+    assert statistics_module._finite_mean((-1.0, 0.0, 1.0)) == 0.0
+    assert statistics_module._finite_mean((0.25, 0.5, 0.75)) == 0.5
 
 
 def test_unrepresentable_variance_components_are_none_with_reason_counts() -> None:

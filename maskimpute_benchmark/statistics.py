@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 import hashlib
 import math
 from types import MappingProxyType
@@ -262,6 +263,35 @@ def _finite_mean(values: Sequence[float]) -> float:
 
     if not values:
         raise ValueError("cannot average an empty sequence")
+    try:
+        raw_total = math.fsum(values)
+    except OverflowError:
+        raw_total = None
+    if raw_total is not None and math.isfinite(raw_total):
+        exact_total = sum(
+            (Fraction.from_float(value) for value in values),
+            start=Fraction(),
+        )
+        result = float(exact_total / len(values))
+        if math.isfinite(result):
+            return result
+    elif raw_total is None:
+        exact_total = sum(
+            (Fraction.from_float(value) for value in values),
+            start=Fraction(),
+        )
+        try:
+            exact_raw_total = float(exact_total)
+        except OverflowError:
+            exact_raw_total = math.inf
+        if math.isfinite(exact_raw_total):
+            result = float(exact_total / len(values))
+            if math.isfinite(result):
+                return result
+
+    # A genuinely unrepresentable raw sum can still have a representable mean.
+    # Scale only after raw compensated summation and exact cancellation have
+    # failed to produce a finite sum.
     scale = max(abs(value) for value in values)
     if scale == 0.0:
         return 0.0

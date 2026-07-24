@@ -915,11 +915,16 @@ and orthogonal evidence is reconstructed independently from typed authority.
 | F-050 | Important | Identical matrices containing only the minimum float64 subnormal produced unavailable mean distortion instead of exact available zero. | The certified mean interval widened a zero estimate by an underflow-scale uncertainty and then classified the positive upper endpoint rounding to zero as an unavailable positive underflow. It did not recognize an exactly identical input before approximate interval construction. | Closed test-first with an exact array-identity shortcut at the mean-distortion owner. Identical finite matrices return available zero without approximate arithmetic; nonidentical overflowed means continue through the exact endpoint path and retain the reviewed tiny residual. |
 | F-051 | Important | Protocol-scale log2-CP10k conversion repeated a row copy, wider row sum, and certification for every nonzero cell; conservative ambiguity then invoked adaptive Decimal 120,000 times for an all-ones 100-by-1,200 matrix. The 300-by-96 and 900-by-8 bounded probes made 28,800 and 7,200 analogous calls. | Certification was cell-oriented even though every cell shared one row denominator, and ambiguous equal values were recomputed independently. | Closed test-first. Each row is copied and certified in one vectorized wider operation. Only unresolved nonzero cells use the exact route; their row denominator is constructed once and equal values share one adaptive Decimal result. The 100-by-1,200, 300-by-96, and 900-by-8 regressions cap exact work at one call per row, retain exact expected serialization, and enforce bounded runtime and memory. |
 | F-052 | Minor | `scsdae_to_evaluator_counts` leaked `FloatingPointError` or a promoted cast warning when a finite `longdouble` native output lay outside float64 range. | Its direct narrowing cast did not use the already established local native-boundary signal translation. | Closed test-first. The scSDAE native cast now traps only overflow and invalid narrowing signals and translates them to the existing `ValueError` representability contract. Shape, numeric, finite, nonnegative, and inverse-scale semantics are unchanged. |
+| F-053 | Important | The shared observed-library inverse rejected every native log1p value above 1,000 even when a minimum-subnormal observed library made the completed CP10k or CPM endpoint finite. Native value 1,001 must produce `0x1.cd72a103bf4cdp+356` at target 10,000 and `0x1.27539a3fd6979p+350` at target 1,000,000. | A native-value-only cutoff assumed `exp(value)` alone determined endpoint representability and ignored the library and target factors. | Closed test-first. A conservative combined-log lower bound rejects only endpoints proven far above the binary64 overflow boundary before any Decimal exponential. Remaining risky cells use adaptive, outward Decimal `expm1(value) * library / target` bounds and convert once after both bounds occupy one binary64 cell. Both exact endpoints, 128 randomized large-native high-precision oracles, and bounded rejection of a 32-by-32 absurd-native fixture pass. |
+| F-054 | Important | The exact pairwise distance fallback returned `0x1.a1a92b184e548p+1021` for the reviewed one-pair fixture instead of `0x1.a1a92b184e547p+1021` in both wider and portable modes. | Exact rational operands entered Decimal square roots and division under a fixed 120-digit context. The exact result lies unusually close to a binary64 boundary, and the outer 120-digit accumulator re-rounded a higher-precision correction. | Closed test-first. Rational radicands, numerator, and scale now enter directed lower/upper Decimal square-root and division intervals whose precision doubles until both endpoints share one binary64 cell. Exact Decimal additions preserve every certified digit, final division is adaptive, and exact-only wider/portable aggregates avoid the former outer-context re-rounding. Both execution modes retain the required exact hexadecimal result, and the existing 1,024-fixture whole-Decimal oracle remains exact. |
+| F-055 | Important | Exact identity still sent a 100-by-48 extreme matrix through pair generation and 4,950 exact norm-difference calls before returning zero. | Pairwise distance had no exact identity dispatch before its ordinary and fallback arithmetic. | Closed test-first. After the pair denominator is established, exact array identity returns available zero before any distance or exact helper work. The public evaluator has already converted and mask-validated both operands, so the shortcut does not invoke an input protocol or bypass the approved dense boundary. The 100-by-48 extreme fixture makes zero exact helper calls; existing identity checks for mean and all other public reconstruction endpoints remain available and exact. |
+| F-056 | Important | Under a caller `np.errstate(all="raise")`, probabilities `[minimum subnormal, nextafter(1, 0)]` leaked `FloatingPointError` from calibration instead of returning a complete score row with reason-coded `calibration_fit_failed` coefficients. | The numerically stable sigmoid intentionally permits an exponential to underflow to zero, and IRLS weight/information products can intentionally underflow, but both inherited the caller's floating-point policy. | Closed test-first. Underflow is ignored only around the sign-split sigmoid exponential and the IRLS weight/information products where zero is the limiting mathematical value. Other floating-point signals retain their strict behavior, the singular optimizer enters the existing reason-coded failure path, and Brier, log loss, reliability, and the complete score record remain available without a warning or exception. |
+| F-057 | Important | Three technical-view effects `[DBL_MAX, -DBL_MAX, 2^-52]` collapsed to zero before biological-draw inference; their exact mean is `0x1.5555555555555p-54`. The observed median, every bootstrap replicate, and both interval endpoints therefore lost a representable residual. | `_finite_mean` divided every input by the largest magnitude before summation, which underflowed the small residual before the maximum terms cancelled. Some input orders also make `math.fsum` raise on an intermediate even when exact cancellation leaves a representable raw sum. | Closed test-first. Stable aggregation first attempts raw `math.fsum`, uses exact binary-rational cancellation when that sum is finite or an intermediate overflow may conceal a representable raw total, and uses the established scaled fallback only when the exact raw sum is truly unrepresentable. The public three-view result retains the exact median, bootstrap distribution, and interval values under strict caller state; probability and win/tie/loss semantics remain unchanged. A 256-fixture randomized order/exponent oracle and ordinary equality controls pass. |
 | O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
 
 No unresolved metric-domain, statistical-independence, evaluation-row,
 external-reference, manifest, or pre-zero evidence defect was demonstrated
-after F-025 through F-052. Legacy runtime-lock, filesystem-hardening, and
+after F-025 through F-057. Legacy runtime-lock, filesystem-hardening, and
 outer-provenance mechanisms were not redesigned or extended.
 
 ### Task 5 test-first and verification evidence
@@ -1370,6 +1375,59 @@ The post-format CP10k oracle/performance and scSDAE cast set separately
 reported 10 passes in 21.97 seconds. No production or test file changed after
 the formatting/static gates or final five-file suite; only this ledger
 evidence and the ignored fix-9 report followed.
+
+A tenth independent numerical review then demonstrated F-053 through F-057.
+The corrected inverse fixtures first failed independently with two `NaN`
+results. In the initial combined invocation, the two first-draft inverse tests
+were rejected earlier by the established integer-count fixture contract and
+were corrected before production work; the remaining five exact behavioral
+nodes all failed for their expected reasons: both pairwise modes were one ULP
+high, exact identity made 4,950 helper calls, calibration leaked
+`FloatingPointError`, and the three-view effect became zero. After correcting
+the five owning boundaries, the complete focused set reported:
+
+```text
+7 passed in 1.87s
+```
+
+The 128-fixture large-native inverse oracle and bounded absurd-native
+rejection, the existing 1,024-fixture whole-Decimal pairwise oracle, ordinary
+reconstruction serialization, and protocol-size exact-refinement controls
+passed. A 256-fixture randomized cancellation audit then exposed one
+input-order case where `math.fsum` raised before exact cancellation; after the
+exact representable-raw-sum fallback, the expanded oracle and ordinary-control
+set reported:
+
+```text
+6 passed in 10.14s
+```
+
+The complete metric, statistics, and core-method adapter owning files then
+reported:
+
+```text
+207 passed, 14 skipped in 38.93s
+```
+
+Formatting and the scoped static gates completed before the one authoritative
+suite:
+
+```text
+Ruff check: All checks passed
+Ruff format --check: 6 files already formatted
+Scoped compileall: exit 0
+git diff --check: exit 0
+```
+
+The single final correctly sanitized five-file Task 5 suite reported:
+
+```text
+405 passed, 1 skipped in 980.72s (0:16:20)
+```
+
+No production or test file changed after those static gates or the final
+five-file suite; only this ledger evidence and the ignored fix-10 report
+followed.
 
 These checks establish bounded-fixture evaluation contracts only. No real
 scientific or comparator workload ran, and no empirical competitiveness,

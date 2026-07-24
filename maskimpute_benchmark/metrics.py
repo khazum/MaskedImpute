@@ -256,6 +256,42 @@ def _fraction_to_decimal(value: Fraction) -> Decimal:
     return Decimal(value.numerator) / Decimal(value.denominator)
 
 
+def _decimal_add_exact(left: Decimal, right: Decimal) -> Decimal:
+    """Add two finite nonnegative Decimal values without context re-rounding."""
+
+    if left == 0:
+        return right
+    if right == 0:
+        return left
+    minimum_exponent = min(left.as_tuple().exponent, right.as_tuple().exponent)
+    precision = max(left.adjusted(), right.adjusted()) - minimum_exponent + 2
+    with localcontext() as context:
+        context.prec = precision
+        return left + right
+
+
+def _decimal_divide_adaptive(value: Decimal, denominator: int) -> Decimal:
+    """Divide a nonnegative Decimal once its binary64 rounding cell is known."""
+
+    if denominator <= 0:  # pragma: no cover - private programming invariant
+        raise AssertionError(denominator)
+    if value == 0 or denominator == 1:
+        return value
+    precision = max(120, len(value.as_tuple().digits) + len(str(denominator)) + 8)
+    while precision <= 15_360:
+        with localcontext() as context:
+            context.prec = precision
+            context.rounding = ROUND_FLOOR
+            lower = value / Decimal(denominator)
+            context.rounding = ROUND_CEILING
+            upper = value / Decimal(denominator)
+            if float(lower) == float(upper):
+                context.rounding = ROUND_FLOOR
+                return (lower + upper) / Decimal(2)
+        precision *= 2
+    raise ArithmeticError("decimal mean could not certify float rounding")
+
+
 def _longdouble_to_decimal(value: np.longdouble) -> Decimal:
     numerator, denominator = value.as_integer_ratio()
     return Decimal(numerator) / Decimal(denominator)
@@ -569,10 +605,61 @@ def _euclidean_norm_difference_decimal(
         (value * value for value in truth_scaled),
         start=Fraction(),
     )
-    denominator = _fraction_to_decimal(imputed_squared_norm).sqrt()
-    denominator += _fraction_to_decimal(truth_squared_norm).sqrt()
-    coefficient = _fraction_to_decimal(squared_norm_difference) / denominator
-    return _fraction_to_decimal(common_scale) * coefficient
+    precision = 120
+    while precision <= 7_680:
+        with localcontext() as context:
+            context.prec = precision
+
+            context.rounding = ROUND_FLOOR
+            numerator_lower = Decimal(squared_norm_difference.numerator) / Decimal(
+                squared_norm_difference.denominator
+            )
+            scale_lower = Decimal(common_scale.numerator) / Decimal(
+                common_scale.denominator
+            )
+            imputed_radicand_lower = Decimal(imputed_squared_norm.numerator) / Decimal(
+                imputed_squared_norm.denominator
+            )
+            truth_radicand_lower = Decimal(truth_squared_norm.numerator) / Decimal(
+                truth_squared_norm.denominator
+            )
+
+            context.rounding = ROUND_CEILING
+            numerator_upper = Decimal(squared_norm_difference.numerator) / Decimal(
+                squared_norm_difference.denominator
+            )
+            scale_upper = Decimal(common_scale.numerator) / Decimal(
+                common_scale.denominator
+            )
+            imputed_radicand_upper = Decimal(imputed_squared_norm.numerator) / Decimal(
+                imputed_squared_norm.denominator
+            )
+            truth_radicand_upper = Decimal(truth_squared_norm.numerator) / Decimal(
+                truth_squared_norm.denominator
+            )
+
+            imputed_root_lower = context.next_minus(imputed_radicand_lower.sqrt())
+            truth_root_lower = context.next_minus(truth_radicand_lower.sqrt())
+            imputed_root_upper = context.next_plus(imputed_radicand_upper.sqrt())
+            truth_root_upper = context.next_plus(truth_radicand_upper.sqrt())
+
+            context.rounding = ROUND_FLOOR
+            denominator_lower = imputed_root_lower + truth_root_lower
+            context.rounding = ROUND_CEILING
+            denominator_upper = imputed_root_upper + truth_root_upper
+
+            context.rounding = ROUND_FLOOR
+            lower = scale_lower * numerator_lower / denominator_upper
+            context.rounding = ROUND_CEILING
+            upper = scale_upper * numerator_upper / denominator_lower
+
+            lower_float = float(lower)
+            upper_float = float(upper)
+            if lower_float == upper_float:
+                context.rounding = ROUND_FLOOR
+                return (lower + upper) / Decimal(2)
+        precision *= 2
+    raise ArithmeticError("pairwise norm difference could not certify float rounding")
 
 
 def _exact_pairwise_distance_distortion(
@@ -587,13 +674,16 @@ def _exact_pairwise_distance_distortion(
         total = Decimal()
         for first in range(truth.shape[0] - 1):
             for second in range(first + 1, truth.shape[0]):
-                total += _euclidean_norm_difference_decimal(
-                    imputed[second],
-                    imputed[first],
-                    truth[second],
-                    truth[first],
+                total = _decimal_add_exact(
+                    total,
+                    _euclidean_norm_difference_decimal(
+                        imputed[second],
+                        imputed[first],
+                        truth[second],
+                        truth[first],
+                    ),
                 )
-        mean_value = total / Decimal(n_pairs)
+        mean_value = _decimal_divide_adaptive(total, n_pairs)
     return _metric_from_high_precision(mean_value, n_pairs)
 
 
@@ -830,11 +920,14 @@ def _portable_pairwise_interval(
             )
         for offset in np.flatnonzero(ambiguous):
             second = start + int(offset)
-            exact_total += _euclidean_norm_difference_decimal(
-                imputed[second],
-                imputed[first],
-                truth[second],
-                truth[first],
+            exact_total = _decimal_add_exact(
+                exact_total,
+                _euclidean_norm_difference_decimal(
+                    imputed[second],
+                    imputed[first],
+                    truth[second],
+                    truth[first],
+                ),
             )
 
     if lower_total == 0.0 and upper_total == 0.0:
@@ -897,6 +990,11 @@ def _portable_pairwise_certified_metric(
 ) -> MetricValue | None:
     """Certify one binary64 rounding cell from exact Decimal interval endpoints."""
 
+    if lower_dimensionless == 0 and upper_dimensionless == 0:
+        return _metric_from_high_precision(
+            _decimal_divide_adaptive(exact_total, n_pairs),
+            n_pairs,
+        )
     scale = Decimal.from_float(common_scale)
     lower_mean = (exact_total + lower_dimensionless * scale) / Decimal(n_pairs)
     upper_mean = (exact_total + upper_dimensionless * scale) / Decimal(n_pairs)
@@ -964,7 +1062,7 @@ def _portable_pairwise_distance_distortion(
                     truth[second],
                     truth[first],
                 )
-                exact_total += exact
+                exact_total = _decimal_add_exact(exact_total, exact)
                 lower_total -= Decimal.from_float(lower)
                 upper_total -= Decimal.from_float(upper)
                 refined_count += 1
@@ -1044,11 +1142,14 @@ def _wide_pairwise_distance_distortion(
                         )
                 for offset in np.flatnonzero(ambiguous):
                     second = start + int(offset)
-                    exact_total += _euclidean_norm_difference_decimal(
-                        imputed[second],
-                        imputed[first],
-                        truth[second],
-                        truth[first],
+                    exact_total = _decimal_add_exact(
+                        exact_total,
+                        _euclidean_norm_difference_decimal(
+                            imputed[second],
+                            imputed[first],
+                            truth[second],
+                            truth[first],
+                        ),
                     )
 
         lower_sum, upper_sum = _widen_accumulated_interval(
@@ -1061,6 +1162,11 @@ def _wide_pairwise_distance_distortion(
                 lower_total + lower_correction,
             ),
         )
+        if lower_sum == 0 and upper_sum == 0:
+            return _metric_from_high_precision(
+                _decimal_divide_adaptive(exact_total, n_pairs),
+                n_pairs,
+            )
         lower_mean = (exact_total + _longdouble_to_decimal(lower_sum)) / Decimal(
             n_pairs
         )
@@ -1708,6 +1814,8 @@ def _pairwise_distance_distortion(
     n_pairs = n_cells * (n_cells - 1) // 2
     if n_pairs == 0:
         return _unavailable(0, "fewer_than_two_cells")
+    if np.array_equal(imputed, truth):
+        return MetricValue(0.0, n_pairs, None)
     try:
         with np.errstate(all="raise"):
             ordinary = np.empty(n_pairs, dtype=np.float64)
@@ -2040,8 +2148,9 @@ def _average_precision(probability: np.ndarray, outcome: np.ndarray) -> float:
 def _expit(value: np.ndarray) -> np.ndarray:
     result = np.empty_like(value, dtype=float)
     positive = value >= 0
-    result[positive] = 1.0 / (1.0 + np.exp(-value[positive]))
-    exponential = np.exp(value[~positive])
+    with np.errstate(under="ignore"):
+        result[positive] = 1.0 / (1.0 + np.exp(-value[positive]))
+        exponential = np.exp(value[~positive])
     result[~positive] = exponential / (1.0 + exponential)
     return result
 
@@ -2067,8 +2176,9 @@ def _calibration_fit(
     for _ in range(100):
         fitted = _expit(design @ coefficient)
         gradient = design.T @ (outcome - fitted)
-        weights = fitted * (1.0 - fitted)
-        information = design.T @ (weights[:, None] * design)
+        with np.errstate(under="ignore"):
+            weights = fitted * (1.0 - fitted)
+            information = design.T @ (weights[:, None] * design)
         try:
             step = np.linalg.solve(information, gradient)
         except np.linalg.LinAlgError:
