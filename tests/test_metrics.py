@@ -220,7 +220,9 @@ def test_safe_mean_keeps_legacy_value_when_variance_requires_scaled_route() -> N
     assert result["variance_distortion"].value is not None
 
 
-def test_random_ordinary_reconstruction_values_are_exactly_legacy_numpy() -> None:
+def test_random_ordinary_reconstruction_values_preserve_certified_legacy_numpy() -> (
+    None
+):
     rng = np.random.default_rng(20260723)
     for _ in range(100):
         truth = rng.uniform(0.25, 20.0, size=(5, 4))
@@ -237,30 +239,15 @@ def test_random_ordinary_reconstruction_values_are_exactly_legacy_numpy() -> Non
                 for gene in range(truth.shape[1])
             ]
         )
-        expected_mean = np.mean(
-            np.abs(np.mean(imputed, axis=0) - np.mean(truth, axis=0))
-        )
-        expected_variance = np.mean(
-            np.abs(np.var(imputed, axis=0, ddof=0) - np.var(truth, axis=0, ddof=0))
-        )
+        expected_mean = _independent_fraction_mean_distortion(imputed, truth)
+        expected_variance = _independent_fraction_variance_distortion(imputed, truth)
         expected_wasserstein = np.mean(
             np.mean(
                 np.abs(np.sort(imputed, axis=0) - np.sort(truth, axis=0)),
                 axis=0,
             )
         )
-        pairwise = []
-        for first in range(truth.shape[0] - 1):
-            truth_distance = np.linalg.norm(
-                truth[first + 1 :] - truth[first],
-                axis=1,
-            )
-            imputed_distance = np.linalg.norm(
-                imputed[first + 1 :] - imputed[first],
-                axis=1,
-            )
-            pairwise.extend(np.abs(imputed_distance - truth_distance))
-        expected_pairwise = np.mean(np.asarray(pairwise))
+        expected_pairwise = _independent_decimal_pairwise_mean(imputed, truth)
         upper = np.triu_indices(truth.shape[1], k=1)
         expected_correlation = np.mean(
             np.abs(
@@ -277,6 +264,190 @@ def test_random_ordinary_reconstruction_values_are_exactly_legacy_numpy() -> Non
         assert result["mean_gene_wasserstein_distance"].value == expected_wasserstein
         assert result["cell_distance_distortion"].value == expected_pairwise
         assert result["corr_err"].value == expected_correlation
+
+
+def _independent_fraction_mean_distortion(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+) -> float:
+    total = Fraction()
+    for gene in range(truth.shape[1]):
+        difference = sum(
+            (
+                Fraction.from_float(float(imputed[cell, gene]))
+                - Fraction.from_float(float(truth[cell, gene]))
+                for cell in range(truth.shape[0])
+            ),
+            start=Fraction(),
+        )
+        total += abs(difference) / truth.shape[0]
+    return float(total / truth.shape[1])
+
+
+def _independent_fraction_variance_distortion(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+) -> float:
+    def variance(values: np.ndarray) -> Fraction:
+        exact = [Fraction.from_float(float(value)) for value in values]
+        mean = sum(exact, start=Fraction()) / len(exact)
+        return sum(
+            ((value - mean) ** 2 for value in exact),
+            start=Fraction(),
+        ) / len(exact)
+
+    total = sum(
+        (
+            abs(variance(imputed[:, gene]) - variance(truth[:, gene]))
+            for gene in range(truth.shape[1])
+        ),
+        start=Fraction(),
+    )
+    return float(total / truth.shape[1])
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_ordinary_adjacent_metric_cancellation_matches_exact_oracles(
+    reverse: bool,
+) -> None:
+    rng = np.random.default_rng(20260723)
+    for _ in range(64):
+        n_cells = int(rng.integers(2, 7))
+        n_genes = int(rng.integers(2, 6))
+        truth = rng.uniform(0.5, 8.0, size=(n_cells, n_genes))
+        imputed = truth.copy()
+        cell = int(rng.integers(0, n_cells))
+        gene = int(rng.integers(0, n_genes))
+        imputed[cell, gene] = np.nextafter(
+            imputed[cell, gene],
+            np.inf if rng.integers(0, 2) else -np.inf,
+        )
+        if reverse:
+            imputed, truth = truth, imputed
+
+        result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+        expected_mean = _independent_fraction_mean_distortion(imputed, truth)
+        expected_variance = _independent_fraction_variance_distortion(imputed, truth)
+        expected_pairwise = _independent_decimal_pairwise_mean(imputed, truth)
+        assert result["mean_distortion"] == MetricValue(
+            expected_mean,
+            n_genes,
+            None,
+        )
+        assert result["variance_distortion"] == MetricValue(
+            expected_variance,
+            n_genes,
+            None,
+        )
+        assert result["cell_distance_distortion"] == MetricValue(
+            expected_pairwise,
+            n_cells * (n_cells - 1) // 2,
+            None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("truth", "imputed", "metric", "expected"),
+    [
+        (
+            np.array([[1.0], [1.0]]),
+            np.array([[np.nextafter(1.0, np.inf)], [1.0]]),
+            "mean_distortion",
+            "0x1p-53",
+        ),
+        (
+            np.array([[0.0], [1.5]]),
+            np.array([[0.0], [np.nextafter(1.5, np.inf)]]),
+            "variance_distortion",
+            "0x1.8p-53",
+        ),
+        (
+            np.array([[0.0, 0.0], [1.0, 1.0]]),
+            np.array([[0.0, 0.0], [np.nextafter(1.0, np.inf), 1.0]]),
+            "cell_distance_distortion",
+            "0x1.6a09e667f3bcdp-53",
+        ),
+    ],
+)
+@pytest.mark.parametrize("reverse", [False, True])
+def test_ordinary_metric_fast_paths_do_not_erase_small_cancellation(
+    truth: np.ndarray,
+    imputed: np.ndarray,
+    metric: str,
+    expected: str,
+    reverse: bool,
+) -> None:
+    if reverse:
+        truth, imputed = imputed, truth
+
+    result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result[metric].value is not None
+    assert result[metric].value == float.fromhex(expected)
+
+
+def test_protocol_sized_ordinary_metrics_bound_exact_refinement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    truth = np.zeros((160, 48), dtype=np.float64)
+    imputed = truth.copy()
+    imputed[0, 0] = 1_024.0
+    exact_calls = {"mean": 0, "variance": 0, "pairwise": 0}
+    exact_mean = getattr(metrics_module, "_exact_mean_distortion", None)
+    exact_variance = metrics_module._variance_difference_fraction
+    exact_pairwise = metrics_module._euclidean_norm_difference_decimal
+
+    def counted_mean(*args: np.ndarray) -> MetricValue:
+        exact_calls["mean"] += 1
+        if exact_mean is None:
+            raise AssertionError("exact mean fallback is not implemented")
+        return exact_mean(*args)
+
+    def counted_variance(*args: np.ndarray) -> Fraction:
+        exact_calls["variance"] += 1
+        return exact_variance(*args)
+
+    def counted_pairwise(*args: np.ndarray) -> Decimal:
+        exact_calls["pairwise"] += 1
+        return exact_pairwise(*args)
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_exact_mean_distortion",
+        counted_mean,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        metrics_module,
+        "_variance_difference_fraction",
+        counted_variance,
+    )
+    monkeypatch.setattr(
+        metrics_module,
+        "_euclidean_norm_difference_decimal",
+        counted_pairwise,
+    )
+    started = time.perf_counter()
+    result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+    elapsed = time.perf_counter() - started
+
+    expected_mean = np.mean(np.abs(np.mean(imputed, axis=0) - np.mean(truth, axis=0)))
+    expected_variance = float(Fraction(1_024**2 * 159, 160**2 * truth.shape[1]))
+    pairwise = []
+    for first in range(truth.shape[0] - 1):
+        pairwise.extend(
+            np.abs(
+                np.linalg.norm(imputed[first + 1 :] - imputed[first], axis=1)
+                - np.linalg.norm(truth[first + 1 :] - truth[first], axis=1)
+            )
+        )
+    expected_pairwise = np.mean(pairwise)
+    assert result["mean_distortion"].value == expected_mean
+    assert result["variance_distortion"].value == expected_variance
+    assert result["cell_distance_distortion"].value == expected_pairwise
+    assert exact_calls == {"mean": 0, "variance": 1, "pairwise": 0}
+    assert elapsed < 10.0
 
 
 def test_reconstruction_extremes_are_stable_with_warnings_as_errors() -> None:

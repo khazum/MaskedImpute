@@ -66,6 +66,7 @@ from maskimpute_benchmark.methods.scvi import (
     frequencies_to_observed_library_counts,
     run_scvi,
 )
+from maskimpute_benchmark.methods.scsdae import scsdae_to_evaluator_counts
 
 
 METHODS_PATH = Path("study/methods.json")
@@ -450,6 +451,31 @@ def test_common_scale_normalization_retains_tiny_cp10k_terms_until_conversion() 
     assert log2_result[0, 2].hex() == "0x0.0000000000e17p-1022"
 
 
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        (
+            np.array([[1e300, 1e280]], dtype=np.float64),
+            "0x1.4ca9af0f3becep-53",
+        ),
+        (
+            np.array([[1.0, 2.0**-60]], dtype=np.float64),
+            "0x1.c2d79a6ff9d45p-47",
+        ),
+    ],
+)
+def test_log2_cp10k_retains_vulnerable_finite_row_terms(
+    counts: np.ndarray,
+    expected: str,
+) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            converted = count_equivalent_to_log2_cp10k(counts)
+
+    assert converted[0, 1].hex() == expected
+
+
 def _independent_decimal_cp10k_log(value: float, total: Fraction, base: int) -> float:
     exact_term = Fraction.from_float(value) * 10_000 / total
     with localcontext() as context:
@@ -536,6 +562,41 @@ def test_native_output_conversion_rejects_unrepresentable_longdouble_without_war
         with np.errstate(all="raise"):
             with pytest.raises(ValueError, match="representable as float64"):
                 conversion(method_input, native_output)
+
+
+def test_inverse_log1p_cp10k_rounds_a_risky_representable_endpoint_once() -> None:
+    maximum = np.finfo(np.float64).max
+    method_input = _method_input(counts=np.array([[maximum]], dtype=np.float64))
+    native = np.array([[np.log1p(5_000.0)]], dtype=np.float64)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            converted = log1p_cp10k_to_count_equivalent(method_input, native)
+
+    assert converted[0, 0].hex() == "0x1.0000000000002p+1023"
+    assert converted.flags.writeable is False
+
+
+def test_inverse_log1p_cpm_uses_the_same_risky_endpoint_boundary() -> None:
+    maximum = np.finfo(np.float64).max
+    method_input = _method_input(counts=np.array([[maximum]], dtype=np.float64))
+    native = np.array([[np.log1p(500_000.0)]], dtype=np.float64)
+    with localcontext() as context:
+        context.prec = 250
+        exact_native = Decimal.from_float(float(native[0, 0]))
+        exact_library = Decimal.from_float(maximum)
+        expected = float(
+            (exact_native.exp() - Decimal(1)) * exact_library / Decimal(1_000_000)
+        )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            converted = scsdae_to_evaluator_counts(method_input, native)
+
+    assert converted[0, 0] == expected
+    assert converted.flags.writeable is False
 
 
 def test_common_scale_zero_row_reason_precedes_another_row_overflow() -> None:

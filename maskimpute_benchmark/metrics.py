@@ -283,15 +283,20 @@ def _widen_accumulated_interval(
 ) -> tuple[np.longdouble, np.longdouble]:
     """Cover the residual rounding error after compensated block summation."""
 
-    error = (
-        np.longdouble(8.0)
-        * np.longdouble(_LONGDOUBLE_INFO.eps)
-        * max(abs(lower), abs(upper))
-    )
+    if lower == 0 and upper == 0:
+        return np.longdouble(0.0), np.longdouble(0.0)
     with np.errstate(under="ignore"):
+        error = (
+            np.longdouble(8.0)
+            * np.longdouble(_LONGDOUBLE_INFO.eps)
+            * max(abs(lower), abs(upper))
+        )
         return (
-            max(lower - error, np.longdouble(0.0)),
-            upper + error,
+            max(
+                np.nextafter(lower - error, -np.longdouble(np.inf)),
+                np.longdouble(0.0),
+            ),
+            np.nextafter(upper + error, np.longdouble(np.inf)),
         )
 
 
@@ -377,6 +382,11 @@ def _longdouble_norm_difference_intervals(
         )
         lower = np.maximum(estimate - error, np.longdouble(0.0))
         upper = estimate + error
+        lower = np.nextafter(lower, -np.longdouble(np.inf))
+        upper = np.nextafter(upper, np.longdouble(np.inf))
+        lower = np.maximum(lower, np.longdouble(0.0))
+        lower[~nonzero_scale] = np.longdouble(0.0)
+        upper[~nonzero_scale] = np.longdouble(0.0)
     ambiguous = _interval_ambiguity(estimate, error, nonzero_scale)
     return lower, upper, ambiguous
 
@@ -493,6 +503,11 @@ def _longdouble_variance_difference_intervals(
         )
         lower = np.maximum(estimate - error, np.longdouble(0.0))
         upper = estimate + error
+        lower = np.nextafter(lower, -np.longdouble(np.inf))
+        upper = np.nextafter(upper, np.longdouble(np.inf))
+        lower = np.maximum(lower, np.longdouble(0.0))
+        lower[~nonzero_scale] = np.longdouble(0.0)
+        upper[~nonzero_scale] = np.longdouble(0.0)
     ambiguous = _interval_ambiguity(estimate, error, nonzero_scale)
     return lower, upper, ambiguous
 
@@ -1079,6 +1094,114 @@ def _exact_variance_distortion(
     )
 
 
+def _exact_mean_distortion(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+) -> MetricValue:
+    """Round the joint mean-expression distortion from exact input values."""
+
+    total = Fraction()
+    n_cells = truth.shape[0]
+    n_genes = truth.shape[1]
+    for gene in range(n_genes):
+        difference = sum(
+            (
+                Fraction.from_float(float(imputed[cell, gene]))
+                - Fraction.from_float(float(truth[cell, gene]))
+                for cell in range(n_cells)
+            ),
+            start=Fraction(),
+        )
+        total += abs(difference) / n_cells
+    return _metric_from_high_precision(total / n_genes, n_genes)
+
+
+def _certified_mean_distortion(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+    ordinary: float,
+) -> MetricValue:
+    """Retain the ordinary value only when a joint interval certifies it."""
+
+    n_cells, n_genes = truth.shape
+    lower_total = np.longdouble(0.0)
+    lower_correction = np.longdouble(0.0)
+    upper_total = np.longdouble(0.0)
+    upper_correction = np.longdouble(0.0)
+    epsilon = np.longdouble(_LONGDOUBLE_INFO.eps)
+    reduction_depth = max(1, math.ceil(math.log2(max(1, n_cells))))
+    error_factor = np.longdouble(16 + 4 * reduction_depth)
+    for gene in range(n_genes):
+        left = np.asarray(imputed[:, gene], dtype=np.longdouble)
+        right = np.asarray(truth[:, gene], dtype=np.longdouble)
+        scale = max(
+            np.max(np.abs(left)),
+            np.max(np.abs(right)),
+        )
+        if scale == 0:
+            continue
+        with np.errstate(under="ignore"):
+            left_scaled = left / scale
+            right_scaled = right / scale
+            difference = left_scaled - right_scaled
+            signed_total = np.sum(difference, dtype=np.longdouble)
+            estimate = abs(signed_total) * scale / np.longdouble(n_cells)
+            absolute_work = np.sum(
+                np.abs(left_scaled) + np.abs(right_scaled),
+                dtype=np.longdouble,
+            )
+            error = (
+                error_factor
+                * epsilon
+                * (absolute_work + abs(signed_total))
+                * scale
+                / np.longdouble(n_cells)
+            )
+            lower = max(estimate - error, np.longdouble(0.0))
+            upper = estimate + error
+            lower = max(
+                np.nextafter(lower, -np.longdouble(np.inf)),
+                np.longdouble(0.0),
+            )
+            upper = np.nextafter(upper, np.longdouble(np.inf))
+        lower_total, lower_correction = _compensated_add(
+            lower_total,
+            lower_correction,
+            lower,
+        )
+        upper_total, upper_correction = _compensated_add(
+            upper_total,
+            upper_correction,
+            upper,
+        )
+
+    lower_sum, upper_sum = _widen_accumulated_interval(
+        max(lower_total + lower_correction, np.longdouble(0.0)),
+        max(
+            upper_total + upper_correction,
+            lower_total + lower_correction,
+        ),
+    )
+    with localcontext() as context:
+        context.prec = 120 + len(str(n_genes))
+        lower_mean = _longdouble_to_decimal(lower_sum) / Decimal(n_genes)
+        upper_mean = _longdouble_to_decimal(upper_sum) / Decimal(n_genes)
+        certified = _metric_if_interval_rounds_together(
+            lower_mean,
+            upper_mean,
+            n_genes,
+        )
+    if (
+        certified is not None
+        and certified.reason is None
+        and certified.value == ordinary
+    ):
+        return MetricValue(float(ordinary), n_genes, None)
+    if certified is not None:
+        return certified
+    return _exact_mean_distortion(imputed, truth)
+
+
 def _float64_variance_difference_intervals(
     left: np.ndarray,
     right: np.ndarray,
@@ -1141,6 +1264,11 @@ def _float64_variance_difference_intervals(
         )
         lower = np.maximum(estimate - error, 0.0)
         upper = estimate + error
+        lower = np.nextafter(lower, -np.inf)
+        upper = np.nextafter(upper, np.inf)
+        lower = np.maximum(lower, 0.0)
+        lower[~nonzero_scale] = 0.0
+        upper[~nonzero_scale] = 0.0
     ambiguous = nonzero_scale & (error > 0.0) & (estimate <= 128.0 * error)
     return estimate, lower, upper, ambiguous, scale
 
@@ -1670,11 +1798,18 @@ def _pairwise_distance_distortion(
     except FloatingPointError:
         ordinary_value = None
     if ordinary_value is not None and np.isfinite(ordinary_value):
-        return MetricValue(float(ordinary_value), n_pairs, None)
+        certified = (
+            _wide_pairwise_distance_distortion(imputed, truth, n_pairs)
+            if _WIDE_LONGDOUBLE
+            else _portable_pairwise_distance_distortion(imputed, truth, n_pairs)
+        )
+        if certified.reason is None and certified.value == float(ordinary_value):
+            return MetricValue(float(ordinary_value), n_pairs, None)
+        return certified
 
-    if not _WIDE_LONGDOUBLE:
-        return _portable_pairwise_distance_distortion(imputed, truth, n_pairs)
-    return _wide_pairwise_distance_distortion(imputed, truth, n_pairs)
+    if _WIDE_LONGDOUBLE:
+        return _wide_pairwise_distance_distortion(imputed, truth, n_pairs)
+    return _portable_pairwise_distance_distortion(imputed, truth, n_pairs)
 
 
 def _mean_gene_wasserstein_distance(
@@ -1813,10 +1948,10 @@ def reconstruction_metrics(
     except FloatingPointError:
         ordinary_mean = None
     if ordinary_mean is not None and np.isfinite(ordinary_mean):
-        result["mean_distortion"] = MetricValue(
+        result["mean_distortion"] = _certified_mean_distortion(
+            imputed_array,
+            truth_array,
             float(ordinary_mean),
-            truth_array.shape[1],
-            None,
         )
     else:
         mean_differences: list[_ScaledTerm] = []
@@ -1846,11 +1981,21 @@ def reconstruction_metrics(
     except FloatingPointError:
         ordinary_variance = None
     if ordinary_variance is not None and np.isfinite(ordinary_variance):
-        result["variance_distortion"] = MetricValue(
-            float(ordinary_variance),
-            truth_array.shape[1],
-            None,
+        certified_variance = (
+            _wide_variance_distortion(imputed_array, truth_array)
+            if _WIDE_LONGDOUBLE
+            else _portable_variance_distortion(imputed_array, truth_array)
         )
+        if certified_variance.reason is None and certified_variance.value == float(
+            ordinary_variance
+        ):
+            result["variance_distortion"] = MetricValue(
+                float(ordinary_variance),
+                truth_array.shape[1],
+                None,
+            )
+        else:
+            result["variance_distortion"] = certified_variance
     else:
         if _WIDE_LONGDOUBLE:
             result["variance_distortion"] = _wide_variance_distortion(

@@ -28,6 +28,7 @@ from .observed import (
     AdapterUnavailableError,
     CompatibilityEvent,
     SourceReceipt,
+    _inverse_log1p_observed_library,
     execute_pinned_command,
     observed_library_sizes,
     read_environment_receipt,
@@ -471,8 +472,11 @@ def scsdae_to_evaluator_counts(
     if not np.isfinite(native).all() or bool((native < 0).any()):
         raise ValueError("native scSDAE output must be finite and nonnegative")
     libraries = observed_library_sizes(method_input)
-    with np.errstate(over="ignore", invalid="ignore"):
-        converted = np.expm1(native) * libraries[:, None] / 1_000_000.0
+    converted = _inverse_log1p_observed_library(
+        native,
+        libraries,
+        target_sum=1_000_000,
+    )
     if not np.isfinite(converted).all() or bool((converted < 0).any()):
         raise ValueError("native scSDAE output does not have a finite count equivalent")
     converted.setflags(write=False)

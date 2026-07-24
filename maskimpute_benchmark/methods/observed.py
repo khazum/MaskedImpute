@@ -191,18 +191,35 @@ def log1p_cp10k(counts: np.ndarray) -> np.ndarray:
 def _cp10k_transform(values: np.ndarray, *, log_base: int) -> np.ndarray:
     """Normalize rows exactly when safe, otherwise through scaled proportions."""
 
+    if log_base not in {1, 2}:  # pragma: no cover - private programming error
+        raise AssertionError(log_base)
     converted = np.empty_like(values)
     for index, row in enumerate(values):
         try:
             with np.errstate(all="raise"):
                 library_size = np.sum(row)
                 proportions = row / library_size
+                terms = proportions * 10_000.0
                 if log_base == 1:
-                    converted_row = np.log1p(proportions * 10_000.0)
-                elif log_base == 2:
-                    converted_row = np.log2(1.0 + proportions * 10_000.0)
-                else:  # pragma: no cover - private programming error
-                    raise AssertionError(log_base)
+                    converted_row = np.log1p(terms)
+                else:
+                    converted_row = np.log2(1.0 + terms)
+                    exact_total: Fraction | None = None
+                    for column in np.flatnonzero(row):
+                        certified = _certified_cp10k_log2(row, int(column))
+                        if certified is not None:
+                            converted_row[column] = certified
+                            continue
+                        if exact_total is None:
+                            exact_total = sum(
+                                (Fraction.from_float(float(value)) for value in row),
+                                start=Fraction(),
+                            )
+                        converted_row[column] = _exact_cp10k_logarithm(
+                            float(row[column]),
+                            exact_total,
+                            log_base=2,
+                        )
         except FloatingPointError:
             exact_total = sum(
                 (Fraction.from_float(float(value)) for value in row),
@@ -215,31 +232,85 @@ def _cp10k_transform(values: np.ndarray, *, log_base: int) -> np.ndarray:
                 if value == 0.0:
                     converted_row[column] = 0.0
                     continue
-                exact_term = Fraction.from_float(float(value)) * 10_000 / exact_total
-                binary_gap = max(
-                    0,
-                    exact_term.denominator.bit_length()
-                    - exact_term.numerator.bit_length(),
+                converted_row[column] = _exact_cp10k_logarithm(
+                    float(value),
+                    exact_total,
+                    log_base=log_base,
                 )
-                required_precision = max(
-                    100,
-                    math.ceil(binary_gap * math.log10(2.0)) + 100,
-                )
-                with localcontext() as context:
-                    context.prec = required_precision
-                    term = Decimal(exact_term.numerator) / Decimal(
-                        exact_term.denominator
-                    )
-                    logged = (Decimal(1) + term).ln()
-                    if log_base == 2:
-                        logged /= Decimal(2).ln()
-                    converted_row[column] = float(logged)
-            if log_base not in {1, 2}:  # pragma: no cover - private programming error
-                raise AssertionError(log_base)
         if not np.isfinite(converted_row).all():
             raise ValueError("CP10k transformation did not remain finite")
         converted[index] = converted_row
     return converted
+
+
+def _certified_cp10k_log2(row: np.ndarray, column: int) -> float | None:
+    """Certify log1p(CP10k)/ln(2) in one binary64 rounding cell."""
+
+    wide_info = np.finfo(np.longdouble)
+    float_info = np.finfo(np.float64)
+    if wide_info.nmant <= float_info.nmant:
+        return None
+    wide_row = np.asarray(row, dtype=np.longdouble)
+    with np.errstate(under="ignore"):
+        total = np.sum(wide_row, dtype=np.longdouble)
+        term = wide_row[column] * np.longdouble(10_000.0) / total
+        logged = np.log1p(term) / np.log(np.longdouble(2.0))
+        reduction_depth = max(
+            1,
+            math.ceil(math.log2(max(1, row.size))),
+        )
+        error_factor = np.longdouble(64 + 8 * reduction_depth)
+        error = (
+            error_factor
+            * np.longdouble(wide_info.eps)
+            * max(abs(logged), np.longdouble(1.0))
+        )
+        lower = np.nextafter(logged - error, -np.longdouble(np.inf))
+        upper = np.nextafter(logged + error, np.longdouble(np.inf))
+    lower_float = float(lower)
+    upper_float = float(upper)
+    return lower_float if lower_float == upper_float else None
+
+
+def _exact_cp10k_logarithm(
+    value: float,
+    exact_total: Fraction,
+    *,
+    log_base: int,
+) -> float:
+    """Round one completed CP10k logarithm from exact binary-rational inputs."""
+
+    exact_term = Fraction.from_float(value) * 10_000 / exact_total
+    binary_gap = max(
+        0,
+        exact_term.denominator.bit_length() - exact_term.numerator.bit_length(),
+    )
+    required_precision = max(
+        100,
+        math.ceil(binary_gap * math.log10(2.0)) + 100,
+    )
+    for precision in (
+        required_precision,
+        required_precision * 2,
+        required_precision * 4,
+    ):
+        with localcontext() as context:
+            context.prec = precision
+            term = Decimal(exact_term.numerator) / Decimal(exact_term.denominator)
+            logged = (Decimal(1) + term).ln()
+            if log_base == 2:
+                logged /= Decimal(2).ln()
+            elif log_base != 1:  # pragma: no cover - private programming error
+                raise AssertionError(log_base)
+            decimal_ulp = Decimal(1).scaleb(logged.adjusted() - precision + 1)
+            error = decimal_ulp * 32
+            lower = max(logged - error, Decimal())
+            upper = logged + error
+        lower_float = float(lower)
+        upper_float = float(upper)
+        if lower_float == upper_float:
+            return lower_float
+    raise ValueError("CP10k logarithm could not certify float64 rounding")
 
 
 def _validated_native_matrix(
@@ -338,14 +409,95 @@ def log1p_cp10k_to_count_equivalent(
         native_output,
         name="native log1p-CP10k output",
     )
-    with np.errstate(over="ignore", invalid="ignore"):
-        converted = np.expm1(values) * libraries[:, None] / 10_000.0
+    converted = _inverse_log1p_observed_library(
+        values,
+        libraries,
+        target_sum=10_000,
+    )
     if not np.isfinite(converted).all() or bool((converted < 0).any()):
         raise ValueError(
             "native log1p-CP10k output does not have a finite count equivalent"
         )
     converted.setflags(write=False)
     return converted
+
+
+def _inverse_log1p_observed_library(
+    values: np.ndarray,
+    libraries: np.ndarray,
+    *,
+    target_sum: int,
+) -> np.ndarray:
+    """Invert log1p normalization while retaining safe legacy serialization."""
+
+    if type(target_sum) is not int or target_sum <= 0:
+        raise ValueError("target_sum must be a positive integer")
+    converted = np.empty_like(values)
+    with np.errstate(over="ignore", invalid="ignore", under="ignore"):
+        native_counts = np.expm1(values)
+    for row in range(values.shape[0]):
+        library = float(libraries[row])
+        for column in range(values.shape[1]):
+            native_count = float(native_counts[row, column])
+            # Preserve the established operation order whenever its product is
+            # representable. Only a multiplication-overflow risk uses the
+            # one-rounding high-precision endpoint.
+            if math.isfinite(native_count) and (
+                native_count == 0.0 or native_count <= _FLOAT64_PRODUCT_LIMIT / library
+            ):
+                converted[row, column] = native_count * library / float(target_sum)
+                continue
+            exact = _decimal_inverse_log1p_endpoint(
+                float(values[row, column]),
+                library,
+                target_sum,
+            )
+            converted[row, column] = math.nan if exact is None else exact
+    return converted
+
+
+_FLOAT64_PRODUCT_LIMIT = float(np.finfo(np.float64).max)
+
+
+def _decimal_inverse_log1p_endpoint(
+    value: float,
+    library: float,
+    target_sum: int,
+) -> float | None:
+    """Certify one risky expm1-scaled endpoint with outward decimal bounds."""
+
+    # Even division by the largest supported target cannot make exp(1000)
+    # representable in binary64. This also avoids impractical Decimal work for
+    # arbitrary finite native values far outside the meaningful input range.
+    if value > 1_000.0:
+        return None
+    exact_value = Decimal.from_float(value)
+    exact_library = Decimal.from_float(library)
+    denominator = Decimal(target_sum)
+    for precision in (120, 240, 480, 960):
+        with localcontext() as context:
+            context.prec = precision
+            approximation = (
+                (exact_value.exp() - Decimal(1)) * exact_library / denominator
+            )
+            if not approximation.is_finite() or approximation < 0:
+                return None
+            decimal_ulp = Decimal(1).scaleb(approximation.adjusted() - precision + 1)
+            error = decimal_ulp * 32
+            lower = max(approximation - error, Decimal())
+            upper = approximation + error
+        try:
+            lower_float = float(lower)
+            upper_float = float(upper)
+        except (OverflowError, ValueError):
+            return None
+        if (
+            lower_float == upper_float
+            and math.isfinite(lower_float)
+            and lower_float >= 0.0
+        ):
+            return lower_float
+    return None
 
 
 def count_equivalent_to_log2_cp10k(counts: object) -> np.ndarray:
