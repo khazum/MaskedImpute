@@ -3051,7 +3051,9 @@ def _recover_interrupted_execution_transactions(
                 "artifact_paths",
                 "intent_sha256",
             }
+            or type(intent.get("schema_version")) is not int
             or intent.get("schema_version") != 1
+            or type(intent.get("ordinal")) is not int
             or intent.get("ordinal") != ordinal
             or not isinstance(run_id, str)
             or run_pattern.fullmatch(run_id) is None
@@ -4192,11 +4194,14 @@ class FinalResultStore:
         records = self._cached_records()
         references = value.get("records")
         if (
-            value.get("schema_version") != 1
+            type(value.get("schema_version")) is not int
+            or value.get("schema_version") != 1
             or value.get("status") != "completed"
             or value.get("plan_sha256") != self.plan.plan_sha256
             or value.get("input_hashes") != dict(self.plan.input_hashes)
+            or type(value.get("planned_run_count")) is not int
             or value.get("planned_run_count") != len(self.plan.entries)
+            or type(value.get("recorded_run_count")) is not int
             or value.get("recorded_run_count") != len(records)
             or len(records) != len(self.plan.entries)
             or value.get("artifact_storage") != _FINAL_STORAGE_POLICY
@@ -4218,14 +4223,19 @@ class FinalResultStore:
             raise FinalRunnerContractError("final execution manifest differs from plan")
         for plan_entry, reference in zip(self.plan.entries, references, strict=True):
             path = self._record_path(plan_entry.run.ordinal)
-            if not isinstance(reference, Mapping) or reference != {
-                "ordinal": plan_entry.run.ordinal,
-                "run_id": plan_entry.run.run_id,
-                "path": path.relative_to(self.output_dir).as_posix(),
-                "sha256": hashlib.sha256(
-                    _read_unique_file(path, "final execution record")
-                ).hexdigest(),
-            }:
+            if (
+                not isinstance(reference, Mapping)
+                or type(reference.get("ordinal")) is not int
+                or reference
+                != {
+                    "ordinal": plan_entry.run.ordinal,
+                    "run_id": plan_entry.run.run_id,
+                    "path": path.relative_to(self.output_dir).as_posix(),
+                    "sha256": hashlib.sha256(
+                        _read_unique_file(path, "final execution record")
+                    ).hexdigest(),
+                }
+            ):
                 raise FinalRunnerContractError(
                     "final execution manifest record binding differs"
                 )

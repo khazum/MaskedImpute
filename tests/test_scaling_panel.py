@@ -1067,6 +1067,79 @@ def test_scaling_store_rejects_boolean_schema_versions(
         ScalingResultStore(tmp_path, plan).load()
 
 
+@pytest.mark.parametrize("boundary", ("evaluation", "evidence"))
+def test_publication_scaling_loader_rejects_boolean_receipt_schema_versions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    from types import SimpleNamespace
+
+    import maskimpute_benchmark.final_runner as final_runner
+    import maskimpute_benchmark.scaling as scaling
+    import maskimpute_benchmark.study as study
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    evaluation = {
+        "schema_version": True if boundary == "evaluation" else 1,
+        "status": "completed",
+        "final_plan_sha256": "a" * 64,
+        "final_execution_manifest_path": (
+            "results/final/execution/execution_manifest.json"
+        ),
+        "final_execution_manifest_sha256": "b" * 64,
+        "final_execution_payload_sha256": "c" * 64,
+        "execution_validation": {},
+        "storage_preflight": {},
+        "scaling_evidence": {
+            "schema_version": True if boundary == "evidence" else 1,
+            "status": "completed",
+            "plan": {},
+            "checkpoint_path": "results/scaling/checkpoints/00000001.json",
+            "checkpoint_file_sha256": "d" * 64,
+            "checkpoint_payload": {},
+            "result_files": [],
+        },
+        "result_files": [],
+    }
+    evidence = evaluation["scaling_evidence"]
+    evidence["evidence_sha256"] = canonical_sha256(evidence)
+    receipt = {
+        "result_manifest": evaluation,
+        "result_manifest_sha256": canonical_sha256(evaluation),
+    }
+    repository = tmp_path / "repository"
+    round_dir = repository / "round-001"
+    monkeypatch.setattr(
+        final_runner,
+        "_canonical_round",
+        lambda _repository, _round_dir: (repository, round_dir),
+    )
+    monkeypatch.setattr(study, "_validate_freeze", lambda _round, _repo: {})
+    monkeypatch.setattr(
+        study,
+        "_validate_registry",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        study,
+        "_validate_state_record_chain",
+        lambda *_args, **_kwargs: ({}, {}, receipt),
+    )
+    monkeypatch.setattr(study, "_validate_result_files", lambda *_args: ())
+    monkeypatch.setattr(
+        study, "_verify_frozen_repository", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        scaling,
+        "load_scaling_execution_authority",
+        lambda _repository: SimpleNamespace(plan=SimpleNamespace()),
+    )
+
+    with pytest.raises(scaling.ScalingContractError, match="receipt|evidence"):
+        scaling.load_publication_scaling_evidence(repository, round_dir)
+
+
 def test_scaling_store_rejects_rehashed_seed_authority_drift(tmp_path: Path) -> None:
     from maskimpute_benchmark.protocol import canonical_sha256
     from maskimpute_benchmark.scaling import (
@@ -1130,6 +1203,62 @@ def test_scaling_store_rejects_rehashed_invalid_run_and_metric_semantics(
     _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
     with pytest.raises(ScalingContractError, match="status|runtime|resource|metric"):
         ScalingResultStore(tmp_path, plan).load()
+
+
+@pytest.mark.parametrize("value", (10**400, -(10**400)))
+def test_scaling_store_translates_unrepresentable_persisted_runtime(
+    tmp_path: Path,
+    value: int,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    output = tmp_path / ("positive" if value > 0 else "negative")
+    plan = _plan()
+    store = ScalingResultStore(output, plan)
+    receipt = _dataset_receipt(output)
+    store.append_dataset(receipt)
+    attempt = _first_attempt(plan, output, receipt)
+    attempt = replace(
+        attempt,
+        run=replace(attempt.run, runtime_seconds=value),
+    )
+    record = scaling_attempt_record(attempt, cells=10_000, accuracy_enabled=True)
+
+    with pytest.raises(ScalingContractError, match="runtime|receipt"):
+        store.append_attempt(plan.entries[0], record)
+
+
+@pytest.mark.parametrize("value", (10**400, -(10**400)))
+def test_scaling_store_translates_unrepresentable_persisted_metric(
+    tmp_path: Path,
+    value: int,
+) -> None:
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_attempt_record,
+    )
+
+    output = tmp_path / ("positive" if value > 0 else "negative")
+    plan = _plan()
+    store = ScalingResultStore(output, plan)
+    receipt = _dataset_receipt(output)
+    store.append_dataset(receipt)
+    record = scaling_attempt_record(
+        _first_attempt(plan, output, receipt),
+        cells=10_000,
+        accuracy_enabled=True,
+    )
+    record["metrics"][0]["value"] = value
+
+    with pytest.raises(ScalingContractError, match="metric"):
+        store.append_attempt(plan.entries[0], record)
 
 
 def test_scaling_store_rejects_coordinated_h5ad_and_receipt_rehash(

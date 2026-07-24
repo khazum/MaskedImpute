@@ -3427,6 +3427,118 @@ def test_trajectory_scope_emits_one_reason_coded_endpoint_and_exact_counts(
     )
 
 
+def test_persisted_downstream_plan_rejects_boolean_schema_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset, configuration, source_plan, fixture = _trajectory_source(tmp_path)
+    monkeypatch.setattr(
+        downstream, "_validate_evaluated_round_binding", lambda _binding: None
+    )
+    monkeypatch.setattr(downstream, "_read_bound_dataset", lambda _binding: None)
+    plan = downstream._build_downstream_evidence_plan(
+        source,
+        source_kind="final",
+        evidence_scope="supplementary_trajectory",
+        datasets=(dataset,),
+        configurations=(configuration,),
+        evaluated_round_binding=fixture["evaluated_round_binding"],
+        source_plan=source_plan,
+    )
+    monkeypatch.setattr(
+        downstream,
+        "build_final_trajectory_downstream_evidence_plan",
+        lambda _repository, _round_root: plan,
+    )
+    output = downstream.expected_final_downstream_output_directory(plan)
+    payload = plan.to_dict()
+    payload["schema_version"] = True
+    body = {key: value for key, value in payload.items() if key != "plan_sha256"}
+    payload["plan_sha256"] = canonical_sha256(body)
+    _write_canonical(output / "plan.json", payload)
+
+    with pytest.raises(downstream.DownstreamEvidenceError, match="plan schema"):
+        downstream.load_downstream_evidence_plan(output)
+
+
+def test_one_row_downstream_manifest_rejects_boolean_integer_aliases(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, dataset, configuration, source_plan, fixture = _trajectory_source(tmp_path)
+    monkeypatch.setattr(
+        downstream, "_validate_evaluated_round_binding", lambda _binding: None
+    )
+    monkeypatch.setattr(downstream, "_read_bound_dataset", lambda _binding: None)
+    plan = downstream._build_downstream_evidence_plan(
+        source,
+        source_kind="final",
+        evidence_scope="supplementary_trajectory",
+        datasets=(dataset,),
+        configurations=(configuration,),
+        evaluated_round_binding=fixture["evaluated_round_binding"],
+        source_plan=source_plan,
+    )
+    monkeypatch.setattr(
+        downstream,
+        "build_final_trajectory_downstream_evidence_plan",
+        lambda _repository, _round_root: plan,
+    )
+    output = downstream.expected_final_downstream_output_directory(plan)
+    valid_manifest = downstream.run_downstream_evidence(plan, output)
+    assert downstream.load_downstream_evidence_manifest(output).endpoint_row_count == 1
+    manifest_path = output / "downstream_manifest.json"
+
+    for field in (
+        "schema_version",
+        "recorded_denominator_count",
+        "endpoint_row_count",
+    ):
+        manifest = json.loads(json.dumps(valid_manifest))
+        manifest[field] = True
+        body = {
+            key: value for key, value in manifest.items() if key != "manifest_sha256"
+        }
+        manifest["manifest_sha256"] = canonical_sha256(body)
+        _write_canonical(manifest_path, manifest)
+        with pytest.raises(downstream.DownstreamEvidenceError, match="manifest"):
+            downstream.load_downstream_evidence_manifest(output)
+
+    manifest = json.loads(json.dumps(valid_manifest))
+    manifest["records"][0]["ordinal"] = True
+    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    manifest["manifest_sha256"] = canonical_sha256(body)
+    _write_canonical(manifest_path, manifest)
+    with pytest.raises(downstream.DownstreamEvidenceError, match="manifest"):
+        downstream.load_downstream_evidence_manifest(output)
+
+    record_path = output / "records/00000001.json"
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["ordinal"] = True
+    record_body = {
+        key: value for key, value in record.items() if key != "record_sha256"
+    }
+    record["record_sha256"] = canonical_sha256(record_body)
+    record_file_sha = _write_canonical(record_path, record)
+    manifest = json.loads(json.dumps(valid_manifest))
+    manifest["records"][0]["sha256"] = record_file_sha
+    manifest["records"][0]["record_sha256"] = record["record_sha256"]
+    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    manifest["manifest_sha256"] = canonical_sha256(body)
+    _write_canonical(manifest_path, manifest)
+    with pytest.raises(
+        downstream.DownstreamEvidenceError,
+        match="record (identity|binding)",
+    ):
+        downstream.load_downstream_evidence_manifest(output)
+
+
 def test_completed_trajectory_scope_evaluates_only_the_direct_trajectory_endpoint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

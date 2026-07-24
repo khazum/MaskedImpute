@@ -747,7 +747,13 @@ def test_direct_revision_loader_accepts_only_complete_48_candidate_checkpoint(
         plan_scope="revision_candidate_only",
         configurations=(SimpleNamespace(configuration_id=configuration_id),),
     )
-    projection = SimpleNamespace(selected_by_method={}, receipt_bytes=b"{}\n")
+    selected_configuration = {"nested": {"values": [1, 2]}}
+    projection = SimpleNamespace(
+        selected_by_method={
+            "magic": SimpleNamespace(configuration=selected_configuration)
+        },
+        receipt_bytes=b"{}\n",
+    )
 
     evidence = revision_evaluation._load_direct_revision_reconstruction(
         tmp_path / "checkpoint.json",
@@ -762,7 +768,14 @@ def test_direct_revision_loader_accepts_only_complete_48_candidate_checkpoint(
 
     assert isinstance(evidence, DirectReconstructionEvidence)
     assert len(evidence.records) == 48
-    assert evidence.selected_by_method == {}
+    report.plan_snapshot["entries"][0] = 999
+    selected_configuration["nested"]["values"].append(3)
+    from maskimpute_benchmark.direct_values import direct_json_value
+
+    assert direct_json_value(evidence.plan_snapshot, payload=True)["entries"][0] == 0
+    assert direct_json_value(evidence.selected_by_method, payload=True) == {
+        "magic": {"nested": {"values": [1, 2]}}
+    }
     assert captured["validated"] is True
     assert captured["path"] == tmp_path / "checkpoint.json"
 

@@ -27,6 +27,14 @@ MECHANISMS = ("symsim", "sergio", "sparsim", "semisynthetic")
 VIEWS = ("moderate", "severe")
 
 
+def _write_canonical_json(path: Path, value: object) -> None:
+    path.write_text(
+        json.dumps(value, allow_nan=False, separators=(",", ":"), sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _read_only_tree_snapshot(root: Path) -> tuple[tuple[object, ...], ...]:
     rows: list[tuple[object, ...]] = []
     for path in sorted(root.rglob("*")):
@@ -5322,6 +5330,100 @@ def test_interrupted_final_attempt_transaction_removes_orphan_artifacts(
     assert not (output / "transactions").exists()
     assert not (output / "runs").exists()
     assert _final_store(output, plan).load_records() == ()
+
+
+def test_final_execution_manifest_rejects_boolean_integer_aliases(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256="5" * 64,
+    )
+    output = tmp_path / "round-001/results/final/execution"
+    store = _final_store(output, plan)
+    store.append(plan.entries[0], _completed_attempt(plan.entries[0]))
+    valid = store.finalize()
+    assert store.load_manifest() == valid
+
+    for field in ("schema_version", "planned_run_count", "recorded_run_count"):
+        payload = json.loads(json.dumps(valid))
+        payload[field] = True
+        body = {
+            key: value for key, value in payload.items() if key != "manifest_sha256"
+        }
+        payload["manifest_sha256"] = canonical_sha256(body)
+        _write_canonical_json(store.manifest_path, payload)
+        with pytest.raises(FinalRunnerContractError, match="manifest"):
+            store.load_manifest()
+
+    payload = json.loads(json.dumps(valid))
+    payload["records"][0]["ordinal"] = True
+    body = {key: value for key, value in payload.items() if key != "manifest_sha256"}
+    payload["manifest_sha256"] = canonical_sha256(body)
+    _write_canonical_json(store.manifest_path, payload)
+    with pytest.raises(FinalRunnerContractError, match="manifest"):
+        store.load_manifest()
+
+
+def test_final_transaction_intent_rejects_boolean_integer_aliases(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        _recover_interrupted_final_transactions,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(full.entries[0],),
+        configurations=full.configurations,
+        plan_sha256="5" * 64,
+    )
+    for field in ("schema_version", "ordinal"):
+        round_dir = tmp_path / field
+        output = round_dir / "results/final/execution"
+        store = _final_store(output, plan)
+        intent_path = store._publish_transaction_intent(
+            plan.entries[0],
+            _completed_attempt(plan.entries[0]),
+        )
+        payload = json.loads(intent_path.read_text(encoding="utf-8"))
+        payload[field] = True
+        body = {key: value for key, value in payload.items() if key != "intent_sha256"}
+        payload["intent_sha256"] = canonical_sha256(body)
+        _write_canonical_json(intent_path, payload)
+        with pytest.raises(FinalRunnerContractError, match="transaction intent"):
+            _recover_interrupted_final_transactions(round_dir)
 
 
 def test_interrupted_maskimpute_transaction_removes_realized_score_artifact(

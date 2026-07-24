@@ -6260,6 +6260,8 @@ def _load_record(
     body = {key: nested for key, nested in value.items() if key != "record_sha256"}
     if value.get("record_sha256") != canonical_sha256(body):
         raise DownstreamEvidenceError("downstream record checksum differs")
+    if type(value.get("ordinal")) is not int:
+        raise DownstreamEvidenceError("downstream record identity differs")
     common = _expected_record_common(plan, entry, binding)
     if any(not direct_equal(value.get(key), nested) for key, nested in common.items()):
         raise DownstreamEvidenceError("downstream record identity differs")
@@ -6625,7 +6627,11 @@ def _load_persisted_plan(
     plan_payload, _plan_raw, plan_file_sha = _strict_json(
         output_root / "plan.json", "downstream plan"
     )
-    if set(plan_payload) != _PLAN_FIELDS or plan_payload.get("schema_version") != 3:
+    if (
+        set(plan_payload) != _PLAN_FIELDS
+        or type(plan_payload.get("schema_version")) is not int
+        or plan_payload.get("schema_version") != 3
+    ):
         raise DownstreamEvidenceError("persisted downstream plan schema differs")
     plan_sha = _digest(plan_payload.get("plan_sha256"), "downstream plan checksum")
     plan_body = {
@@ -6825,6 +6831,7 @@ def load_downstream_evidence_manifest(
     endpoint_rows = manifest.get("endpoint_row_count")
     if (
         canonical_sha256(manifest_body) != manifest_sha
+        or type(manifest.get("schema_version")) is not int
         or manifest.get("schema_version") != 3
         or manifest.get("status") != "completed"
         or manifest.get("plan_sha256") != plan_sha
@@ -6853,10 +6860,13 @@ def load_downstream_evidence_manifest(
         != [value.to_dict() for value in rebuilt.development_sources]
         or type(planned) is not int
         or planned <= 0
+        or type(manifest.get("recorded_denominator_count")) is not int
         or manifest.get("recorded_denominator_count") != planned
+        or type(endpoint_rows) is not int
         or endpoint_rows != planned * len(_endpoint_names(rebuilt))
         or not isinstance(references, list)
         or len(references) != planned
+        or type(plan_payload.get("planned_denominator_count")) is not int
         or plan_payload.get("planned_denominator_count") != planned
     ):
         raise DownstreamEvidenceError("downstream manifest completeness differs")
@@ -6868,6 +6878,7 @@ def load_downstream_evidence_manifest(
             not isinstance(reference, Mapping)
             or set(reference)
             != {"ordinal", "run_id", "path", "sha256", "record_sha256"}
+            or type(reference.get("ordinal")) is not int
             or reference.get("ordinal") != ordinal
         ):
             raise DownstreamEvidenceError(
@@ -6898,6 +6909,7 @@ def load_downstream_evidence_manifest(
                 reference.get("record_sha256"), "downstream record payload checksum"
             )
             or record.get("run_id") != reference.get("run_id")
+            or type(record.get("ordinal")) is not int
             or record.get("ordinal") != ordinal
         ):
             raise DownstreamEvidenceError("downstream manifest record binding differs")

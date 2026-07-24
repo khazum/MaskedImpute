@@ -949,6 +949,117 @@ def test_public_schema2_builder_routes_direct_checkpoint_without_legacy_plan(
     assert not hasattr(captured["reconstruction"], "input_hashes")
 
 
+def test_direct_reconstruction_evidence_recursively_snapshots_caller_values() -> None:
+    from maskimpute_benchmark.development_evaluation import (
+        DirectReconstructionEvidence,
+    )
+    from maskimpute_benchmark.direct_values import direct_json_value
+
+    plan_snapshot = {"entries": [{"identity": {"ordinal": 1}}]}
+    input_descriptor = {"dataset_id": "dataset-test", "shape": [2, 3]}
+    record = {"run": {"status": "completed"}, "metrics": [{"value": 0.5}]}
+    selected = {"magic": {"configuration": {"neighbors": [3, 5]}}}
+    evidence = DirectReconstructionEvidence(
+        checkpoint_path="checkpoint.json",
+        identity_mode="direct-v1",
+        authority_revision="fair-comparator-direct-v1",
+        plan_snapshot=plan_snapshot,
+        input_descriptors=(input_descriptor,),
+        records=(record,),
+        selected_by_method=selected,
+        comparator_receipt_bytes=b"{}\n",
+    )
+
+    plan_snapshot["entries"][0]["identity"]["ordinal"] = 9
+    input_descriptor["shape"][0] = 99
+    record["metrics"][0]["value"] = 9.5
+    selected["magic"]["configuration"]["neighbors"].append(7)
+
+    assert direct_json_value(evidence.plan_snapshot, payload=True) == {
+        "entries": [{"identity": {"ordinal": 1}}]
+    }
+    assert direct_json_value(evidence.input_descriptors, payload=True) == [
+        {"dataset_id": "dataset-test", "shape": [2, 3]}
+    ]
+    assert direct_json_value(evidence.records, payload=True) == [
+        {"metrics": [{"value": 0.5}], "run": {"status": "completed"}}
+    ]
+    assert direct_json_value(evidence.selected_by_method, payload=True) == {
+        "magic": {"configuration": {"neighbors": [3, 5]}}
+    }
+
+
+def test_direct_reconstruction_evidence_rejects_noncanonical_nested_values() -> None:
+    from maskimpute_benchmark.development_evaluation import (
+        DirectReconstructionEvidence,
+    )
+
+    with pytest.raises(ValueError, match="canonical|keys"):
+        DirectReconstructionEvidence(
+            checkpoint_path="checkpoint.json",
+            identity_mode="direct-v1",
+            authority_revision="fair-comparator-direct-v1",
+            plan_snapshot={"entries": [{1: "invalid-key"}]},
+            input_descriptors=(),
+            records=(),
+            selected_by_method={},
+            comparator_receipt_bytes=b"{}\n",
+        )
+
+
+def test_direct_value_boundaries_reject_malformed_frozen_objects() -> None:
+    from maskimpute_benchmark.direct_values import (
+        FrozenDirectObject,
+        direct_json_value,
+        freeze_direct_mapping,
+    )
+
+    malformed = FrozenDirectObject(((1, "x"),))
+    with pytest.raises(ValueError, match="keys|object"):
+        direct_json_value({"nested": malformed}, payload=True)
+    with pytest.raises(ValueError, match="keys|object"):
+        freeze_direct_mapping({"nested": malformed})
+
+    valid = FrozenDirectObject((("key", "value"),))
+    assert direct_json_value({"nested": valid}, payload=True) == {
+        "nested": {"key": "value"}
+    }
+    assert direct_json_value(
+        dict(freeze_direct_mapping({"nested": valid})),
+        payload=True,
+    ) == {"nested": {"key": "value"}}
+
+
+@pytest.mark.parametrize("value", (10**400, -(10**400)))
+def test_endpoint_unit_translates_unrepresentable_integer_values(value: int) -> None:
+    from maskimpute_benchmark.development_evaluation import EndpointUnit
+
+    with pytest.raises(ValueError, match="finite"):
+        EndpointUnit(
+            unit_id="unit-1",
+            biological_id="draw-1",
+            technical_id="view-1",
+            value=value,
+        )
+
+
+@pytest.mark.parametrize("nominal_alpha", (10**400, -(10**400)))
+def test_null_de_translates_unrepresentable_integer_alpha(
+    nominal_alpha: int,
+) -> None:
+    from maskimpute_benchmark.development_evaluation import evaluate_null_de_fpr
+
+    with pytest.raises(ValueError, match="nominal_alpha"):
+        evaluate_null_de_fpr(
+            np.zeros((4, 100), dtype=np.float64),
+            tuple(f"cell-{index}" for index in range(4)),
+            ("a", "a", "b", "b"),
+            fixed_gene_mask=np.ones(100, dtype=np.bool_),
+            entropy_sha256="f" * 64,
+            nominal_alpha=nominal_alpha,
+        )
+
+
 def test_null_de_uses_deterministic_balanced_stratified_split() -> None:
     from maskimpute_benchmark.development_evaluation import (
         balanced_null_split,

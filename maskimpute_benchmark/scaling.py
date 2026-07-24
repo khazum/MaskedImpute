@@ -196,6 +196,18 @@ class ScalingContractError(ValueError):
     """Raised when the scaling authority, plan, or evidence is not closed."""
 
 
+def _finite_real(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ScalingContractError(f"{name} must be a finite real number")
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ScalingContractError(f"{name} must be a finite real number") from error
+    if not np.isfinite(result):
+        raise ScalingContractError(f"{name} must be a finite real number")
+    return result
+
+
 @dataclass(frozen=True, slots=True)
 class ScalingEvaluatedAttempt:
     """Bounded scaling result without main-study score-matrix evidence."""
@@ -2092,6 +2104,10 @@ class ScalingResultStore:
             raise ScalingContractError("scaling executor receipt binding differs")
         status = receipt.get("status")
         reason = receipt.get("reason")
+        runtime_seconds = _finite_real(
+            receipt.get("runtime_seconds"),
+            "scaling executor runtime",
+        )
         if (
             status
             not in {
@@ -2106,10 +2122,7 @@ class ScalingResultStore:
             }
             or (status == "completed" and reason is not None)
             or (status != "completed" and (not isinstance(reason, str) or not reason))
-            or isinstance(receipt.get("runtime_seconds"), bool)
-            or not isinstance(receipt.get("runtime_seconds"), (int, float))
-            or not np.isfinite(float(receipt["runtime_seconds"]))
-            or float(receipt["runtime_seconds"]) < 0.0
+            or runtime_seconds < 0.0
             or any(
                 isinstance(receipt.get(name), bool)
                 or type(receipt.get(name)) is not int
@@ -2523,12 +2536,13 @@ class ScalingResultStore:
             artifact_directory=artifact_directory,
         )
         status = run.get("status")
+        runtime = _finite_real(
+            run.get("runtime_seconds"),
+            "stored scaling runtime",
+        )
         if (
             status not in _OUTCOME_STATUSES
-            or isinstance(run.get("runtime_seconds"), bool)
-            or not isinstance(run.get("runtime_seconds"), (int, float))
-            or not np.isfinite(float(run["runtime_seconds"]))
-            or float(run["runtime_seconds"]) < 0.0
+            or runtime < 0.0
             or any(
                 isinstance(run.get(name), bool)
                 or type(run.get(name)) is not int
@@ -2539,7 +2553,6 @@ class ScalingResultStore:
             raise ScalingContractError(
                 "stored scaling status, runtime, or resource evidence is invalid"
             )
-        runtime = float(run["runtime_seconds"])
         peak_rss = int(run["peak_rss_bytes"])
         peak_gpu = int(run["peak_gpu_bytes"])
         for name in (
@@ -2847,11 +2860,12 @@ class ScalingResultStore:
                         "unavailable scaling metric denominator differs"
                     )
                 continue
+            metric_value = _finite_real(
+                value_number,
+                "completed scaling metric value",
+            )
             if (
-                isinstance(value_number, bool)
-                or not isinstance(value_number, (int, float))
-                or not np.isfinite(float(value_number))
-                or float(value_number) < 0.0
+                metric_value < 0.0
                 or metric_status != "completed"
                 or metric_reason is not None
                 or type(metric_n) is not int
@@ -2867,11 +2881,11 @@ class ScalingResultStore:
                 raise ScalingContractError(
                     "completed scaling metric denominator differs"
                 )
-            if metric_name == "corr_err" and float(value_number) > 2.0:
+            if metric_name == "corr_err" and metric_value > 2.0:
                 raise ScalingContractError(
                     "scaling correlation distortion exceeds its range"
                 )
-            if metric_name == "n_corr_genes" and float(value_number) != gene_count:
+            if metric_name == "n_corr_genes" and metric_value != gene_count:
                 raise ScalingContractError("scaling correlation gene count differs")
         if evaluator_output is not None:
             from .runner import _evaluator_targets
@@ -4338,6 +4352,7 @@ def load_publication_scaling_evidence(
                 frozenset(required_evaluation_fields),
                 frozenset(required_evaluation_fields | {"trajectory_evidence"}),
             }
+            or type(evaluation.get("schema_version")) is not int
             or evaluation.get("schema_version") != 1
             or evaluation.get("status") != "completed"
             or receipt.get("result_manifest_sha256")
@@ -4375,7 +4390,8 @@ def load_publication_scaling_evidence(
     }
     checkpoint_relative = evidence.get("checkpoint_path")
     if (
-        evidence.get("schema_version") != 1
+        type(evidence.get("schema_version")) is not int
+        or evidence.get("schema_version") != 1
         or evidence.get("status") != "completed"
         or not isinstance(checkpoint_relative, str)
         or re.fullmatch(

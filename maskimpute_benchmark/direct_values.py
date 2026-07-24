@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 import math
+from types import MappingProxyType
 
 
 class FrozenDirectList(tuple[object, ...]):
@@ -15,9 +16,32 @@ class FrozenDirectObject(tuple[tuple[str, object], ...]):
     """A frozen nested JSON object."""
 
 
+def _validated_frozen_object(
+    value: FrozenDirectObject,
+) -> tuple[tuple[str, object], ...]:
+    if type(value) is not FrozenDirectObject or any(
+        type(item) is not tuple or len(item) != 2 or not isinstance(item[0], str)
+        for item in value
+    ):
+        raise ValueError("frozen direct object structure is invalid")
+    keys = tuple(item[0] for item in value)
+    if len(keys) != len(set(keys)) or keys != tuple(sorted(keys)):
+        raise ValueError("frozen direct object keys are invalid")
+    return tuple(value)
+
+
 def freeze_direct_value(value: object) -> object:
     """Freeze one canonical JSON value without losing container identity."""
 
+    if isinstance(value, FrozenDirectObject):
+        return FrozenDirectObject(
+            (key, freeze_direct_value(nested))
+            for key, nested in _validated_frozen_object(value)
+        )
+    if isinstance(value, FrozenDirectList):
+        if type(value) is not FrozenDirectList:
+            raise ValueError("frozen direct list structure is invalid")
+        return FrozenDirectList(freeze_direct_value(nested) for nested in value)
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
             raise ValueError("direct value keys must be strings")
@@ -45,15 +69,48 @@ def freeze_direct_mapping(
     )
 
 
+def snapshot_direct_value(value: object) -> object:
+    """Return a recursively detached direct value with mapping access preserved."""
+
+    if isinstance(value, FrozenDirectObject):
+        value = {key: nested for key, nested in _validated_frozen_object(value)}
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("direct value keys must be strings")
+        return MappingProxyType(
+            {
+                key: snapshot_direct_value(nested)
+                for key, nested in sorted(value.items())
+            }
+        )
+    if isinstance(value, (list, tuple)):
+        return FrozenDirectList(snapshot_direct_value(nested) for nested in value)
+    return freeze_direct_value(value)
+
+
+def snapshot_direct_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
+    """Return a detached immutable mapping suitable for public evidence."""
+
+    result = snapshot_direct_value(value)
+    if not isinstance(result, Mapping):  # pragma: no cover - guarded by annotation
+        raise ValueError("direct value must be a string-keyed mapping")
+    return result
+
+
 def _thaw_direct_value(value: object) -> object:
+    if isinstance(value, FrozenDirectObject):
+        return {
+            key: _thaw_direct_value(nested)
+            for key, nested in _validated_frozen_object(value)
+        }
+    if isinstance(value, FrozenDirectList):
+        if type(value) is not FrozenDirectList:
+            raise ValueError("frozen direct list structure is invalid")
+        return [_thaw_direct_value(item) for item in value]
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
             raise ValueError("direct value keys must be strings")
         return {key: _thaw_direct_value(nested) for key, nested in value.items()}
-    if isinstance(value, FrozenDirectObject):
-        return {item[0]: _thaw_direct_value(item[1]) for item in value}
-    if isinstance(value, FrozenDirectList):
-        return [_thaw_direct_value(item) for item in value]
     if isinstance(value, tuple):
         if all(
             isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
@@ -77,6 +134,15 @@ def direct_json_value(value: object, *, payload: bool = False) -> object:
             )
             for item in fields(value)
         }
+    if isinstance(value, FrozenDirectObject):
+        return {
+            key: direct_json_value(nested)
+            for key, nested in _validated_frozen_object(value)
+        }
+    if isinstance(value, FrozenDirectList):
+        if type(value) is not FrozenDirectList:
+            raise ValueError("frozen direct list structure is invalid")
+        return [direct_json_value(item) for item in value]
     if isinstance(value, tuple):
         return [direct_json_value(item) for item in value]
     if isinstance(value, Mapping):
@@ -146,4 +212,6 @@ __all__ = [
     "direct_json_value",
     "freeze_direct_mapping",
     "freeze_direct_value",
+    "snapshot_direct_mapping",
+    "snapshot_direct_value",
 ]

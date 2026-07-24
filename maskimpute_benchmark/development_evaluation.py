@@ -61,6 +61,75 @@ class DirectReconstructionEvidence:
     selected_by_method: Mapping[str, object]
     comparator_receipt_bytes: bytes
 
+    def __post_init__(self) -> None:
+        from .direct_values import (
+            direct_json_value,
+            snapshot_direct_mapping,
+            snapshot_direct_value,
+        )
+
+        def frozen_mapping(value: object, name: str) -> Mapping[str, object]:
+            encoded = direct_json_value(value)
+            if not isinstance(encoded, Mapping):
+                raise ValueError(f"direct reconstruction {name} must be an object")
+            return snapshot_direct_mapping(encoded)
+
+        def frozen_sequence(
+            value: object,
+            name: str,
+            *,
+            mappings_only: bool,
+        ) -> tuple[object, ...]:
+            if type(value) is not tuple:
+                raise ValueError(f"direct reconstruction {name} must be a tuple")
+            result: list[object] = []
+            for nested in value:
+                encoded = direct_json_value(nested)
+                if isinstance(encoded, Mapping):
+                    result.append(snapshot_direct_mapping(encoded))
+                elif mappings_only:
+                    raise ValueError(
+                        f"direct reconstruction {name} must contain objects"
+                    )
+                else:
+                    result.append(snapshot_direct_value(encoded))
+            return tuple(result)
+
+        if (
+            not isinstance(self.checkpoint_path, str)
+            or not self.checkpoint_path
+            or not isinstance(self.identity_mode, str)
+            or not self.identity_mode
+            or not isinstance(self.authority_revision, str)
+            or not self.authority_revision
+            or type(self.comparator_receipt_bytes) is not bytes
+        ):
+            raise ValueError("direct reconstruction identity is invalid")
+        object.__setattr__(
+            self,
+            "plan_snapshot",
+            frozen_mapping(self.plan_snapshot, "plan snapshot"),
+        )
+        object.__setattr__(
+            self,
+            "input_descriptors",
+            frozen_sequence(
+                self.input_descriptors,
+                "input descriptors",
+                mappings_only=False,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "records",
+            frozen_sequence(self.records, "records", mappings_only=True),
+        )
+        object.__setattr__(
+            self,
+            "selected_by_method",
+            frozen_mapping(self.selected_by_method, "selected methods"),
+        )
+
 
 def project_direct_comparator_evidence(
     checkpoint_path: Path,
@@ -263,7 +332,11 @@ class EndpointUnit:
         for name in ("unit_id", "biological_id", "technical_id"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name):
                 raise ValueError(f"endpoint {name} must be nonempty")
-        if isinstance(self.value, bool) or not math.isfinite(float(self.value)):
+        try:
+            numeric = float(self.value)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError("endpoint value must be finite") from error
+        if isinstance(self.value, bool) or not math.isfinite(numeric):
             raise ValueError("endpoint value must be finite")
 
 
@@ -3309,8 +3382,17 @@ def build_reconstruction_selection_records(
     audits: list[dict[str, object]] = []
     null_designs: dict[str, tuple[str, np.ndarray | None, str, str, str | None]] = {}
     for record_index, stored in enumerate(evidence.records):
-        run = stored.get("run")
-        metric_rows = stored.get("metrics")
+        record_value = (
+            direct_json_value(stored, payload=True)
+            if isinstance(evidence, DirectReconstructionEvidence)
+            else stored
+        )
+        if not isinstance(record_value, Mapping):
+            raise DevelopmentEvaluationError(
+                f"checkpoint record {record_index} is malformed"
+            )
+        run = record_value.get("run")
+        metric_rows = record_value.get("metrics")
         if not isinstance(run, Mapping) or not isinstance(metric_rows, list):
             raise DevelopmentEvaluationError(
                 f"checkpoint record {record_index} is malformed"
@@ -4051,11 +4133,15 @@ def evaluate_null_de_fpr(
         raise ValueError(
             "fixed_gene_mask must be boolean, gene-aligned, and meet the fixed minimum"
         )
+    try:
+        alpha = float(nominal_alpha)
+    except (TypeError, ValueError, OverflowError):
+        alpha = math.nan
     if (
         isinstance(nominal_alpha, bool)
         or not isinstance(nominal_alpha, (int, float))
-        or not math.isfinite(float(nominal_alpha))
-        or not 0.0 < float(nominal_alpha) < 1.0
+        or not math.isfinite(alpha)
+        or not 0.0 < alpha < 1.0
     ):
         raise ValueError("nominal_alpha must lie strictly between zero and one")
     (
@@ -4083,7 +4169,7 @@ def evaluate_null_de_fpr(
         return NullDEResult(
             status="unavailable",
             fpr=None,
-            nominal_alpha=float(nominal_alpha),
+            nominal_alpha=alpha,
             n_tested_genes=0,
             split_sha256=split_sha256,
             gene_mask_sha256=gene_mask_sha256,
@@ -4103,7 +4189,7 @@ def evaluate_null_de_fpr(
         return NullDEResult(
             status="unavailable",
             fpr=None,
-            nominal_alpha=float(nominal_alpha),
+            nominal_alpha=alpha,
             n_tested_genes=n_tested,
             split_sha256=split_sha256,
             gene_mask_sha256=gene_mask_sha256,
@@ -4111,11 +4197,11 @@ def evaluate_null_de_fpr(
         )
     statistic = np.abs(coefficients[1, mask] / standard_error[mask])
     p_values = 2.0 * student_t.sf(statistic, degrees_of_freedom)
-    fpr = float(np.mean(p_values < float(nominal_alpha)))
+    fpr = float(np.mean(p_values < alpha))
     return NullDEResult(
         status="completed",
         fpr=fpr,
-        nominal_alpha=float(nominal_alpha),
+        nominal_alpha=alpha,
         n_tested_genes=n_tested,
         split_sha256=split_sha256,
         gene_mask_sha256=gene_mask_sha256,

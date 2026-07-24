@@ -1667,3 +1667,52 @@ No selected method, final population, seed denominator, revision allowance,
 estimand, runtime behavior, or claim permission changed. No real scientific
 workload ran, and no new checksum, fingerprint, content-summary,
 filesystem-hardening, or cyber-related mechanism was added.
+
+### Task 6 final-acceptance corrections
+
+A final independent acceptance review of Task 6 at
+`1da78e70cf3a029d0c6f8edf70c5bbbbd086f26d` demonstrated four additional
+important contract gaps.
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-077 | Important | `DirectReconstructionEvidence` retained caller-owned nested plan, input, record, and selected-configuration values, including through revision reconstruction. | Closed test-first with constructor-owned recursive canonical snapshots that retain established read-only mapping access. |
+| F-078 | Important | A malformed tuple-backed `FrozenDirectObject` could reach freeze, thaw, or serialization without validating pair shape, string keys, uniqueness, and canonical order. | Closed test-first by validating the wrapper at every direct-value boundary while preserving valid wrappers. |
+| F-079 | Important | Persisted final, downstream, and scaling authorities accepted Boolean aliases for some integer schema, count, and ordinal fields. | Closed test-first with exact built-in integer validation at the owning loaders. |
+| F-080 | Important | Huge positive or negative Python integers leaked `OverflowError` from endpoint, null-DE alpha, and persisted scaling numeric validation. | Closed test-first by translating invalid or unrepresentable values to each boundary's declared contract exception. |
+
+The initial focused acceptance set reported:
+
+```text
+17 failed, 1 passed in 184.34s (0:03:04)
+```
+
+After correcting the owning boundaries and preserving established mapping
+access for immutable reconstruction records, the focused set reported:
+
+```text
+18 passed in 183.73s (0:03:03)
+```
+
+The complete five owning files reported:
+
+```text
+375 passed in 3379.70s (0:56:19)
+```
+
+Two adjacent direct-value/runner compatibility nodes reported
+`2 passed in 2.06s`. Ruff formatting and lint, byte compilation, and
+`git diff --check` all exited zero before the exact final suite.
+
+The exact sanitized fifteen-file Task 6 suite reported:
+
+```text
+860 passed in 6211.36s (1:43:31)
+```
+
+No production or test file changed during that execution. Only this tracked
+ledger evidence and the matching correction report were updated afterward. No
+selected method, population, seed denominator, revision allowance, estimand,
+concurrency behavior, or claim permission changed. No real scientific
+workload ran, and no new provenance, content-validation,
+filesystem-hardening, or cyber-related mechanism was added.
