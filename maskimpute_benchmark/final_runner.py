@@ -82,6 +82,11 @@ _TRANSACTION_FILE = re.compile(r"[0-9]{8}\.json\Z")
 _FINAL_RUN_ID = re.compile(r"final-[a-z0-9-]+\Z")
 _TRAJECTORY_RUN_ID = re.compile(r"trajectory-[a-z0-9-]+\Z")
 _FINAL_DRAWS = tuple(f"draw-{draw:02d}" for draw in range(1, 6))
+_PRIMARY_FINAL_DATASET_POPULATION = (
+    len(DEVELOPMENT_MECHANISMS) * len(_FINAL_DRAWS) * len(DEVELOPMENT_VIEWS)
+)
+_PRIMARY_FINAL_RUN_POPULATION = 1_760
+_TRAJECTORY_RUN_POPULATION = 44
 _FINAL_OUTPUT_ENCODING = "zlib_raw_f64_v1"
 _FINAL_OUTPUT_COMPRESSION_LEVEL = 6
 _FINAL_NATIVE_RETENTION = "omitted_redundant_final_output"
@@ -2455,7 +2460,8 @@ def _scaling_checkpoint_file_bindings(round_dir: Path) -> dict[str, str]:
         records = checkpoint.get("records")
         planned = checkpoint.get("planned_run_count")
         if (
-            checkpoint.get("schema_version") != 1
+            type(checkpoint.get("schema_version")) is not int
+            or checkpoint.get("schema_version") != 1
             or _sha256(checkpoint.get("plan_sha256"), "scaling plan")
             != checkpoint.get("plan_sha256")
             or not isinstance(input_hashes, Mapping)
@@ -2784,6 +2790,7 @@ def _owned_final_result_paths(round_dir: Path) -> frozenset[str]:
         receipt_binding = receipt.get("binding")
         if (
             receipt_raw != _canonical_bytes(receipt) + b"\n"
+            or type(receipt.get("schema_version")) is not int
             or receipt.get("schema_version") != 1
             or receipt.get("scope") != "supplementary_trajectory"
             or receipt.get("receipt_sha256") != canonical_sha256(receipt_body)
@@ -5094,6 +5101,16 @@ def trajectory_execution_plan_payload(
 
     if not isinstance(plan, TrajectoryExecutionPlan):
         raise TypeError("plan must be a TrajectoryExecutionPlan")
+    if (
+        type(plan.schema_version) is not int
+        or plan.schema_version != 1
+        or not plan.entries
+        or any(
+            type(entry.run.ordinal) is not int or entry.run.ordinal != ordinal
+            for ordinal, entry in enumerate(plan.entries, start=1)
+        )
+    ):
+        raise FinalRunnerContractError("trajectory plan authority is invalid")
     body: dict[str, object] = {
         "schema_version": plan.schema_version,
         "scope": plan.scope,
@@ -5102,7 +5119,7 @@ def trajectory_execution_plan_payload(
         "configurations": [value.to_dict() for value in plan.configurations],
         "model_seed_policy": list(DEVELOPMENT_MODEL_SEEDS),
     }
-    if plan.schema_version != 1 or canonical_sha256(body) != plan.plan_sha256:
+    if canonical_sha256(body) != plan.plan_sha256:
         raise FinalRunnerContractError("trajectory plan payload binding is invalid")
     return {**body, "plan_sha256": plan.plan_sha256}
 
@@ -5403,6 +5420,93 @@ def _validate_frozen_execution_for_evaluation(
     return {**body, "validation_sha256": canonical_sha256(body)}
 
 
+def _require_complete_publication_plan_population(
+    plan: FinalExecutionPlan | TrajectoryExecutionPlan,
+) -> None:
+    """Independently require the complete frozen plan-owned population."""
+
+    if (
+        type(plan.schema_version) is not int
+        or plan.schema_version != 1
+        or type(plan.entries) is not tuple
+        or not plan.entries
+        or type(plan.configurations) is not tuple
+        or not plan.configurations
+        or any(
+            not isinstance(entry, FinalPlanEntry)
+            or not isinstance(entry.run, RunPlanEntry)
+            for entry in plan.entries
+        )
+        or any(
+            not isinstance(value, FrozenPlanMethodAuthority)
+            for value in plan.configurations
+        )
+    ):
+        raise FinalRunnerContractError(
+            "publication evaluation plan population is incomplete"
+        )
+    configuration_by_method = {value.method_id: value for value in plan.configurations}
+    if len(configuration_by_method) != len(plan.configurations):
+        raise FinalRunnerContractError(
+            "publication evaluation plan population is incomplete"
+        )
+    dataset_ids = {entry.run.dataset_id for entry in plan.entries}
+    required_dataset_count = (
+        _PRIMARY_FINAL_DATASET_POPULATION if isinstance(plan, FinalExecutionPlan) else 1
+    )
+    if len(dataset_ids) != required_dataset_count:
+        raise FinalRunnerContractError(
+            "publication evaluation plan population is incomplete"
+        )
+    expected = {
+        (configuration.method_id, dataset_id, seed)
+        for configuration in plan.configurations
+        for dataset_id in dataset_ids
+        for seed in configuration.seeds
+    }
+    observed: set[tuple[str, str, int | None]] = set()
+    for ordinal, entry in enumerate(plan.entries, start=1):
+        configuration = configuration_by_method.get(entry.run.method_id)
+        key = (
+            entry.run.method_id,
+            entry.run.dataset_id,
+            entry.run.model_seed,
+        )
+        if (
+            type(entry.run.ordinal) is not int
+            or entry.run.ordinal != ordinal
+            or configuration is None
+            or entry.run.model_seed not in configuration.seeds
+            or entry.run.configuration_id != configuration.configuration_id
+            or entry.run.configuration_kind != configuration.kind
+            or entry.action != configuration.action
+            or entry.reason != configuration.reason
+            or key in observed
+        ):
+            raise FinalRunnerContractError(
+                "publication evaluation plan population is incomplete"
+            )
+        observed.add(key)
+    if observed != expected or len(plan.entries) != len(expected):
+        raise FinalRunnerContractError(
+            "publication evaluation plan population is incomplete"
+        )
+    per_dataset = sum(len(value.seeds) for value in plan.configurations)
+    if (
+        per_dataset != _TRAJECTORY_RUN_POPULATION
+        or (
+            isinstance(plan, FinalExecutionPlan)
+            and len(plan.entries) != _PRIMARY_FINAL_RUN_POPULATION
+        )
+    ) or (
+        isinstance(plan, TrajectoryExecutionPlan)
+        and len(plan.entries) != _TRAJECTORY_RUN_POPULATION
+    ):
+        raise FinalRunnerContractError(
+            "publication evaluation plan population is incomplete"
+        )
+
+
 def validate_final_execution_for_evaluation(
     plan: FinalExecutionPlan,
     records: Sequence[Mapping[str, object]],
@@ -5411,6 +5515,7 @@ def validate_final_execution_for_evaluation(
 
     if not isinstance(plan, FinalExecutionPlan):
         raise TypeError("plan must be a FinalExecutionPlan")
+    _require_complete_publication_plan_population(plan)
     return _validate_frozen_execution_for_evaluation(plan, records)
 
 
@@ -5422,6 +5527,7 @@ def validate_trajectory_execution_for_evaluation(
 
     if not isinstance(plan, TrajectoryExecutionPlan):
         raise TypeError("plan must be a TrajectoryExecutionPlan")
+    _require_complete_publication_plan_population(plan)
     return _validate_frozen_execution_for_evaluation(plan, records)
 
 
@@ -5446,7 +5552,7 @@ def _trajectory_evaluation_evidence(
         raise TypeError("authority must be an ExecutionAuthorityContext")
     if not isinstance(store, FinalResultStore) or store.plan != plan:
         raise FinalRunnerContractError("trajectory evidence store differs from plan")
-    expected_validation = validate_trajectory_execution_for_evaluation(
+    expected_validation = _validate_frozen_execution_for_evaluation(
         plan,
         store.load_records(),
     )
@@ -5711,7 +5817,7 @@ def _validate_trajectory_primary_authority_chain(
     primary_records = primary_store.load_records()
     primary_store._records_cache = primary_records
     primary_manifest = primary_store.load_manifest()
-    primary_validation = validate_final_execution_for_evaluation(
+    primary_validation = _validate_frozen_execution_for_evaluation(
         primary_plan,
         primary_records,
     )
@@ -5719,9 +5825,12 @@ def _validate_trajectory_primary_authority_chain(
         not primary_records
         or primary_manifest.get("plan_sha256") != primary_plan_sha256
         or primary_manifest.get("input_hashes") != dict(primary_plan.input_hashes)
+        or type(primary_manifest.get("planned_run_count")) is not int
         or primary_manifest.get("planned_run_count") != len(primary_plan.entries)
+        or type(primary_manifest.get("recorded_run_count")) is not int
         or primary_manifest.get("recorded_run_count") != len(primary_records)
         or primary_validation.get("final_plan_sha256") != primary_plan_sha256
+        or type(primary_validation.get("planned_run_count")) is not int
         or primary_validation.get("planned_run_count") != len(primary_records)
     ):
         raise FinalRunnerContractError(
@@ -5730,7 +5839,7 @@ def _validate_trajectory_primary_authority_chain(
     stable_records = primary_store.load_records()
     primary_store._records_cache = stable_records
     stable_manifest = primary_store.load_manifest()
-    stable_validation = validate_final_execution_for_evaluation(
+    stable_validation = _validate_frozen_execution_for_evaluation(
         primary_plan,
         stable_records,
     )
@@ -6097,6 +6206,7 @@ def _rederive_trajectory_evidence_before_receipt(
     if (
         set(authority_payload) != expected_authority_fields
         or authority_raw != _canonical_bytes(authority_payload) + b"\n"
+        or type(authority_payload.get("schema_version")) is not int
         or authority_payload.get("schema_version") != 1
         or authority_payload.get("authority_type")
         != "maskimpute_frozen_trajectory_execution"
@@ -6171,7 +6281,7 @@ def _rederive_trajectory_evidence_before_receipt(
         execution_authority,
         authority_repository=selected_repository,
     )
-    validation = validate_trajectory_execution_for_evaluation(
+    validation = _validate_frozen_execution_for_evaluation(
         plan,
         store.load_records(),
     )
@@ -6217,6 +6327,7 @@ def _scaling_evaluation_evidence(
         checkpoint.plan_sha256 != authority.plan.plan_sha256
         or dict(checkpoint.input_hashes) != dict(authority.plan.input_hashes)
         or checkpoint.status != "completed"
+        or type(checkpoint.planned_run_count) is not int
         or len(checkpoint.records) != checkpoint.planned_run_count
     ):
         raise FinalRunnerContractError(
@@ -6318,6 +6429,7 @@ def _record_final_evaluation_after_scaling(
             "result_files",
             "evidence_sha256",
         }
+        or type(trajectory_evidence.get("schema_version")) is not int
         or trajectory_evidence.get("schema_version") != 1
         or trajectory_evidence.get("status") != "completed"
         or trajectory_evidence.get("scope") != "supplementary_trajectory"
@@ -6332,6 +6444,7 @@ def _record_final_evaluation_after_scaling(
     if (
         checkpoint is None
         or getattr(checkpoint, "status", None) != "completed"
+        or type(getattr(checkpoint, "planned_run_count", None)) is not int
         or len(getattr(checkpoint, "records", ()))
         != getattr(checkpoint, "planned_run_count", None)
     ):

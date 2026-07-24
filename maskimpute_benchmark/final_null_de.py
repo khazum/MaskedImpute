@@ -352,7 +352,7 @@ def evaluate_final_null_de_records(
     records: list[Mapping[str, object]] = []
     receipt_sha256 = plan.evaluated_round_binding.evaluation_receipt_payload_sha256
     for expected_ordinal, entry in enumerate(plan.entries, start=1):
-        if entry.ordinal != expected_ordinal:
+        if type(entry.ordinal) is not int or entry.ordinal != expected_ordinal:
             raise FinalNullDEError("final run denominator is not ordered")
         binding = bindings[entry.dataset_id]
         context = contexts.get(entry.dataset_id)
@@ -574,6 +574,7 @@ def build_final_null_de_plan(
             )
         if (
             downstream_manifest.plan_sha256 != source_plan.plan_sha256
+            or type(downstream_manifest.planned_denominator_count) is not int
             or downstream_manifest.planned_denominator_count != len(source_plan.entries)
         ):
             raise FinalNullDEError(

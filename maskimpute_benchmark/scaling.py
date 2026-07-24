@@ -372,13 +372,23 @@ def scaling_plan_payload(plan: ScalingPlan) -> dict[str, object]:
 
     if not isinstance(plan, ScalingPlan):
         raise TypeError("plan must be a ScalingPlan")
+    if (
+        type(plan.schema_version) is not int
+        or plan.schema_version != 1
+        or not plan.entries
+        or any(
+            type(entry.ordinal) is not int or entry.ordinal != ordinal
+            for ordinal, entry in enumerate(plan.entries, start=1)
+        )
+    ):
+        raise ScalingContractError("scaling plan authority is invalid")
     body: dict[str, object] = {
         "schema_version": plan.schema_version,
         "input_hashes": dict(plan.input_hashes),
         "entries": [entry.to_dict() for entry in plan.entries],
         "configurations": [value.to_dict() for value in plan.configurations],
     }
-    if plan.schema_version != 1 or canonical_sha256(body) != plan.plan_sha256:
+    if canonical_sha256(body) != plan.plan_sha256:
         raise ScalingContractError("scaling plan payload binding is invalid")
     return {**body, "plan_sha256": plan.plan_sha256}
 
@@ -388,6 +398,14 @@ def scaling_checkpoint_payload(checkpoint: ScalingCheckpoint) -> dict[str, objec
 
     if not isinstance(checkpoint, ScalingCheckpoint):
         raise TypeError("checkpoint must be a ScalingCheckpoint")
+    if (
+        type(checkpoint.schema_version) is not int
+        or checkpoint.schema_version != 1
+        or type(checkpoint.planned_run_count) is not int
+        or checkpoint.planned_run_count <= 0
+        or len(checkpoint.records) > checkpoint.planned_run_count
+    ):
+        raise ScalingContractError("scaling checkpoint authority is invalid")
     body: dict[str, object] = {
         "schema_version": checkpoint.schema_version,
         "plan_sha256": checkpoint.plan_sha256,
@@ -397,10 +415,7 @@ def scaling_checkpoint_payload(checkpoint: ScalingCheckpoint) -> dict[str, objec
         "datasets": [dict(value) for value in checkpoint.datasets],
         "records": [dict(value) for value in checkpoint.records],
     }
-    if (
-        checkpoint.schema_version != 1
-        or canonical_sha256(body) != checkpoint.checkpoint_sha256
-    ):
+    if canonical_sha256(body) != checkpoint.checkpoint_sha256:
         raise ScalingContractError("scaling checkpoint payload binding is invalid")
     return {**body, "checkpoint_sha256": checkpoint.checkpoint_sha256}
 
@@ -2955,6 +2970,7 @@ class ScalingResultStore:
             or payload.get("schema_version") != 1
             or payload.get("plan_sha256") != self.plan.plan_sha256
             or payload.get("input_hashes") != dict(self.plan.input_hashes)
+            or type(payload.get("planned_run_count")) is not int
             or payload.get("planned_run_count") != len(self.plan.entries)
         ):
             raise ScalingContractError("scaling checkpoint authority mismatch")
@@ -4136,6 +4152,7 @@ def execute_scaling_plan(
         raise TypeError("output_dir must be a pathlib.Path")
     if on_checkpoint_published is not None and not callable(on_checkpoint_published):
         raise TypeError("on_checkpoint_published must be callable")
+    scaling_plan_payload(authority.plan)
 
     def publish_checkpoint() -> None:
         if on_checkpoint_published is not None:

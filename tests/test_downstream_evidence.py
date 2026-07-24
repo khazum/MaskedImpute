@@ -1474,8 +1474,9 @@ def _trajectory_source(
 
     from maskimpute_benchmark.final_runner import (
         FinalPlanEntry,
+        FrozenPlanMethodAuthority,
         TrajectoryExecutionPlan,
-        validate_trajectory_execution_for_evaluation,
+        _validate_frozen_execution_for_evaluation,
     )
     from maskimpute_benchmark.protocol import canonical_sha256
     from maskimpute_benchmark.runner import (
@@ -1503,6 +1504,15 @@ def _trajectory_source(
     )
     _candidate, configuration = _test_configuration_authority()
     reason = "technical_unavailable_development_attempts"
+    frozen_configuration = FrozenPlanMethodAuthority(
+        method_id=configuration.method_id,
+        legacy_configuration=configuration,
+        comparator_configuration=None,
+        comparator_nonexecution_identity=None,
+        action="not_applicable",
+        reason=reason,
+        seeds=(None,),
+    )
     run_plan = RunPlanEntry(
         ordinal=1,
         run_id="trajectory-fixture-run",
@@ -1546,7 +1556,7 @@ def _trajectory_source(
         "scope": "supplementary_trajectory",
         "input_hashes": input_hashes,
         "entries": [entry.to_dict()],
-        "configurations": [configuration.to_dict()],
+        "configurations": [frozen_configuration.to_dict()],
         "model_seed_policy": list(DEVELOPMENT_MODEL_SEEDS),
     }
     plan = TrajectoryExecutionPlan(
@@ -1554,7 +1564,7 @@ def _trajectory_source(
         scope="supplementary_trajectory",
         input_hashes=input_hashes,
         entries=(entry,),
-        configurations=(configuration,),
+        configurations=(frozen_configuration,),
         plan_sha256=canonical_sha256(plan_body),
     )
     run = _run(
@@ -1634,14 +1644,14 @@ def _trajectory_source(
         },
         "scope": "supplementary_trajectory",
         "plan_entries": [entry.to_dict()],
-        "configurations": [configuration.to_dict()],
+        "configurations": [frozen_configuration.to_dict()],
         "model_seed_policy": list(DEVELOPMENT_MODEL_SEEDS),
     }
     manifest = {**manifest_body, "manifest_sha256": canonical_sha256(manifest_body)}
     manifest_file_sha256 = _write_canonical(
         source / "execution_manifest.json", manifest
     )
-    validation = validate_trajectory_execution_for_evaluation(plan, (record,))
+    validation = _validate_frozen_execution_for_evaluation(plan, (record,))
     receipt_binding = _fake_evaluated_round_binding(
         tmp_path,
         tmp_path,
@@ -1682,7 +1692,7 @@ def _trajectory_source(
     return (
         source,
         binding,
-        configuration,
+        frozen_configuration,
         plan,
         {
             "record": record,
@@ -3464,6 +3474,56 @@ def test_persisted_downstream_plan_rejects_boolean_schema_version(
         downstream.load_downstream_evidence_plan(output)
 
 
+@pytest.mark.parametrize("source_kind", ("final", "trajectory"))
+@pytest.mark.parametrize(
+    "field",
+    ("schema_version", "planned_run_count", "recorded_run_count", "ordinal"),
+)
+def test_final_and_trajectory_source_owners_reject_boolean_integer_aliases(
+    tmp_path: Path,
+    source_kind: str,
+    field: str,
+) -> None:
+    import maskimpute_benchmark.downstream_evidence as downstream
+    from maskimpute_benchmark.protocol import canonical_sha256
+
+    source, _dataset, _configuration, source_plan, fixture = _trajectory_source(
+        tmp_path
+    )
+    manifest = json.loads(json.dumps(fixture["manifest"]))
+    if source_kind == "final":
+        for name in (
+            "scope",
+            "plan_entries",
+            "configurations",
+            "model_seed_policy",
+        ):
+            manifest.pop(name)
+    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    manifest["manifest_sha256"] = canonical_sha256(body)
+    manifest_path = source / "execution_manifest.json"
+    _write_canonical(manifest_path, manifest)
+
+    if source_kind == "final":
+        assert len(downstream._final_source(source).records) == 1
+    else:
+        assert len(downstream._trajectory_source(source, source_plan).records) == 1
+
+    if field == "ordinal":
+        manifest["records"][0]["ordinal"] = True
+    else:
+        manifest[field] = True
+    body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    manifest["manifest_sha256"] = canonical_sha256(body)
+    _write_canonical(manifest_path, manifest)
+
+    with pytest.raises(downstream.DownstreamEvidenceError, match="source|manifest"):
+        if source_kind == "final":
+            downstream._final_source(source)
+        else:
+            downstream._trajectory_source(source, source_plan)
+
+
 def test_one_row_downstream_manifest_rejects_boolean_integer_aliases(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5183,6 +5243,17 @@ def test_evaluated_round_binding_requires_and_replays_exact_scaling_evidence(
         "tampered_retained_calibration_digest",
         "tampered_trajectory_inventory",
         "tampered_trajectory_validation_count",
+        "boolean_evaluation_receipt_schema",
+        "boolean_result_manifest_schema",
+        "boolean_final_validation_schema",
+        "boolean_scaling_evidence_schema",
+        "boolean_scaling_plan_schema",
+        "boolean_scaling_checkpoint_schema",
+        "boolean_scaling_checkpoint_count",
+        "boolean_trajectory_evidence_schema",
+        "boolean_trajectory_plan_schema",
+        "boolean_trajectory_validation_schema",
+        "boolean_trajectory_validation_count",
         "validation_denominator",
         "round_mismatch",
     ],
@@ -5313,6 +5384,118 @@ def test_evaluated_round_binding_rejects_scaling_schema_and_binding_tampering(
         from maskimpute_benchmark.protocol import canonical_sha256
 
         trajectory_validation["validation_sha256"] = canonical_sha256(validation_body)
+        _resign_trajectory_evidence(trajectory_evidence)
+    elif attack == "boolean_evaluation_receipt_schema":
+        receipt["schema_version"] = True
+    elif attack == "boolean_result_manifest_schema":
+        result_manifest["schema_version"] = True
+    elif attack == "boolean_final_validation_schema":
+        validation = result_manifest["execution_validation"]
+        assert isinstance(validation, dict)
+        validation["schema_version"] = True
+        validation_body = {
+            key: value
+            for key, value in validation.items()
+            if key != "validation_sha256"
+        }
+        from maskimpute_benchmark.protocol import canonical_sha256
+
+        validation["validation_sha256"] = canonical_sha256(validation_body)
+    elif attack == "boolean_scaling_evidence_schema":
+        evidence["schema_version"] = True
+        _resign_scaling_evidence(evidence)
+    elif attack == "boolean_scaling_plan_schema":
+        plan = evidence["plan"]
+        assert isinstance(plan, dict)
+        plan["schema_version"] = True
+        plan_body = {key: value for key, value in plan.items() if key != "plan_sha256"}
+        from maskimpute_benchmark.protocol import canonical_sha256
+
+        plan["plan_sha256"] = canonical_sha256(plan_body)
+        checkpoint = evidence["checkpoint_payload"]
+        assert isinstance(checkpoint, dict)
+        checkpoint["plan_sha256"] = plan["plan_sha256"]
+        checkpoint_body = {
+            key: value
+            for key, value in checkpoint.items()
+            if key != "checkpoint_sha256"
+        }
+        checkpoint["checkpoint_sha256"] = canonical_sha256(checkpoint_body)
+        _resign_scaling_evidence(evidence)
+    elif attack in {
+        "boolean_scaling_checkpoint_schema",
+        "boolean_scaling_checkpoint_count",
+    }:
+        checkpoint = evidence["checkpoint_payload"]
+        assert isinstance(checkpoint, dict)
+        field = (
+            "schema_version"
+            if attack == "boolean_scaling_checkpoint_schema"
+            else "planned_run_count"
+        )
+        checkpoint[field] = True
+        checkpoint_body = {
+            key: value
+            for key, value in checkpoint.items()
+            if key != "checkpoint_sha256"
+        }
+        from maskimpute_benchmark.protocol import canonical_sha256
+
+        checkpoint["checkpoint_sha256"] = canonical_sha256(checkpoint_body)
+        checkpoint_path = fixture["checkpoint_path"]
+        assert isinstance(checkpoint_path, Path)
+        checkpoint_file_sha256 = _write_canonical(checkpoint_path, checkpoint)
+        evidence["checkpoint_file_sha256"] = checkpoint_file_sha256
+        checkpoint_relative = evidence["checkpoint_path"]
+        for inventory in (evidence["result_files"], result_manifest["result_files"]):
+            assert isinstance(inventory, list)
+            row = next(
+                value
+                for value in inventory
+                if isinstance(value, dict) and value.get("path") == checkpoint_relative
+            )
+            row["sha256"] = checkpoint_file_sha256
+        _resign_scaling_evidence(evidence)
+    elif attack == "boolean_trajectory_evidence_schema":
+        trajectory_evidence["schema_version"] = True
+        _resign_trajectory_evidence(trajectory_evidence)
+    elif attack == "boolean_trajectory_plan_schema":
+        plan = trajectory_evidence["plan"]
+        validation = trajectory_evidence["execution_validation"]
+        assert isinstance(plan, dict) and isinstance(validation, dict)
+        plan["schema_version"] = True
+        plan_body = {key: value for key, value in plan.items() if key != "plan_sha256"}
+        from maskimpute_benchmark.protocol import canonical_sha256
+
+        plan["plan_sha256"] = canonical_sha256(plan_body)
+        validation["trajectory_plan_sha256"] = plan["plan_sha256"]
+        validation_body = {
+            key: value
+            for key, value in validation.items()
+            if key != "validation_sha256"
+        }
+        validation["validation_sha256"] = canonical_sha256(validation_body)
+        _resign_trajectory_evidence(trajectory_evidence)
+    elif attack in {
+        "boolean_trajectory_validation_schema",
+        "boolean_trajectory_validation_count",
+    }:
+        validation = trajectory_evidence["execution_validation"]
+        assert isinstance(validation, dict)
+        field = (
+            "schema_version"
+            if attack == "boolean_trajectory_validation_schema"
+            else "planned_run_count"
+        )
+        validation[field] = True
+        validation_body = {
+            key: value
+            for key, value in validation.items()
+            if key != "validation_sha256"
+        }
+        from maskimpute_benchmark.protocol import canonical_sha256
+
+        validation["validation_sha256"] = canonical_sha256(validation_body)
         _resign_trajectory_evidence(trajectory_evidence)
     elif attack == "validation_denominator":
         validation = result_manifest["execution_validation"]

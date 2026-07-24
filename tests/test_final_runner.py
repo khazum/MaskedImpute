@@ -1078,6 +1078,251 @@ def test_trajectory_plan_is_exactly_one_registered_supplementary_denominator(
     assert plan.input_hashes["primary_final_plan_sha256"] == "a" * 64
 
 
+@pytest.mark.parametrize("mutation", ("schema_version", "ordinal", "empty"))
+def test_trajectory_plan_payload_rejects_boolean_aliases_and_empty_plan(
+    mutation: str,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        TrajectoryExecutionPlan,
+        build_final_execution_plan,
+        trajectory_execution_plan_payload,
+    )
+    from maskimpute_benchmark.runner import DEVELOPMENT_MODEL_SEEDS
+
+    registry = _registry()
+    primary = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    entry = primary.entries[0]
+
+    def plan_with(
+        *,
+        schema_version: object = 1,
+        entries: tuple[object, ...] = (entry,),
+    ) -> TrajectoryExecutionPlan:
+        body = {
+            "schema_version": schema_version,
+            "scope": "supplementary_trajectory",
+            "input_hashes": dict(primary.input_hashes),
+            "entries": [value.to_dict() for value in entries],
+            "configurations": [value.to_dict() for value in primary.configurations],
+            "model_seed_policy": list(DEVELOPMENT_MODEL_SEEDS),
+        }
+        return TrajectoryExecutionPlan(
+            schema_version=schema_version,
+            scope="supplementary_trajectory",
+            input_hashes=primary.input_hashes,
+            entries=entries,
+            configurations=primary.configurations,
+            plan_sha256=canonical_sha256(body),
+        )
+
+    assert trajectory_execution_plan_payload(plan_with())["schema_version"] == 1
+    changed_entry = (
+        replace(entry, run=replace(entry.run, ordinal=True))
+        if mutation == "ordinal"
+        else entry
+    )
+    changed = plan_with(
+        schema_version=True if mutation == "schema_version" else 1,
+        entries=() if mutation == "empty" else (changed_entry,),
+    )
+    with pytest.raises(FinalRunnerContractError, match="trajectory plan"):
+        trajectory_execution_plan_payload(changed)
+
+
+@pytest.mark.parametrize(
+    ("scope", "population"),
+    (
+        ("final", "empty"),
+        ("trajectory", "empty"),
+        ("final", "incomplete"),
+        ("trajectory", "incomplete"),
+        ("final", "invalid_configuration"),
+        ("trajectory", "invalid_configuration"),
+        ("final", "invalid_entry"),
+        ("trajectory", "invalid_entry"),
+        ("final", "invalid_run"),
+        ("trajectory", "invalid_run"),
+    ),
+)
+def test_publication_evaluation_rejects_empty_and_incomplete_plan_populations(
+    scope: str,
+    population: str,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalExecutionPlan,
+        FinalPlanEntry,
+        FinalRunnerContractError,
+        TrajectoryExecutionPlan,
+        build_final_execution_plan,
+        validate_final_execution_for_evaluation,
+        validate_trajectory_execution_for_evaluation,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    if population == "empty":
+        entries = ()
+    elif population == "invalid_configuration":
+        entries = full.entries
+    elif population == "invalid_entry":
+        entries = (object(),)
+    elif population == "invalid_run":
+        entries = (FinalPlanEntry(run=object(), action="execute", reason=None),)
+    else:
+        entries = (full.entries[0],)
+    configurations = (
+        (object(),) if population == "invalid_configuration" else full.configurations
+    )
+    records: tuple[object, ...] = ()
+    if entries and population not in {
+        "invalid_configuration",
+        "invalid_entry",
+        "invalid_run",
+    }:
+        attempt = _unavailable_attempt(entries[0])
+        records = (
+            {
+                "run": asdict(attempt.run),
+                "metrics": [metric.to_dict() for metric in attempt.metrics],
+                "execution_request": None,
+            },
+        )
+    if scope == "final":
+        plan = FinalExecutionPlan(
+            schema_version=1,
+            input_hashes=full.input_hashes,
+            entries=entries,
+            configurations=configurations,
+            plan_sha256="a" * 64,
+        )
+        validator = validate_final_execution_for_evaluation
+    else:
+        plan = TrajectoryExecutionPlan(
+            schema_version=1,
+            scope="supplementary_trajectory",
+            input_hashes=full.input_hashes,
+            entries=entries,
+            configurations=configurations,
+            plan_sha256="b" * 64,
+        )
+        validator = validate_trajectory_execution_for_evaluation
+    with pytest.raises(FinalRunnerContractError, match="plan|population|denominator"):
+        validator(plan, records)
+
+
+@pytest.mark.parametrize("field", ("configuration_id", "configuration_kind"))
+def test_publication_population_rejects_entry_configuration_identity_drift(
+    field: str,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark import final_runner
+
+    registry = _registry()
+    full = final_runner.build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    replacement = (
+        "wrong-configuration"
+        if field == "configuration_id"
+        else next(
+            value
+            for value in ("registry", "candidate_search", "ablation")
+            if value != full.entries[0].run.configuration_kind
+        )
+    )
+    changed_run = replace(
+        full.entries[0].run,
+        **{field: replacement},
+    )
+    changed_plan = replace(
+        full,
+        entries=(
+            replace(full.entries[0], run=changed_run),
+            *full.entries[1:],
+        ),
+    )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="plan|population",
+    ):
+        final_runner._require_complete_publication_plan_population(changed_plan)
+
+
+def test_publication_population_rejects_changed_seed_denominator() -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark import final_runner
+
+    registry = _registry()
+    full = final_runner.build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    configuration = full.configurations[0]
+    changed_configuration = replace(
+        configuration,
+        seeds=(*configuration.seeds, 999),
+    )
+    templates = {
+        entry.run.dataset_id: entry
+        for entry in full.entries
+        if entry.run.method_id == configuration.method_id
+    }
+    entries = list(full.entries)
+    for template in templates.values():
+        ordinal = len(entries) + 1
+        entries.append(
+            replace(
+                template,
+                run=replace(
+                    template.run,
+                    ordinal=ordinal,
+                    run_id=f"expanded-denominator-{ordinal}",
+                    model_seed=999,
+                ),
+            )
+        )
+    changed_plan = replace(
+        full,
+        entries=tuple(entries),
+        configurations=(changed_configuration, *full.configurations[1:]),
+    )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="plan|population",
+    ):
+        final_runner._require_complete_publication_plan_population(changed_plan)
+
+
 def test_trajectory_plan_rejects_nearby_registered_identity(
     tmp_path: Path,
 ) -> None:
@@ -1873,9 +2118,9 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
         _owned_final_result_file_manifest,
         _rederive_trajectory_evidence_before_receipt,
         _trajectory_evaluation_evidence,
+        _validate_frozen_execution_for_evaluation,
         execute_trajectory_plan,
         final_result_file_manifest,
-        validate_trajectory_execution_for_evaluation,
     )
     from maskimpute_benchmark.direct_values import direct_equal
     from maskimpute_benchmark.runner import (
@@ -1928,7 +2173,7 @@ def test_execute_trajectory_plan_reuses_executor_and_retains_terminal_rows(
         on_record_published=published,
     )
     records = store.load_records()
-    validation = validate_trajectory_execution_for_evaluation(plan, records)
+    validation = _validate_frozen_execution_for_evaluation(plan, records)
     cumulative = _owned_final_result_file_manifest(round_dir)["result_files"]
     evidence = _trajectory_evaluation_evidence(
         round_dir,
@@ -2076,7 +2321,7 @@ def test_pre_receipt_rederivation_uses_exact_running_runtime_pair(
             ),
         )
     store.finalize()
-    validation = final_runner.validate_trajectory_execution_for_evaluation(
+    validation = final_runner._validate_frozen_execution_for_evaluation(
         plan,
         store.load_records(),
     )
@@ -3989,8 +4234,8 @@ def test_final_evaluation_retains_reason_coded_algorithmic_unavailability(
     tmp_path: Path,
 ) -> None:
     from maskimpute_benchmark.final_runner import (
+        _validate_frozen_execution_for_evaluation,
         build_final_execution_plan,
-        validate_final_execution_for_evaluation,
     )
 
     registry = _registry()
@@ -4012,7 +4257,7 @@ def test_final_evaluation_retains_reason_coded_algorithmic_unavailability(
     store = _final_store(tmp_path / "execution", plan)
     store.append(plan.entries[0], _unavailable_attempt(plan.entries[0]))
 
-    validation = validate_final_execution_for_evaluation(plan, store.load_records())
+    validation = _validate_frozen_execution_for_evaluation(plan, store.load_records())
 
     assert validation["executed_completed_count"] == 0
     assert validation["executed_algorithmic_failure_count"] == 1
@@ -4024,8 +4269,8 @@ def test_final_evaluation_retains_each_unfavorable_algorithmic_status(
     tmp_path: Path, status: str
 ) -> None:
     from maskimpute_benchmark.final_runner import (
+        _validate_frozen_execution_for_evaluation,
         build_final_execution_plan,
-        validate_final_execution_for_evaluation,
     )
     from maskimpute_benchmark.runner import AdapterOutcome, evaluate_adapter_outcome
 
@@ -4051,7 +4296,7 @@ def test_final_evaluation_retains_each_unfavorable_algorithmic_status(
     store = _final_store(tmp_path / status / "execution", plan)
     store.append(entry, attempt)
 
-    validation = validate_final_execution_for_evaluation(plan, store.load_records())
+    validation = _validate_frozen_execution_for_evaluation(plan, store.load_records())
 
     assert validation["planned_run_count"] == 1
     assert validation["executed_algorithmic_failure_count"] == 1
@@ -4063,8 +4308,8 @@ def test_final_evaluation_blocks_infrastructure_incompleteness(
 ) -> None:
     from maskimpute_benchmark.final_runner import (
         FinalRunnerContractError,
+        _validate_frozen_execution_for_evaluation,
         build_final_execution_plan,
-        validate_final_execution_for_evaluation,
     )
     from maskimpute_benchmark.runner import (
         AdapterOutcome,
@@ -4097,13 +4342,13 @@ def test_final_evaluation_blocks_infrastructure_incompleteness(
     store.append(entry, attempt)
 
     with pytest.raises(FinalRunnerContractError, match="infrastructure|authority"):
-        validate_final_execution_for_evaluation(plan, store.load_records())
+        _validate_frozen_execution_for_evaluation(plan, store.load_records())
 
 
 def test_final_evaluation_accepts_completed_execution_and_exact_nonrun() -> None:
     from maskimpute_benchmark.final_runner import (
+        _validate_frozen_execution_for_evaluation,
         build_final_execution_plan,
-        validate_final_execution_for_evaluation,
     )
 
     registry = _registry()
@@ -4147,7 +4392,9 @@ def test_final_evaluation_accepts_completed_execution_and_exact_nonrun() -> None
         plan_sha256="0" * 64,
     )
 
-    validation = validate_final_execution_for_evaluation(plan, (completed, unavailable))
+    validation = _validate_frozen_execution_for_evaluation(
+        plan, (completed, unavailable)
+    )
 
     assert validation["executed_completed_count"] == 1
     assert validation["not_applicable_count"] == 1

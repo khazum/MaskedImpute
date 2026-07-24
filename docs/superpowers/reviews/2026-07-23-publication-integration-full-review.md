@@ -1716,3 +1716,72 @@ selected method, population, seed denominator, revision allowance, estimand,
 concurrency behavior, or claim permission changed. No real scientific
 workload ran, and no new provenance, content-validation,
 filesystem-hardening, or cyber-related mechanism was added.
+
+### Task 6 v3 final-acceptance correction
+
+A further independent review of Task 6 at
+`df6c3b16820c28ba2397590be08f7251997ea4f5` found that F-079 had not been
+closed at every reachable publication boundary.
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-081 | Important | Additional scaling, final, trajectory, downstream, final-analysis, null-DE, and publication-synthesis authorities accepted Boolean aliases for integer schema, count, or ordinal fields. Public final and trajectory evaluation also trusted empty, sliced, or coherently expanded typed plan populations. | Closed test-first with exact built-in integer checks at each owner, nonempty and complete Cartesian typed-plan validation at the public evaluation entries, and fixed production totals of 1,760 primary runs and 44 trajectory runs. Independently rebuilt internal typed plans use the existing structural terminal-record replay after their owning authority validation. |
+
+The direct payload, loader, and population RED set reported:
+
+```text
+13 failed in 186.27s (0:03:06)
+```
+
+Adapter and source-owner mutation probes demonstrated seven additional Boolean
+acceptance gaps while retaining nineteen already-rejecting controls. After
+correction, the focused direct, adapter, and source-owner sets reported:
+
+```text
+13 passed in 166.61s (0:02:46)
+11 passed, 19 deselected in 2.15s
+8 passed in 2.86s
+```
+
+Complete changed and adjacent owner suites reported:
+
+```text
+tests/test_downstream_evidence.py: 170 passed in 93.77s
+tests/test_final_analysis.py: 53 passed in 382.85s (0:06:22)
+tests/test_final_runner.py: 131 passed in 782.17s (0:13:02)
+tests/test_scaling_panel.py: 66 passed in 2940.99s (0:49:00)
+publication-synthesis and final-null-DE: 72 passed in 80.91s (0:01:20)
+freeze and revision compatibility: 139 passed in 2314.41s (0:38:34)
+```
+
+The first exact fifteen-file run exposed a test/consumer integration mistake:
+the strict public production-population gate had also been used by internal
+replay paths after those paths had independently rebuilt and validated a typed
+plan. It reported:
+
+```text
+57 failed, 844 passed in 7652.31s (2:07:32)
+```
+
+The public gate remained strict. Only independently validated internal replays
+were returned to the existing structural terminal-record validator. All 57
+previous failures then passed, and the complete affected owners reported:
+
+```text
+53 passed, 376 deselected in 159.04s (0:02:39)
+363 passed in 1246.67s (0:20:46)
+```
+
+Ruff formatting and lint, byte compilation, and `git diff --check` all exited
+zero before the second clean exact run. The exact fifteen-file Task 6 suite
+then reported:
+
+```text
+901 passed in 7766.96s (2:09:26)
+```
+
+No production or test file changed during that successful exact run. The
+selected methods, final dataset population, 1,760/44 run totals, seed
+denominator, revision allowance, estimands, execution behavior, and claim
+permissions remain unchanged. No real scientific or comparator workload ran,
+and no unrelated mechanism was added.

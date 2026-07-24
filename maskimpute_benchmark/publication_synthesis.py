@@ -150,7 +150,11 @@ def _validated_primary_report(
         seal="analysis_sha256",
         name="primary final analysis",
     )
-    if report.get("schema_version") != 1 or report.get("status") != "completed":
+    if (
+        type(report.get("schema_version")) is not int
+        or report.get("schema_version") != 1
+        or report.get("status") != "completed"
+    ):
         raise PublicationSynthesisError("primary final analysis is not completed")
     candidate = _text(report.get("candidate_method_id"), "candidate method")
     inputs = _mapping(report.get("input_bindings"), "primary input bindings")
@@ -333,6 +337,7 @@ def _scheduled_claim_permissions(
                 "selection_receipt_namespace",
                 "configuration_terminal_denominator",
             }
+            or type(identity.get("schema_version")) is not int
             or identity.get("schema_version") != 1
             or identity.get("selection_receipt_namespace")
             != "maskimpute-comparator-selection-v1"
@@ -491,10 +496,13 @@ def _validate_downstream_bindings(
         != binding.trajectory_evidence_sha256
     ):
         raise PublicationSynthesisError("primary trajectory evidence binding differs")
-    if report_inputs.get("planned_run_count") != len(plan.entries):
+    if type(report_inputs.get("planned_run_count")) is not int or report_inputs.get(
+        "planned_run_count"
+    ) != len(plan.entries):
         raise PublicationSynthesisError("primary final denominator differs")
     if (
         manifest.plan_sha256 != plan.plan_sha256
+        or type(manifest.planned_denominator_count) is not int
         or manifest.planned_denominator_count != len(plan.entries)
         or len(manifest.records) != len(plan.entries)
     ):
@@ -519,7 +527,8 @@ def _validate_downstream_bindings(
     for entry, record in zip(plan.entries, manifest.records, strict=True):
         endpoints = record.get("endpoints")
         if (
-            record.get("ordinal") != entry.ordinal
+            type(record.get("ordinal")) is not int
+            or record.get("ordinal") != entry.ordinal
             or record.get("run_id") != entry.run_id
             or record.get("runner_method_id") != entry.method_id
             or record.get("run_status") != entry.status
@@ -527,7 +536,10 @@ def _validate_downstream_bindings(
         ):
             raise PublicationSynthesisError("downstream record denominator differs")
         endpoint_count += len(endpoints)
-    if endpoint_count != manifest.endpoint_row_count:
+    if (
+        type(manifest.endpoint_row_count) is not int
+        or endpoint_count != manifest.endpoint_row_count
+    ):
         raise PublicationSynthesisError("downstream endpoint denominator differs")
 
 
@@ -627,8 +639,10 @@ def _validate_trajectory_downstream_bindings(
         raise PublicationSynthesisError("trajectory receipt status binding differs")
     if (
         manifest.plan_sha256 != plan.plan_sha256
+        or type(manifest.planned_denominator_count) is not int
         or manifest.planned_denominator_count != len(plan.entries)
         or len(manifest.records) != len(plan.entries)
+        or type(manifest.endpoint_row_count) is not int
         or manifest.endpoint_row_count != len(plan.entries)
     ):
         raise PublicationSynthesisError(
@@ -691,7 +705,8 @@ def _validate_trajectory_downstream_bindings(
             "trajectory downstream record file checksum",
         )
         if (
-            reference.get("ordinal") != entry.ordinal
+            type(reference.get("ordinal")) is not int
+            or reference.get("ordinal") != entry.ordinal
             or reference.get("run_id") != entry.run_id
             or reference.get("path") != f"records/{entry.ordinal:08d}.json"
             or reference.get("record_sha256") != record.get("record_sha256")
@@ -701,7 +716,8 @@ def _validate_trajectory_downstream_bindings(
             )
         endpoints = record.get("endpoints")
         if (
-            record.get("ordinal") != entry.ordinal
+            type(record.get("ordinal")) is not int
+            or record.get("ordinal") != entry.ordinal
             or record.get("run_id") != entry.run_id
             or record.get("runner_method_id") != entry.method_id
             or record.get("dataset_id") != entry.dataset_id
@@ -757,6 +773,7 @@ def _validate_null_de_bindings(loaded: _LoadedPublicationEvidence) -> None:
         raise PublicationSynthesisError("final null-DE downstream location differs")
     if (
         manifest.plan_sha256 != plan.plan_sha256
+        or type(manifest.planned_denominator_count) is not int
         or manifest.planned_denominator_count != len(source.entries)
     ):
         raise PublicationSynthesisError("final null-DE manifest binding differs")
@@ -803,6 +820,7 @@ def _validate_scaling_binding(
         raise PublicationSynthesisError("scaling checkpoint is invalid") from error
     if (
         checkpoint.status != "completed"
+        or type(checkpoint.planned_run_count) is not int
         or len(checkpoint.records) != checkpoint.planned_run_count
         or checkpoint.plan_sha256 != binding.scaling_plan_sha256
         or canonical_sha256(payload) != binding.scaling_checkpoint_payload_sha256

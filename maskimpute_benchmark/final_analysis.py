@@ -218,9 +218,11 @@ def _validated_metric_direction_contract(
         "metric direction contract",
     )
     body = {key: nested for key, nested in contract.items() if key != "contract_sha256"}
-    if contract.get("schema_version") != 1 or contract.get(
-        "contract_sha256"
-    ) != canonical_sha256(body):
+    if (
+        type(contract.get("schema_version")) is not int
+        or contract.get("schema_version") != 1
+        or contract.get("contract_sha256") != canonical_sha256(body)
+    ):
         raise FinalAnalysisContractError("metric direction contract checksum differs")
     status = contract.get("status")
     metrics = contract.get("metrics")
@@ -804,7 +806,10 @@ def _normalize_score_evidence(
             ),
             f"record {record_index} p_pre_zero evidence",
         )
-        if evidence.get("schema_version") != 1:
+        if (
+            type(evidence.get("schema_version")) is not int
+            or evidence.get("schema_version") != 1
+        ):
             raise FinalAnalysisContractError(
                 f"record {record_index} p_pre_zero schema_version is invalid"
             )
@@ -897,7 +902,8 @@ def _normalize_score_evidence(
                     f"record {record_index} p_pre_zero matrix receipt is invalid"
                 )
             if (
-                policy.get("schema_version") != 2
+                type(policy.get("schema_version")) is not int
+                or policy.get("schema_version") != 2
                 or policy.get("probability_semantics")
                 != "pre_capture_count_is_zero_given_observed_counts"
                 or policy.get("evaluation_domain") != "observed_zero_entries_only"
@@ -1209,7 +1215,11 @@ def _denominator(
     execution_action_denominator: object = None,
 ) -> dict[str, object]:
     recorded_run_count = len(evidence.run_statuses)
-    if planned_run_count != recorded_run_count:
+    if (
+        type(planned_run_count) is not int
+        or planned_run_count <= 0
+        or planned_run_count != recorded_run_count
+    ):
         raise FinalAnalysisContractError(
             "validated final record denominator is incomplete"
         )
@@ -2665,8 +2675,10 @@ def _validate_embedded_scaling_evidence(
         "embedded scaling plan",
     )
     plan_body = {key: nested for key, nested in plan.items() if key != "plan_sha256"}
-    if plan.get("schema_version") != 1 or plan.get("plan_sha256") != canonical_sha256(
-        plan_body
+    if (
+        type(plan.get("schema_version")) is not int
+        or plan.get("schema_version") != 1
+        or plan.get("plan_sha256") != canonical_sha256(plan_body)
     ):
         raise FinalAnalysisContractError("embedded scaling plan binding is invalid")
     checkpoint = _exact_mapping(
@@ -2692,7 +2704,8 @@ def _validate_embedded_scaling_evidence(
     datasets = checkpoint.get("datasets")
     planned = checkpoint.get("planned_run_count")
     if (
-        checkpoint.get("schema_version") != 1
+        type(checkpoint.get("schema_version")) is not int
+        or checkpoint.get("schema_version") != 1
         or checkpoint.get("status") != "completed"
         or checkpoint.get("plan_sha256") != plan.get("plan_sha256")
         or checkpoint.get("input_hashes") != plan.get("input_hashes")
@@ -2740,9 +2753,9 @@ def _validate_embedded_trajectory_evidence(
         _canonical_round,
         _rederive_trajectory_evidence_before_receipt,
         _trajectory_run_id,
+        _validate_frozen_execution_for_evaluation,
         _validate_trajectory_primary_authority_chain,
         trajectory_execution_plan_payload,
-        validate_trajectory_execution_for_evaluation,
     )
     from .runner import (
         DEVELOPMENT_MODEL_SEEDS,
@@ -2786,7 +2799,8 @@ def _validate_embedded_trajectory_evidence(
         key: nested for key, nested in evidence.items() if key != "evidence_sha256"
     }
     if (
-        evidence.get("schema_version") != 1
+        type(evidence.get("schema_version")) is not int
+        or evidence.get("schema_version") != 1
         or evidence.get("status") != "completed"
         or evidence.get("scope") != "supplementary_trajectory"
         or evidence.get("evidence_sha256") != canonical_sha256(evidence_body)
@@ -3520,7 +3534,7 @@ def _validate_embedded_trajectory_evidence(
     for index, digest in enumerate(payload_hashes):
         _sha256(digest, f"trajectory validation record {index} payload")
     try:
-        replayed_validation = validate_trajectory_execution_for_evaluation(
+        replayed_validation = _validate_frozen_execution_for_evaluation(
             typed_plan,
             records,
         )
@@ -3574,6 +3588,10 @@ def _validate_storage_preflight(
     planned_run_count: int,
     require_combined: bool = False,
 ) -> Mapping[str, object]:
+    if type(planned_run_count) is not int or planned_run_count <= 0:
+        raise FinalAnalysisContractError(
+            "storage preflight planned run count is invalid"
+        )
     if isinstance(value, Mapping) and value.get("schema") == (
         "maskimpute-combined-final-storage-preflight-v1"
     ):
@@ -3804,10 +3822,12 @@ def _validate_execution_validation(
         key: nested for key, nested in validation.items() if key != "validation_sha256"
     }
     if (
-        validation.get("schema_version") != 1
+        type(validation.get("schema_version")) is not int
+        or validation.get("schema_version") != 1
         or validation.get("status")
         != "eligible_for_final_evaluation_complete_terminal_denominator"
         or validation.get("final_plan_sha256") != final_plan_sha256
+        or type(validation.get("planned_run_count")) is not int
         or validation.get("planned_run_count") != record_count
         or validation.get("validation_sha256") != canonical_sha256(body)
     ):
@@ -3920,7 +3940,8 @@ def _evaluated_inputs(
                 "evaluation receipt result manifest hash does not match"
             )
         if (
-            evaluation.get("schema_version") != 1
+            type(evaluation.get("schema_version")) is not int
+            or evaluation.get("schema_version") != 1
             or evaluation.get("status") != "completed"
         ):
             raise FinalAnalysisContractError("evaluation manifest status is invalid")
@@ -4019,7 +4040,8 @@ def _evaluated_inputs(
     final_plan_sha256 = _sha256(evaluation.get("final_plan_sha256"), "final plan hash")
     references = manifest.get("records")
     if (
-        manifest.get("schema_version") != 1
+        type(manifest.get("schema_version")) is not int
+        or manifest.get("schema_version") != 1
         or manifest.get("status") != "completed"
         or manifest.get("plan_sha256") != final_plan_sha256
         or manifest.get("artifact_storage") != _EXPECTED_FINAL_STORAGE_POLICY
@@ -4029,6 +4051,7 @@ def _evaluated_inputs(
         or not isinstance(references, list)
         or type(manifest.get("planned_run_count")) is not int
         or manifest.get("planned_run_count") != len(references)
+        or type(manifest.get("recorded_run_count")) is not int
         or manifest.get("recorded_run_count") != len(references)
     ):
         raise FinalAnalysisContractError("final execution manifest binding is invalid")
@@ -4061,7 +4084,11 @@ def _evaluated_inputs(
             f"final execution record reference {index}",
         )
         expected_path = f"records/{index:08d}.json"
-        if reference.get("ordinal") != index or reference.get("path") != expected_path:
+        if (
+            type(reference.get("ordinal")) is not int
+            or reference.get("ordinal") != index
+            or reference.get("path") != expected_path
+        ):
             raise FinalAnalysisContractError("final execution record path is invalid")
         run_id = _nonempty_string(
             reference.get("run_id"), f"final execution record {index} run_id"

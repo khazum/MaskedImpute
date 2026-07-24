@@ -2056,7 +2056,8 @@ def _validated_scaling_binding_fields(
         key: value for key, value in evidence.items() if key != "evidence_sha256"
     }
     if (
-        evidence.get("schema_version") != 1
+        type(evidence.get("schema_version")) is not int
+        or evidence.get("schema_version") != 1
         or evidence.get("status") != "completed"
         or canonical_sha256(evidence_body) != evidence_sha256
     ):
@@ -2072,7 +2073,8 @@ def _validated_scaling_binding_fields(
     plan_sha256 = _digest(plan.get("plan_sha256"), "evaluated scaling plan checksum")
     plan_body = {key: value for key, value in plan.items() if key != "plan_sha256"}
     if (
-        plan.get("schema_version") != 1
+        type(plan.get("schema_version")) is not int
+        or plan.get("schema_version") != 1
         or not isinstance(plan.get("input_hashes"), Mapping)
         or not isinstance(plan.get("entries"), list)
         or not isinstance(plan.get("configurations"), list)
@@ -2098,7 +2100,8 @@ def _validated_scaling_binding_fields(
     datasets = checkpoint.get("datasets")
     records = checkpoint.get("records")
     if (
-        checkpoint.get("schema_version") != 1
+        type(checkpoint.get("schema_version")) is not int
+        or checkpoint.get("schema_version") != 1
         or checkpoint.get("status") != "completed"
         or checkpoint.get("plan_sha256") != plan_sha256
         or checkpoint.get("input_hashes") != plan.get("input_hashes")
@@ -2272,7 +2275,8 @@ def _validated_trajectory_binding_fields(
         key: value for key, value in evidence.items() if key != "evidence_sha256"
     }
     if (
-        evidence.get("schema_version") != 1
+        type(evidence.get("schema_version")) is not int
+        or evidence.get("schema_version") != 1
         or evidence.get("status") != "completed"
         or evidence.get("scope") != "supplementary_trajectory"
         or canonical_sha256(evidence_body) != evidence_sha256
@@ -2294,7 +2298,8 @@ def _validated_trajectory_binding_fields(
     from .runner import DEVELOPMENT_MODEL_SEEDS
 
     if (
-        plan.get("schema_version") != 1
+        type(plan.get("schema_version")) is not int
+        or plan.get("schema_version") != 1
         or plan.get("scope") != "supplementary_trajectory"
         or not isinstance(input_hashes, Mapping)
         or set(input_hashes) != _TRAJECTORY_PLAN_INPUT_FIELDS
@@ -2459,7 +2464,8 @@ def _validated_trajectory_binding_fields(
         {"completed", "failed", "timeout", "resource_exceeded", "unavailable"}
     )
     if (
-        validation.get("schema_version") != 1
+        type(validation.get("schema_version")) is not int
+        or validation.get("schema_version") != 1
         or validation.get("status")
         != "eligible_for_final_evaluation_complete_terminal_denominator"
         or validation.get("scope") != "supplementary_trajectory"
@@ -2634,7 +2640,8 @@ def _read_verified_evaluated_round_binding(
     if set(receipt) != _EVALUATION_RECEIPT_FIELDS:
         raise DownstreamEvidenceError("evaluated final receipt schema differs")
     if (
-        receipt.get("schema_version") != 1
+        type(receipt.get("schema_version")) is not int
+        or receipt.get("schema_version") != 1
         or receipt.get("state") != "evaluated"
         or receipt.get("round_id") != round_root.name
     ):
@@ -2656,7 +2663,8 @@ def _read_verified_evaluated_round_binding(
     if canonical_sha256(result_manifest) != result_manifest_sha256:
         raise DownstreamEvidenceError("final result manifest checksum differs")
     if (
-        result_manifest.get("schema_version") != 1
+        type(result_manifest.get("schema_version")) is not int
+        or result_manifest.get("schema_version") != 1
         or result_manifest.get("status") != "completed"
     ):
         raise DownstreamEvidenceError("final result manifest is incomplete")
@@ -2679,6 +2687,7 @@ def _read_verified_evaluated_round_binding(
     }
     if (
         canonical_sha256(validation_body) != validation_sha256
+        or type(validation.get("schema_version")) is not int
         or validation.get("schema_version") != 1
         or validation.get("status")
         != "eligible_for_final_evaluation_complete_terminal_denominator"
@@ -2770,7 +2779,11 @@ def _read_verified_evaluated_round_binding(
         or type(planned) is not int
         or planned != len(references)
         or len(payload_sha256s) != len(references)
+        or type(final_manifest.get("schema_version")) is not int
+        or final_manifest.get("schema_version") != 1
+        or type(final_manifest.get("planned_run_count")) is not int
         or final_manifest.get("planned_run_count") != planned
+        or type(final_manifest.get("recorded_run_count")) is not int
         or final_manifest.get("recorded_run_count") != planned
     ):
         raise DownstreamEvidenceError("final execution validation denominator differs")
@@ -2783,6 +2796,7 @@ def _read_verified_evaluated_round_binding(
         if (
             not isinstance(reference, Mapping)
             or set(reference) != {"ordinal", "run_id", "path", "sha256"}
+            or type(reference.get("ordinal")) is not int
             or reference.get("ordinal") != index
         ):
             raise DownstreamEvidenceError(
@@ -3636,6 +3650,7 @@ def _validate_prezero_source_schema(
     if (
         not isinstance(value, Mapping)
         or set(value) != _PREZERO_EVIDENCE_FIELDS
+        or type(value.get("schema_version")) is not int
         or value.get("schema_version") != 1
     ):
         raise DownstreamEvidenceError("source p_pre_zero evidence schema differs")
@@ -3662,6 +3677,7 @@ def _validate_prezero_source_schema(
         if (
             not isinstance(policy, Mapping)
             or set(policy) != _PREZERO_POLICY_FIELDS
+            or type(policy.get("schema_version")) is not int
             or policy.get("schema_version") != 2
         ):
             raise DownstreamEvidenceError(
@@ -3701,9 +3717,11 @@ def _development_source(
         raise DownstreamEvidenceError("development checkpoint checksum differs")
     records = payload.get("records")
     if (
-        payload.get("schema_version") != 1
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
         or payload.get("status") != "completed"
         or not isinstance(records, list)
+        or type(payload.get("planned_run_count")) is not int
         or payload.get("planned_run_count") != len(records)
     ):
         raise DownstreamEvidenceError("development checkpoint is incomplete")
@@ -3746,10 +3764,13 @@ def _final_source(root: Path) -> _SourceBundle:
     references = payload.get("records")
     storage = payload.get("artifact_storage")
     if (
-        payload.get("schema_version") != 1
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
         or payload.get("status") != "completed"
         or not isinstance(references, list)
+        or type(payload.get("planned_run_count")) is not int
         or payload.get("planned_run_count") != len(references)
+        or type(payload.get("recorded_run_count")) is not int
         or payload.get("recorded_run_count") != len(references)
         or not isinstance(storage, Mapping)
         or dict(storage) != dict(_FINAL_STORAGE_POLICY)
@@ -3769,7 +3790,7 @@ def _final_source(root: Path) -> _SourceBundle:
         }:
             raise DownstreamEvidenceError("final source reference is malformed")
         ordinal = reference.get("ordinal")
-        if ordinal != expected_ordinal:
+        if type(ordinal) is not int or ordinal != expected_ordinal:
             raise DownstreamEvidenceError("final source records are not ordered")
         record_path = _safe_relative(root, reference.get("path"), "final record")
         record, _record_raw, record_file_sha = _strict_json(
@@ -3807,8 +3828,8 @@ def _trajectory_source(root: Path, source_plan: object) -> _SourceBundle:
     from .final_runner import (
         FinalRunnerContractError,
         TrajectoryExecutionPlan,
+        _validate_frozen_execution_for_evaluation,
         trajectory_execution_plan_payload,
-        validate_trajectory_execution_for_evaluation,
     )
     from .runner import DEVELOPMENT_MODEL_SEEDS
 
@@ -3829,6 +3850,7 @@ def _trajectory_source(root: Path, source_plan: object) -> _SourceBundle:
     storage = payload.get("artifact_storage")
     if (
         canonical_sha256(unsigned) != checksum
+        or type(payload.get("schema_version")) is not int
         or payload.get("schema_version") != 1
         or payload.get("status") != "completed"
         or payload.get("scope") != "supplementary_trajectory"
@@ -3838,7 +3860,9 @@ def _trajectory_source(root: Path, source_plan: object) -> _SourceBundle:
         or payload.get("configurations") != expected_plan["configurations"]
         or payload.get("model_seed_policy") != list(DEVELOPMENT_MODEL_SEEDS)
         or not isinstance(references, list)
+        or type(payload.get("planned_run_count")) is not int
         or payload.get("planned_run_count") != len(source_plan.entries)
+        or type(payload.get("recorded_run_count")) is not int
         or payload.get("recorded_run_count") != len(source_plan.entries)
         or len(references) != len(source_plan.entries)
         or not isinstance(storage, Mapping)
@@ -3866,7 +3890,10 @@ def _trajectory_source(root: Path, source_plan: object) -> _SourceBundle:
             "sha256",
         }:
             raise DownstreamEvidenceError("trajectory source reference is malformed")
-        if reference.get("ordinal") != expected_ordinal:
+        if (
+            type(reference.get("ordinal")) is not int
+            or reference.get("ordinal") != expected_ordinal
+        ):
             raise DownstreamEvidenceError("trajectory source records are not ordered")
         record_path = _safe_relative(root, reference.get("path"), "trajectory record")
         record, _record_raw, record_file_sha = _strict_json(
@@ -3899,7 +3926,7 @@ def _trajectory_source(root: Path, source_plan: object) -> _SourceBundle:
     )
     _validate_independent_source_plan(source_plan, bundle)
     try:
-        validation = validate_trajectory_execution_for_evaluation(
+        validation = _validate_frozen_execution_for_evaluation(
             source_plan, tuple(record_payloads)
         )
     except (FinalRunnerContractError, TypeError, ValueError) as error:
@@ -3961,6 +3988,7 @@ def _validate_independent_source_plan(
         if (
             not isinstance(expected_payload, Mapping)
             or not isinstance(observed, Mapping)
+            or type(expected_payload.get("ordinal")) is not int
             or expected_payload.get("ordinal") != ordinal
             or any(
                 not direct_equal(observed.get(name), expected_payload.get(name))
@@ -4465,6 +4493,7 @@ def _build_downstream_evidence_plan(
             != evaluated_round_binding.trajectory_registered_binding_sha256
             or validation.get("validation_sha256")
             != evaluated_round_binding.trajectory_execution_validation_sha256
+            or type(validation.get("planned_run_count")) is not int
             or validation.get("planned_run_count")
             != evaluated_round_binding.trajectory_planned_run_count
             or canonical_sha256(validation.get("record_payload_sha256s"))
@@ -5529,7 +5558,8 @@ def development_downstream_revision_version(
             path, f"{version} revision selection input"
         )
         if (
-            payload.get("schema_version") != 3
+            type(payload.get("schema_version")) is not int
+            or payload.get("schema_version") != 3
             or payload.get("revision_versions") != expected_versions
         ):
             raise DownstreamEvidenceError(

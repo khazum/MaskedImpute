@@ -277,6 +277,97 @@ def test_scaling_plan_closes_full_method_by_size_denominator() -> None:
     assert len({entry.run_id for entry in plan.entries}) == len(plan.entries)
 
 
+@pytest.mark.parametrize("mutation", ("schema_version", "ordinal", "empty"))
+def test_scaling_plan_payload_rejects_boolean_aliases_and_empty_plan(
+    mutation: str,
+) -> None:
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        scaling_plan_payload,
+    )
+
+    plan = _single_entry_plan()
+    assert scaling_plan_payload(plan)["schema_version"] == 1
+    changed_entry = (
+        replace(plan.entries[0], ordinal=True)
+        if mutation == "ordinal"
+        else plan.entries[0]
+    )
+    entries = () if mutation == "empty" else (changed_entry,)
+    schema_version = True if mutation == "schema_version" else 1
+    body = {
+        "schema_version": schema_version,
+        "input_hashes": dict(plan.input_hashes),
+        "entries": [value.to_dict() for value in entries],
+        "configurations": [value.to_dict() for value in plan.configurations],
+    }
+    changed = replace(
+        plan,
+        schema_version=schema_version,
+        entries=entries,
+        plan_sha256=canonical_sha256(body),
+    )
+    with pytest.raises(ScalingContractError, match="plan"):
+        scaling_plan_payload(changed)
+
+
+@pytest.mark.parametrize("field", ("schema_version", "planned_run_count"))
+def test_scaling_checkpoint_payload_rejects_boolean_integer_aliases(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.scaling import (
+        ScalingContractError,
+        ScalingResultStore,
+        scaling_checkpoint_payload,
+    )
+
+    plan = _single_entry_plan()
+    checkpoint = ScalingResultStore(tmp_path, plan).append_dataset(
+        _dataset_receipt(tmp_path)
+    )
+    assert scaling_checkpoint_payload(checkpoint)["planned_run_count"] == 1
+    body = {
+        "schema_version": True if field == "schema_version" else 1,
+        "plan_sha256": checkpoint.plan_sha256,
+        "input_hashes": dict(checkpoint.input_hashes),
+        "planned_run_count": (
+            True if field == "planned_run_count" else checkpoint.planned_run_count
+        ),
+        "status": checkpoint.status,
+        "datasets": [dict(value) for value in checkpoint.datasets],
+        "records": [dict(value) for value in checkpoint.records],
+    }
+    changed = replace(
+        checkpoint,
+        schema_version=body["schema_version"],
+        planned_run_count=body["planned_run_count"],
+        checkpoint_sha256=canonical_sha256(body),
+    )
+    with pytest.raises(ScalingContractError, match="checkpoint"):
+        scaling_checkpoint_payload(changed)
+
+
+def test_scaling_checkpoint_loader_rejects_boolean_planned_run_count(
+    tmp_path: Path,
+) -> None:
+    from maskimpute_benchmark.scaling import ScalingContractError, ScalingResultStore
+
+    plan = _single_entry_plan()
+    store = ScalingResultStore(tmp_path, plan)
+    store.append_dataset(_dataset_receipt(tmp_path))
+    assert ScalingResultStore(tmp_path, plan).load() is not None
+    _rewrite_scaling_checkpoint(
+        store.checkpoint_path,
+        lambda payload: payload.__setitem__("planned_run_count", True),
+    )
+
+    with pytest.raises(ScalingContractError, match="checkpoint"):
+        ScalingResultStore(tmp_path, plan).load()
+
+
 def test_scaling_plan_uses_exact_frozen_comparator_payloads() -> None:
     from maskimpute_benchmark.direct_values import direct_equal
     from maskimpute_benchmark.runner import direct_bound_comparator_value
