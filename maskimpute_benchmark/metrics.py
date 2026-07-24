@@ -10,7 +10,7 @@ local to log-loss computation.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, localcontext
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, localcontext
 from fractions import Fraction
 import heapq
 import math
@@ -88,9 +88,6 @@ def _unavailable(n: int, reason: str) -> MetricValue:
     return MetricValue(None, int(n), reason)
 
 
-_ScaledTerm = tuple[float, int]
-_ZERO_TERM: _ScaledTerm = (0.0, 0)
-_FLOAT64_MAX = np.finfo(np.float64).max
 _FLOAT64_INFO = np.finfo(np.float64)
 _LONGDOUBLE_INFO = np.finfo(np.longdouble)
 _PAIRWISE_DISTANCE_BLOCK_SIZE = 128
@@ -112,95 +109,6 @@ def _longdouble_supports_float64_products() -> bool:
 
 
 _WIDE_LONGDOUBLE = _longdouble_supports_float64_products()
-
-
-def _normalize_term(mantissa: float, exponent: int) -> _ScaledTerm:
-    if mantissa == 0.0:
-        return _ZERO_TERM
-    normalized_mantissa, adjustment = math.frexp(float(mantissa))
-    return normalized_mantissa, int(exponent) + adjustment
-
-
-def _term_from_float(value: float) -> _ScaledTerm:
-    if value < 0.0 or not math.isfinite(value):
-        raise ValueError("scaled terms require finite nonnegative values")
-    return _normalize_term(value, 0)
-
-
-def _term_from_scaled(
-    scale: float,
-    coefficient: float,
-    *,
-    power: int = 1,
-) -> _ScaledTerm:
-    if (
-        scale < 0.0
-        or coefficient < 0.0
-        or not math.isfinite(scale)
-        or not math.isfinite(coefficient)
-    ):
-        raise ValueError("scaled terms require finite nonnegative factors")
-    if scale == 0.0 or coefficient == 0.0:
-        return _ZERO_TERM
-    scale_mantissa, scale_exponent = math.frexp(scale)
-    coefficient_mantissa, coefficient_exponent = math.frexp(coefficient)
-    return _normalize_term(
-        coefficient_mantissa * scale_mantissa**power,
-        coefficient_exponent + power * scale_exponent,
-    )
-
-
-def _term_ratio(numerator: _ScaledTerm, denominator: _ScaledTerm) -> _ScaledTerm:
-    numerator_mantissa, numerator_exponent = numerator
-    denominator_mantissa, denominator_exponent = denominator
-    if denominator_mantissa == 0.0:
-        raise ZeroDivisionError("scaled-term denominator must be positive")
-    if numerator_mantissa == 0.0:
-        return _ZERO_TERM
-    return _normalize_term(
-        numerator_mantissa / denominator_mantissa,
-        numerator_exponent - denominator_exponent,
-    )
-
-
-def _term_mean(terms: list[_ScaledTerm]) -> _ScaledTerm:
-    nonzero = [term for term in terms if term[0] != 0.0]
-    if not nonzero:
-        return _ZERO_TERM
-    maximum_exponent = max(exponent for _, exponent in nonzero)
-    aligned = math.fsum(
-        math.ldexp(mantissa, exponent - maximum_exponent)
-        for mantissa, exponent in nonzero
-    )
-    return _normalize_term(aligned / len(terms), maximum_exponent)
-
-
-def _term_is_less(left: _ScaledTerm, right: _ScaledTerm) -> bool:
-    if left[0] == 0.0:
-        return right[0] != 0.0
-    if right[0] == 0.0:
-        return False
-    return left[1] < right[1] or (left[1] == right[1] and left[0] < right[0])
-
-
-def _term_to_float(term: _ScaledTerm) -> float | None:
-    mantissa, exponent = term
-    if mantissa == 0.0:
-        return 0.0
-    try:
-        value = math.ldexp(mantissa, exponent)
-    except OverflowError:
-        return None
-    if not math.isfinite(value) or value == 0.0:
-        return None
-    return value
-
-
-def _metric_from_term(term: _ScaledTerm, n: int) -> MetricValue:
-    value = _term_to_float(term)
-    if value is None:
-        return _unavailable(n, "nonfinite_metric")
-    return MetricValue(value, int(n), None)
 
 
 def _metric_from_high_precision(value: Fraction | Decimal, n: int) -> MetricValue:
@@ -241,6 +149,107 @@ def _metric_if_interval_rounds_together(
     if lower_float == 0.0 and upper > 0:
         return _unavailable(n, "nonfinite_metric")
     return MetricValue(lower_float, int(n), None)
+
+
+def _exact_difference_power_mean(
+    left: np.ndarray,
+    right: np.ndarray,
+    *,
+    power: int,
+) -> Fraction:
+    """Return an exact mean of absolute binary64 differences."""
+
+    if power not in {1, 2}:  # pragma: no cover - private programming error
+        raise AssertionError(power)
+    left_values = np.asarray(left, dtype=np.float64).reshape(-1)
+    right_values = np.asarray(right, dtype=np.float64).reshape(-1)
+    if left_values.shape != right_values.shape or left_values.size == 0:
+        raise ValueError("exact difference operands must be nonempty and aligned")
+    total = Fraction()
+    for left_value, right_value in zip(left_values, right_values):
+        difference = abs(
+            Fraction.from_float(float(left_value))
+            - Fraction.from_float(float(right_value))
+        )
+        total += difference if power == 1 else difference * difference
+    return total / left_values.size
+
+
+def _fraction_population_variance(values: np.ndarray) -> Fraction:
+    """Return an exact population variance of finite binary64 values."""
+
+    exact = [
+        Fraction.from_float(float(value))
+        for value in np.asarray(values, dtype=np.float64).reshape(-1)
+    ]
+    mean = sum(exact, start=Fraction()) / len(exact)
+    return sum(((value - mean) ** 2 for value in exact), start=Fraction()) / len(exact)
+
+
+def _decimal_sqrt_mean(
+    squared_values: list[Fraction],
+    *,
+    precision: int,
+    rounding: str,
+) -> Decimal:
+    """Evaluate a nonnegative square-root mean with directed rounding."""
+
+    with localcontext() as context:
+        context.prec = precision
+        context.rounding = rounding
+        total = Decimal()
+        for value in squared_values:
+            radicand = Decimal(value.numerator) / Decimal(value.denominator)
+            total += radicand.sqrt()
+        return total / Decimal(len(squared_values))
+
+
+def _exact_gnrmse(
+    imputed: np.ndarray,
+    truth: np.ndarray,
+    mask: np.ndarray,
+) -> MetricValue:
+    """Evaluate the completed gene-wise normalized RMSE with one final cast."""
+
+    floor_squared = Fraction.from_float(1e-8) ** 2
+    squared_ratios: list[Fraction] = []
+    for gene in range(truth.shape[1]):
+        selected = mask[:, gene]
+        if not np.any(selected):
+            continue
+        mse = _exact_difference_power_mean(
+            imputed[selected, gene],
+            truth[selected, gene],
+            power=2,
+        )
+        variance = _fraction_population_variance(truth[:, gene])
+        squared_ratios.append(
+            mse / (variance if variance >= floor_squared else floor_squared)
+        )
+
+    n_genes = len(squared_ratios)
+    if not squared_ratios:
+        return _unavailable(0, "no_entries")
+    if all(value == 0 for value in squared_ratios):
+        return MetricValue(0.0, n_genes, None)
+    for precision in (120, 240, 480, 960, 1_920):
+        lower = _decimal_sqrt_mean(
+            squared_ratios,
+            precision=precision,
+            rounding=ROUND_FLOOR,
+        )
+        upper = _decimal_sqrt_mean(
+            squared_ratios,
+            precision=precision,
+            rounding=ROUND_CEILING,
+        )
+        metric = _metric_if_interval_rounds_together(lower, upper, n_genes)
+        if metric is not None:
+            return metric
+    with localcontext() as context:
+        context.prec = 1_920
+        midpoint = (lower + upper) / Decimal(2)
+    return _metric_from_high_precision(midpoint, n_genes)
 
 
 def _fraction_to_decimal(value: Fraction) -> Decimal:
@@ -1417,80 +1426,6 @@ def _wide_variance_distortion(
     return _metric_from_high_precision(lower_total / n_genes, n_genes)
 
 
-def _scaled_signed_differences(
-    left: np.ndarray,
-    right: np.ndarray,
-) -> tuple[float, np.ndarray]:
-    """Return ``left - right`` divided by a safe common magnitude."""
-
-    left_values = np.asarray(left, dtype=np.float64).reshape(-1)
-    right_values = np.asarray(right, dtype=np.float64).reshape(-1)
-    if left_values.shape != right_values.shape:
-        raise ValueError("difference operands must have the same shape")
-    if left_values.size == 0:
-        return 0.0, np.empty(0, dtype=np.float64)
-
-    left_magnitude = np.abs(left_values)
-    right_magnitude = np.abs(right_values)
-    same_sign = np.signbit(left_values) == np.signbit(right_values)
-    safe_opposite = left_magnitude <= (_FLOAT64_MAX - right_magnitude)
-    safe = same_sign | safe_opposite
-    safe_differences = np.empty(left_values.size, dtype=np.float64)
-    safe_differences[safe] = left_values[safe] - right_values[safe]
-
-    maximum_safe = (
-        float(np.max(np.abs(safe_differences[safe]))) if np.any(safe) else 0.0
-    )
-    unsafe = ~safe
-    maximum_unsafe = (
-        float(
-            max(
-                np.max(left_magnitude[unsafe]),
-                np.max(right_magnitude[unsafe]),
-            )
-        )
-        if np.any(unsafe)
-        else 0.0
-    )
-    scale = max(maximum_safe, maximum_unsafe)
-    if scale == 0.0:
-        return 0.0, np.zeros(left_values.size, dtype=np.float64)
-
-    normalized = np.empty(left_values.size, dtype=np.float64)
-    # Terms too small relative to ``scale`` cannot affect a float64 reduction,
-    # but NumPy still signals when their correctly rounded quotient is
-    # subnormal. Permit only that expected scaling underflow.
-    with np.errstate(under="ignore"):
-        normalized[safe] = safe_differences[safe] / scale
-        normalized[unsafe] = left_values[unsafe] / scale - right_values[unsafe] / scale
-    return scale, normalized
-
-
-def _root_mean_square_term(left: np.ndarray, right: np.ndarray) -> _ScaledTerm:
-    scale, normalized = _scaled_signed_differences(left, right)
-    if scale == 0.0:
-        return _ZERO_TERM
-    with np.errstate(under="ignore"):
-        coefficient = math.sqrt(float(np.sum(normalized * normalized))) / math.sqrt(
-            normalized.size
-        )
-    return _term_from_scaled(scale, coefficient)
-
-
-def _standard_deviation_term(values: np.ndarray) -> _ScaledTerm:
-    vector = np.asarray(values, dtype=np.float64).reshape(-1)
-    scale = float(np.max(np.abs(vector)))
-    if scale == 0.0:
-        return _ZERO_TERM
-    with np.errstate(under="ignore"):
-        normalized = vector / scale
-    mean = math.fsum(float(value) for value in normalized) / normalized.size
-    with np.errstate(under="ignore"):
-        centered = normalized - mean
-        coefficient = math.sqrt(float(np.mean(centered * centered)))
-    return _term_from_scaled(scale, coefficient)
-
-
 def _ordinary_gnrmse_value(
     imputed: np.ndarray,
     truth: np.ndarray,
@@ -1654,13 +1589,13 @@ def _error_metric(
         value = None
     if value is not None and np.isfinite(value):
         return MetricValue(float(value), n, None)
-
-    scale, normalized = _scaled_signed_differences(imputed[mask], truth[mask])
     power = 2 if squared else 1
-    with np.errstate(under="ignore"):
-        coefficient = float(np.mean(np.abs(normalized) ** power))
-    return _metric_from_term(
-        _term_from_scaled(scale, coefficient, power=power),
+    return _metric_from_high_precision(
+        _exact_difference_power_mean(
+            imputed[mask],
+            truth[mask],
+            power=power,
+        ),
         n,
     )
 
@@ -1672,10 +1607,7 @@ def _gnrmse(
 ) -> MetricValue:
     if not np.any(mask):
         return _unavailable(0, "no_entries")
-    floor = _term_from_float(1e-8)
-    values: list[_ScaledTerm] = []
     ordinary_values: list[float] = []
-    all_ordinary = True
     for gene in range(truth.shape[1]):
         selected = mask[:, gene]
         if np.any(selected):
@@ -1684,21 +1616,21 @@ def _gnrmse(
                 truth[:, gene],
                 selected,
             )
-            if ordinary is not None:
-                ordinary_values.append(ordinary)
-                values.append(_term_from_float(ordinary))
-                continue
-            all_ordinary = False
-            rmse = _root_mean_square_term(
-                imputed[selected, gene],
-                truth[selected, gene],
-            )
-            truth_sd = _standard_deviation_term(truth[:, gene])
-            denominator = floor if _term_is_less(truth_sd, floor) else truth_sd
-            values.append(_term_ratio(rmse, denominator))
-    if all_ordinary:
-        return _metric(np.mean(ordinary_values), len(ordinary_values))
-    return _metric_from_term(_term_mean(values), len(values))
+            if ordinary is None:
+                return _exact_gnrmse(imputed, truth, mask)
+            ordinary_values.append(ordinary)
+    try:
+        with np.errstate(all="raise"):
+            ordinary_mean = np.mean(ordinary_values)
+    except FloatingPointError:
+        return _exact_gnrmse(imputed, truth, mask)
+    if np.isfinite(ordinary_mean):
+        return MetricValue(
+            float(ordinary_mean),
+            len(ordinary_values),
+            None,
+        )
+    return _exact_gnrmse(imputed, truth, mask)
 
 
 def _correlation_matrix_distortion(
@@ -1836,13 +1768,13 @@ def _mean_gene_wasserstein_distance(
         ordinary_value = None
     if ordinary_value is not None and np.isfinite(ordinary_value):
         return MetricValue(float(ordinary_value), truth.shape[1], None)
-
-    scale, normalized = _scaled_signed_differences(
+    exact = _exact_difference_power_mean(
         sorted_imputed,
         sorted_truth,
+        power=1,
     )
-    return _metric_from_term(
-        _term_from_scaled(scale, float(np.mean(np.abs(normalized)))),
+    return _metric_from_high_precision(
+        exact,
         truth.shape[1],
     )
 
@@ -1940,34 +1872,38 @@ def reconstruction_metrics(
         )
         result[f"gnrmse{suffix}"] = _gnrmse(imputed_array, truth_array, mask)
 
-    try:
-        with np.errstate(all="raise"):
-            ordinary_mean = np.mean(
-                np.abs(np.mean(imputed_array, axis=0) - np.mean(truth_array, axis=0))
-            )
-    except FloatingPointError:
-        ordinary_mean = None
-    if ordinary_mean is not None and np.isfinite(ordinary_mean):
+    identical_reconstruction = np.array_equal(imputed_array, truth_array)
+    ordinary_mean: float | None = None
+    if identical_reconstruction:
+        result["mean_distortion"] = MetricValue(
+            0.0,
+            truth_array.shape[1],
+            None,
+        )
+    else:
+        try:
+            with np.errstate(all="raise"):
+                ordinary_mean = np.mean(
+                    np.abs(
+                        np.mean(imputed_array, axis=0) - np.mean(truth_array, axis=0)
+                    )
+                )
+        except FloatingPointError:
+            ordinary_mean = None
+    if (
+        not identical_reconstruction
+        and ordinary_mean is not None
+        and np.isfinite(ordinary_mean)
+    ):
         result["mean_distortion"] = _certified_mean_distortion(
             imputed_array,
             truth_array,
             float(ordinary_mean),
         )
-    else:
-        mean_differences: list[_ScaledTerm] = []
-        for gene in range(truth_array.shape[1]):
-            mean_scale, normalized_difference = _scaled_signed_differences(
-                imputed_array[:, gene],
-                truth_array[:, gene],
-            )
-            mean_coefficient = abs(
-                math.fsum(float(value) for value in normalized_difference)
-                / normalized_difference.size
-            )
-            mean_differences.append(_term_from_scaled(mean_scale, mean_coefficient))
-        result["mean_distortion"] = _metric_from_term(
-            _term_mean(mean_differences),
-            truth_array.shape[1],
+    elif not identical_reconstruction:
+        result["mean_distortion"] = _exact_mean_distortion(
+            imputed_array,
+            truth_array,
         )
 
     try:

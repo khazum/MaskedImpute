@@ -911,11 +911,15 @@ and orthogonal evidence is reconstructed independently from typed authority.
 | F-046 | Important | Finite, representable log2-CP10k rows still lost or misrounded small nonzero terms. `[1e300, 1e280]` returned zero instead of `0x1.4ca9af0f3becep-53`; `[1, 2^-60]` returned `0x1.c21ef034d0783p-47` instead of `0x1.c2d79a6ff9d45p-47`. | The exact logarithm route was entered only after a floating-point signal. A finite row therefore retained `log2(1+x)` even when the addition discarded or rounded the small CP10k term before the logarithm. | Closed test-first. Every nonzero finite log2 cell is evaluated through cancellation-safe `log1p(x)/ln(2)` in wider precision with conservative outward bounds. A cell occupying one binary64 rounding cell is converted once; ambiguity escalates to an adaptive exact-binary-rational Decimal interval. Certified moderate legacy values remain unchanged. A 3,000-row/6,000-endpoint independent 350-digit audit found zero mismatches. |
 | F-047 | Important | Finite ordinary mean, population-variance, and pairwise-distance paths accepted small nonzero cancellation as zero or the wrong adjacent float. The reviewed endpoints were respectively `0x1p-53`, `0x1.8p-53`, and `0x1.6a09e667f3bcdp-53`, but the ordinary formulas returned zero, `0x1p-52`, and zero. | Each ordinary path accepted a finite scalar without certifying the joint subtraction and final rounding cell; this affected small nonzero cancellation, not only endpoints that had already become zero. | Closed test-first in both operand orders. Mean distortion now forms a joint wider interval and uses an exact linear-time Fraction fallback only when its final cell is uncertified. Variance and pairwise distance submit every finite ordinary candidate to the existing bounded wider/portable interval and ambiguity-refinement machinery, returning the legacy scalar only when the certified result agrees. Outward bounds cover interval and accumulated rounding. Sixty-four committed randomized adjacent cases per order and an independent 5,000-case public-metric audit match exact Fraction/320-digit oracles. A 160-by-48 safe fixture uses zero exact mean/pair calls and one ambiguous-gene refinement in under ten seconds. |
 | F-048 | Important | Inverse log1p-CP10k conversion multiplied before dividing by 10,000. With observed library `DBL_MAX` and stored native `log1p(5000)`, the intermediate overflowed and the representable endpoint was rejected; reordering in float64 would still produce the one-ULP-low `0x1.0000000000001p+1023` instead of `0x1.0000000000002p+1023`. | The converter treated intermediate float64 overflow as endpoint overflow and had no single-rounding path for a mathematically representable scaled product. | Closed test-first with a shared observed-library inverse boundary. Safe products retain the exact legacy operation order. Only multiplication-risk cells use adaptive Decimal `expm1(native) * library / target`, outward decimal bounds, and one final binary64 conversion. The analogous scSDAE log1p-CPM endpoint now uses the same boundary. A 20,000-case independent 250-digit risky-endpoint audit found zero mismatches. |
+| F-049 | Important | Unsafe but finite reconstruction fallbacks rounded before the completed estimand. MAE and empirical Wasserstein distance for `[DBL_MAX, predecessor(DBL_MAX)]` versus zero returned `DBL_MAX` rather than `0x1.ffffffffffffep+1023`; an extreme gNRMSE returned `0x1.6a09e667f3bccp+0` rather than `0x1.6a09e667f3bcdp+0`. | `_scaled_signed_differences` rounded normalized per-entry differences, then later reductions and scale restoration rounded again. The same architecture could erase a tiny residual while separately forming overflowed row means. | Closed test-first. Exceptional MSE, MAE, Wasserstein, and mean endpoints retain exact binary-rational sums through the completed estimator and convert once. Exceptional gNRMSE retains exact squared-error and variance ratios and uses directed, adaptive Decimal square-root means until one binary64 cell is certified. The inaccurate scaled-difference path and all consumers were removed. Ordinary finite branches remain unchanged. Both operand orders retain the reviewed `2e-301` mean residual, and bounded unsafe 300-by-96 and 900-by-8 probes complete with bounded memory. |
+| F-050 | Important | Identical matrices containing only the minimum float64 subnormal produced unavailable mean distortion instead of exact available zero. | The certified mean interval widened a zero estimate by an underflow-scale uncertainty and then classified the positive upper endpoint rounding to zero as an unavailable positive underflow. It did not recognize an exactly identical input before approximate interval construction. | Closed test-first with an exact array-identity shortcut at the mean-distortion owner. Identical finite matrices return available zero without approximate arithmetic; nonidentical overflowed means continue through the exact endpoint path and retain the reviewed tiny residual. |
+| F-051 | Important | Protocol-scale log2-CP10k conversion repeated a row copy, wider row sum, and certification for every nonzero cell; conservative ambiguity then invoked adaptive Decimal 120,000 times for an all-ones 100-by-1,200 matrix. The 300-by-96 and 900-by-8 bounded probes made 28,800 and 7,200 analogous calls. | Certification was cell-oriented even though every cell shared one row denominator, and ambiguous equal values were recomputed independently. | Closed test-first. Each row is copied and certified in one vectorized wider operation. Only unresolved nonzero cells use the exact route; their row denominator is constructed once and equal values share one adaptive Decimal result. The 100-by-1,200, 300-by-96, and 900-by-8 regressions cap exact work at one call per row, retain exact expected serialization, and enforce bounded runtime and memory. |
+| F-052 | Minor | `scsdae_to_evaluator_counts` leaked `FloatingPointError` or a promoted cast warning when a finite `longdouble` native output lay outside float64 range. | Its direct narrowing cast did not use the already established local native-boundary signal translation. | Closed test-first. The scSDAE native cast now traps only overflow and invalid narrowing signals and translates them to the existing `ValueError` representability contract. Shape, numeric, finite, nonnegative, and inverse-scale semantics are unchanged. |
 | O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
 
 No unresolved metric-domain, statistical-independence, evaluation-row,
 external-reference, manifest, or pre-zero evidence defect was demonstrated
-after F-025 through F-048. Legacy runtime-lock, filesystem-hardening, and
+after F-025 through F-052. Legacy runtime-lock, filesystem-hardening, and
 outer-provenance mechanisms were not redesigned or extended.
 
 ### Task 5 test-first and verification evidence
@@ -1325,6 +1329,47 @@ The final-state sanitized five-file Task 5 suite reported:
 
 No production or test file changed after those formatting/static gates or the
 final suite. Only this ledger evidence and the ignored fix-8 report followed.
+
+A final endpoint and protocol-scale review then demonstrated F-049 through
+F-052. The exact focused pre-change invocation produced eight expected
+failures and two already-correct residual controls: both MAE/Wasserstein
+operand orders, the extreme gNRMSE endpoint, exact-zero minimum-subnormal mean
+distortion, all three protocol-size CP10k call-count nodes, and the scSDAE
+native cast boundary. After the exact/certified endpoint corrections,
+vectorized row certification, and narrow cast translation, the identical set
+reported:
+
+```text
+10 passed in 3.72s
+```
+
+The complete metric and core-method adapter owning files then reported:
+
+```text
+166 passed, 14 skipped in 35.24s
+```
+
+Independent numerical checks retained every one of 5,000 ordinary endpoint
+tuples, matched 3,000 finite log2-CP10k rows and all 6,000 of their endpoints
+against 350-digit oracles, and matched 20,000 risky inverse-log1p endpoints
+against 250-digit oracles. The unsafe 300-by-96 and 900-by-8 exact-fallback
+probes completed in 1.766 and 0.567 seconds with traced peaks below one
+megabyte; the direct 100-by-1,200 all-ones CP10k probe completed in one second
+including interpreter startup.
+
+Formatting was applied before the final verification sequence. Scoped Ruff
+lint and format checking, byte compilation, and `git diff --check` all exited
+zero. The single final correctly sanitized five-file Task 5 suite then
+reported:
+
+```text
+399 passed, 1 skipped in 979.32s (0:16:19)
+```
+
+The post-format CP10k oracle/performance and scSDAE cast set separately
+reported 10 passes in 21.97 seconds. No production or test file changed after
+the formatting/static gates or final five-file suite; only this ledger
+evidence and the ignored fix-9 report followed.
 
 These checks establish bounded-fixture evaluation contracts only. No real
 scientific or comparator workload ran, and no empirical competitiveness,

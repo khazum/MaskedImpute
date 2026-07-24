@@ -9,6 +9,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
+import tracemalloc
 import warnings
 
 import anndata as ad
@@ -20,6 +22,7 @@ import maskimpute_benchmark.methods as core_methods
 import maskimpute_benchmark.methods.alra as alra_adapter
 import maskimpute_benchmark.methods.dca as dca_adapter
 import maskimpute_benchmark.methods.magic as magic_adapter
+import maskimpute_benchmark.methods.observed as observed_adapter
 import maskimpute_benchmark.methods.saver as saver_adapter
 from maskimpute_benchmark.methods import (
     EnvironmentSpec,
@@ -531,6 +534,59 @@ def test_cp10k_threshold_terms_match_high_precision_logarithm_oracles() -> None:
         assert log2_result[index, 2].hex() == expected_log2.hex()
 
 
+def test_log2_cp10k_vectorizes_protocol_sized_moderate_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counts = np.ones((100, 1_200), dtype=np.float64)
+    exact_calls = 0
+    original_exact = observed_adapter._exact_cp10k_logarithm
+
+    def counted_exact(*args, **kwargs) -> float:
+        nonlocal exact_calls
+        exact_calls += 1
+        return original_exact(*args, **kwargs)
+
+    monkeypatch.setattr(observed_adapter, "_exact_cp10k_logarithm", counted_exact)
+    tracemalloc.start()
+    started = time.perf_counter()
+    converted = count_equivalent_to_log2_cp10k(counts)
+    elapsed = time.perf_counter() - started
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    expected = np.log2(1.0 + 10_000.0 / counts.shape[1])
+    np.testing.assert_array_equal(converted, np.full(counts.shape, expected))
+    assert exact_calls <= counts.shape[0]
+    assert elapsed < 5.0
+    assert peak < 24_000_000
+
+
+@pytest.mark.parametrize(("rows", "columns"), [(300, 96), (900, 8)])
+def test_log2_cp10k_bounded_sizes_avoid_cellwise_exact_work(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: int,
+    columns: int,
+) -> None:
+    counts = np.ones((rows, columns), dtype=np.float64)
+    exact_calls = 0
+    original_exact = observed_adapter._exact_cp10k_logarithm
+
+    def counted_exact(*args, **kwargs) -> float:
+        nonlocal exact_calls
+        exact_calls += 1
+        return original_exact(*args, **kwargs)
+
+    monkeypatch.setattr(observed_adapter, "_exact_cp10k_logarithm", counted_exact)
+    started = time.perf_counter()
+    converted = count_equivalent_to_log2_cp10k(counts)
+    elapsed = time.perf_counter() - started
+
+    expected = np.log2(1.0 + 10_000.0 / columns)
+    np.testing.assert_array_equal(converted, np.full(counts.shape, expected))
+    assert exact_calls <= rows
+    assert elapsed < 4.0
+
+
 def test_observed_library_sizes_reject_unrepresentable_totals_without_fp_errors() -> (
     None
 ):
@@ -597,6 +653,22 @@ def test_inverse_log1p_cpm_uses_the_same_risky_endpoint_boundary() -> None:
 
     assert converted[0, 0] == expected
     assert converted.flags.writeable is False
+
+
+def test_scsdae_native_output_rejects_unrepresentable_longdouble_without_warning() -> (
+    None
+):
+    if np.finfo(np.longdouble).max <= np.finfo(np.float64).max:
+        pytest.skip("longdouble has no wider finite range on this platform")
+    method_input = _method_input()
+    native = np.ones(method_input.shape, dtype=np.longdouble)
+    native[0, 0] = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            with pytest.raises(ValueError, match="representable as float64"):
+                scsdae_to_evaluator_counts(method_input, native)
 
 
 def test_common_scale_zero_row_reason_precedes_another_row_overflow() -> None:

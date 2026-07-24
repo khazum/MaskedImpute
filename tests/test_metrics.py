@@ -161,7 +161,7 @@ def test_gnrmse_preserves_tiny_representable_error_with_strict_fp_errors() -> No
         result = reconstruction_metrics(imputed, truth, truth)
 
     assert result["gnrmse"] == MetricValue(
-        tiny / np.sqrt(2.0) / 1e-8,
+        float.fromhex("0x1.0dbd6587980a2p-996"),
         1,
         None,
     )
@@ -204,6 +204,80 @@ def test_mixed_scale_fallbacks_complete_with_strict_fp_errors() -> None:
         maximum / 3.0
     )
     assert result["cell_distance_distortion"].reason is None
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_extreme_mae_and_wasserstein_round_the_completed_mean_once(
+    reverse: bool,
+) -> None:
+    maximum = np.finfo(np.float64).max
+    predecessor = np.nextafter(maximum, 0.0)
+    imputed = np.array([[maximum], [predecessor]])
+    truth = np.zeros_like(imputed)
+    if reverse:
+        imputed, truth = truth, imputed
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    expected = float.fromhex("0x1.ffffffffffffep+1023")
+    assert result["mae"] == MetricValue(expected, 2, None)
+    assert result["mean_gene_wasserstein_distance"] == MetricValue(expected, 1, None)
+
+
+def test_extreme_gnrmse_rounds_the_completed_ratio_once() -> None:
+    maximum = np.finfo(np.float64).max
+    truth = np.array([[-maximum], [maximum]])
+    imputed = np.array([[maximum], [maximum]])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result["gnrmse"] == MetricValue(
+        float.fromhex("0x1.6a09e667f3bcdp+0"),
+        1,
+        None,
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_overflowed_nonnegative_means_retain_a_tiny_residual(reverse: bool) -> None:
+    maximum = np.finfo(np.float64).max
+    imputed = np.array([[maximum], [maximum], [0.0], [0.0], [0.0]])
+    truth = np.array([[maximum], [maximum], [1e-300], [0.0], [0.0]])
+    if reverse:
+        imputed, truth = truth, imputed
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(imputed, np.zeros_like(truth), truth)
+
+    assert result["mean_distortion"] == MetricValue(
+        float.fromhex("0x1.124e63593f5e1p-999"),
+        1,
+        None,
+    )
+
+
+def test_identical_minimum_subnormal_means_are_available_zero() -> None:
+    minimum_subnormal = np.nextafter(0.0, 1.0)
+    identical = np.array([[minimum_subnormal], [minimum_subnormal]])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = reconstruction_metrics(
+                identical,
+                np.zeros_like(identical),
+                identical.copy(),
+            )
+
+    assert result["mean_distortion"] == MetricValue(0.0, 1, None)
 
 
 def test_safe_mean_keeps_legacy_value_when_variance_requires_scaled_route() -> None:

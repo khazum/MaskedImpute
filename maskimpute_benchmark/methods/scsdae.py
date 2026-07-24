@@ -462,13 +462,19 @@ def scsdae_to_evaluator_counts(
         raise ValueError("native scSDAE output must match the method-input shape")
     if native_output.dtype.kind not in {"i", "u", "f"}:
         raise ValueError("native scSDAE output must be numeric")
-    native = np.array(
-        native_output,
-        dtype=np.float64,
-        copy=True,
-        order="C",
-        subok=False,
-    )
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            native = np.array(
+                native_output,
+                dtype=np.float64,
+                copy=True,
+                order="C",
+                subok=False,
+            )
+    except (FloatingPointError, RuntimeWarning) as error:
+        raise ValueError(
+            "native scSDAE output must be representable as float64"
+        ) from error
     if not np.isfinite(native).all() or bool((native < 0).any()):
         raise ValueError("native scSDAE output must be finite and nonnegative")
     libraries = observed_library_sizes(method_input)

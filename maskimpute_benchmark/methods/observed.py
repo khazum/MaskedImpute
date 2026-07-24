@@ -195,66 +195,80 @@ def _cp10k_transform(values: np.ndarray, *, log_base: int) -> np.ndarray:
         raise AssertionError(log_base)
     converted = np.empty_like(values)
     for index, row in enumerate(values):
+        ordinary_row: np.ndarray | None = None
         try:
             with np.errstate(all="raise"):
                 library_size = np.sum(row)
                 proportions = row / library_size
                 terms = proportions * 10_000.0
                 if log_base == 1:
-                    converted_row = np.log1p(terms)
+                    ordinary_row = np.log1p(terms)
                 else:
-                    converted_row = np.log2(1.0 + terms)
-                    exact_total: Fraction | None = None
-                    for column in np.flatnonzero(row):
-                        certified = _certified_cp10k_log2(row, int(column))
-                        if certified is not None:
-                            converted_row[column] = certified
-                            continue
-                        if exact_total is None:
-                            exact_total = sum(
-                                (Fraction.from_float(float(value)) for value in row),
-                                start=Fraction(),
-                            )
-                        converted_row[column] = _exact_cp10k_logarithm(
-                            float(row[column]),
-                            exact_total,
-                            log_base=2,
-                        )
+                    ordinary_row = np.log2(1.0 + terms)
         except FloatingPointError:
-            exact_total = sum(
-                (Fraction.from_float(float(value)) for value in row),
-                start=Fraction(),
+            ordinary_row = None
+
+        if ordinary_row is not None and log_base == 1:
+            converted_row = ordinary_row
+        else:
+            certified, resolved = _certified_cp10k_logarithm_row(
+                row,
+                log_base=log_base,
             )
-            if exact_total == 0:  # guarded by each public caller
-                raise AssertionError("zero row reached CP10k scaling")
-            converted_row = np.empty_like(row)
-            for column, value in enumerate(row):
-                if value == 0.0:
-                    converted_row[column] = 0.0
-                    continue
-                converted_row[column] = _exact_cp10k_logarithm(
-                    float(value),
-                    exact_total,
-                    log_base=log_base,
+            converted_row = (
+                ordinary_row.copy() if ordinary_row is not None else np.zeros_like(row)
+            )
+            converted_row[resolved] = certified[resolved]
+            unresolved = np.flatnonzero((row != 0.0) & ~resolved)
+            if unresolved.size:
+                exact_total = sum(
+                    (Fraction.from_float(float(value)) for value in row),
+                    start=Fraction(),
                 )
+                if exact_total == 0:  # guarded by each public caller
+                    raise AssertionError("zero row reached CP10k scaling")
+                exact_by_value: dict[float, float] = {}
+                for column in unresolved:
+                    value = float(row[column])
+                    if value not in exact_by_value:
+                        exact_by_value[value] = _exact_cp10k_logarithm(
+                            value,
+                            exact_total,
+                            log_base=log_base,
+                        )
+                    converted_row[column] = exact_by_value[value]
         if not np.isfinite(converted_row).all():
             raise ValueError("CP10k transformation did not remain finite")
         converted[index] = converted_row
     return converted
 
 
-def _certified_cp10k_log2(row: np.ndarray, column: int) -> float | None:
-    """Certify log1p(CP10k)/ln(2) in one binary64 rounding cell."""
+def _certified_cp10k_logarithm_row(
+    row: np.ndarray,
+    *,
+    log_base: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Certify a complete CP10k row with one vectorized wider evaluation."""
 
     wide_info = np.finfo(np.longdouble)
     float_info = np.finfo(np.float64)
     if wide_info.nmant <= float_info.nmant:
-        return None
-    wide_row = np.asarray(row, dtype=np.longdouble)
+        return np.zeros_like(row), row == 0.0
+    wide_row = np.array(
+        row,
+        dtype=np.longdouble,
+        copy=True,
+        order="C",
+        subok=False,
+    )
     with np.errstate(under="ignore"):
         total = np.sum(wide_row, dtype=np.longdouble)
-        term = wide_row[column] * np.longdouble(10_000.0) / total
-        logged = np.log1p(term) / np.log(np.longdouble(2.0))
+        term = wide_row * np.longdouble(10_000.0) / total
+        logged = np.log1p(term)
+        if log_base == 2:
+            logged /= np.log(np.longdouble(2.0))
+        elif log_base != 1:  # pragma: no cover - private programming error
+            raise AssertionError(log_base)
         reduction_depth = max(
             1,
             math.ceil(math.log2(max(1, row.size))),
@@ -263,13 +277,16 @@ def _certified_cp10k_log2(row: np.ndarray, column: int) -> float | None:
         error = (
             error_factor
             * np.longdouble(wide_info.eps)
-            * max(abs(logged), np.longdouble(1.0))
+            * np.maximum(np.abs(logged), np.longdouble(1.0))
         )
         lower = np.nextafter(logged - error, -np.longdouble(np.inf))
         upper = np.nextafter(logged + error, np.longdouble(np.inf))
-    lower_float = float(lower)
-    upper_float = float(upper)
-    return lower_float if lower_float == upper_float else None
+    lower_float = np.asarray(lower, dtype=np.float64)
+    upper_float = np.asarray(upper, dtype=np.float64)
+    resolved = lower_float == upper_float
+    resolved[row == 0.0] = True
+    lower_float[row == 0.0] = 0.0
+    return lower_float, resolved
 
 
 def _exact_cp10k_logarithm(
