@@ -832,6 +832,62 @@ def test_pairwise_fallback_adapts_precision_until_exact_rounding_cell(
     )
 
 
+@pytest.mark.parametrize("mode", ["public", "wide", "portable", "exact"])
+def test_pairwise_multi_pair_aggregate_preserves_directed_exact_intervals(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    imputed = np.array(
+        [
+            [float.fromhex("0x1.8ecc7264f6276p+121")],
+            [-float.fromhex("0x1.383f3bcd87dbcp-909")],
+            [-float.fromhex("0x1.ca4f67501e1fep-552")],
+            [float.fromhex("0x1.5099d43e38ca0p+442")],
+            [-float.fromhex("0x1.f62e49f24be23p+993")],
+        ]
+    )
+    truth = np.array(
+        [
+            [float.fromhex("0x1.900f16e38b25ep-323")],
+            [-float.fromhex("0x1.f1de940c28ed1p+373")],
+            [float.fromhex("0x1.1868c7d6e8f8ep+995")],
+            [-float.fromhex("0x1.0bfb0c99da4a6p+88")],
+            [-float.fromhex("0x1.2aa460a8d435bp-711")],
+        ]
+    )
+    n_pairs = 10
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            if mode == "public":
+                result = metrics_module._pairwise_distance_distortion(imputed, truth)
+            elif mode == "wide":
+                result = metrics_module._wide_pairwise_distance_distortion(
+                    imputed,
+                    truth,
+                    n_pairs,
+                )
+            elif mode == "portable":
+                result = metrics_module._portable_pairwise_distance_distortion(
+                    imputed,
+                    truth,
+                    n_pairs,
+                )
+            else:
+                result = metrics_module._exact_pairwise_distance_distortion(
+                    imputed,
+                    truth,
+                    n_pairs,
+                )
+
+    assert result == MetricValue(
+        float.fromhex("0x1.128ba744285dcp+994"),
+        n_pairs,
+        None,
+    )
+
+
 def test_pairwise_identity_returns_zero_without_exact_fallback_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1711,6 +1767,31 @@ def test_extreme_calibration_optimizer_failure_is_reason_coded_under_strict_stat
     assert result["brier"].reason is None
     assert result["log_loss"].reason is None
     assert len(result["reliability_bins"]) == 2
+
+
+def test_zero_scores_localize_brier_underflow_under_strict_state() -> None:
+    probability = np.array([[np.nextafter(0.0, np.inf), np.nextafter(1.0, 0.0)]])
+    observed = np.zeros((1, 2))
+    truth = np.array([[1.0, 0.0]])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with np.errstate(all="raise"):
+            result = zero_score_metrics(probability, observed, truth)
+
+    assert result["brier"] == MetricValue(float.fromhex("0x1p-107"), 2, None)
+    assert result["log_loss"].reason is None
+    assert result["ece"].reason is None
+    assert result["calibration_intercept"] == MetricValue(
+        None,
+        2,
+        "calibration_fit_failed",
+    )
+    assert result["calibration_slope"] == MetricValue(
+        None,
+        2,
+        "calibration_fit_failed",
+    )
 
 
 def test_average_rank_auroc_and_average_precision_handle_mixed_tie() -> None:

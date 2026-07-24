@@ -920,11 +920,16 @@ and orthogonal evidence is reconstructed independently from typed authority.
 | F-055 | Important | Exact identity still sent a 100-by-48 extreme matrix through pair generation and 4,950 exact norm-difference calls before returning zero. | Pairwise distance had no exact identity dispatch before its ordinary and fallback arithmetic. | Closed test-first. After the pair denominator is established, exact array identity returns available zero before any distance or exact helper work. The public evaluator has already converted and mask-validated both operands, so the shortcut does not invoke an input protocol or bypass the approved dense boundary. The 100-by-48 extreme fixture makes zero exact helper calls; existing identity checks for mean and all other public reconstruction endpoints remain available and exact. |
 | F-056 | Important | Under a caller `np.errstate(all="raise")`, probabilities `[minimum subnormal, nextafter(1, 0)]` leaked `FloatingPointError` from calibration instead of returning a complete score row with reason-coded `calibration_fit_failed` coefficients. | The numerically stable sigmoid intentionally permits an exponential to underflow to zero, and IRLS weight/information products can intentionally underflow, but both inherited the caller's floating-point policy. | Closed test-first. Underflow is ignored only around the sign-split sigmoid exponential and the IRLS weight/information products where zero is the limiting mathematical value. Other floating-point signals retain their strict behavior, the singular optimizer enters the existing reason-coded failure path, and Brier, log loss, reliability, and the complete score record remain available without a warning or exception. |
 | F-057 | Important | Three technical-view effects `[DBL_MAX, -DBL_MAX, 2^-52]` collapsed to zero before biological-draw inference; their exact mean is `0x1.5555555555555p-54`. The observed median, every bootstrap replicate, and both interval endpoints therefore lost a representable residual. | `_finite_mean` divided every input by the largest magnitude before summation, which underflowed the small residual before the maximum terms cancelled. Some input orders also make `math.fsum` raise on an intermediate even when exact cancellation leaves a representable raw sum. | Closed test-first. Stable aggregation first attempts raw `math.fsum`, uses exact binary-rational cancellation when that sum is finite or an intermediate overflow may conceal a representable raw total, and uses the established scaled fallback only when the exact raw sum is truly unrepresentable. The public three-view result retains the exact median, bootstrap distribution, and interval values under strict caller state; probability and win/tie/loss semantics remain unchanged. A 256-fixture randomized order/exponent oracle and ordinary equality controls pass. |
+| F-058 | Important | A five-cell, one-gene pairwise fixture returned `0x1.128ba744285dbp+994` instead of the whole-estimand result `0x1.128ba744285dcp+994` in public, wider, portable, and nominally exact modes. | Every exact pair was individually certified, replaced by a Decimal midpoint, and only then summed. Per-pair float-cell certification did not certify the rounding cell of their completed mean. | Closed test-first. Directed lower and upper pair endpoints now survive exact accumulation and combination with wider or portable approximate bounds. If those complete endpoints do not occupy one binary64 cell, precision doubles over the whole bounded-memory endpoint; pair midpoints are not summed. Existing zero-exact-call, refinement-count, runtime, and memory regressions remain green. |
+| F-059 | Important | Under strict caller floating-point state, the reviewed two-entry probability row aborted while squaring the minimum-subnormal Brier residual, then again in the calibration gradient. The representable Brier result is `0x1p-107` with denominator two, while calibration must be reason-coded `calibration_fit_failed`. | Expected limiting underflow was localized for the sigmoid and information matrix but not for Brier squaring or the IRLS gradient product. | Closed test-first. Brier ignores underflow only while forming bounded squared residuals and exact-recomputes the completed mean when a nonzero residual is lost. The calibration gradient joins the already narrow underflow-localized IRLS operations. Brier, log loss, ECE, and reliability complete; calibration retains its declared failure reason. |
+| F-060 | Important | Stable means with an unrepresentable raw sum rounded twice: every permutation of `[DBL_MAX, DBL_MAX, 0]` returned `0x1.5555555555554p+1023` instead of `0x1.5555555555555p+1023`. The mean and even median of `DBL_MAX` and its predecessor rounded upward to `DBL_MAX` instead of ties-to-even `0x1.ffffffffffffep+1023`. | The remaining overflow path divided scaled binary64 inputs and multiplied the rounded normalized mean by the scale. | Closed test-first by retaining exact binary-rational inputs through the completed sum and division, then converting once. This is the same exact route already used for ordinary and cancellation means, so established exactly rounded ordinary values are unchanged. A 100,000-fixture signed exponent/order audit found zero mean or median oracle mismatches. |
+| F-061 | Important | Paired relative effects could round the subtraction or ratio before the completed estimand. The reviewed finite pair returned one ULP low instead of `-0x1.fffe840932394p-1`. | Same-sign and opposite-sign branches used different staged float64 formulas, neither of which guaranteed one rounding of `(method-comparator)/abs(comparator)`. | Closed test-first with exact binary-rational subtraction and division followed by one float64 conversion. Positive and negative comparator directions, zero method, zero comparator exclusion, exact ties, nonrepresentable effects, and 100,000 randomized signed finite pairs retain their declared policies with zero oracle mismatches. |
+| F-062 | Important | Overflow-safe quantile interpolation and sample variance still double-rounded completed estimands. The reviewed 2.5% quantile was one ULP low and the reviewed three-value sample variance was one ULP high. | Quantiles interpolated scaled rounded endpoints; sample variance rounded the normalized mean, centered squares, normalized variance, and restored scale separately. | Closed test-first. Linear interpolation now retains exact binary-rational endpoints and its float64 interpolation weight through one final conversion. Sample variance retains the exact centered sum and degrees-of-freedom division through one final conversion, returning `None` only for positive underflow or overflow as before. Strict-state endpoints, exact zero, unrepresentable variance, and 100,000 randomized quantile and variance oracles pass. |
 | O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
 
 No unresolved metric-domain, statistical-independence, evaluation-row,
 external-reference, manifest, or pre-zero evidence defect was demonstrated
-after F-025 through F-057. Legacy runtime-lock, filesystem-hardening, and
+after F-025 through F-062. Legacy runtime-lock, filesystem-hardening, and
 outer-provenance mechanisms were not redesigned or extended.
 
 ### Task 5 test-first and verification evidence
@@ -1427,6 +1432,50 @@ The single final correctly sanitized five-file Task 5 suite reported:
 
 No production or test file changed after those static gates or the final
 five-file suite; only this ledger evidence and the ignored fix-10 report
+followed.
+
+An eleventh independent numerical review then demonstrated F-058 through
+F-062. The exact focused pre-change invocation produced thirteen expected
+failures: all four pairwise modes, the strict Brier/calibration row, three
+unrepresentable-sum mean permutations, the extreme even mean/median, the
+reviewed relative effect and randomized signed oracle, and the reviewed
+quantile and sample-variance endpoints. After correcting the five owning
+arithmetic boundaries, the post-format focused set reported:
+
+```text
+13 passed in 0.44s
+```
+
+The complete metric and statistics owning files, including the existing
+pairwise exact-call, runtime, and traced-memory bounds, then reported:
+
+```text
+155 passed in 12.82s
+```
+
+Four independent 100,000-fixture signed exponent audits compared mean/median,
+relative effect, quantile, and sample variance against exact binary-rational
+oracles. Each reported zero mismatches; their elapsed times were respectively
+9.386, 5.598, 6.986, and 15.443 seconds.
+
+Formatting and scoped static gates completed before the one authoritative
+suite:
+
+```text
+Ruff check: All checks passed
+Ruff format --check: 4 files already formatted
+Scoped compileall: exit 0
+git diff --check: exit 0
+```
+
+The single final correctly sanitized five-file Task 5 suite reported:
+
+```text
+418 passed, 1 skipped in 983.96s (0:16:23)
+```
+
+No production or test file changed after those static gates or the final
+five-file suite; only this ledger evidence and the ignored fix-11 report
 followed.
 
 These checks establish bounded-fixture evaluation contracts only. No real

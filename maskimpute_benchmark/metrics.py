@@ -270,6 +270,57 @@ def _decimal_add_exact(left: Decimal, right: Decimal) -> Decimal:
         return left + right
 
 
+def _decimal_multiply_exact(left: Decimal, right: Decimal) -> Decimal:
+    """Multiply two finite Decimals without context re-rounding."""
+
+    if left == 0 or right == 0:
+        return Decimal()
+    precision = len(left.as_tuple().digits) + len(right.as_tuple().digits) + 2
+    with localcontext() as context:
+        context.prec = precision
+        return left * right
+
+
+def _metric_from_directed_decimal_totals(
+    lower_total: Decimal,
+    upper_total: Decimal,
+    denominator: int,
+) -> MetricValue | None:
+    """Certify the mean of outward Decimal totals without midpoint rounding."""
+
+    if denominator <= 0:  # pragma: no cover - private programming invariant
+        raise AssertionError(denominator)
+    precision = 120
+    while precision <= 15_360:
+        with localcontext() as context:
+            context.prec = precision
+            context.rounding = ROUND_FLOOR
+            lower_mean = lower_total / Decimal(denominator)
+            context.rounding = ROUND_CEILING
+            upper_mean = upper_total / Decimal(denominator)
+        metric = _metric_if_interval_rounds_together(
+            lower_mean,
+            upper_mean,
+            denominator,
+        )
+        if metric is not None:
+            return metric
+        # Additional division precision cannot close an interval whose exact
+        # endpoints already straddle two float cells.
+        if (
+            precision
+            >= max(
+                len(lower_total.as_tuple().digits),
+                len(upper_total.as_tuple().digits),
+            )
+            + len(str(denominator))
+            + 8
+        ):
+            return None
+        precision *= 2
+    return None
+
+
 def _decimal_divide_adaptive(value: Decimal, denominator: int) -> Decimal:
     """Divide a nonnegative Decimal once its binary64 rounding cell is known."""
 
@@ -562,7 +613,8 @@ def _euclidean_norm_difference_decimal(
     imputed_right: np.ndarray,
     truth_left: np.ndarray,
     truth_right: np.ndarray,
-) -> Decimal:
+    directed_precision: int | None = None,
+) -> Decimal | tuple[Decimal, Decimal]:
     """Compute ``abs(||u|| - ||v||)`` before either norm is rounded."""
 
     imputed_difference = [
@@ -578,6 +630,8 @@ def _euclidean_norm_difference_decimal(
         default=Fraction(),
     )
     if common_scale == 0:
+        if directed_precision is not None:
+            return Decimal(), Decimal()
         return Decimal()
 
     imputed_scaled = [value / common_scale for value in imputed_difference]
@@ -596,6 +650,8 @@ def _euclidean_norm_difference_decimal(
         )
     )
     if squared_norm_difference == 0:
+        if directed_precision is not None:
+            return Decimal(), Decimal()
         return Decimal()
     imputed_squared_norm = sum(
         (value * value for value in imputed_scaled),
@@ -605,7 +661,7 @@ def _euclidean_norm_difference_decimal(
         (value * value for value in truth_scaled),
         start=Fraction(),
     )
-    precision = 120
+    precision = 120 if directed_precision is None else directed_precision
     while precision <= 7_680:
         with localcontext() as context:
             context.prec = precision
@@ -653,6 +709,8 @@ def _euclidean_norm_difference_decimal(
             context.rounding = ROUND_CEILING
             upper = scale_upper * numerator_upper / denominator_lower
 
+            if directed_precision is not None:
+                return lower, upper
             lower_float = float(lower)
             upper_float = float(upper)
             if lower_float == upper_float:
@@ -669,22 +727,33 @@ def _exact_pairwise_distance_distortion(
 ) -> MetricValue:
     """Portable bounded-memory evaluation when no wider NumPy type exists."""
 
-    with localcontext() as context:
-        context.prec = 120 + len(str(n_pairs))
-        total = Decimal()
+    precision = 120 + len(str(n_pairs))
+    while precision <= 7_680:
+        lower_total = Decimal()
+        upper_total = Decimal()
         for first in range(truth.shape[0] - 1):
             for second in range(first + 1, truth.shape[0]):
-                total = _decimal_add_exact(
-                    total,
-                    _euclidean_norm_difference_decimal(
-                        imputed[second],
-                        imputed[first],
-                        truth[second],
-                        truth[first],
-                    ),
+                interval = _euclidean_norm_difference_decimal(
+                    imputed[second],
+                    imputed[first],
+                    truth[second],
+                    truth[first],
+                    precision,
                 )
-        mean_value = _decimal_divide_adaptive(total, n_pairs)
-    return _metric_from_high_precision(mean_value, n_pairs)
+                if not isinstance(interval, tuple):  # pragma: no cover
+                    raise AssertionError("directed pair interval was not returned")
+                lower, upper = interval
+                lower_total = _decimal_add_exact(lower_total, lower)
+                upper_total = _decimal_add_exact(upper_total, upper)
+        metric = _metric_from_directed_decimal_totals(
+            lower_total,
+            upper_total,
+            n_pairs,
+        )
+        if metric is not None:
+            return metric
+        precision *= 2
+    raise ArithmeticError("pairwise mean could not certify float rounding")
 
 
 def _float64_norm_difference_intervals(
@@ -877,7 +946,7 @@ def _portable_pairwise_interval(
     imputed_scaled: np.ndarray,
     truth_scaled: np.ndarray,
     common_scale: float,
-) -> tuple[Decimal, Decimal, Decimal, int, Decimal]:
+) -> tuple[Decimal, Decimal, Decimal, Decimal, int, Decimal]:
     """Stream aggregate pair bounds and exact cancellation-only contributions."""
 
     lower_total = 0.0
@@ -886,7 +955,9 @@ def _portable_pairwise_interval(
     upper_correction = 0.0
     fixed_total = Decimal()
     refinable_count = 0
-    exact_total = Decimal()
+    exact_lower_total = Decimal()
+    exact_upper_total = Decimal()
+    directed_precision = 120 + len(str(truth.shape[0]))
     for first, start, lower, upper, ambiguous in _portable_pairwise_blocks(
         imputed,
         truth,
@@ -920,14 +991,23 @@ def _portable_pairwise_interval(
             )
         for offset in np.flatnonzero(ambiguous):
             second = start + int(offset)
-            exact_total = _decimal_add_exact(
-                exact_total,
-                _euclidean_norm_difference_decimal(
-                    imputed[second],
-                    imputed[first],
-                    truth[second],
-                    truth[first],
-                ),
+            interval = _euclidean_norm_difference_decimal(
+                imputed[second],
+                imputed[first],
+                truth[second],
+                truth[first],
+                directed_precision,
+            )
+            if not isinstance(interval, tuple):  # pragma: no cover
+                raise AssertionError("directed pair interval was not returned")
+            exact_lower, exact_upper = interval
+            exact_lower_total = _decimal_add_exact(
+                exact_lower_total,
+                exact_lower,
+            )
+            exact_upper_total = _decimal_add_exact(
+                exact_upper_total,
+                exact_upper,
             )
 
     if lower_total == 0.0 and upper_total == 0.0:
@@ -941,7 +1021,14 @@ def _portable_pairwise_interval(
         )
         lower_bound += fixed_total
         upper_bound += fixed_total
-    return lower_bound, upper_bound, exact_total, refinable_count, fixed_total
+    return (
+        lower_bound,
+        upper_bound,
+        exact_lower_total,
+        exact_upper_total,
+        refinable_count,
+        fixed_total,
+    )
 
 
 def _portable_pairwise_refinement_candidates(
@@ -984,21 +1071,27 @@ def _portable_pairwise_refinement_candidates(
 def _portable_pairwise_certified_metric(
     lower_dimensionless: Decimal,
     upper_dimensionless: Decimal,
-    exact_total: Decimal,
+    exact_lower_total: Decimal,
+    exact_upper_total: Decimal,
     common_scale: float,
     n_pairs: int,
 ) -> MetricValue | None:
     """Certify one binary64 rounding cell from exact Decimal interval endpoints."""
 
-    if lower_dimensionless == 0 and upper_dimensionless == 0:
-        return _metric_from_high_precision(
-            _decimal_divide_adaptive(exact_total, n_pairs),
-            n_pairs,
-        )
     scale = Decimal.from_float(common_scale)
-    lower_mean = (exact_total + lower_dimensionless * scale) / Decimal(n_pairs)
-    upper_mean = (exact_total + upper_dimensionless * scale) / Decimal(n_pairs)
-    return _metric_if_interval_rounds_together(lower_mean, upper_mean, n_pairs)
+    lower_total = _decimal_add_exact(
+        exact_lower_total,
+        _decimal_multiply_exact(lower_dimensionless, scale),
+    )
+    upper_total = _decimal_add_exact(
+        exact_upper_total,
+        _decimal_multiply_exact(upper_dimensionless, scale),
+    )
+    return _metric_from_directed_decimal_totals(
+        lower_total,
+        upper_total,
+        n_pairs,
+    )
 
 
 def _portable_pairwise_distance_distortion(
@@ -1022,19 +1115,25 @@ def _portable_pairwise_distance_distortion(
 
     with localcontext() as context:
         context.prec = 120 + len(str(n_pairs))
-        lower_total, upper_total, exact_total, refinable_count, fixed_total = (
-            _portable_pairwise_interval(
-                imputed,
-                truth,
-                imputed_scaled,
-                truth_scaled,
-                common_scale,
-            )
+        (
+            lower_total,
+            upper_total,
+            exact_lower_total,
+            exact_upper_total,
+            refinable_count,
+            fixed_total,
+        ) = _portable_pairwise_interval(
+            imputed,
+            truth,
+            imputed_scaled,
+            truth_scaled,
+            common_scale,
         )
         metric = _portable_pairwise_certified_metric(
             lower_total,
             upper_total,
-            exact_total,
+            exact_lower_total,
+            exact_upper_total,
             common_scale,
             n_pairs,
         )
@@ -1056,13 +1155,24 @@ def _portable_pairwise_distance_distortion(
             for _, upper, first, second, lower in candidates[
                 start : start + _PAIRWISE_REFINEMENT_BATCH_SIZE
             ]:
-                exact = _euclidean_norm_difference_decimal(
+                interval = _euclidean_norm_difference_decimal(
                     imputed[second],
                     imputed[first],
                     truth[second],
                     truth[first],
+                    context.prec,
                 )
-                exact_total = _decimal_add_exact(exact_total, exact)
+                if not isinstance(interval, tuple):  # pragma: no cover
+                    raise AssertionError("directed pair interval was not returned")
+                exact_lower, exact_upper = interval
+                exact_lower_total = _decimal_add_exact(
+                    exact_lower_total,
+                    exact_lower,
+                )
+                exact_upper_total = _decimal_add_exact(
+                    exact_upper_total,
+                    exact_upper,
+                )
                 lower_total -= Decimal.from_float(lower)
                 upper_total -= Decimal.from_float(upper)
                 refined_count += 1
@@ -1075,7 +1185,8 @@ def _portable_pairwise_distance_distortion(
             metric = _portable_pairwise_certified_metric(
                 lower_total,
                 upper_total,
-                exact_total,
+                exact_lower_total,
+                exact_upper_total,
                 common_scale,
                 n_pairs,
             )
@@ -1102,7 +1213,8 @@ def _wide_pairwise_distance_distortion(
     upper_correction = np.longdouble(0.0)
     with localcontext() as context:
         context.prec = 120 + len(str(n_pairs))
-        exact_total = Decimal()
+        exact_lower_total = Decimal()
+        exact_upper_total = Decimal()
         for first in range(truth.shape[0] - 1):
             for start in range(
                 first + 1,
@@ -1142,14 +1254,23 @@ def _wide_pairwise_distance_distortion(
                         )
                 for offset in np.flatnonzero(ambiguous):
                     second = start + int(offset)
-                    exact_total = _decimal_add_exact(
-                        exact_total,
-                        _euclidean_norm_difference_decimal(
-                            imputed[second],
-                            imputed[first],
-                            truth[second],
-                            truth[first],
-                        ),
+                    interval = _euclidean_norm_difference_decimal(
+                        imputed[second],
+                        imputed[first],
+                        truth[second],
+                        truth[first],
+                        context.prec,
+                    )
+                    if not isinstance(interval, tuple):  # pragma: no cover
+                        raise AssertionError("directed pair interval was not returned")
+                    exact_lower, exact_upper = interval
+                    exact_lower_total = _decimal_add_exact(
+                        exact_lower_total,
+                        exact_lower,
+                    )
+                    exact_upper_total = _decimal_add_exact(
+                        exact_upper_total,
+                        exact_upper,
                     )
 
         lower_sum, upper_sum = _widen_accumulated_interval(
@@ -1162,27 +1283,21 @@ def _wide_pairwise_distance_distortion(
                 lower_total + lower_correction,
             ),
         )
-        if lower_sum == 0 and upper_sum == 0:
-            return _metric_from_high_precision(
-                _decimal_divide_adaptive(exact_total, n_pairs),
-                n_pairs,
-            )
-        lower_mean = (exact_total + _longdouble_to_decimal(lower_sum)) / Decimal(
-            n_pairs
+        combined_lower = _decimal_add_exact(
+            exact_lower_total,
+            _longdouble_to_decimal(lower_sum),
         )
-        upper_mean = (exact_total + _longdouble_to_decimal(upper_sum)) / Decimal(
-            n_pairs
+        combined_upper = _decimal_add_exact(
+            exact_upper_total,
+            _longdouble_to_decimal(upper_sum),
         )
-        lower_float = float(lower_mean)
-        upper_float = float(upper_mean)
-        if lower_float == upper_float:
-            if not math.isfinite(lower_float):
-                return _unavailable(n_pairs, "nonfinite_metric")
-            if lower_float == 0.0:
-                if exact_total > 0 or upper_sum > 0:
-                    return _unavailable(n_pairs, "nonfinite_metric")
-                return MetricValue(0.0, n_pairs, None)
-            return MetricValue(lower_float, n_pairs, None)
+        metric = _metric_from_directed_decimal_totals(
+            combined_lower,
+            combined_upper,
+            n_pairs,
+        )
+        if metric is not None:
+            return metric
 
     # The completed mean lies on a binary64 rounding boundary. Re-evaluate
     # incrementally rather than retaining an all-pair exact-value collection.
@@ -2175,8 +2290,8 @@ def _calibration_fit(
     converged = False
     for _ in range(100):
         fitted = _expit(design @ coefficient)
-        gradient = design.T @ (outcome - fitted)
         with np.errstate(under="ignore"):
+            gradient = design.T @ (outcome - fitted)
             weights = fitted * (1.0 - fitted)
             information = design.T @ (weights[:, None] * design)
         try:
@@ -2336,7 +2451,21 @@ def _score_selected(
         result["average_precision"] = _metric(
             _average_precision(probability, outcome), n
         )
-    result["brier"] = _metric(np.mean((probability - outcome) ** 2), n)
+    difference = probability - outcome
+    with np.errstate(under="ignore"):
+        squared_difference = difference**2
+        brier = np.mean(squared_difference)
+    if np.any((difference != 0.0) & (squared_difference == 0.0)):
+        result["brier"] = _metric_from_high_precision(
+            _exact_difference_power_mean(
+                probability,
+                outcome.astype(np.float64, copy=False),
+                power=2,
+            ),
+            n,
+        )
+    else:
+        result["brier"] = _metric(brier, n)
     epsilon = 1e-15
     log_probability = np.clip(probability, epsilon, 1.0 - epsilon)
     log_loss = -np.mean(

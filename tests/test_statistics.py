@@ -418,6 +418,119 @@ def test_stable_mean_matches_randomized_exact_cancellation_oracle() -> None:
     assert statistics_module._finite_mean((0.25, 0.5, 0.75)) == 0.5
 
 
+@pytest.mark.parametrize(
+    "values",
+    [
+        (
+            np.finfo(np.float64).max,
+            np.finfo(np.float64).max,
+            0.0,
+        ),
+        (
+            0.0,
+            np.finfo(np.float64).max,
+            np.finfo(np.float64).max,
+        ),
+        (
+            np.finfo(np.float64).max,
+            0.0,
+            np.finfo(np.float64).max,
+        ),
+    ],
+)
+def test_stable_mean_rounds_unrepresentable_raw_sum_once(
+    values: tuple[float, ...],
+) -> None:
+    assert statistics_module._finite_mean(values) == float.fromhex(
+        "0x1.5555555555555p+1023"
+    )
+
+
+def test_extreme_even_median_uses_exact_midpoint_rounding() -> None:
+    maximum = np.finfo(np.float64).max
+    predecessor = np.nextafter(maximum, 0.0)
+    expected = float.fromhex("0x1.ffffffffffffep+1023")
+
+    assert statistics_module._finite_mean((maximum, predecessor)) == expected
+    assert statistics_module._finite_median((maximum, predecessor)) == expected
+
+
+def test_relative_effect_rounds_exact_completed_ratio_once() -> None:
+    method = float.fromhex("0x1.3d0f1bd063a86p+410")
+    comparator = float.fromhex("0x1.ab3c569d16fc8p+426")
+
+    assert statistics_module._finite_relative_effect(
+        method,
+        comparator,
+    ) == float.fromhex("-0x1.fffe840932394p-1")
+
+
+def test_relative_effect_matches_fraction_oracle_for_signed_finite_inputs() -> None:
+    rng = np.random.default_rng(20260725)
+    for _ in range(512):
+        method, comparator = np.ldexp(
+            rng.uniform(0.5, 1.0, size=2) * rng.choice((-1.0, 1.0), size=2),
+            rng.integers(-1_000, 1_001, size=2),
+        )
+        expected_exact = (
+            Fraction.from_float(float(method)) - Fraction.from_float(float(comparator))
+        ) / abs(Fraction.from_float(float(comparator)))
+        try:
+            expected = float(expected_exact)
+        except OverflowError:
+            expected = None
+        if expected is not None and not math.isfinite(expected):
+            expected = None
+
+        assert (
+            statistics_module._finite_relative_effect(
+                float(method),
+                float(comparator),
+            )
+            == expected
+        )
+
+    assert statistics_module._finite_relative_effect(0.0, 1.0) == -1.0
+    assert statistics_module._finite_relative_effect(0.0, -1.0) == 1.0
+    assert statistics_module._finite_relative_effect(1.0, 0.0) is None
+    assert statistics_module._finite_relative_effect(-1.0, -1.0) == 0.0
+
+
+def test_quantile_rounds_exact_linear_interpolation_once() -> None:
+    lower = -float.fromhex("0x1.d260cc9b36f18p+832")
+    upper = float.fromhex("0x1.504bfc6ef5184p+832")
+
+    with np.errstate(all="raise"):
+        assert statistics_module._finite_quantile(
+            (lower, upper),
+            0.025,
+        ) == float.fromhex("-0x1.be4fadfaf5d7ap+832")
+        assert statistics_module._finite_quantile((lower, upper), 0.0) == lower
+        assert statistics_module._finite_quantile((lower, upper), 1.0) == upper
+
+
+def test_sample_variance_rounds_exact_centered_sum_once() -> None:
+    values = (
+        float.fromhex("0x1.5f053f4be0ed8p-84"),
+        float.fromhex("0x1.b13e869d54e42p+396"),
+        float.fromhex("0x1.f18b18d48b3f8p+452"),
+    )
+
+    with np.errstate(all="raise"):
+        assert statistics_module._finite_sample_variance(values) == float.fromhex(
+            "0x1.425475ff14a17p+904"
+        )
+        maximum = np.finfo(np.float64).max
+        assert statistics_module._finite_sample_variance((maximum, maximum)) == 0.0
+        assert statistics_module._finite_sample_variance((maximum, -maximum)) is None
+        assert (
+            statistics_module._finite_sample_variance(
+                (0.0, float.fromhex("0x0.0000000000001p-1022"))
+            )
+            is None
+        )
+
+
 def test_unrepresentable_variance_components_are_none_with_reason_counts() -> None:
     records = [
         _record("m", "draw", "view", "dataset", "within", 1, -1e308),

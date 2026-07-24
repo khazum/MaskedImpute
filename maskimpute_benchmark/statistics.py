@@ -263,45 +263,12 @@ def _finite_mean(values: Sequence[float]) -> float:
 
     if not values:
         raise ValueError("cannot average an empty sequence")
-    try:
-        raw_total = math.fsum(values)
-    except OverflowError:
-        raw_total = None
-    if raw_total is not None and math.isfinite(raw_total):
-        exact_total = sum(
-            (Fraction.from_float(value) for value in values),
-            start=Fraction(),
-        )
-        result = float(exact_total / len(values))
-        if math.isfinite(result):
-            return result
-    elif raw_total is None:
-        exact_total = sum(
-            (Fraction.from_float(value) for value in values),
-            start=Fraction(),
-        )
-        try:
-            exact_raw_total = float(exact_total)
-        except OverflowError:
-            exact_raw_total = math.inf
-        if math.isfinite(exact_raw_total):
-            result = float(exact_total / len(values))
-            if math.isfinite(result):
-                return result
-
-    # A genuinely unrepresentable raw sum can still have a representable mean.
-    # Scale only after raw compensated summation and exact cancellation have
-    # failed to produce a finite sum.
-    scale = max(abs(value) for value in values)
-    if scale == 0.0:
-        return 0.0
-    scaled = tuple(value / scale for value in values)
-    normalized = math.fsum(scaled) / len(scaled)
-    # A mean lies in its input range.  Clamping only corrects a possible final
-    # rounding ulp that could otherwise overflow when scale is DBL_MAX.
-    normalized = min(max(normalized, min(scaled)), max(scaled))
-    result = scale * normalized
-    if not math.isfinite(result):  # pragma: no cover - defensive invariant
+    exact_total = sum(
+        (Fraction.from_float(float(value)) for value in values),
+        start=Fraction(),
+    )
+    result = float(exact_total / len(values))
+    if not math.isfinite(result):  # pragma: no cover - a finite mean is bounded
         raise ArithmeticError("finite mean became non-finite")
     return result
 
@@ -311,18 +278,13 @@ def _finite_relative_effect(method_mean: float, comparator_mean: float) -> float
 
     if comparator_mean == 0.0:
         return None
-    same_sign = (method_mean >= 0.0 and comparator_mean > 0.0) or (
-        method_mean <= 0.0 and comparator_mean < 0.0
-    )
-    if same_sign:
-        # Same-sign subtraction cannot overflow and retains cancellation
-        # precision for nearly equal metric values.
-        effect = (method_mean - comparator_mean) / abs(comparator_mean)
-    else:
-        ratio = method_mean / abs(comparator_mean)
-        if not math.isfinite(ratio):
-            return None
-        effect = math.fsum((ratio, -math.copysign(1.0, comparator_mean)))
+    method_exact = Fraction.from_float(float(method_mean))
+    comparator_exact = Fraction.from_float(float(comparator_mean))
+    effect_exact = (method_exact - comparator_exact) / abs(comparator_exact)
+    try:
+        effect = float(effect_exact)
+    except OverflowError:
+        return None
     if not math.isfinite(effect):
         return None
     return effect
@@ -354,16 +316,12 @@ def _finite_quantile(values: Sequence[float], probability: float) -> float:
     if lower_index == upper_index or lower == upper:
         return lower
     upper_weight = position - lower_index
-    scale = max(abs(lower), abs(upper))
-    if scale == 0.0:
-        return 0.0
-    lower_scaled = lower / scale
-    upper_scaled = upper / scale
-    normalized = math.fsum(
-        ((1.0 - upper_weight) * lower_scaled, upper_weight * upper_scaled)
+    weight_exact = Fraction.from_float(float(upper_weight))
+    result = float(
+        Fraction.from_float(float(lower))
+        + (Fraction.from_float(float(upper)) - Fraction.from_float(float(lower)))
+        * weight_exact
     )
-    normalized = min(max(normalized, lower_scaled), upper_scaled)
-    result = scale * normalized
     if not math.isfinite(result):  # pragma: no cover - defensive invariant
         raise ArithmeticError("finite quantile became non-finite")
     return result
@@ -374,21 +332,16 @@ def _finite_sample_variance(values: Sequence[float]) -> float | None:
 
     if len(values) < 2:
         raise ValueError("sample variance requires at least two values")
-    scale = max(abs(value) for value in values)
-    if scale == 0.0:
+    exact_values = tuple(Fraction.from_float(float(value)) for value in values)
+    exact_mean = sum(exact_values, start=Fraction()) / len(exact_values)
+    exact_variance = sum(
+        ((value - exact_mean) ** 2 for value in exact_values),
+        start=Fraction(),
+    ) / (len(exact_values) - 1)
+    if exact_variance == 0:
         return 0.0
-    normalized = tuple(value / scale for value in values)
-    normalized_mean = _finite_mean(normalized)
-    variance_normalized = math.fsum(
-        (value - normalized_mean) ** 2 for value in normalized
-    ) / (len(normalized) - 1)
-    if variance_normalized == 0.0:
-        return 0.0
-    variance_mantissa, variance_exponent = math.frexp(variance_normalized)
-    scale_mantissa, scale_exponent = math.frexp(scale)
-    mantissa = variance_mantissa * scale_mantissa * scale_mantissa
     try:
-        result = math.ldexp(mantissa, variance_exponent + 2 * scale_exponent)
+        result = float(exact_variance)
     except OverflowError:
         return None
     if not math.isfinite(result) or result == 0.0:
