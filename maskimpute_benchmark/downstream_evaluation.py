@@ -341,11 +341,15 @@ class EndpointRecord:
         if not isinstance(self.procedure, str) or not self.procedure:
             raise ValueError("procedure must be nonempty")
         if self.status == "completed":
+            try:
+                finite_value = np.isfinite(float(self.value))
+            except (TypeError, ValueError, OverflowError):
+                finite_value = False
             if (
                 self.value is None
                 or isinstance(self.value, (bool, np.bool_))
                 or not isinstance(self.value, (int, float, np.integer, np.floating))
-                or not np.isfinite(float(self.value))
+                or not finite_value
             ):
                 raise ValueError("completed endpoint requires a finite numeric value")
             if self.reason is not None:
@@ -354,13 +358,17 @@ class EndpointRecord:
             raise ValueError("unavailable endpoint requires a fixed reason code")
         family_fields = (self.family_id, self.family_size, self.alpha)
         if any(value is not None for value in family_fields):
+            try:
+                valid_alpha = 0.0 < float(self.alpha) < 1.0
+            except (TypeError, ValueError, OverflowError):
+                valid_alpha = False
             if (
                 not isinstance(self.family_id, str)
                 or not self.family_id
                 or type(self.family_size) is not int
                 or self.family_size <= 0
                 or not isinstance(self.alpha, (int, float))
-                or not 0.0 < float(self.alpha) < 1.0
+                or not valid_alpha
             ):
                 raise ValueError("multiple-testing family metadata is incomplete")
 

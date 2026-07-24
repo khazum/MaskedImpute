@@ -47,7 +47,9 @@ def freeze_direct_mapping(
 
 def _thaw_direct_value(value: object) -> object:
     if isinstance(value, Mapping):
-        return {str(key): _thaw_direct_value(nested) for key, nested in value.items()}
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("direct value keys must be strings")
+        return {key: _thaw_direct_value(nested) for key, nested in value.items()}
     if isinstance(value, FrozenDirectObject):
         return {item[0]: _thaw_direct_value(item[1]) for item in value}
     if isinstance(value, FrozenDirectList):
@@ -78,7 +80,9 @@ def direct_json_value(value: object, *, payload: bool = False) -> object:
     if isinstance(value, tuple):
         return [direct_json_value(item) for item in value]
     if isinstance(value, Mapping):
-        return {str(key): direct_json_value(nested) for key, nested in value.items()}
+        if not all(isinstance(key, str) for key in value):
+            raise ValueError("direct value keys must be strings")
+        return {key: direct_json_value(nested) for key, nested in value.items()}
     return value
 
 

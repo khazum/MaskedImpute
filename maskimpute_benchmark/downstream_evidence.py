@@ -6210,12 +6210,17 @@ def _validate_endpoint_rows(
         ):
             raise DownstreamEvidenceError("downstream independent unit differs")
         value = row.get("value")
-        if value is not None and (
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not np.isfinite(float(value))
-        ):
-            raise DownstreamEvidenceError("downstream endpoint value is invalid")
+        if value is not None:
+            try:
+                finite_value = np.isfinite(float(value))
+            except (TypeError, ValueError, OverflowError):
+                finite_value = False
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not finite_value
+            ):
+                raise DownstreamEvidenceError("downstream endpoint value is invalid")
         _endpoint_record_from_row(row, entry)
         if entry.status == "completed":
             if row.get("status") not in {"completed", "unavailable"}:

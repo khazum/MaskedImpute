@@ -1620,3 +1620,50 @@ These checks establish authority and claim contracts over bounded fixtures.
 No real scientific or comparator workload ran, and no empirical
 competitiveness, external-runtime availability, or Genome Biology submission
 readiness claim is made.
+
+### Task 6 independent-acceptance corrections
+
+An independent acceptance review of Task 6 at
+`ec08b1f4c74b1224d57f9f71d63c0a650e301a52` demonstrated four additional
+important validation gaps.
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-073 | Important | The final manifest accepted `failed_count=False` because Boolean zero compared equal to integer zero. | Closed test-first by requiring exact integer types for every manifest count field. |
+| F-074 | Important | Typed final authorities and frozen applicability accepted arbitrary nonblank non-run reasons. | Closed test-first with the existing publication-freeze reason vocabulary enforced according to method/configuration disposition at constructors and receipt reconstruction. |
+| F-075 | Important | Recursive direct normalization silently changed a nested integer mapping key into text before freezing it. | Closed test-first by rejecting non-string mapping keys before direct serialization or thawing; valid immutable snapshots are unchanged. |
+| F-076 | Important | Huge positive or negative Python integers leaked `OverflowError` from direct endpoint and persisted endpoint validation. | Closed test-first with declared `ValueError` and `DownstreamEvidenceError` translation at the owning value/alpha and persisted-row boundaries. |
+
+The first focused acceptance set reported `9 failed, 3 passed in 71.36s`.
+The adjacent family-alpha case separately reported `2 failed in 2.01s`.
+After correction, the complete focused set reported
+`14 passed in 78.93s (0:01:18)`.
+
+Complete owning files reported:
+
+```text
+tests/test_downstream_evaluation.py: 48 passed in 2.38s
+tests/test_final_runner.py: 122 passed in 667.35s (0:11:07)
+tests/test_downstream_evidence.py: 149 passed in 82.26s (0:01:22)
+```
+
+The adjacent freeze, final-analysis, publication-synthesis, and
+development-evaluation files reported:
+
+```text
+266 passed in 2717.82s (0:45:17)
+```
+
+After formatting and static checks, the exact sanitized fifteen-file Task 6
+suite from the brief reported:
+
+```text
+843 passed in 6033.96s (1:40:33)
+```
+
+No production or test file changed during that execution. Only this ledger
+evidence and the matching Task 6 correction report were updated afterward.
+No selected method, final population, seed denominator, revision allowance,
+estimand, runtime behavior, or claim permission changed. No real scientific
+workload ran, and no new checksum, fingerprint, content-summary,
+filesystem-hardening, or cyber-related mechanism was added.

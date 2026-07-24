@@ -96,10 +96,42 @@ _FINAL_MATRIX_UNCOMPRESSED_NBYTES = 2_700 * 1_200 * 8
 _FINAL_PREZERO_MATRIX_UNCOMPRESSED_NBYTES = 2_700 * 1_200 * 8
 _FINAL_RECORD_OVERHEAD_BYTES = 1024 * 1024
 _FINAL_STORAGE_RESERVE_BYTES = 1024**3
+_TECHNICAL_UNAVAILABLE_REASON = "technical_unavailable_development_attempts"
+_TECHNICAL_UNAVAILABLE_REASON_CODE = re.compile(
+    rf"{_TECHNICAL_UNAVAILABLE_REASON}(?:_[0-9a-f]{{16}})?\Z"
+)
+_FIXED_FINAL_NON_RUN_REASON_BY_METHOD = MappingProxyType(
+    {
+        "scimpute": "historical_method_not_rerun",
+        "wedge": "historical_method_not_rerun",
+        "scgacl": "upstream_no_dataset_general_truth_free_configuration",
+        "sctacl": "upstream_incomplete_no_full_count_imputation_output",
+        "sczn": "upstream_not_packaged_as_callable_method",
+        "d3impute": "matched_bulk_reference_absent",
+        "sctsi": "matched_bulk_reference_absent",
+    }
+)
 
 
 class FinalRunnerContractError(ValueError):
     """Raised when frozen final execution authority is incomplete or changed."""
+
+
+def _is_canonical_final_non_run_reason(
+    method_id: str,
+    configuration_kind: str,
+    reason: object,
+) -> bool:
+    """Match the frozen disposition's existing closed non-run vocabulary."""
+
+    if not isinstance(reason, str):
+        return False
+    if configuration_kind == "comparator_nonexecution":
+        return reason == _TECHNICAL_UNAVAILABLE_REASON
+    expected = _FIXED_FINAL_NON_RUN_REASON_BY_METHOD.get(method_id)
+    if expected is not None:
+        return reason == expected
+    return _TECHNICAL_UNAVAILABLE_REASON_CODE.fullmatch(reason) is not None
 
 
 def _zlib_compress_bound(uncompressed_nbytes: int) -> int:
@@ -136,8 +168,11 @@ def validate_final_manifest_payload(
         or payload.get("schema_version") != 1
         or payload.get("namespace") != "final"
         or payload.get("status") != "completed"
+        or type(payload.get("independent_unit_count")) is not int
         or payload.get("independent_unit_count") != 20
+        or type(payload.get("completed_count")) is not int
         or payload.get("completed_count") != 40
+        or type(payload.get("failed_count")) is not int
         or payload.get("failed_count") != 0
         or not isinstance(payload.get("execution_claim_id"), str)
         or not payload.get("execution_claim_id")
@@ -1297,9 +1332,15 @@ class FinalPlanEntry:
                 "executable final entry has a non-run reason"
             )
         if self.action == "not_applicable" and (
-            not isinstance(self.reason, str) or not self.reason.strip()
+            not _is_canonical_final_non_run_reason(
+                self.run.method_id,
+                self.run.configuration_kind,
+                self.reason,
+            )
         ):
-            raise FinalRunnerContractError("non-run final entry lacks an exact reason")
+            raise FinalRunnerContractError(
+                "non-run final entry has a noncanonical reason"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {"run": self.run.to_dict(), "action": self.action, "reason": self.reason}
@@ -1359,10 +1400,14 @@ class FrozenPlanMethodAuthority:
                 "executable frozen method authority has a reason"
             )
         if self.action == "not_applicable" and (
-            not isinstance(self.reason, str) or not self.reason.strip()
+            not _is_canonical_final_non_run_reason(
+                self.method_id,
+                self.kind,
+                self.reason,
+            )
         ):
             raise FinalRunnerContractError(
-                "nonexecution frozen method authority lacks a reason"
+                "nonexecution frozen method authority has a noncanonical reason"
             )
         if (
             type(self.seeds) is not tuple
@@ -4569,6 +4614,22 @@ def _frozen_final_applicability(
     raw_reason = applicability.get("non_run_reason")
     if not isinstance(raw_reason, str) or not raw_reason:
         raise FinalRunnerContractError(f"method {spec.id} lacks a final non-run reason")
+    if configuration_kind == "comparator_nonexecution":
+        reason_matches_disposition = raw_reason == _TECHNICAL_UNAVAILABLE_REASON
+    elif spec.execution_scope == "historical_not_run":
+        reason_matches_disposition = raw_reason == "historical_method_not_rerun"
+    elif spec.execution_scope == "external_reference_only":
+        reason_matches_disposition = raw_reason == "matched_bulk_reference_absent"
+    elif spec.execution_scope == "not_applicable":
+        reason_matches_disposition = raw_reason == spec.applicability_reason
+    else:
+        reason_matches_disposition = (
+            _TECHNICAL_UNAVAILABLE_REASON_CODE.fullmatch(raw_reason) is not None
+        )
+    if not reason_matches_disposition:
+        raise FinalRunnerContractError(
+            f"method {spec.id} final non-run reason differs from its disposition"
+        )
     if rule == "never":
         if applicability.get("required_reference") is not None:
             raise FinalRunnerContractError(

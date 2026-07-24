@@ -1502,7 +1502,7 @@ def _trajectory_source(
         trajectory_binding_sha256="8" * 64,
     )
     _candidate, configuration = _test_configuration_authority()
-    reason = "matched_bulk_reference_unavailable"
+    reason = "technical_unavailable_development_attempts"
     run_plan = RunPlanEntry(
         ordinal=1,
         run_id="trajectory-fixture-run",
@@ -3422,7 +3422,9 @@ def test_trajectory_scope_emits_one_reason_coded_endpoint_and_exact_counts(
     assert endpoints[0]["endpoint"] == "trajectory_pseudotime_rank_loss"
     assert endpoints[0]["status"] == "unavailable"
     assert endpoints[0]["reason_code"] == "upstream_run_not_completed"
-    assert endpoints[0]["upstream_reason"] == "matched_bulk_reference_unavailable"
+    assert (
+        endpoints[0]["upstream_reason"] == "technical_unavailable_development_attempts"
+    )
 
 
 def test_completed_trajectory_scope_evaluates_only_the_direct_trajectory_endpoint(
@@ -3506,6 +3508,57 @@ def test_completed_trajectory_scope_evaluates_only_the_direct_trajectory_endpoin
         "trajectory_pseudotime_rank_loss"
     ]
     assert record["endpoints"][0]["value"] == 0.25
+
+
+@pytest.mark.parametrize("value", (10**1000, -(10**1000)))
+def test_persisted_downstream_endpoint_translates_unrepresentable_python_integers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    value: int,
+) -> None:
+    from dataclasses import replace
+
+    import maskimpute_benchmark.downstream_evidence as downstream
+    from maskimpute_benchmark.downstream_evaluation import EndpointRecord
+
+    source, dataset, configuration, source_plan, fixture = _trajectory_source(tmp_path)
+    monkeypatch.setattr(
+        downstream, "_validate_evaluated_round_binding", lambda _binding: None
+    )
+    monkeypatch.setattr(downstream, "_read_bound_dataset", lambda _binding: None)
+    plan = downstream._build_downstream_evidence_plan(
+        source,
+        source_kind="final",
+        evidence_scope="supplementary_trajectory",
+        datasets=(dataset,),
+        configurations=(configuration,),
+        evaluated_round_binding=fixture["evaluated_round_binding"],
+        source_plan=source_plan,
+    )
+    entry = replace(plan.entries[0], status="completed", reason=None)
+    endpoint = EndpointRecord(
+        endpoint="trajectory_pseudotime_rank_loss",
+        value=0.25,
+        status="completed",
+        reason=None,
+        direction="lower_is_better",
+        independent_unit="biological_draw",
+        independent_n=1,
+        descriptive_n=6,
+        descriptive_unit="trajectory_cells",
+        procedure=(
+            "root_oriented_multiscale_diffusion_log2_cp10k_plus_1_full_svd_"
+            "blockwise_exact_knn=floor_sqrt_n_capped_15_sparse_eigsh_modes=15"
+        ),
+    )
+    row = downstream._endpoint_row(plan, entry, endpoint)
+    row["value"] = value
+
+    with pytest.raises(
+        downstream.DownstreamEvidenceError,
+        match="endpoint value is invalid",
+    ):
+        downstream._validate_endpoint_rows([row], plan, entry)
 
 
 def test_completed_trajectory_scope_reason_codes_expected_numeric_failure(

@@ -962,6 +962,51 @@ def test_endpoint_schema_rejects_boolean_count_and_completed_value() -> None:
         )
 
 
+@pytest.mark.parametrize("value", (10**1000, -(10**1000)))
+def test_endpoint_schema_translates_unrepresentable_python_integers(
+    value: int,
+) -> None:
+    from maskimpute_benchmark.downstream_evaluation import EndpointRecord
+
+    with pytest.raises(ValueError, match="finite numeric value"):
+        EndpointRecord(
+            endpoint="marker_rank_loss",
+            value=value,
+            status="completed",
+            reason=None,
+            direction="lower_is_better",
+            independent_unit="biological_draw",
+            independent_n=1,
+            descriptive_n=1,
+            descriptive_unit="truth_markers",
+            procedure="fixed-test-procedure",
+        )
+
+
+@pytest.mark.parametrize("alpha", (10**1000, -(10**1000)))
+def test_endpoint_schema_translates_unrepresentable_integer_alpha(
+    alpha: int,
+) -> None:
+    from maskimpute_benchmark.downstream_evaluation import EndpointRecord
+
+    with pytest.raises(ValueError, match="family metadata"):
+        EndpointRecord(
+            endpoint="positive_de_marker_recall",
+            value=0.5,
+            status="completed",
+            reason=None,
+            direction="higher_is_better",
+            independent_unit="biological_draw",
+            independent_n=1,
+            descriptive_n=1,
+            descriptive_unit="truth_markers",
+            procedure="fixed-test-procedure",
+            family_id="one_vs_rest_all_groups_all_genes",
+            family_size=2,
+            alpha=alpha,
+        )
+
+
 def test_clustering_partition_and_model_selection_are_truth_free() -> None:
     from maskimpute_benchmark.downstream_evaluation import (
         evaluator_targets_from_dataset,

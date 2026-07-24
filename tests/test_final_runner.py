@@ -406,7 +406,7 @@ def test_final_plan_rejects_selected_comparator_nonrun_disposition_drift() -> No
     magic["integration_status"] = "unavailable"
     magic["final_applicability"] = {
         "rule": "never",
-        "non_run_reason": "selected_comparator_unavailable",
+        "non_run_reason": "technical_unavailable_development_attempts",
         "required_reference": None,
     }
     unsigned = {key: value for key, value in frozen.items() if key != "payload_sha256"}
@@ -439,7 +439,7 @@ def test_full_production_final_plan_enforces_1480_280_action_split() -> None:
     observed["integration_status"] = "unavailable"
     observed["final_applicability"] = {
         "rule": "never",
-        "non_run_reason": "production_split_drift",
+        "non_run_reason": "technical_unavailable_development_attempts",
         "required_reference": None,
     }
     unsigned = {key: value for key, value in frozen.items() if key != "payload_sha256"}
@@ -751,14 +751,23 @@ def test_final_manifest_requires_exact_40_dataset_unseen_panel() -> None:
     assert len({item.independent_unit_id for item in observed}) == 20
 
 
-def test_final_manifest_rejects_boolean_schema_version() -> None:
+@pytest.mark.parametrize(
+    "field",
+    (
+        "schema_version",
+        "independent_unit_count",
+        "completed_count",
+        "failed_count",
+    ),
+)
+def test_final_manifest_rejects_boolean_integer_fields(field: str) -> None:
     from maskimpute_benchmark.final_runner import (
         FinalRunnerContractError,
         validate_final_manifest_payload,
     )
 
     payload = _status_payload(_bindings())
-    payload["schema_version"] = True
+    payload[field] = bool(payload[field])
     unsigned = {
         key: value for key, value in payload.items() if key != "manifest_sha256"
     }
@@ -892,6 +901,110 @@ def test_frozen_nonexecution_authority_snapshots_nested_direct_values() -> None:
     assert authority.to_dict()["comparator_nonexecution_identity"] == {
         "nested": {"reasons": ["technical_unavailable"]}
     }
+
+
+def test_final_typed_authorities_reject_noncanonical_nonrun_reasons() -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    plan = build_final_execution_plan(
+        _direct_frozen_method(unavailable_method="biaeimpute"),
+        _full_registry(),
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    for method_id in ("scimpute", "d3impute", "scgacl", "biaeimpute"):
+        entry = next(
+            value for value in plan.entries if value.run.method_id == method_id
+        )
+        authority = next(
+            value for value in plan.configurations if value.method_id == method_id
+        )
+        assert entry.action == authority.action == "not_applicable"
+        with pytest.raises(FinalRunnerContractError, match="reason"):
+            replace(entry, reason="invented_non_run_reason")
+        with pytest.raises(FinalRunnerContractError, match="reason"):
+            replace(authority, reason="invented_non_run_reason")
+
+
+@pytest.mark.parametrize("method_id", ("scgacl", "biaeimpute"))
+def test_frozen_receipt_rejects_noncanonical_nonrun_reasons(
+    method_id: str,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    frozen = _direct_frozen_method(
+        unavailable_method="biaeimpute" if method_id == "biaeimpute" else None
+    )
+    row = next(
+        value for value in frozen["method_denominator"] if value["id"] == method_id
+    )
+    row["final_applicability"]["non_run_reason"] = "invented_non_run_reason"
+    unsigned = {key: value for key, value in frozen.items() if key != "payload_sha256"}
+    frozen["payload_sha256"] = canonical_sha256(unsigned)
+
+    with pytest.raises(FinalRunnerContractError, match="reason|disposition"):
+        build_final_execution_plan(
+            frozen,
+            _full_registry(),
+            _bindings(),
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            execution_authority_sha256="9" * 64,
+        )
+
+
+def test_direct_authorities_reject_nested_nonstring_mapping_keys() -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        FrozenPlanMethodAuthority,
+        build_final_execution_plan,
+    )
+    from maskimpute_benchmark.runner import RunnerContractError
+
+    invalid = {"nested": {1: "must-not-be-stringified"}}
+    with pytest.raises(FinalRunnerContractError, match="nonexecution authority"):
+        FrozenPlanMethodAuthority(
+            method_id="biaeimpute",
+            legacy_configuration=None,
+            comparator_configuration=None,
+            comparator_nonexecution_identity=invalid,
+            action="not_applicable",
+            reason="technical_unavailable_development_attempts",
+            seeds=(42, 43, 44),
+        )
+
+    plan = build_final_execution_plan(
+        _direct_frozen_method(unavailable_method="biaeimpute"),
+        _full_registry(),
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    run = next(
+        value.run for value in plan.entries if value.run.method_id == "biaeimpute"
+    )
+    serialized = run.to_dict()
+    serialized["comparator_nonexecution_identity"] = invalid
+    with pytest.raises(RunnerContractError, match="nonexecution plan identity"):
+        replace(
+            run,
+            comparator_nonexecution_identity=(
+                serialized["comparator_nonexecution_identity"]
+            ),
+        )
 
 
 def test_trajectory_plan_is_exactly_one_registered_supplementary_denominator(
@@ -2243,10 +2356,14 @@ def test_final_plan_rejects_unbound_matched_bulk_applicability() -> None:
         build_final_execution_plan,
     )
 
-    registry = _registry()
+    source = load_method_registry(METHODS)
+    registry = MethodRegistry(
+        schema_version=1,
+        methods=(source.by_id("d3impute"),),
+    )
     receipt = _receipt(registry)
     row = next(
-        value for value in receipt["method_denominator"] if value["id"] == "magic"
+        value for value in receipt["method_denominator"] if value["id"] == "d3impute"
     )
     row["final_applicability"] = {
         "rule": "matched_bulk_reference_present",
