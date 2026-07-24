@@ -50,6 +50,151 @@ def test_method_output_rejects_malformed_truth_free_values(
         MethodOutput(values=values, cell_ids=cell_ids, gene_ids=gene_ids)
 
 
+@pytest.mark.parametrize(
+    "boundary",
+    ["method_output", "heldout_counts", "trajectory", "group_markers"],
+)
+def test_downstream_numeric_authorities_reject_masked_values(boundary: str) -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        EvaluatorTargets,
+        MethodOutput,
+        TrajectoryTruth,
+    )
+
+    masked_matrix = np.ma.array(
+        [[1.0, 2.0], [3.0, 4.0]],
+        mask=[[False, True], [False, False]],
+    )
+    with pytest.raises(TypeError, match="masked"):
+        if boundary == "method_output":
+            MethodOutput(
+                values=masked_matrix,
+                cell_ids=("c1", "c2"),
+                gene_ids=("g1", "g2"),
+            )
+        elif boundary == "trajectory":
+            TrajectoryTruth(
+                pseudotime=np.ma.array(
+                    [0.0, 1.0],
+                    mask=[False, True],
+                ),
+                cell_ids=("c1", "c2"),
+                root_cell_id="c1",
+                source_id="genuine-fixture",
+            )
+        else:
+            EvaluatorTargets(
+                cell_ids=("c1", "c2"),
+                gene_ids=("g1", "g2"),
+                group_labels=(("a", "b") if boundary == "group_markers" else None),
+                group_labels_reason=(
+                    None if boundary == "group_markers" else "labels_unavailable"
+                ),
+                group_markers=(
+                    {
+                        "a": np.ma.array([True, False], mask=[False, True]),
+                        "b": np.asarray([False, True]),
+                    }
+                    if boundary == "group_markers"
+                    else None
+                ),
+                group_markers_reason=(
+                    None if boundary == "group_markers" else "markers_unavailable"
+                ),
+                heldout_counts=(
+                    masked_matrix if boundary == "heldout_counts" else None
+                ),
+                heldout_reason=(
+                    None
+                    if boundary == "heldout_counts"
+                    else "heldout_counts_unavailable"
+                ),
+                trajectory=None,
+                trajectory_reason="trajectory_unavailable",
+            )
+
+
+def test_method_output_rejects_masked_sparse_storage() -> None:
+    from scipy import sparse
+
+    from maskimpute_benchmark.downstream_evaluation import MethodOutput
+
+    values = sparse.csr_matrix(np.asarray([[1.0, 0.0], [0.0, 2.0]]))
+    values.data = np.ma.array(
+        values.data,
+        mask=np.asarray([False, True]),
+    )
+
+    with pytest.raises(TypeError, match="masked"):
+        MethodOutput(
+            values=values,
+            cell_ids=("c1", "c2"),
+            gene_ids=("g1", "g2"),
+        )
+
+
+def test_downstream_float64_narrowing_uses_declared_value_error() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        MethodOutput,
+        TrajectoryTruth,
+    )
+
+    extended = np.asarray(
+        [[np.longdouble(np.finfo(np.float64).max) * np.longdouble(2.0)]],
+        dtype=np.longdouble,
+    )
+
+    with np.errstate(all="raise"), pytest.raises(ValueError, match="float64"):
+        MethodOutput(values=extended, cell_ids=("c1",), gene_ids=("g1",))
+    with np.errstate(all="raise"), pytest.raises(ValueError, match="float64"):
+        TrajectoryTruth(
+            pseudotime=extended.ravel(),
+            cell_ids=("c1",),
+            root_cell_id="c1",
+            source_id="fixture",
+        )
+
+
+def test_heldout_endpoint_normalizes_extreme_representable_rows() -> None:
+    from maskimpute_benchmark.downstream_evaluation import (
+        EvaluatorTargets,
+        MethodOutput,
+        evaluate_heldout_endpoints,
+    )
+    from maskimpute_benchmark.methods.observed import (
+        count_equivalent_to_log2_cp10k,
+    )
+
+    maximum = np.finfo(np.float64).max
+    heldout = np.asarray([[maximum, maximum], [maximum, 0.0]])
+    expected = count_equivalent_to_log2_cp10k(heldout)
+    output = MethodOutput(
+        values=expected,
+        cell_ids=("c1", "c2"),
+        gene_ids=("g1", "g2"),
+    )
+    targets = EvaluatorTargets(
+        cell_ids=("c1", "c2"),
+        gene_ids=("g1", "g2"),
+        group_labels=None,
+        group_labels_reason="labels_unavailable",
+        group_markers=None,
+        group_markers_reason="markers_unavailable",
+        heldout_counts=heldout,
+        heldout_reason=None,
+        trajectory=None,
+        trajectory_reason="trajectory_unavailable",
+    )
+
+    with np.errstate(all="raise"):
+        gene, cell = evaluate_heldout_endpoints(output, targets)
+
+    assert gene.status == "completed"
+    assert cell.status == "completed"
+    assert gene.value is not None and gene.value <= np.finfo(np.float64).eps
+    assert cell.value is not None and cell.value <= np.finfo(np.float64).eps
+
+
 def _simulator_dataset(
     mechanism: str,
     groups: tuple[str, ...],
@@ -786,6 +931,35 @@ def test_endpoint_schema_rejects_ad_hoc_names_directions_units_and_reasons() -> 
     ):
         with pytest.raises(ValueError, match=message):
             EndpointRecord(**{**valid, field: invalid})
+
+
+def test_endpoint_schema_rejects_boolean_count_and_completed_value() -> None:
+    from maskimpute_benchmark.downstream_evaluation import EndpointRecord
+
+    unavailable = {
+        "endpoint": "marker_rank_loss",
+        "value": None,
+        "status": "unavailable",
+        "reason": "group_specific_marker_truth_unavailable",
+        "direction": "lower_is_better",
+        "independent_unit": "biological_draw",
+        "independent_n": 1,
+        "descriptive_n": 0,
+        "descriptive_unit": "truth_markers",
+        "procedure": "fixed-test-procedure",
+    }
+    with pytest.raises(ValueError, match="independent_n"):
+        EndpointRecord(**{**unavailable, "independent_n": True})
+
+    with pytest.raises(ValueError, match="finite numeric value"):
+        EndpointRecord(
+            **{
+                **unavailable,
+                "value": True,
+                "status": "completed",
+                "reason": None,
+            }
+        )
 
 
 def test_clustering_partition_and_model_selection_are_truth_free() -> None:

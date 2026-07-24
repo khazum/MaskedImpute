@@ -1038,6 +1038,35 @@ def _rewrite_scaling_checkpoint(path: Path, mutate) -> None:
     )
 
 
+@pytest.mark.parametrize("boundary", ("checkpoint", "dataset_receipt"))
+def test_scaling_store_rejects_boolean_schema_versions(
+    tmp_path: Path,
+    boundary: str,
+) -> None:
+    from maskimpute_benchmark.protocol import canonical_sha256
+    from maskimpute_benchmark.scaling import ScalingContractError, ScalingResultStore
+
+    plan = _plan()
+    store = ScalingResultStore(tmp_path, plan)
+    store.append_dataset(_dataset_receipt(tmp_path))
+
+    def mutate(payload: dict[str, object]) -> None:
+        if boundary == "checkpoint":
+            payload["schema_version"] = True
+            return
+        receipt = payload["datasets"][0]
+        receipt["schema_version"] = True
+        unsigned = {
+            key: value for key, value in receipt.items() if key != "receipt_sha256"
+        }
+        receipt["receipt_sha256"] = canonical_sha256(unsigned)
+
+    _rewrite_scaling_checkpoint(store.checkpoint_path, mutate)
+
+    with pytest.raises(ScalingContractError, match="checkpoint|dataset receipt"):
+        ScalingResultStore(tmp_path, plan).load()
+
+
 def test_scaling_store_rejects_rehashed_seed_authority_drift(tmp_path: Path) -> None:
     from maskimpute_benchmark.protocol import canonical_sha256
     from maskimpute_benchmark.scaling import (
@@ -1509,31 +1538,30 @@ def test_scaling_store_serializes_two_cached_writers(
         cells=10_000,
         accuracy_enabled=True,
     )
-    first_staged = Event()
+    first_ready_to_publish = Event()
     release_first = Event()
     second_entered_transaction = Event()
-    first_prepare = first_store._prepare_run_transaction
+    first_publish = first_store._publish_run_transaction
     second_prepare = second_store._prepare_run_transaction
 
-    def hold_first(entry):
-        transaction = first_prepare(entry)
-        first_staged.set()
+    def hold_first(stage, final):
+        first_ready_to_publish.set()
         if not release_first.wait(timeout=10):
             raise AssertionError("first writer was not released")
-        return transaction
+        return first_publish(stage, final)
 
     def observe_second(entry):
         second_entered_transaction.set()
         return second_prepare(entry)
 
-    monkeypatch.setattr(first_store, "_prepare_run_transaction", hold_first)
+    monkeypatch.setattr(first_store, "_publish_run_transaction", hold_first)
     monkeypatch.setattr(second_store, "_prepare_run_transaction", observe_second)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first_future = pool.submit(
             first_store.append_attempt, plan.entries[0], first_record
         )
-        assert first_staged.wait(timeout=10)
+        assert first_ready_to_publish.wait(timeout=120)
         second_future = pool.submit(
             second_store.append_attempt, plan.entries[0], second_record
         )

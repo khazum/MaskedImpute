@@ -6205,6 +6205,7 @@ def _validate_endpoint_rows(
             raise DownstreamEvidenceError("downstream endpoint identity differs")
         if (
             row.get("independent_unit") != "biological_draw"
+            or type(row.get("independent_n")) is not int
             or row.get("independent_n") != 1
         ):
             raise DownstreamEvidenceError("downstream independent unit differs")

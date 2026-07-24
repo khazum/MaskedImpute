@@ -1532,3 +1532,91 @@ report followed.
 These checks establish bounded-fixture evaluation contracts only. No real
 scientific or comparator workload ran, and no empirical competitiveness,
 external-runtime availability, or publication-readiness claim is made.
+
+## Task 6 selection, revision, freeze, and post-freeze authority audit
+
+Task 6 began from clean commit
+`dbd766618e2b62b6c7a0295036ff8e02b9699dc0`. It traced direct-comparator
+evidence through selection, promotion, bounded revision, freeze, final
+planning, trajectory and downstream evaluation, scaling, final analysis, and
+publication synthesis. Fixed scheduled and numerical populations, revision
+limits, final seed denominators, one-use lifecycle, unavailable-estimand
+suppression, confidence direction, and multiplicity permissions remain
+unchanged.
+
+No development selector was found to consume final performance, downstream
+endpoints, final data, or post-freeze results. After the corrections below, no
+additional reachable selection, revision, execution, or claim-permission
+bypass remained.
+
+### Task 6 findings
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-066 | Important | Dense and sparse masked values could cross downstream method-output, held-out truth, trajectory, and group-marker boundaries after coercion erased missingness. | Closed test-first by rejecting masked containers before coercion, including sparse stored data. |
+| F-067 | Important | Finite extended-precision method or trajectory values outside float64 range leaked `FloatingPointError` rather than the declared validation failure. | Closed by strict local narrowing with stable `ValueError` translation and no clipping. |
+| F-068 | Important | Direct held-out CP10k normalization overflowed on extreme finite rows even when the normalized output was representable. | Closed by using the reviewed count-equivalent conversion for nonzero rows while preserving zero rows. |
+| F-069 | Important | Typed final authorities admitted unknown action text and incompletely constrained method IDs, seed denominators, and nonexecution reasons. | Closed by enforcing the exact two-action vocabulary, safe IDs, exact unique seed tuples, and nonblank reasons. |
+| F-070 | Important | Selected direct evidence and frozen comparator nonexecution mappings were only shallow snapshots and remained mutable through caller-owned nested values. | Closed by recursively normalizing and detaching nested direct values before exposing immutable mappings. |
+| F-071 | Important | Boolean values could impersonate integer schema versions, downstream independent counts, and completed endpoint values. | Closed with exact integer schema/count checks and explicit Python/NumPy Boolean value rejection. Existing frozen-publication reconstruction was separately confirmed fail-closed. |
+| F-072 | Minor | The two-writer scaling regression coupled its lock assertion to large-artifact write and replay speed, producing a 20-second timeout while the process was CPU-bound. | Closed in the test by pausing at the already-validated publish boundary. Cross-instance serialization and stale-prefix rejection remain unchanged; no production lock behavior changed. |
+
+### Task 6 verification
+
+The initial focused mutation set reported:
+
+```text
+10 failed in 27.65s
+```
+
+After the owning corrections, the same set reported:
+
+```text
+10 passed in 27.66s
+```
+
+Adjacent RED/GREEN review separately covered Boolean endpoint count/value,
+nested selected-map mutation, Boolean frozen final-plan receipt, trajectory
+narrowing, and Boolean scaling checkpoint/dataset-receipt schemas. The complete
+downstream evaluation owning file reported:
+
+```text
+43 passed in 2.17s
+```
+
+The first authoritative 15-file run reported:
+
+```text
+1 failed, 829 passed in 7096.09s (1:58:16)
+```
+
+Its sole failure was F-072. The same node reproduced independently at the same
+future deadline:
+
+```text
+1 failed in 133.94s (0:02:13)
+```
+
+After the test-only pause-point correction, the isolated node reported:
+
+```text
+1 passed in 183.04s (0:03:03)
+```
+
+Scoped Ruff lint and format checking, byte compilation, and
+`git diff --check` all exited zero before the new clean final-state suite. The
+sanitized 15-file authority and post-freeze suite then reported:
+
+```text
+830 passed in 7065.83s (1:57:45)
+```
+
+No production or test file changed during or after that final suite; only this
+ledger evidence and the ignored Task 6 report followed. The fixed populations,
+estimands, revision allowance, execution lifecycle, runtime lock, legacy outer
+provenance, and existing content-validation mechanisms were not redesigned.
+
+These checks establish authority and claim contracts over bounded fixtures.
+No real scientific or comparator workload ran, and no empirical
+competitiveness, external-runtime availability, or Genome Biology submission
+readiness claim is made.

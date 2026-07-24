@@ -85,7 +85,7 @@ def project_direct_comparator_evidence(
         validate_comparator_selection_object,
         validate_comparator_tuning_authority,
     )
-    from .direct_values import direct_equal, direct_json_value
+    from .direct_values import direct_equal, direct_json_value, freeze_direct_mapping
     from .fair_comparator_checkpoint import DirectCheckpointStore
     from .fair_comparator_plan import (
         DirectCompetitionPlan,
@@ -214,7 +214,7 @@ def project_direct_comparator_evidence(
         plan_snapshot=report.plan_snapshot,
         input_descriptors=report.input_descriptors,
         records=report.records,
-        selected_by_method=MappingProxyType(dict(selected)),
+        selected_by_method=MappingProxyType(dict(freeze_direct_mapping(selected))),
         comparator_receipt_bytes=comparator_projection.receipt_bytes,
     )
 

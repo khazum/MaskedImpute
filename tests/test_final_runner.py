@@ -751,6 +751,23 @@ def test_final_manifest_requires_exact_40_dataset_unseen_panel() -> None:
     assert len({item.independent_unit_id for item in observed}) == 20
 
 
+def test_final_manifest_rejects_boolean_schema_version() -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        validate_final_manifest_payload,
+    )
+
+    payload = _status_payload(_bindings())
+    payload["schema_version"] = True
+    unsigned = {
+        key: value for key, value in payload.items() if key != "manifest_sha256"
+    }
+    payload["manifest_sha256"] = canonical_sha256(unsigned)
+
+    with pytest.raises(FinalRunnerContractError, match="40-dataset"):
+        validate_final_manifest_payload(payload)
+
+
 def test_final_manifest_rejects_missing_view_even_with_rehashed_manifest() -> None:
     from maskimpute_benchmark.final_runner import (
         FinalRunnerContractError,
@@ -796,6 +813,85 @@ def test_final_plan_uses_three_fixed_seeds_and_retains_nonrun_denominator() -> N
         "historical_method_not_rerun"
     }
     assert len(plan.plan_sha256) == 64
+
+
+def test_final_plan_rejects_boolean_frozen_method_schema_version() -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    receipt = _receipt(registry)
+    receipt["schema_version"] = True
+    unsigned = {key: value for key, value in receipt.items() if key != "payload_sha256"}
+    receipt["payload_sha256"] = canonical_sha256(unsigned)
+
+    with pytest.raises(FinalRunnerContractError, match="frozen method receipt"):
+        build_final_execution_plan(
+            receipt,
+            registry,
+            _bindings(),
+            execution_claim_sha256="7" * 64,
+            execution_environment_sha256="8" * 64,
+            execution_authority_sha256="9" * 64,
+        )
+
+
+def test_final_typed_authorities_reject_unknown_actions() -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalPlanEntry,
+        FinalRunnerContractError,
+        FrozenPlanMethodAuthority,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    plan = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    entry = plan.entries[0]
+    authority = plan.configurations[0]
+
+    with pytest.raises(FinalRunnerContractError, match="action"):
+        FinalPlanEntry(run=entry.run, action="execute_anyway", reason=None)
+    with pytest.raises(FinalRunnerContractError, match="action"):
+        FrozenPlanMethodAuthority(
+            method_id=authority.method_id,
+            legacy_configuration=authority.legacy_configuration,
+            comparator_configuration=authority.comparator_configuration,
+            comparator_nonexecution_identity=(
+                authority.comparator_nonexecution_identity
+            ),
+            action="execute_anyway",
+            reason=None,
+            seeds=authority.seeds,
+        )
+
+
+def test_frozen_nonexecution_authority_snapshots_nested_direct_values() -> None:
+    from maskimpute_benchmark.final_runner import FrozenPlanMethodAuthority
+
+    source = {"nested": {"reasons": ["technical_unavailable"]}}
+    authority = FrozenPlanMethodAuthority(
+        method_id="dca",
+        legacy_configuration=None,
+        comparator_configuration=None,
+        comparator_nonexecution_identity=source,
+        action="not_applicable",
+        reason="technical_unavailable_development_attempts",
+        seeds=(None,),
+    )
+    source["nested"]["reasons"][0] = "mutated"
+
+    assert authority.to_dict()["comparator_nonexecution_identity"] == {
+        "nested": {"reasons": ["technical_unavailable"]}
+    }
 
 
 def test_trajectory_plan_is_exactly_one_registered_supplementary_denominator(

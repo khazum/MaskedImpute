@@ -15,6 +15,8 @@ import numpy as np
 from scipy import sparse
 from scipy import stats
 
+from maskimpute.sparse_input import _unmasked_array, contains_masked_array
+
 
 CLUSTERING_SEED = 20_260_716
 CLUSTERING_N_INIT = 20
@@ -113,16 +115,28 @@ def _stable_ids(values: object, name: str) -> tuple[str, ...]:
 
 def _dense_float_matrix(value: object, name: str) -> np.ndarray:
     if sparse.issparse(value):
+        if contains_masked_array(value):
+            raise TypeError(f"{name} must not contain masked arrays")
         array = value.toarray()
     else:
-        array = np.asarray(value)
+        array = _unmasked_array(value, name)
     if array.ndim != 2:
         raise ValueError(f"{name} must be two-dimensional")
     if array.shape[0] == 0 or array.shape[1] == 0:
         raise ValueError(f"{name} must be nonempty")
     if array.dtype.kind not in {"b", "i", "u", "f"}:
         raise TypeError(f"{name} must be a real numeric matrix")
-    result = np.array(array, dtype=np.float64, copy=True)
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            result = np.array(
+                array,
+                dtype=np.float64,
+                copy=True,
+                order="C",
+                subok=False,
+            )
+    except FloatingPointError as error:
+        raise ValueError(f"{name} must be representable as float64") from error
     if not np.all(np.isfinite(result)):
         raise ValueError(f"{name} must contain only finite values")
     if np.any(result < 0.0):
@@ -168,12 +182,16 @@ class TrajectoryTruth:
 
     def __post_init__(self) -> None:
         cell_ids = _stable_ids(self.cell_ids, "trajectory cell_ids")
-        pseudotime = np.asarray(self.pseudotime)
+        pseudotime = _unmasked_array(self.pseudotime, "pseudotime")
         if pseudotime.ndim != 1 or pseudotime.size != len(cell_ids):
             raise ValueError("pseudotime must have one value per trajectory cell")
         if pseudotime.dtype.kind not in {"i", "u", "f"}:
             raise TypeError("pseudotime must be real numeric")
-        values = np.array(pseudotime, dtype=np.float64, copy=True)
+        try:
+            with np.errstate(over="raise", invalid="raise"):
+                values = np.array(pseudotime, dtype=np.float64, copy=True)
+        except FloatingPointError as error:
+            raise ValueError("pseudotime must be representable as float64") from error
         if not np.all(np.isfinite(values)):
             raise ValueError("pseudotime must contain only finite values")
         if not isinstance(self.root_cell_id, str) or self.root_cell_id not in cell_ids:
@@ -241,7 +259,10 @@ class EvaluatorTargets:
                 )
             markers: dict[str, np.ndarray] = {}
             for group in sorted(expected_groups):
-                mask = np.asarray(self.group_markers[group])
+                mask = _unmasked_array(
+                    self.group_markers[group],
+                    f"group marker mask {group}",
+                )
                 if mask.ndim != 1 or mask.size != len(gene_ids):
                     raise ValueError(
                         "each group marker mask must have one value per gene"
@@ -307,8 +328,12 @@ class EndpointRecord:
         ]
         if self.direction != expected_direction:
             raise ValueError("endpoint direction contradicts the fixed schema")
-        if self.independent_unit != "biological_draw" or self.independent_n != 1:
-            raise ValueError("each endpoint record must represent one biological draw")
+        if (
+            self.independent_unit != "biological_draw"
+            or type(self.independent_n) is not int
+            or self.independent_n != 1
+        ):
+            raise ValueError("independent_n must be exactly one biological_draw")
         if type(self.descriptive_n) is not int or self.descriptive_n < 0:
             raise ValueError("descriptive_n must be a nonnegative integer")
         if self.descriptive_unit != expected_descriptive_unit:
@@ -316,8 +341,13 @@ class EndpointRecord:
         if not isinstance(self.procedure, str) or not self.procedure:
             raise ValueError("procedure must be nonempty")
         if self.status == "completed":
-            if self.value is None or not np.isfinite(float(self.value)):
-                raise ValueError("completed endpoint requires a finite value")
+            if (
+                self.value is None
+                or isinstance(self.value, (bool, np.bool_))
+                or not isinstance(self.value, (int, float, np.integer, np.floating))
+                or not np.isfinite(float(self.value))
+            ):
+                raise ValueError("completed endpoint requires a finite numeric value")
             if self.reason is not None:
                 raise ValueError("completed endpoint cannot have a reason")
         elif self.value is not None or self.reason not in ENDPOINT_REASON_CODES:
@@ -443,14 +473,21 @@ def _aligned_evaluator_arrays(
 
 
 def _counts_to_log2_cp10k(values: np.ndarray) -> np.ndarray:
-    library_size = np.sum(values, axis=1, dtype=np.float64)
-    scale = np.divide(
-        10_000.0,
-        library_size,
-        out=np.zeros_like(library_size),
-        where=library_size > 0.0,
-    )
-    return np.log2(values * scale[:, None] + 1.0)
+    from .methods.observed import count_equivalent_to_log2_cp10k
+
+    nonzero = np.any(values != 0.0, axis=1)
+    result = np.zeros_like(values, dtype=np.float64)
+    if np.any(nonzero):
+        result[nonzero] = count_equivalent_to_log2_cp10k(
+            np.array(
+                values[nonzero],
+                dtype=np.float64,
+                copy=True,
+                order="C",
+                subok=False,
+            )
+        )
+    return result
 
 
 @dataclass(frozen=True, slots=True)

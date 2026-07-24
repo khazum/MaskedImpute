@@ -29,7 +29,7 @@ from .comparator_tuning import (
     comparator_selection_projection,
     comparator_selection_projection_value,
 )
-from .direct_values import direct_equal, direct_json_value
+from .direct_values import direct_equal, direct_json_value, freeze_direct_mapping
 from .methods.registry import MethodRegistry
 from .prezero_evidence import (
     PREZERO_STORAGE_COMPRESSION_LEVEL,
@@ -132,7 +132,8 @@ def validate_final_manifest_payload(
         key: value for key, value in payload.items() if key != "manifest_sha256"
     }
     if (
-        payload.get("schema_version") != 1
+        type(payload.get("schema_version")) is not int
+        or payload.get("schema_version") != 1
         or payload.get("namespace") != "final"
         or payload.get("status") != "completed"
         or payload.get("independent_unit_count") != 20
@@ -1289,12 +1290,14 @@ class FinalPlanEntry:
     reason: str | None
 
     def __post_init__(self) -> None:
+        if self.action not in {"execute", "not_applicable"}:
+            raise FinalRunnerContractError("final entry action is invalid")
         if self.action == "execute" and self.reason is not None:
             raise FinalRunnerContractError(
                 "executable final entry has a non-run reason"
             )
         if self.action == "not_applicable" and (
-            not isinstance(self.reason, str) or not self.reason
+            not isinstance(self.reason, str) or not self.reason.strip()
         ):
             raise FinalRunnerContractError("non-run final entry lacks an exact reason")
 
@@ -1324,8 +1327,13 @@ class FrozenPlanMethodAuthority:
             raise FinalRunnerContractError(
                 "frozen method configuration authority is not exclusive"
             )
-        if not isinstance(self.method_id, str) or not self.method_id:
+        if (
+            not isinstance(self.method_id, str)
+            or _SAFE_ID.fullmatch(self.method_id) is None
+        ):
             raise FinalRunnerContractError("frozen method authority ID is invalid")
+        if self.action not in {"execute", "not_applicable"}:
+            raise FinalRunnerContractError("frozen method authority action is invalid")
         if self.legacy_configuration is not None and (
             self.legacy_configuration.method_id != self.method_id
         ):
@@ -1351,16 +1359,39 @@ class FrozenPlanMethodAuthority:
                 "executable frozen method authority has a reason"
             )
         if self.action == "not_applicable" and (
-            not isinstance(self.reason, str) or not self.reason
+            not isinstance(self.reason, str) or not self.reason.strip()
         ):
             raise FinalRunnerContractError(
                 "nonexecution frozen method authority lacks a reason"
             )
-        if not self.seeds or any(
-            seed is not None and (type(seed) is not int or seed < 0)
-            for seed in self.seeds
+        if (
+            type(self.seeds) is not tuple
+            or not self.seeds
+            or any(
+                seed is not None and (type(seed) is not int or seed < 0)
+                for seed in self.seeds
+            )
+            or len(self.seeds) != len(set(self.seeds))
         ):
             raise FinalRunnerContractError("frozen method seed denominator is invalid")
+        if self.comparator_nonexecution_identity is not None:
+            try:
+                normalized = direct_json_value(
+                    self.comparator_nonexecution_identity,
+                    payload=True,
+                )
+                if not isinstance(normalized, Mapping):
+                    raise ValueError("nonexecution authority is not an object")
+                frozen = MappingProxyType(dict(freeze_direct_mapping(normalized)))
+            except ValueError as error:
+                raise FinalRunnerContractError(
+                    "frozen comparator nonexecution authority is invalid"
+                ) from error
+            object.__setattr__(
+                self,
+                "comparator_nonexecution_identity",
+                frozen,
+            )
 
     @property
     def configuration_id(self) -> str:
@@ -4385,7 +4416,8 @@ def _frozen_method_plan_authority(
         key: value for key, value in frozen_method.items() if key != "payload_sha256"
     }
     if (
-        frozen_method.get("schema_version") != 1
+        type(frozen_method.get("schema_version")) is not int
+        or frozen_method.get("schema_version") != 1
         or frozen_method.get("candidate_method_id") != "maskimpute"
         or frozen_method.get("payload_sha256") != canonical_sha256(unsigned)
     ):

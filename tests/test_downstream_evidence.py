@@ -2622,6 +2622,7 @@ def test_resume_rejects_rehashed_finite_endpoint_value_drift(tmp_path: Path) -> 
     [
         ("direction", "endpoint contract differs"),
         ("independent_count", "independent unit differs"),
+        ("boolean_independent_count", "independent unit differs"),
         ("descriptive_unit", "endpoint contract differs"),
         ("reason_vocabulary", "endpoint contract differs"),
         ("procedure", "endpoint procedure differs"),
@@ -2655,6 +2656,8 @@ def test_resume_reconstructs_and_validates_endpoint_contract(
         row["direction"] = "higher_is_better"
     elif attack == "independent_count":
         row["independent_n"] = 2
+    elif attack == "boolean_independent_count":
+        row["independent_n"] = True
     elif attack == "descriptive_unit":
         row["descriptive_unit"] = "cells"
     elif attack == "reason_vocabulary":

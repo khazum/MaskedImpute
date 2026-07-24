@@ -601,6 +601,7 @@ def test_direct_checkpoint_and_receipt_complete_selected_map_handoff(
         DirectReconstructionEvidence,
         project_direct_comparator_evidence,
     )
+    from maskimpute_benchmark.direct_values import direct_equal
 
     (
         repository,
@@ -630,11 +631,22 @@ def test_direct_checkpoint_and_receipt_complete_selected_map_handoff(
     assert evidence.identity_mode == "direct-v1"
     assert len(evidence.plan_snapshot["entries"]) == 2_896
     assert len(evidence.records) == 2_896
-    assert evidence.selected_by_method == comparator_selection["selected_by_method"]
+    assert direct_equal(
+        evidence.selected_by_method,
+        comparator_selection["selected_by_method"],
+    )
     assert (
         evidence.comparator_receipt_bytes
         == (repository / str(comparator_selection["path"])).read_bytes()
     )
+    selected = comparator_selection["selected_by_method"]
+    assert isinstance(selected, dict)
+    method_id = next(iter(selected))
+    selected_row = selected[method_id]
+    assert isinstance(selected_row, dict)
+    selected_row["forged_after_validation"] = True
+    evidence_row = evidence.selected_by_method[method_id]
+    assert "forged_after_validation" not in evidence_row
 
 
 def test_direct_reconstruction_marks_unretained_null_de_output_unavailable(

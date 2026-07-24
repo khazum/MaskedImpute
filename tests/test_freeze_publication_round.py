@@ -1387,6 +1387,14 @@ def test_prepare_and_validate_frozen_method_recompute_fixed_evidence(
             (repository / "environments/development-runtime.lock.json").read_bytes()
         ).hexdigest()
     )
+    changed = deepcopy(prepared)
+    changed["schema_version"] = True
+    unsigned = {key: value for key, value in changed.items() if key != "payload_sha256"}
+    changed["payload_sha256"] = canonical_sha256(unsigned)
+    _write_json(output, changed)
+
+    with pytest.raises(PublicationFreezeError, match="commit-bound"):
+        validate_frozen_method(repository)
 
 
 def test_frozen_payload_rejects_comparator_receipt_and_selected_payload_tamper(

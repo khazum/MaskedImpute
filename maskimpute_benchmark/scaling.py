@@ -1903,7 +1903,8 @@ class ScalingResultStore:
             raise ScalingContractError("scaling dataset receipt fields are not closed")
         unsigned = {key: item for key, item in value.items() if key != "receipt_sha256"}
         if (
-            value.get("schema_version") != 1
+            type(value.get("schema_version")) is not int
+            or value.get("schema_version") != 1
             or value.get("cells") != expected_cells
             or value.get("genes") != 500
             or value.get("namespace") != f"scaling-{expected_cells}"
@@ -2936,6 +2937,7 @@ class ScalingResultStore:
             not isinstance(payload, dict)
             or set(payload) != _CHECKPOINT_KEYS
             or raw != _canonical_bytes(payload) + b"\n"
+            or type(payload.get("schema_version")) is not int
             or payload.get("schema_version") != 1
             or payload.get("plan_sha256") != self.plan.plan_sha256
             or payload.get("input_hashes") != dict(self.plan.input_hashes)
