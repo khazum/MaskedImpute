@@ -63,9 +63,11 @@ class MetricValue:
         if self.n < 0:
             raise ValueError("n must be non-negative")
         if self.value is None:
-            if not isinstance(self.reason, str) or not self.reason:
+            if not isinstance(self.reason, str) or not self.reason.strip():
                 raise ValueError("an unavailable metric requires a reason")
             return
+        if isinstance(self.value, (bool, np.bool_)):
+            raise TypeError("value must be numeric or None")
         if not isinstance(self.value, (int, float, np.integer, np.floating)):
             raise TypeError("value must be numeric or None")
         if not np.isfinite(float(self.value)):
@@ -194,13 +196,28 @@ def _decimal_sqrt_mean(
 ) -> Decimal:
     """Evaluate a nonnegative square-root mean with directed rounding."""
 
+    if rounding not in {ROUND_FLOOR, ROUND_CEILING}:  # pragma: no cover
+        raise AssertionError(rounding)
     with localcontext() as context:
         context.prec = precision
         context.rounding = rounding
         total = Decimal()
         for value in squared_values:
+            if value < 0:  # pragma: no cover - private programming invariant
+                raise AssertionError(value)
             radicand = Decimal(value.numerator) / Decimal(value.denominator)
-            total += radicand.sqrt()
+            if radicand == 0:
+                root = Decimal()
+            else:
+                # Decimal.sqrt always rounds half-even, regardless of the
+                # context's rounding mode. Step past that rounded result so
+                # each endpoint is genuinely outward before accumulation.
+                root = radicand.sqrt()
+                if rounding == ROUND_FLOOR:
+                    root = context.next_minus(root)
+                else:
+                    root = context.next_plus(root)
+            total += root
         return total / Decimal(len(squared_values))
 
 
@@ -232,7 +249,8 @@ def _exact_gnrmse(
         return _unavailable(0, "no_entries")
     if all(value == 0 for value in squared_ratios):
         return MetricValue(0.0, n_genes, None)
-    for precision in (120, 240, 480, 960, 1_920):
+    precision = 120
+    while precision <= 15_360:
         lower = _decimal_sqrt_mean(
             squared_ratios,
             precision=precision,
@@ -246,14 +264,8 @@ def _exact_gnrmse(
         metric = _metric_if_interval_rounds_together(lower, upper, n_genes)
         if metric is not None:
             return metric
-    with localcontext() as context:
-        context.prec = 1_920
-        midpoint = (lower + upper) / Decimal(2)
-    return _metric_from_high_precision(midpoint, n_genes)
-
-
-def _fraction_to_decimal(value: Fraction) -> Decimal:
-    return Decimal(value.numerator) / Decimal(value.denominator)
+        precision *= 2
+    raise ArithmeticError("gNRMSE square-root mean could not certify float rounding")
 
 
 def _decimal_add_exact(left: Decimal, right: Decimal) -> Decimal:
@@ -319,28 +331,6 @@ def _metric_from_directed_decimal_totals(
             return None
         precision *= 2
     return None
-
-
-def _decimal_divide_adaptive(value: Decimal, denominator: int) -> Decimal:
-    """Divide a nonnegative Decimal once its binary64 rounding cell is known."""
-
-    if denominator <= 0:  # pragma: no cover - private programming invariant
-        raise AssertionError(denominator)
-    if value == 0 or denominator == 1:
-        return value
-    precision = max(120, len(value.as_tuple().digits) + len(str(denominator)) + 8)
-    while precision <= 15_360:
-        with localcontext() as context:
-            context.prec = precision
-            context.rounding = ROUND_FLOOR
-            lower = value / Decimal(denominator)
-            context.rounding = ROUND_CEILING
-            upper = value / Decimal(denominator)
-            if float(lower) == float(upper):
-                context.rounding = ROUND_FLOOR
-                return (lower + upper) / Decimal(2)
-        precision *= 2
-    raise ArithmeticError("decimal mean could not certify float rounding")
 
 
 def _longdouble_to_decimal(value: np.longdouble) -> Decimal:

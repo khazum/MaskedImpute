@@ -925,11 +925,14 @@ and orthogonal evidence is reconstructed independently from typed authority.
 | F-060 | Important | Stable means with an unrepresentable raw sum rounded twice: every permutation of `[DBL_MAX, DBL_MAX, 0]` returned `0x1.5555555555554p+1023` instead of `0x1.5555555555555p+1023`. The mean and even median of `DBL_MAX` and its predecessor rounded upward to `DBL_MAX` instead of ties-to-even `0x1.ffffffffffffep+1023`. | The remaining overflow path divided scaled binary64 inputs and multiplied the rounded normalized mean by the scale. | Closed test-first by retaining exact binary-rational inputs through the completed sum and division, then converting once. This is the same exact route already used for ordinary and cancellation means, so established exactly rounded ordinary values are unchanged. A 100,000-fixture signed exponent/order audit found zero mean or median oracle mismatches. |
 | F-061 | Important | Paired relative effects could round the subtraction or ratio before the completed estimand. The reviewed finite pair returned one ULP low instead of `-0x1.fffe840932394p-1`. | Same-sign and opposite-sign branches used different staged float64 formulas, neither of which guaranteed one rounding of `(method-comparator)/abs(comparator)`. | Closed test-first with exact binary-rational subtraction and division followed by one float64 conversion. Positive and negative comparator directions, zero method, zero comparator exclusion, exact ties, nonrepresentable effects, and 100,000 randomized signed finite pairs retain their declared policies with zero oracle mismatches. |
 | F-062 | Important | Overflow-safe quantile interpolation and sample variance still double-rounded completed estimands. The reviewed 2.5% quantile was one ULP low and the reviewed three-value sample variance was one ULP high. | Quantiles interpolated scaled rounded endpoints; sample variance rounded the normalized mean, centered squares, normalized variance, and restored scale separately. | Closed test-first. Linear interpolation now retains exact binary-rational endpoints and its float64 interpolation weight through one final conversion. Sample variance retains the exact centered sum and degrees-of-freedom division through one final conversion, returning `None` only for positive underflow or overflow as before. Strict-state endpoints, exact zero, unrepresentable variance, and 100,000 randomized quantile and variance oracles pass. |
+| F-063 | Important | The exceptional gNRMSE route could falsely certify the upper adjacent binary64 value for an exact square root lying just below their midpoint. For `a=nextafter(2^200,+inf)`, `b=nextafter(a,+inf)`, and squared ratio `((a+b)/2)^2-1`, its nominal floor and ceiling endpoints were the same half-even Decimal square root and the 120-digit route returned `b`; a 2,000-digit oracle rounds to `a`. If the fixed precision sequence remained ambiguous, the route also returned an uncertified midpoint. | Python Decimal square root is correctly rounded with `ROUND_HALF_EVEN` regardless of the context's `ROUND_FLOOR` or `ROUND_CEILING` setting. The code treated those identical half-even results as directed bounds, then had a midpoint fallback without a proved binary64 cell. | Closed test-first. Each exact rational radicand is first rounded in the requested direction, each half-even square root is stepped one Decimal value outward, and the roots and completed mean are accumulated and divided under the same direction. Precision now doubles through the completed mean until both endpoints certify one binary64 cell; exhaustion raises instead of serializing an uncertified midpoint. A 1,000-fixture multi-term, broad-exponent oracle audit found zero enclosure or rounding mismatches. The only analogous production Decimal-square-root path already used explicit predecessor/successor bounds. |
+| F-064 | Minor | `MetricValue(True, 1, None)` was accepted as the numeric value `True`, and whitespace-only unavailable reasons were accepted as meaningful schema states. | Python Boolean values inherit from `int`, while unavailable-reason validation checked only string length before any whitespace semantics. | Closed test-first. Python and NumPy Boolean metric values are rejected explicitly, and unavailable reasons must contain at least one non-whitespace character. Valid finite numeric values and nonblank reason-coded unavailable states are unchanged. |
+| F-065 | Minor | `_fraction_to_decimal` and `_decimal_divide_adaptive` remained as unowned private arithmetic helpers with no production or test callers. | Earlier numerical corrections superseded both helpers without removing the obsolete definitions. | Closed by deleting the two unreachable private helpers after repository-wide caller search. No owning arithmetic path was redirected through them. |
 | O-004 | Minor | The inherited CUDA library path caused the five baseline runtime-environment failures; one later temporary-venv inventory rebuild fluctuated once in the excluded transient-runtime-swap test. | The shell path resolves through intentionally rejected symlinks; the isolated temporary-runtime inventory changed between its two probes on one attempt. | No code change. The exact transient node passed unchanged on immediate isolated rerun, and the authoritative suite passed with only the inherited CUDA path removed. |
 
 No unresolved metric-domain, statistical-independence, evaluation-row,
 external-reference, manifest, or pre-zero evidence defect was demonstrated
-after F-025 through F-062. Legacy runtime-lock, filesystem-hardening, and
+after F-025 through F-065. Legacy runtime-lock, filesystem-hardening, and
 outer-provenance mechanisms were not redesigned or extended.
 
 ### Task 5 test-first and verification evidence
@@ -1477,6 +1480,54 @@ The single final correctly sanitized five-file Task 5 suite reported:
 No production or test file changed after those static gates or the final
 five-file suite; only this ledger evidence and the ignored fix-11 report
 followed.
+
+A twelfth independent numerical and API review then demonstrated F-063
+through F-065. The exact focused pre-change invocation reported four expected
+failures and one existing-control pass: Python Boolean metric values,
+whitespace-only unavailable reasons, the `2^200` square-root boundary, and the
+uncertified gNRMSE midpoint failed; the NumPy Boolean parameter already entered
+the existing numeric-type rejection. After the owning corrections, the same
+parameterized set reported:
+
+```text
+5 passed in 0.32s
+```
+
+The complete metrics and statistics owning files, including the established
+ordinary-serialization, exact endpoint, strict floating-point-state, and
+performance controls, reported:
+
+```text
+160 passed in 12.96s
+```
+
+A separate 1,000-fixture audit formed multi-term exact binary-rational
+radicands over exponents from -500 through 500, compared both directed bounds
+against 1,000-digit Decimal oracles, and compared each certified binary64
+result. It reported zero enclosure or rounding mismatches. The repository-wide
+square-root search confirmed that the pairwise Decimal path already steps its
+half-even square roots outward. The ordinary gNRMSE branch and the reviewed
+log1p-CP10k, safe Brier, and inverse-log1p formulas were not changed.
+
+Formatting and scoped static gates completed before the authoritative suite:
+
+```text
+Ruff check: All checks passed
+Ruff format --check: 2 files already formatted
+Scoped compileall: exit 0
+Dead-helper search: no callers or definitions remain
+git diff --check: exit 0
+```
+
+The single final correctly sanitized five-file Task 5 suite reported:
+
+```text
+423 passed, 1 skipped in 989.64s (0:16:29)
+```
+
+No production or test file changed after those static gates or the final
+five-file suite; only this tracked ledger evidence and the ignored fix-12
+report followed.
 
 These checks establish bounded-fixture evaluation contracts only. No real
 scientific or comparator workload ran, and no empirical competitiveness,

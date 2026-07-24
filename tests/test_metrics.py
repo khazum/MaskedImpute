@@ -76,6 +76,17 @@ def test_metric_value_is_frozen_and_rejects_invalid_states() -> None:
         MetricValue(1.0, 1, "not_applicable")
 
 
+@pytest.mark.parametrize("value", [True, np.bool_(False)])
+def test_metric_value_rejects_boolean_values(value: object) -> None:
+    with pytest.raises(TypeError, match="numeric"):
+        MetricValue(value, 1, None)  # type: ignore[arg-type]
+
+
+def test_metric_value_rejects_whitespace_only_unavailable_reasons() -> None:
+    with pytest.raises(ValueError, match="reason"):
+        MetricValue(None, 1, " \t ")
+
+
 def test_entry_masks_partition_requested_entry_types(
     reconstruction_fixture: tuple[np.ndarray, np.ndarray, np.ndarray],
 ) -> None:
@@ -242,6 +253,69 @@ def test_extreme_gnrmse_rounds_the_completed_ratio_once() -> None:
         1,
         None,
     )
+
+
+def test_decimal_sqrt_mean_outward_bounds_prevent_false_float_certification() -> None:
+    lower_float = np.nextafter(float(2**200), np.inf)
+    upper_float = np.nextafter(lower_float, np.inf)
+    midpoint = (Fraction.from_float(lower_float) + Fraction.from_float(upper_float)) / 2
+    squared_ratio = midpoint**2 - 1
+    with localcontext() as context:
+        context.prec = 2_000
+        oracle = (
+            Decimal(squared_ratio.numerator) / Decimal(squared_ratio.denominator)
+        ).sqrt()
+
+    certified = None
+    for precision in (120, 240, 480, 960, 1_920, 3_840):
+        lower = metrics_module._decimal_sqrt_mean(
+            [squared_ratio],
+            precision=precision,
+            rounding=metrics_module.ROUND_FLOOR,
+        )
+        upper = metrics_module._decimal_sqrt_mean(
+            [squared_ratio],
+            precision=precision,
+            rounding=metrics_module.ROUND_CEILING,
+        )
+        assert lower <= oracle <= upper
+        certified = metrics_module._metric_if_interval_rounds_together(
+            lower,
+            upper,
+            1,
+        )
+        if certified is not None:
+            break
+
+    assert certified == MetricValue(lower_float, 1, None)
+
+
+def test_exact_gnrmse_never_returns_an_uncertified_midpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unresolved_sqrt_mean(
+        squared_values: list[Fraction],
+        *,
+        precision: int,
+        rounding: str,
+    ) -> Decimal:
+        del squared_values, precision
+        if rounding == metrics_module.ROUND_FLOOR:
+            return Decimal(1)
+        return Decimal(2)
+
+    monkeypatch.setattr(
+        metrics_module,
+        "_decimal_sqrt_mean",
+        unresolved_sqrt_mean,
+    )
+
+    with pytest.raises(ArithmeticError, match="certify"):
+        metrics_module._exact_gnrmse(
+            np.array([[1.0], [0.0]]),
+            np.zeros((2, 1)),
+            np.ones((2, 1), dtype=bool),
+        )
 
 
 @pytest.mark.parametrize("reverse", [False, True])
