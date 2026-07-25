@@ -323,6 +323,61 @@ def _attach_score_evidence(
     }
 
 
+@pytest.mark.parametrize("field", ("metric_denominator", "reliability_bin"))
+def test_score_evidence_rejects_boolean_integer_aliases(field: str) -> None:
+    from maskimpute_benchmark.final_analysis import _normalize_score_group
+
+    group = _score_group(
+        stratum_type="overall",
+        label="all_observed_zeros",
+        n=0,
+        status="unavailable",
+        reason="no_observed_zeros",
+        auroc=None,
+    )
+    if field == "metric_denominator":
+        group["metrics"]["auroc"]["n"] = False
+    else:
+        group["reliability_bins"] = [
+            {
+                "bin": True,
+                "n": 0,
+                "mean_prediction": 0.0,
+                "observed_fraction": 0.0,
+                "wilson_lower": 0.0,
+                "wilson_upper": 0.0,
+            }
+        ]
+    run = {
+        "mechanism": "symsim",
+        "biological_id": "draw-01",
+        "technical_view": "moderate",
+        "dataset_id": "dataset-control",
+        "method_id": "maskimpute",
+        "model_seed": 42,
+    }
+
+    with pytest.raises(FinalAnalysisContractError, match="denominator|bin|order"):
+        _normalize_score_group(
+            group,
+            record_index=0,
+            run=run,
+            evidence_status="completed",
+            evidence_reason=None,
+            truth_kind="exact_pre_capture",
+            expected_stratum_type="overall",
+            expected_label="all_observed_zeros",
+        )
+
+
+@pytest.mark.parametrize("value", (10**400, -(10**400)))
+def test_final_analysis_translates_unrepresentable_integer_values(value: int) -> None:
+    from maskimpute_benchmark.final_analysis import _finite_value
+
+    with pytest.raises(FinalAnalysisContractError, match="finite"):
+        _finite_value(value, "reviewed endpoint")
+
+
 def _analysis(
     records: list[dict[str, Any]],
     *,

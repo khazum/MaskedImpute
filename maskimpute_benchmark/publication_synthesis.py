@@ -108,7 +108,12 @@ def _text(value: object, name: str) -> str:
 def _finite(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PublicationSynthesisError(f"{name} is not finite numerical evidence")
-    result = float(value)
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise PublicationSynthesisError(
+            f"{name} is not finite numerical evidence"
+        ) from error
     if not math.isfinite(result):
         raise PublicationSynthesisError(f"{name} is not finite numerical evidence")
     return result

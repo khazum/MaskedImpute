@@ -32,6 +32,35 @@ ENDPOINTS = (
 )
 
 
+@pytest.mark.parametrize("value", (10**400, -(10**400)))
+@pytest.mark.parametrize(
+    "boundary",
+    ("gate_result", "finite_nonnegative", "finite_number"),
+)
+def test_selection_numeric_boundaries_translate_unrepresentable_integers(
+    value: int,
+    boundary: str,
+) -> None:
+    from maskimpute_benchmark.selection import (
+        GateResult,
+        _finite_nonnegative,
+        _finite_number,
+    )
+
+    with pytest.raises(ValueError, match="finite"):
+        if boundary == "gate_result":
+            GateResult(
+                passed=False,
+                value=value,
+                threshold="reviewed threshold",
+                details={},
+            )
+        elif boundary == "finite_nonnegative":
+            _finite_nonnegative(value, "reviewed value")
+        else:
+            _finite_number(value, "reviewed value")
+
+
 def _declarations(*candidate_ids: str):
     from maskimpute_benchmark.selection import MethodDeclaration
 

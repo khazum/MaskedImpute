@@ -1785,3 +1785,67 @@ selected methods, final dataset population, 1,760/44 run totals, seed
 denominator, revision allowance, estimands, execution behavior, and claim
 permissions remain unchanged. No real scientific or comparator workload ran,
 and no unrelated mechanism was added.
+
+### Task 6 v4 final-acceptance correction
+
+A subsequent independent review of Task 6 at `0fa2719` demonstrated four
+remaining important validation gaps.
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-082 | Important | Public final and trajectory evaluation accepted structurally coherent full-size forged populations and derived plan, entry, run, configuration, and nested authority types. | Closed test-first with exact typed authorities and independent reconstruction of the fixed 20-method order, established method seed policy, 4 x 5 x 2 primary scientific coordinates or registered trajectory identity, canonical run construction, action/reason bindings, and planned preflight fields. The fixed 1,760/44 populations are unchanged. |
+| F-083 | Important | `direct_equal` converted a `FrozenDirectObject` to a mapping before validating it, so duplicate keys, noncanonical order, malformed pairs, and non-string keys could be silently normalized or leak an incidental conversion error on either operand. | Closed test-first by validating every frozen-object operand before equality. Valid nested mapping/list comparisons are unchanged. |
+| F-084 | Important | Final score evidence accepted Boolean aliases for a zero metric denominator and reliability-bin ordinal one. | Closed test-first by requiring exact built-in integers for every score metric denominator and reliability-bin ordinal. |
+| F-085 | Important | Huge positive and negative Python integers leaked `OverflowError` from `GateResult`, both selection finite-number helpers, final-analysis numeric evidence, and publication synthesis. | Closed test-first by translating unrepresentable real coercions to each boundary's documented domain exception while preserving valid finite numerics. |
+
+The focused RED invocations reported:
+
+```text
+20 failed, 1 passed in 3.38s
+12 failed, 2 passed in 30.61s
+```
+
+They covered complete final and trajectory dataset-block substitutions, five
+scientific/preflight mutations, five derived authority layers, both
+frozen-object operand positions across four malformed structures, exact score
+integer aliases, and both signs of unrepresentable Python integers. The three
+passing controls established the canonical full populations and valid direct
+comparison behavior before production changes.
+
+After the bounded corrections, the formatted combined focused set reported:
+
+```text
+38 passed in 44.81s
+```
+
+The complete five changed and adjacent owning files then reported:
+
+```text
+354 passed in 1569.69s (0:26:09)
+```
+
+The population reconstruction was subsequently narrowed to the explicitly
+permitted non-seal authorities. The exact affected focused set and complete
+final-runner owner were repeated from that final production state:
+
+```text
+17 passed in 45.17s
+154 passed in 753.58s (0:12:33)
+```
+
+The correction added no new plan seal, content-summary, filesystem-hardening,
+or runtime-lock mechanism. It did not change selected methods, dataset
+populations, seeds, revision allowances, estimands, execution behavior, or
+claim permissions. No real scientific or comparator workload ran.
+
+Fresh Ruff formatting and lint, scoped byte compilation, and
+`git diff --check` all exited zero from the final production/test state. The
+exact sanitized fifteen-file Task 6 suite then reported:
+
+```text
+936 passed in 6444.11s (1:47:24)
+```
+
+No production, test, or documentation file changed during that authoritative
+run. Only this terminal evidence and the matching correction report were
+recorded afterward.

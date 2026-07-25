@@ -1323,6 +1323,249 @@ def test_publication_population_rejects_changed_seed_denominator() -> None:
         final_runner._require_complete_publication_plan_population(changed_plan)
 
 
+@lru_cache(maxsize=1)
+def _complete_publication_final_plan():
+    from maskimpute_benchmark.final_runner import build_final_execution_plan
+
+    registry = _full_registry()
+    return build_final_execution_plan(
+        _direct_frozen_method(),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+
+
+@lru_cache(maxsize=1)
+def _complete_publication_trajectory_plan():
+    from dataclasses import replace
+
+    from maskimpute_benchmark import final_runner
+    from maskimpute_benchmark.trajectory_dataset import (
+        REGISTERED_TRAJECTORY_DATASET_ID,
+    )
+
+    primary = _complete_publication_final_plan()
+    source_dataset = primary.entries[0].run.dataset_id
+    source_by_method_seed = {
+        (entry.run.method_id, entry.run.model_seed): entry
+        for entry in primary.entries
+        if entry.run.dataset_id == source_dataset
+    }
+    entries = []
+    ordinal = 0
+    for configuration in primary.configurations:
+        for seed in configuration.seeds:
+            ordinal += 1
+            template = source_by_method_seed[(configuration.method_id, seed)]
+            run = replace(
+                template.run,
+                ordinal=ordinal,
+                run_id=final_runner._trajectory_run_id(
+                    ordinal,
+                    configuration.method_id,
+                    REGISTERED_TRAJECTORY_DATASET_ID,
+                    seed,
+                    configuration,
+                ),
+                dataset_id=REGISTERED_TRAJECTORY_DATASET_ID,
+                mechanism="synthetic_trajectory",
+                biological_id="trajectory-draw-01",
+                technical_view="deterministic-count-allocation",
+            )
+            entries.append(replace(template, run=run))
+    return final_runner.TrajectoryExecutionPlan(
+        schema_version=1,
+        scope="supplementary_trajectory",
+        input_hashes=primary.input_hashes,
+        entries=tuple(entries),
+        configurations=primary.configurations,
+        plan_sha256="b" * 64,
+    )
+
+
+@pytest.mark.parametrize("scope", ("final", "trajectory"))
+def test_publication_evaluation_accepts_complete_canonical_typed_population(
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+) -> None:
+    from maskimpute_benchmark import final_runner
+
+    monkeypatch.setattr(
+        final_runner,
+        "_validate_frozen_execution_for_evaluation",
+        lambda _plan, _records: {"status": "validated-control"},
+    )
+    if scope == "final":
+        observed = final_runner.validate_final_execution_for_evaluation(
+            _complete_publication_final_plan(),
+            (),
+        )
+    else:
+        observed = final_runner.validate_trajectory_execution_for_evaluation(
+            _complete_publication_trajectory_plan(),
+            (),
+        )
+
+    assert observed == {"status": "validated-control"}
+
+
+@pytest.mark.parametrize(
+    ("scope", "replacement"),
+    (
+        ("final", "renamed-complete-final-dataset"),
+        ("trajectory", "forged-trajectory-dataset"),
+    ),
+)
+def test_publication_evaluation_rejects_forged_complete_dataset_block(
+    monkeypatch: pytest.MonkeyPatch,
+    scope: str,
+    replacement: str,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark import final_runner
+
+    monkeypatch.setattr(
+        final_runner,
+        "_validate_frozen_execution_for_evaluation",
+        lambda _plan, _records: {"status": "must-not-be-reached"},
+    )
+    original = (
+        _complete_publication_final_plan()
+        if scope == "final"
+        else _complete_publication_trajectory_plan()
+    )
+    target = original.entries[0].run.dataset_id
+    entries = tuple(
+        replace(entry, run=replace(entry.run, dataset_id=replacement))
+        if entry.run.dataset_id == target
+        else entry
+        for entry in original.entries
+    )
+    changed = replace(original, entries=entries)
+    validator = (
+        final_runner.validate_final_execution_for_evaluation
+        if scope == "final"
+        else final_runner.validate_trajectory_execution_for_evaluation
+    )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="plan|population",
+    ):
+        validator(changed, ())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("mechanism", "forged-mechanism"),
+        ("biological_id", "draw-99"),
+        ("technical_view", "forged-view"),
+        ("preflight_status", "blocked_authority"),
+        ("preflight_reason", "forged-preflight-reason"),
+    ),
+)
+def test_publication_population_rejects_scientific_and_preflight_mutations(
+    field: str,
+    value: str,
+) -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark import final_runner
+
+    original = _complete_publication_final_plan()
+    changed_run = replace(original.entries[0].run, **{field: value})
+    changed = replace(
+        original,
+        entries=(replace(original.entries[0], run=changed_run), *original.entries[1:]),
+    )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="plan|population",
+    ):
+        final_runner._require_complete_publication_plan_population(changed)
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    ("plan", "entry", "run", "configuration", "nested_configuration"),
+)
+def test_publication_population_rejects_derived_authority_types(
+    boundary: str,
+) -> None:
+    from dataclasses import fields, replace
+
+    from maskimpute_benchmark import final_runner
+    from maskimpute_benchmark.runner import AuthorizedConfiguration, RunPlanEntry
+
+    class DerivedFinalExecutionPlan(final_runner.FinalExecutionPlan):
+        pass
+
+    class DerivedFinalPlanEntry(final_runner.FinalPlanEntry):
+        pass
+
+    class DerivedRunPlanEntry(RunPlanEntry):
+        pass
+
+    class DerivedFrozenPlanMethodAuthority(final_runner.FrozenPlanMethodAuthority):
+        pass
+
+    class DerivedAuthorizedConfiguration(AuthorizedConfiguration):
+        pass
+
+    def derived(cls, value):
+        return cls(**{item.name: getattr(value, item.name) for item in fields(value)})
+
+    original = _complete_publication_final_plan()
+    changed = original
+    if boundary == "plan":
+        changed = derived(DerivedFinalExecutionPlan, original)
+    elif boundary == "entry":
+        entry = derived(DerivedFinalPlanEntry, original.entries[0])
+        changed = replace(original, entries=(entry, *original.entries[1:]))
+    elif boundary == "run":
+        run = derived(DerivedRunPlanEntry, original.entries[0].run)
+        changed = replace(
+            original,
+            entries=(replace(original.entries[0], run=run), *original.entries[1:]),
+        )
+    elif boundary == "configuration":
+        configuration = derived(
+            DerivedFrozenPlanMethodAuthority,
+            original.configurations[0],
+        )
+        changed = replace(
+            original,
+            configurations=(configuration, *original.configurations[1:]),
+        )
+    else:
+        configuration = original.configurations[0]
+        assert configuration.legacy_configuration is not None
+        nested = derived(
+            DerivedAuthorizedConfiguration,
+            configuration.legacy_configuration,
+        )
+        changed_configuration = replace(
+            configuration,
+            legacy_configuration=nested,
+        )
+        changed = replace(
+            original,
+            configurations=(changed_configuration, *original.configurations[1:]),
+        )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="plan|population",
+    ):
+        final_runner._require_complete_publication_plan_population(changed)
+
+
 def test_trajectory_plan_rejects_nearby_registered_identity(
     tmp_path: Path,
 ) -> None:

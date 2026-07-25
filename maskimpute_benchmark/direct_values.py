@@ -169,8 +169,16 @@ def direct_equal(left: object, right: object) -> bool:
             for item in fields(left)
         )
     if isinstance(left, FrozenDirectObject) or isinstance(right, FrozenDirectObject):
-        left_object = dict(left) if isinstance(left, FrozenDirectObject) else left
-        right_object = dict(right) if isinstance(right, FrozenDirectObject) else right
+        left_object = (
+            dict(_validated_frozen_object(left))
+            if isinstance(left, FrozenDirectObject)
+            else left
+        )
+        right_object = (
+            dict(_validated_frozen_object(right))
+            if isinstance(right, FrozenDirectObject)
+            else right
+        )
         if not isinstance(left_object, Mapping) or not isinstance(
             right_object, Mapping
         ):

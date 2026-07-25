@@ -1030,6 +1030,51 @@ def test_direct_value_boundaries_reject_malformed_frozen_objects() -> None:
     ) == {"nested": {"key": "value"}}
 
 
+@pytest.mark.parametrize(
+    "malformed",
+    (
+        (("key", 1), ("key", 2)),
+        (("z", 1), ("a", 2)),
+        (("key", 1, 2),),
+        ((1, "value"),),
+    ),
+    ids=("duplicate-key", "noncanonical-order", "malformed-pair", "nonstring-key"),
+)
+@pytest.mark.parametrize("side", ("left", "right"))
+def test_direct_equal_validates_every_frozen_object_operand(
+    malformed: tuple[object, ...],
+    side: str,
+) -> None:
+    from maskimpute_benchmark.direct_values import (
+        FrozenDirectObject,
+        direct_equal,
+    )
+
+    invalid = FrozenDirectObject(malformed)
+    valid = FrozenDirectObject((("key", 1),))
+    operands = (invalid, valid) if side == "left" else (valid, invalid)
+
+    with pytest.raises(ValueError, match="object|keys"):
+        direct_equal(*operands)
+
+
+def test_direct_equal_preserves_valid_frozen_object_comparisons() -> None:
+    from maskimpute_benchmark.direct_values import (
+        FrozenDirectList,
+        FrozenDirectObject,
+        direct_equal,
+    )
+
+    frozen = FrozenDirectObject(
+        (("items", FrozenDirectList((1, "two"))), ("nested", {"ok": True}))
+    )
+
+    assert direct_equal(
+        frozen,
+        {"items": [1, "two"], "nested": {"ok": True}},
+    )
+
+
 @pytest.mark.parametrize("value", (10**400, -(10**400)))
 def test_endpoint_unit_translates_unrepresentable_integer_values(value: int) -> None:
     from maskimpute_benchmark.development_evaluation import EndpointUnit

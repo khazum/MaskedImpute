@@ -333,7 +333,10 @@ def _model_seed(value: object, name: str) -> int | None:
 def _finite_value(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise FinalAnalysisContractError(f"{name} must be a finite number")
-    numeric = float(value)
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise FinalAnalysisContractError(f"{name} must be a finite number") from error
     if not math.isfinite(numeric):
         raise FinalAnalysisContractError(f"{name} must be a finite number")
     return numeric
@@ -647,7 +650,7 @@ def _normalize_score_group(
             frozenset({"value", "n", "status", "reason"}),
             f"record {record_index} p_pre_zero metric {metric_name}",
         )
-        if metric.get("n") != n:
+        if type(metric.get("n")) is not int or metric.get("n") != n:
             raise FinalAnalysisContractError(
                 f"record {record_index} p_pre_zero metric denominator differs"
             )
@@ -740,7 +743,8 @@ def _normalize_score_group(
             f"record {record_index} p_pre_zero reliability bin",
         )
         if (
-            bin_row.get("bin") != bin_index
+            type(bin_row.get("bin")) is not int
+            or bin_row.get("bin") != bin_index
             or type(bin_row.get("n")) is not int
             or bin_row["n"] < 0
         ):

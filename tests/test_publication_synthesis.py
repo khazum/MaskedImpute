@@ -2396,3 +2396,13 @@ def test_production_has_no_locally_rehashed_evidence_override(
             Path("/study/final/round-01"),
             primary_report=loaded.primary_report,  # type: ignore[call-arg]
         )
+
+
+@pytest.mark.parametrize("value", (10**400, -(10**400)))
+def test_publication_synthesis_translates_unrepresentable_integer_values(
+    value: int,
+) -> None:
+    from maskimpute_benchmark.publication_synthesis import _finite
+
+    with pytest.raises(PublicationSynthesisError, match="finite"):
+        _finite(value, "reviewed endpoint")

@@ -22,6 +22,9 @@ import numpy as np
 
 from .comparator_tuning import (
     BoundComparatorConfiguration,
+    ComparatorAuthorityReference,
+    ComparatorConfiguration,
+    ComparatorMethodBinding,
     ComparatorSelectionProjection,
     ComparatorTuningError,
     _canonical_comparator_tuning_authority,
@@ -87,6 +90,40 @@ _PRIMARY_FINAL_DATASET_POPULATION = (
 )
 _PRIMARY_FINAL_RUN_POPULATION = 1_760
 _TRAJECTORY_RUN_POPULATION = 44
+_PUBLICATION_METHOD_ORDER = (
+    "observed",
+    "capacity-matched-ae",
+    "maskimpute",
+    "alra",
+    "magic",
+    "dca",
+    "scvi",
+    "saver",
+    "scimpute",
+    "wedge",
+    "scziva",
+    "afmf",
+    "biaeimpute",
+    "sccr",
+    "scgacl",
+    "sctacl",
+    "sczn",
+    "scsdae",
+    "d3impute",
+    "sctsi",
+)
+_PUBLICATION_SINGLE_RUN_METHODS = frozenset(
+    {
+        "observed",
+        "scimpute",
+        "wedge",
+        "scgacl",
+        "sctacl",
+        "sczn",
+        "d3impute",
+        "sctsi",
+    }
+)
 _FINAL_OUTPUT_ENCODING = "zlib_raw_f64_v1"
 _FINAL_OUTPUT_COMPRESSION_LEVEL = 6
 _FINAL_NATIVE_RETENTION = "omitted_redundant_final_output"
@@ -5425,83 +5462,188 @@ def _require_complete_publication_plan_population(
 ) -> None:
     """Independently require the complete frozen plan-owned population."""
 
+    is_primary = type(plan) is FinalExecutionPlan
+    is_trajectory = type(plan) is TrajectoryExecutionPlan
     if (
-        type(plan.schema_version) is not int
+        not (is_primary or is_trajectory)
+        or type(plan.schema_version) is not int
         or plan.schema_version != 1
+        or (
+            is_trajectory
+            and (
+                type(plan.scope) is not str or plan.scope != "supplementary_trajectory"
+            )
+        )
         or type(plan.entries) is not tuple
         or not plan.entries
         or type(plan.configurations) is not tuple
         or not plan.configurations
         or any(
-            not isinstance(entry, FinalPlanEntry)
-            or not isinstance(entry.run, RunPlanEntry)
+            type(entry) is not FinalPlanEntry or type(entry.run) is not RunPlanEntry
             for entry in plan.entries
         )
         or any(
-            not isinstance(value, FrozenPlanMethodAuthority)
+            type(value) is not FrozenPlanMethodAuthority
             for value in plan.configurations
         )
     ):
         raise FinalRunnerContractError(
             "publication evaluation plan population is incomplete"
         )
-    configuration_by_method = {value.method_id: value for value in plan.configurations}
-    if len(configuration_by_method) != len(plan.configurations):
+    if tuple(value.method_id for value in plan.configurations) != (
+        _PUBLICATION_METHOD_ORDER
+    ):
         raise FinalRunnerContractError(
             "publication evaluation plan population is incomplete"
         )
-    dataset_ids = {entry.run.dataset_id for entry in plan.entries}
-    required_dataset_count = (
-        _PRIMARY_FINAL_DATASET_POPULATION if isinstance(plan, FinalExecutionPlan) else 1
-    )
-    if len(dataset_ids) != required_dataset_count:
-        raise FinalRunnerContractError(
-            "publication evaluation plan population is incomplete"
-        )
-    expected = {
-        (configuration.method_id, dataset_id, seed)
-        for configuration in plan.configurations
-        for dataset_id in dataset_ids
-        for seed in configuration.seeds
-    }
-    observed: set[tuple[str, str, int | None]] = set()
-    for ordinal, entry in enumerate(plan.entries, start=1):
-        configuration = configuration_by_method.get(entry.run.method_id)
-        key = (
-            entry.run.method_id,
-            entry.run.dataset_id,
-            entry.run.model_seed,
+    for configuration in plan.configurations:
+        choices = (
+            configuration.legacy_configuration,
+            configuration.comparator_configuration,
+            configuration.comparator_nonexecution_identity,
         )
         if (
-            type(entry.run.ordinal) is not int
-            or entry.run.ordinal != ordinal
-            or configuration is None
-            or entry.run.model_seed not in configuration.seeds
-            or entry.run.configuration_id != configuration.configuration_id
-            or entry.run.configuration_kind != configuration.kind
-            or entry.action != configuration.action
-            or entry.reason != configuration.reason
-            or key in observed
+            sum(value is not None for value in choices) != 1
+            or (
+                configuration.legacy_configuration is not None
+                and type(configuration.legacy_configuration)
+                is not AuthorizedConfiguration
+            )
+            or (
+                configuration.comparator_configuration is not None
+                and (
+                    type(configuration.comparator_configuration)
+                    is not BoundComparatorConfiguration
+                    or type(configuration.comparator_configuration.configuration)
+                    is not ComparatorConfiguration
+                    or type(configuration.comparator_configuration.authority_reference)
+                    is not ComparatorAuthorityReference
+                    or type(configuration.comparator_configuration.method)
+                    is not ComparatorMethodBinding
+                )
+            )
+            or configuration.seeds
+            != (
+                (None,)
+                if configuration.method_id in _PUBLICATION_SINGLE_RUN_METHODS
+                else DEVELOPMENT_MODEL_SEEDS
+            )
         ):
             raise FinalRunnerContractError(
                 "publication evaluation plan population is incomplete"
             )
-        observed.add(key)
-    if observed != expected or len(plan.entries) != len(expected):
+    if sum(len(value.seeds) for value in plan.configurations) != (
+        _TRAJECTORY_RUN_POPULATION
+    ):
         raise FinalRunnerContractError(
             "publication evaluation plan population is incomplete"
         )
-    per_dataset = sum(len(value.seeds) for value in plan.configurations)
-    if (
-        per_dataset != _TRAJECTORY_RUN_POPULATION
-        or (
-            isinstance(plan, FinalExecutionPlan)
-            and len(plan.entries) != _PRIMARY_FINAL_RUN_POPULATION
+    expected_datasets = (
+        tuple(
+            (mechanism, biological_id, technical_view)
+            for mechanism in DEVELOPMENT_MECHANISMS
+            for biological_id in _FINAL_DRAWS
+            for technical_view in DEVELOPMENT_VIEWS
         )
-    ) or (
-        isinstance(plan, TrajectoryExecutionPlan)
-        and len(plan.entries) != _TRAJECTORY_RUN_POPULATION
+        if is_primary
+        else (
+            (
+                "synthetic_trajectory",
+                "trajectory-draw-01",
+                "deterministic-count-allocation",
+            ),
+        )
+    )
+    expected_population = (
+        _PRIMARY_FINAL_RUN_POPULATION if is_primary else _TRAJECTORY_RUN_POPULATION
+    )
+    if (
+        len(expected_datasets)
+        != (_PRIMARY_FINAL_DATASET_POPULATION if is_primary else 1)
+        or len(plan.entries) != expected_population
     ):
+        raise FinalRunnerContractError(
+            "publication evaluation plan population is incomplete"
+        )
+    observed_dataset_ids: set[str] = set()
+    cursor = 0
+    for mechanism, biological_id, technical_view in expected_datasets:
+        block = plan.entries[cursor : cursor + _TRAJECTORY_RUN_POPULATION]
+        if len(block) != _TRAJECTORY_RUN_POPULATION:
+            raise FinalRunnerContractError(
+                "publication evaluation plan population is incomplete"
+            )
+        dataset_id = block[0].run.dataset_id
+        if (
+            type(dataset_id) is not str
+            or not dataset_id
+            or dataset_id in observed_dataset_ids
+            or (is_trajectory and dataset_id != REGISTERED_TRAJECTORY_DATASET_ID)
+        ):
+            raise FinalRunnerContractError(
+                "publication evaluation plan population is incomplete"
+            )
+        observed_dataset_ids.add(dataset_id)
+        for configuration in plan.configurations:
+            for seed in configuration.seeds:
+                cursor += 1
+                entry = plan.entries[cursor - 1]
+                run = entry.run
+                expected_run_id = (
+                    _final_run_id(
+                        cursor,
+                        configuration.method_id,
+                        dataset_id,
+                        seed,
+                        configuration,
+                    )
+                    if is_primary
+                    else _trajectory_run_id(
+                        cursor,
+                        configuration.method_id,
+                        dataset_id,
+                        seed,
+                        configuration,
+                    )
+                )
+                try:
+                    direct_configuration_matches = direct_equal(
+                        run.comparator_configuration,
+                        configuration.comparator_configuration,
+                    ) and direct_equal(
+                        run.comparator_nonexecution_identity,
+                        configuration.comparator_nonexecution_identity,
+                    )
+                except ValueError as error:
+                    raise FinalRunnerContractError(
+                        "publication evaluation plan population is incomplete"
+                    ) from error
+                if (
+                    type(run.ordinal) is not int
+                    or run.ordinal != cursor
+                    or run.run_id != expected_run_id
+                    or run.method_id != configuration.method_id
+                    or run.dataset_id != dataset_id
+                    or run.mechanism != mechanism
+                    or run.biological_id != biological_id
+                    or run.technical_view != technical_view
+                    or run.model_seed != seed
+                    or run.configuration_id != configuration.configuration_id
+                    or run.configuration_kind != configuration.kind
+                    or type(run.requires_count_score) is not bool
+                    or run.requires_count_score != configuration.requires_count_score
+                    or type(run.requires_calibration) is not bool
+                    or run.requires_calibration != configuration.requires_calibration
+                    or run.preflight_status != "planned"
+                    or run.preflight_reason is not None
+                    or not direct_configuration_matches
+                    or entry.action != configuration.action
+                    or entry.reason != configuration.reason
+                ):
+                    raise FinalRunnerContractError(
+                        "publication evaluation plan population is incomplete"
+                    )
+    if cursor != len(plan.entries):
         raise FinalRunnerContractError(
             "publication evaluation plan population is incomplete"
         )
@@ -5513,7 +5655,7 @@ def validate_final_execution_for_evaluation(
 ) -> dict[str, object]:
     """Require the complete terminal primary final denominator."""
 
-    if not isinstance(plan, FinalExecutionPlan):
+    if type(plan) is not FinalExecutionPlan:
         raise TypeError("plan must be a FinalExecutionPlan")
     _require_complete_publication_plan_population(plan)
     return _validate_frozen_execution_for_evaluation(plan, records)
@@ -5525,7 +5667,7 @@ def validate_trajectory_execution_for_evaluation(
 ) -> dict[str, object]:
     """Require the complete terminal supplementary trajectory denominator."""
 
-    if not isinstance(plan, TrajectoryExecutionPlan):
+    if type(plan) is not TrajectoryExecutionPlan:
         raise TypeError("plan must be a TrajectoryExecutionPlan")
     _require_complete_publication_plan_population(plan)
     return _validate_frozen_execution_for_evaluation(plan, records)

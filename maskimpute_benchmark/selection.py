@@ -504,8 +504,7 @@ class GateResult:
         if self.value is not None:
             if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
                 raise TypeError("gate value must be numeric or None")
-            if not math.isfinite(float(self.value)):
-                raise ValueError("gate value must be finite")
+            _finite_number(self.value, "gate value")
         if not isinstance(self.threshold, str) or not self.threshold:
             raise ValueError("gate threshold must be a nonempty string")
         if not isinstance(self.details, Mapping):
@@ -649,7 +648,10 @@ class _Interval:
 def _finite_nonnegative(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be numeric")
-    result = float(value)
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"{name} must be finite and nonnegative") from error
     if not math.isfinite(result) or result < 0:
         raise ValueError(f"{name} must be finite and nonnegative")
     return result
@@ -658,7 +660,10 @@ def _finite_nonnegative(value: object, name: str) -> float:
 def _finite_number(value: object, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be numeric")
-    result = float(value)
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise ValueError(f"{name} must be finite") from error
     if not math.isfinite(result):
         raise ValueError(f"{name} must be finite")
     return result
