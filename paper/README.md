@@ -11,11 +11,15 @@ and the one-use final evaluation. Author metadata and declarations remain
 absent until supplied and approved by the authors.
 
 The vendored class and Vancouver bibliography style come from the official
-Springer Nature LaTeX template, version 3.1 (December 2024). The source archive
-checksum is recorded in `submission_checklist.md`. From this directory, use:
+Springer Nature LaTeX template, version 3.1 (December 2024). Their ordinary
+template provenance and differing upstream notices are recorded in
+`submission_checklist.md`. From this directory, use:
 
 ```bash
-latexmk -pdf -halt-on-error manuscript.tex
+pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
+bibtex manuscript
+pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
+pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
 ```
 
 A successful draft build does not imply submission readiness. Every red

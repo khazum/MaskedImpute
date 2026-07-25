@@ -2134,3 +2134,78 @@ runs. These corrections do not change scientific dependencies, selected
 methods, configurations, dataset populations, seeds, estimands, revision
 allowances, archive contents, or claim permissions. No real scientific
 workload ran. Independent acceptance is not claimed.
+
+## Task 8: Genome Biology package review
+
+The Genome Biology general and Methodology instructions were rechecked against
+the official pages verified on 23 July 2026. The package is a compilable,
+fail-closed Methodology draft, not a submission-ready article and not evidence
+of empirical competitiveness.
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-103 | Important | The rendered title page silently omitted all required author, affiliation, email, and corresponding-author metadata instead of making the blocking omission visible. | Closed with explicit red author-input blockers in the title-page commands. No person or institution was invented. |
+| F-104 | Important | The abstract and external-reference Results prose described unexecuted analyses or evidence as complete. | Closed with a 62-word placeholder-bearing abstract that makes no empirical advance claim and future-tense external-reference evidence. |
+| F-105 | Important | The compact checklist marked the state-of-the-art advancement exercise and final abstract constraint complete despite unavailable results and final wording. | Closed by separating checked structural facts from unchecked clear-advance, same-dataset, known-truth, real-data, and final-abstract evidence requirements. |
+| F-106 | Minor | The manuscript lacked the project-required Abbreviations section and did not expand several terms at first use. | Closed with first-use expansions and a consistent Abbreviations section before Declarations. |
+| F-107 | Minor | Both submission checklists retained excluded template-integrity validation gates, and the paper README referenced the compact instance. | Closed as explicitly required. The active gates and stale README reference were removed while ordinary template provenance, upstream notices, licensing separation, and publisher-redistribution caveats remain. No replacement integrity mechanism was added. |
+| F-108 | Minor | Static DOI-issuing deposition was phrased as mandatory although the current Methodology instructions recommend it. | Closed by retaining the public repository and OSI-license requirements while accurately making static deposition an author decision and recommendation. |
+| F-109 | Minor | One author name in the DCA BibTeX entry used a malformed TeX accent escape. | Closed. All twelve cited DOI, title, year, and venue records matched registry metadata and the final bibliography resolved. |
+
+Focused venue-contract RED reported:
+
+```text
+4 failed, 53 deselected in 0.11s
+```
+
+Focused GREEN reported:
+
+```text
+4 passed, 53 deselected in 0.06s
+```
+
+The new checks plus the existing manuscript contracts then reported:
+
+```text
+7 passed, 175 deselected in 2.01s
+```
+
+The complete repository-hygiene owner reported:
+
+```text
+57 passed in 26.75s
+```
+
+Existing manuscript/comparator documentation checks reported:
+
+```text
+3 passed, 122 deselected in 1.99s
+```
+
+The obsolete-term checks reported:
+
+```text
+2 passed in 0.79s
+```
+
+A clean `pdflatex`, `bibtex`, `pdflatex`, `pdflatex` build exited zero. The
+final PDF had 13 A4 pages; build-log inspection found no unresolved citation,
+unresolved reference, fatal error, emergency stop, or overfull box. Extracted
+text showed the visible title-page blockers, 62-word unstructured abstract, six
+keywords, required main order, Abbreviations, all seven Declarations, and
+References.
+
+Ruff formatting and lint passed across all 164 Python files, scoped Python
+compilation and `git diff --check` exited zero, and generated manuscript and
+cache products were removed after inspection.
+
+Submission remains blocked on real frozen evidence, same-dataset
+state-of-the-art advance, known-truth and real-data utility, author metadata and
+approval, all declarations, the author-approved LLM disclosure, public data and
+source access, an OSI-compliant project license, accessions, the static-archive
+decision and any resulting identifier, figures/tables/supplement, Minimum
+Standards, cover letter, preprint and redistribution decisions, and final
+authorization. No scientific result, human metadata, license, identifier, or
+authorization was fabricated. No real scientific workload ran, and no
+estimand, population, selection rule, method configuration, seed policy, or
+claim permission changed. Independent acceptance is not claimed.

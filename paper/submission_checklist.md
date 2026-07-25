@@ -36,16 +36,21 @@ is a sealed-evidence draft, not a submission-ready article.
 
 ## Venue structure and reporting
 
-- [x] Article type is framed as Methodology and state-of-the-art advancement is
-  tested on common datasets with known truth where possible.
-- [x] Abstract is unstructured and constrained to at most 100 words after final
-  rendering.
+- [x] Article type is framed as Methodology.
+- [ ] Completed same-dataset side-by-side results demonstrate a clear advance
+  over current state-of-the-art methods, with known-truth benchmarking where
+  possible and demonstrated real-data utility.
+- [ ] The final unstructured Abstract remains at most 100 words after the sealed
+  result and conclusion replace the draft marker.
 - [x] The manuscript supplies 3--10 keywords.
 - [x] Main order is Background, Results, Discussion, Conclusions, then Methods.
+- [ ] The title page contains every author's full name, institutional address,
+  and email address and identifies the corresponding author.
 - [ ] All seven required Declarations contain author-approved statements or an
   author-approved `Not applicable` determination.
 - [ ] The author-approved AI-use disclosure appears in Methods and accurately
   describes any reportable use and human validation.
+- [x] The Abbreviations section matches terms expanded at first use.
 - [x] Biological and technical replication are distinguished explicitly.
 - [ ] Figure legends give sample size, independent unit, summary/error-bar
   definition, statistical sidedness, and multiplicity family.
@@ -55,8 +60,9 @@ is a sealed-evidence draft, not a submission-ready article.
   have an ethically or legally necessary restriction stated precisely.
 - [ ] In-house scripts and the described software are in a public repository
   under an identified OSI-compliant license.
-- [ ] A static archived release has a persistent identifier and matches the
-  manuscript's source and analysis release.
+- [ ] The authors have acted on the journal's recommendation to create a static
+  archived release, or have recorded a decision not to do so; any archive that
+  is created has a persistent identifier and matches the manuscript release.
 - [ ] Genome Biology instructions are rechecked immediately before submission.
 
 ## Author, legal, and release input
@@ -75,8 +81,12 @@ is a sealed-evidence draft, not a submission-ready article.
 
 ## Package validation
 
-- [ ] Official Springer Nature template version 3.1 checksum is
-  `812e76dcaa9c28dc1bff1fb6065d51729b67d4ea140552a05088317414a3ecae`.
+- [x] The vendored class and Vancouver style retain their upstream notices and
+  are identified as files from the project-chosen Springer Nature authoring
+  template version 3.1 (December 2024).
+- [ ] Publisher redistribution terms have been cleared for the final source
+  package; publisher assets are not described as covered by MaskImpute's source
+  license.
 - [ ] Vancouver-numbered bibliography compiles without missing references.
 - [ ] Clean build has no undefined references, overfull critical content, or
   missing figures/tables.

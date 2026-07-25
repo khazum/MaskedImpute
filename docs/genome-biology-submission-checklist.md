@@ -2,7 +2,7 @@
 
 **Status:** Blocking human-author checklist
 
-**Guidance verified:** 21 July 2026
+**Guidance verified:** 23 July 2026
 
 This checklist deliberately records requirements, not answers. An unchecked item blocks submission. The manuscript is currently a sealed-evidence draft, not submission-ready. The authors may mark an item not applicable only after making and recording the underlying determination; no contributor or automated system may infer names, affiliations, ethics decisions, consent, funding, contributions, conflicts, repository identifiers, preprint details, or disclosure wording.
 
@@ -105,7 +105,7 @@ Keep all seven required headings. When a heading is not relevant, retain it and 
 - [ ] The public MaskImpute source repository URL is live; no placeholder remains.
 - [ ] The repository contains the exact source and in-house analysis scripts used for the manuscript, or any permitted supplementary-script location is stated explicitly.
 - [ ] MaskImpute has an identified OSI-compliant source-code license, and the repository and manuscript state the same license.
-- [ ] A static archived release matching the manuscript has a DOI or other unique identifier, is cited, and is bound to the reported tag or commit.
+- [ ] The authors have acted on the journal's recommendation to create a static archived release, or have recorded a decision not to do so; if created, the release has a DOI or other unique identifier, is cited, and is bound to the reported tag or commit.
 - [ ] The availability statement gives the project name, project home page, archived release, supported operating systems, programming language, other requirements, license, and any use restriction.
 - [ ] Public source, archive, environment locks, container, commands, accession ledger, raw long-form results, machine-readable tables, and smoke workflow identify one internally consistent release.
 - [ ] Supporting data are not hosted only on a personal or departmental website.
@@ -151,7 +151,6 @@ Keep all seven required headings. When a heading is not relevant, retain it and 
 ### Springer Nature template provenance
 
 - [ ] The paper is based on the project-chosen Springer Nature authoring template version 3.1, December 2024.
-- [ ] The archived official ZIP matches SHA-256 `812e76dcaa9c28dc1bff1fb6065d51729b67d4ea140552a05088317414a3ecae`.
 - [ ] A Vancouver-compatible bibliography style is selected and the journal-level rules override generic examples in the template.
 - [ ] Publisher assets retain all upstream notices and remain separate from MaskImpute's OSI-licensed source.
 - [ ] The complete template package is not described as having one package-wide LPPL or OSI license: the ZIP has no package-wide license file, its manual states `Copyright Springer Nature`, `sn-jnl.cls` contains an LPPL 1.3c-or-later notice plus a restrictive distribution sentence, and bibliography files contain differing notices.

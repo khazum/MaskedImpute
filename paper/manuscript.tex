@@ -18,10 +18,11 @@
 
 \title[Calibrated selective single-cell imputation]{MaskImpute: calibrated selective imputation for single-cell RNA-sequencing count matrices}
 
-% Author names, affiliations, correspondence, and contribution statements are
-% intentionally absent. They may be restored only from author-approved input.
+\author*[1]{\PendingAuthor{provide the full author list and approved order}}
+\affil*[1]{\PendingAuthor{provide every institutional address and author--affiliation mapping}}
+\email{\PendingAuthor{provide every author email address and identify the corresponding author}}
 
-\abstract{MaskImpute is a selective single-cell RNA-sequencing imputation method that estimates whether each observed zero preceded technical loss and restricts reconstruction accordingly. We designed a truth-aware benchmark spanning four independent simulation mechanisms, paired sequencing-depth views, modern same-input comparators, molecular validation, ablations, and resource scaling. \PendingResult{replace this sentence with the sealed primary result and calibrated conclusion}. All analyses are generated from immutable, machine-readable study artifacts.}
+\abstract{MaskImpute is a selective single-cell ribonucleic acid (RNA) sequencing imputation method that estimates whether each observed zero preceded technical loss and restricts reconstruction accordingly. We prespecified a truth-aware benchmark spanning four independent simulation mechanisms, paired sequencing-depth views, same-input comparators, real-data endpoints, ablations, and resource scaling. \PendingResult{insert the sealed primary result and scope-qualified conclusion}. Until then, this draft makes no empirical advance claim.}
 
 \keywords{single-cell RNA sequencing, dropout, selective imputation, count model, benchmark, reproducible research}
 
@@ -45,7 +46,7 @@ The benchmark uses SymSim, SERGIO, SPARSim, and a semisynthetic thinning mechani
 
 \subsection{Selective reconstruction is compared on common estimands and scales}
 
-All same-input methods receive the identical quality-controlled cell and gene set. Count-scale outputs are evaluated directly; normalized outputs are converted through prespecified, method-specific evaluator mappings before the common $\log_2(\mathrm{CP10k}+1)$ distributional analysis. Primary reconstruction errors, dropout-restricted errors, correlation error, false-positive expression, nonzero preservation, and per-gene empirical Wasserstein distance are reported together rather than reduced to one favorable metric.
+All same-input methods receive the identical quality-controlled cell and gene set. Count-scale outputs are evaluated directly; normalized outputs are converted through prespecified, method-specific evaluator mappings before the common counts-per-10,000 (CP10k) $\log_2(\mathrm{CP10k}+1)$ distributional analysis. Primary reconstruction errors, dropout-restricted errors, correlation error, false-positive expression, nonzero preservation, and per-gene empirical Wasserstein distance are reported together rather than reduced to one favorable metric.
 
 \PendingResult{insert sealed median/IQR estimates, paired intervals, win/tie/loss summaries, and Pareto results}
 
@@ -57,7 +58,7 @@ Cross-fitted count-model scores are generated without evaluator truth at inferen
 
 \subsection{Biological endpoints are isolated from method inputs}
 
-Group labels, marker truth, held-out count splits, proteins, spike-ins, replicates, and bulk references remain evaluator-only. Prespecified endpoints include marker-rank loss, clustering loss, positive-control differential-expression recovery, held-out gene and cell profile concordance, RNA--protein concordance, ERCC recovery, technical-replicate concordance, and bulk--pseudobulk concordance. Trajectory recovery is reported as unavailable when a mechanism lacks genuine prespecified pseudotime rather than substituting a constructed label.
+Group labels, marker truth, held-out count splits, proteins, spike-ins, replicates, and bulk references remain evaluator-only. Prespecified endpoints include marker-rank loss, clustering loss, positive-control differential-expression recovery, held-out gene and cell profile concordance, RNA--protein concordance, External RNA Controls Consortium (ERCC) recovery, technical-replicate concordance, and bulk--pseudobulk concordance. Trajectory recovery is reported as unavailable when a mechanism lacks genuine prespecified pseudotime rather than substituting a constructed label.
 
 \PendingResult{insert sealed orthogonal and evaluator-only endpoint results}
 
@@ -69,13 +70,13 @@ The ablation panel changes one named component at a time where possible and incl
 
 \subsection{Resource scaling is reported with failures in the denominator}
 
-The prespecified scaling panel uses 10,000, 25,000, 50,000, and 100,000 cells from one fixed mechanism. Wall-clock time, peak resident memory, peak GPU memory, and terminal status are reported for every scheduled run. Accuracy is reported only where the truth matrix fits the prespecified metric implementation.
+The prespecified scaling panel uses 10,000, 25,000, 50,000, and 100,000 cells from one fixed mechanism. Wall-clock time, peak resident memory, peak graphics processing unit (GPU) memory, and terminal status are reported for every scheduled run. Accuracy is reported only where the truth matrix fits the prespecified metric implementation.
 
 \PendingResult{insert sealed scaling results and Figure 5}
 
 \subsection{External-reference methods form a separate applicability track}
 
-D3Impute and scTsI require a matched bulk reference and therefore are not presented as same-input competitors. Their development evidence is reported on a separate reference-available track, with endpoint overlap described explicitly and no use of evaluator truth as method input \cite{Zhu2025D3Impute,Guan2025scTsI}.
+D3Impute and scTsI require a matched bulk reference and therefore are not presented as same-input competitors. Their development evidence will be reported on a separate reference-available track, with endpoint overlap described explicitly and no use of evaluator truth as method input \cite{Zhu2025D3Impute,Guan2025scTsI}.
 
 \PendingResult{insert sealed external-reference availability and endpoint results}
 
@@ -95,7 +96,7 @@ The untouched final round is used once after method and protocol freeze. Develop
 
 \subsection{Study design, preregistered authority, and evidence lifecycle}
 
-Tracked JSON authorities define the protocol, development panel, method registry, search space, calibration contract, selection contract, ablations, source pins, runtime lock, and final lifecycle. Canonical checksums bind every authority consumed by an execution plan. Development artifacts are resumable but immutable once published. The final lifecycle permits one execution claim; terminal records must cover the complete planned denominator. Infrastructure errors, authority blocks, budget exhaustion, omissions, checksum mismatches, and unsafe paths fail closed.
+Tracked JavaScript Object Notation (JSON) authorities define the protocol, development panel, method registry, search space, calibration contract, selection contract, ablations, source pins, runtime lock, and final lifecycle. Canonical checksums bind every authority consumed by an execution plan. Development artifacts are resumable but immutable once published. The final lifecycle permits one execution claim; terminal records must cover the complete planned denominator. Infrastructure errors, authority blocks, budget exhaustion, omissions, checksum mismatches, and unsafe paths fail closed.
 
 Development uses two biological draws per mechanism with moderate and severe technical views. The final simulation panel uses five new biological draws per mechanism, the same paired views, and three fixed model seeds for stochastic methods. Cell filtering is restricted to the union of zero-observed-library cells across the paired views and is applied identically to every method. Additional cell or gene filtering is forbidden.
 
@@ -124,7 +125,7 @@ Primary metrics are mean squared error, dropout-restricted mean squared error, p
 
 \subsection{Evaluator-only biological endpoints}
 
-Method outputs contain only an aligned matrix and cell/gene identifiers. Endpoint targets are held in a separate evaluator object. Marker ranks and positive-control differential expression use simulator group-marker truth; Benjamini--Hochberg adjustment is applied once across the declared group-by-gene family. Clustering uses deterministic principal components and seeded $k$-means, reported as $1-\mathrm{ARI}$ and $1-\mathrm{NMI}$. Held-out gene and cell profile losses use independent count splits. Genuine pseudotime is required for trajectory recovery; absent truth yields a reason-coded unavailable result.
+Method outputs contain only an aligned matrix and cell/gene identifiers. Endpoint targets are held in a separate evaluator object. Marker ranks and positive-control differential expression use simulator group-marker truth; Benjamini--Hochberg adjustment is applied once across the declared group-by-gene family. Clustering uses deterministic principal components and seeded $k$-means, reported as one minus the adjusted Rand index (ARI) and one minus normalized mutual information (NMI). Held-out gene and cell profile losses use independent count splits. Genuine pseudotime is required for trajectory recovery; absent truth yields a reason-coded unavailable result.
 
 \subsection{Statistical analysis}
 
@@ -134,13 +135,19 @@ The biological draw is the independent unit. Model seeds are averaged within tec
 
 Independent parent-process telemetry samples the full process tree. Runs are terminated when their frozen wall-time, resident-memory, or GPU-memory ceiling is exceeded. Scaling uses the fixed cell-count grid and one biological draw; its accuracy summaries are descriptive and are not treated as biological replication.
 
+Artificial intelligence (AI) use requires a separate, author-approved disclosure.
+
 \subsection{Use of generative AI or AI-assisted technologies}
 
-\PendingAuthor{provide the author-approved disclosure required by current publisher policy}
+\PendingAuthor{review and approve a complete disclosure of reportable large-language-model use, including its roles and the human validation and accountability applied to its outputs}
 
 \subsection{Reproducibility and software availability}
 
-Source revisions, source-tree hashes, runtime closure inventories, environment identities, command receipts, seeds, protocol files, and artifact checksums are machine readable. \PendingAuthor{choose and add an OSI-approved project license}. \PendingAuthor{provide the public repository URL and archival DOI}. The final release will include exact commands for development reconstruction, selection, freeze, one-use final execution, analysis generation, and manuscript rendering.
+Source revisions, source-tree hashes, runtime closure inventories, environment identities, command receipts, seeds, protocol files, and artifact checksums are machine readable. \PendingAuthor{choose and add an Open Source Initiative (OSI)-approved project license}. \PendingAuthor{provide the public repository URL and, if created, the recommended archival digital object identifier (DOI)}. The final release will include exact commands for development reconstruction, selection, freeze, one-use final execution, analysis generation, and manuscript rendering.
+
+\section*{Abbreviations}
+
+AI, artificial intelligence; ARI, adjusted Rand index; CP10k, counts per 10,000; DOI, digital object identifier; ERCC, External RNA Controls Consortium; GPU, graphics processing unit; JSON, JavaScript Object Notation; NMI, normalized mutual information; OSI, Open Source Initiative; RNA, ribonucleic acid.
 
 \section*{Declarations}
 

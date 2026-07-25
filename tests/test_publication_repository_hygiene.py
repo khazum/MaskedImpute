@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -19,6 +20,26 @@ _GENERATED_MATRIX_SUFFIXES = {
     ".npz",
 }
 _DIRECT_CHECKPOINT_INTENT_SUFFIX = ".transaction.json"
+
+
+def _latex_command_body(source: str, command: str) -> str:
+    marker = f"\\{command}{{"
+    start = source.index(marker) + len(marker)
+    depth = 1
+    cursor = start
+    while depth:
+        character = source[cursor]
+        if character == "{" and source[cursor - 1] != "\\":
+            depth += 1
+        elif character == "}" and source[cursor - 1] != "\\":
+            depth -= 1
+        cursor += 1
+    return source[start : cursor - 1]
+
+
+def _latex_prose_word_count(source: str) -> int:
+    without_commands = re.sub(r"\\[A-Za-z@]+\*?", "", source)
+    return len(re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*", without_commands))
 
 
 def _tracked_or_unignored_paths() -> tuple[Path, ...]:
@@ -166,6 +187,109 @@ def test_repository_presence_check_includes_ignored_direct_checkpoint_intent(
         ".checkpoint.json.transaction.json"
     )
     assert expected in checked
+
+
+def test_genome_biology_draft_has_complete_fail_closed_front_matter() -> None:
+    manuscript = (ROOT / "paper/manuscript.tex").read_text(encoding="utf-8")
+
+    ordered_front_matter = (
+        r"\title[",
+        r"\author*",
+        r"\affil*",
+        r"\email{",
+        r"\abstract{",
+        r"\keywords{",
+        r"\maketitle",
+    )
+    positions = tuple(manuscript.index(fragment) for fragment in ordered_front_matter)
+    assert positions == tuple(sorted(positions))
+    for command in (r"\author*", r"\affil*", r"\email{"):
+        line = next(line for line in manuscript.splitlines() if command in line)
+        assert r"\PendingAuthor" in line
+
+    abstract = _latex_command_body(manuscript, "abstract")
+    assert _latex_prose_word_count(abstract) <= 100
+    assert r"\cite" not in abstract
+
+    keywords = tuple(
+        keyword.strip()
+        for keyword in _latex_command_body(manuscript, "keywords").split(",")
+    )
+    assert 3 <= len(keywords) <= 10
+    assert all(keywords)
+
+
+def test_genome_biology_draft_has_required_section_and_declaration_order() -> None:
+    manuscript = (ROOT / "paper/manuscript.tex").read_text(encoding="utf-8")
+    sections = (
+        r"\section{Background}",
+        r"\section{Results}",
+        r"\section{Discussion}",
+        r"\section{Conclusions}",
+        r"\section{Methods}",
+        r"\section*{Abbreviations}",
+        r"\section*{Declarations}",
+    )
+    positions = tuple(manuscript.index(section) for section in sections)
+    assert positions == tuple(sorted(positions))
+
+    methods = positions[4]
+    abbreviations = positions[5]
+    disclosure = manuscript.index(
+        r"\subsection{Use of generative AI or AI-assisted technologies}"
+    )
+    assert methods < disclosure < abbreviations
+    assert methods < manuscript.index("Artificial intelligence (AI)") < disclosure
+
+    declarations = manuscript[positions[6] :]
+    required_headings = (
+        "Ethics approval and consent to participate",
+        "Consent for publication",
+        "Availability of data and materials",
+        "Competing interests",
+        "Funding",
+        "Authors' contributions",
+        "Acknowledgements",
+    )
+    actual_headings = tuple(re.findall(r"\\subsection\*\{([^}]*)\}", declarations))
+    assert actual_headings == required_headings
+
+
+def test_genome_biology_draft_does_not_claim_unexecuted_analyses_are_complete() -> None:
+    manuscript = (ROOT / "paper/manuscript.tex").read_text(encoding="utf-8")
+
+    assert "All analyses are generated" not in manuscript
+    assert "Their development evidence is reported" not in manuscript
+
+
+def test_genome_biology_checklists_leave_evidence_dependent_criteria_open() -> None:
+    compact = (ROOT / "paper/submission_checklist.md").read_text(encoding="utf-8")
+    full = (ROOT / "docs/genome-biology-submission-checklist.md").read_text(
+        encoding="utf-8"
+    )
+
+    checklist_items = tuple(
+        match
+        for match in re.finditer(
+            r"(?ms)^- \[(?P<status>[ x])\] (?P<body>.*?)(?=^- \[[ x]\] |\Z)",
+            compact,
+        )
+    )
+    checked_items = tuple(
+        " ".join(match.group("body").split())
+        for match in checklist_items
+        if match.group("status") == "x"
+    )
+    assert not any(
+        evidence_phrase in item
+        for item in checked_items
+        for evidence_phrase in ("state-of-the-art", "after final rendering")
+    )
+    assert (
+        "- [ ] Completed same-dataset side-by-side results demonstrate a clear "
+        "advance over current state-of-the-art methods"
+    ) in " ".join(compact.split())
+    assert "**Guidance verified:** 23 July 2026" in full
 
 
 ACTIVE_PYTHON_CLIS = tuple(
