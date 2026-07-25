@@ -181,7 +181,8 @@ def estimate_shrunk_gene_dispersion(
         raise ValueError(
             "library_sizes must be a numeric vector with one value per cell"
         )
-    libraries = np.asarray(libraries, dtype=np.float64)
+    with np.errstate(over="ignore", invalid="ignore"):
+        libraries = np.asarray(libraries, dtype=np.float64)
     if not np.all(np.isfinite(libraries)) or np.any(libraries < 0):
         raise ValueError("library_sizes must be finite and nonnegative")
     if not np.array_equal(libraries, counts.sum(axis=1, dtype=np.float64)):

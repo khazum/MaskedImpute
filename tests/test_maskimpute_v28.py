@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import json
 import importlib.util
+import warnings
 
 import numpy as np
 import pytest
@@ -212,6 +213,27 @@ def test_gene_dispersion_rejects_protocol_masked_library_sizes() -> None:
 
     with pytest.raises(TypeError, match="library_sizes.*masked"):
         estimate_shrunk_gene_dispersion(counts, libraries)
+
+
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).max <= np.finfo(np.float64).max,
+    reason="extended precision is unavailable",
+)
+def test_gene_dispersion_normalizes_library_cast_overflow_errors() -> None:
+    from maskimpute.nb_model import estimate_shrunk_gene_dispersion
+
+    counts = np.asarray([[1], [1]], dtype=np.int64)
+    outside_float64 = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+    libraries = np.asarray([outside_float64, outside_float64], dtype=np.longdouble)
+
+    with np.errstate(over="raise"):
+        with pytest.raises(ValueError, match="library_sizes.*finite"):
+            estimate_shrunk_gene_dispersion(counts, libraries)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(ValueError, match="library_sizes.*finite"):
+            estimate_shrunk_gene_dispersion(counts, libraries)
 
 
 def test_gene_dispersion_rejects_protocol_masked_estimation_mask() -> None:

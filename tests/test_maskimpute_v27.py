@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import warnings
 
 import numpy as np
 import pytest
@@ -194,6 +195,26 @@ def test_inverse_normalization_rejects_protocol_masked_library_sizes():
             library_sizes,
             target=1_000.0,
         )
+
+
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).max <= np.finfo(np.float64).max,
+    reason="extended precision is unavailable",
+)
+def test_inverse_normalization_normalizes_float64_cast_overflow_errors():
+    from maskimpute.train import invert_observed_normalization
+
+    outside_float64 = np.longdouble(np.finfo(np.float64).max) * np.longdouble(2)
+    normalized = np.asarray([[outside_float64]], dtype=np.longdouble)
+
+    with np.errstate(over="raise"):
+        with pytest.raises(ValueError, match="normalized_expression.*finite"):
+            invert_observed_normalization(normalized, [1.0], target=1.0)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        with pytest.raises(ValueError, match="normalized_expression.*finite"):
+            invert_observed_normalization(normalized, [1.0], target=1.0)
 
 
 @pytest.mark.skipif(

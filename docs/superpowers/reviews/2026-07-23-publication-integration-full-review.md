@@ -2269,3 +2269,44 @@ Ruff module invocation stopped before analysis because that environment does
 not contain Ruff; rerunning the same checks with the already installed Ruff
 0.14.4 executable produced the recorded clean results. This was tool placement,
 not a repository finding.
+
+## Task 10: Independent whole-range review correction
+
+The independent review of the 40 commits from the fixed review baseline
+through the Task 9 candidate accepted the range with zero Critical and zero
+Important findings. It retained one Minor exception-normalization defect:
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-112 | Minor | Two finite extended-precision inputs outside the float64 range were rejected with a NumPy-state-dependent `RuntimeWarning` or `FloatingPointError` instead of the documented `ValueError`. | Closed test-first. The two float64 conversion boundaries now locally suppress conversion overflow signalling, then reject the resulting nonfinite values through their existing `ValueError` contracts. Both global `np.seterr(over="raise")` and warning-as-error states are covered. |
+
+The focused RED run reported:
+
+```text
+2 failed in 1.74s
+```
+
+Both failures exposed `FloatingPointError: overflow encountered in cast` at the
+reviewed conversion boundaries. The same two tests passed after the bounded
+correction:
+
+```text
+2 passed in 1.58s
+```
+
+After formatting, the focused rerun reported:
+
+```text
+2 passed in 1.72s
+```
+
+The complete v27 and v28 owner modules reported:
+
+```text
+116 passed, 2 skipped in 3.20s
+```
+
+Focused Ruff lint and formatting checks and `git diff --check` also passed.
+The correction does not change any accepted scientific dependency,
+configuration, population, estimand, selection rule, seed policy, or claim
+permission. No scientific workload ran.

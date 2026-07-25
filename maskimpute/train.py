@@ -169,7 +169,8 @@ def _finite_matrix(value: object, name: str) -> np.ndarray:
         raise ValueError(f"{name} must be a two-dimensional matrix")
     if matrix.dtype.kind not in "iuf" or matrix.dtype.kind == "b":
         raise TypeError(f"{name} must contain real numeric values")
-    result = np.asarray(matrix, dtype=np.float64)
+    with np.errstate(over="ignore", invalid="ignore"):
+        result = np.asarray(matrix, dtype=np.float64)
     if not np.all(np.isfinite(result)):
         raise ValueError(f"{name} must contain only finite values")
     if np.any(result < 0):
