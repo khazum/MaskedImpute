@@ -10,7 +10,6 @@ if [[ $# -lt 2 || $# -gt 3 ]]; then
 fi
 
 library_dir=$(realpath -m "$1")
-saver_source=$(realpath "$2")
 build_receipt=${3:-"${library_dir}.build-receipt.json"}
 build_receipt=$(realpath -m "$build_receipt")
 
@@ -29,6 +28,13 @@ if [[ -e "$build_receipt" ]]; then
   echo "refusing to replace existing build receipt: $build_receipt" >&2
   exit 73
 fi
+if [[ "$library_dir" == "$build_receipt" ||
+      "$library_dir" == "$build_receipt/"* ||
+      "$build_receipt" == "$library_dir/"* ]]; then
+  echo "library and build receipt paths must be disjoint" >&2
+  exit 64
+fi
+saver_source=$(realpath "$2")
 
 for command in awk base64 curl git jq R realpath Rscript sha256sum; do
   command -v "$command" >/dev/null || {

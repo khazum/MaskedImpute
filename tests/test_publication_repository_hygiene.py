@@ -256,3 +256,164 @@ def test_environment_builder_refuses_to_replace_existing_receipt(
     assert completed.returncode == 73
     assert "refusing to replace existing build receipt" in completed.stderr
     assert receipt.read_text(encoding="utf-8") == "existing receipt\n"
+
+
+def test_environment_builder_existing_receipt_precedes_source_normalization(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "library"
+    missing_source = tmp_path / "missing-parent" / "source"
+    receipt = tmp_path / "build-receipt.json"
+    receipt.write_text("existing receipt\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/build_saver_r_environment.sh"),
+            str(library),
+            str(missing_source),
+            str(receipt),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 73
+    assert "refusing to replace existing build receipt" in completed.stderr
+    assert receipt.read_text(encoding="utf-8") == "existing receipt\n"
+    assert not library.exists()
+
+
+def test_environment_builder_rejects_receipt_equal_to_library_before_writing(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "library"
+    missing_source = tmp_path / "missing-parent" / "source"
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/build_saver_r_environment.sh"),
+            str(library),
+            str(missing_source),
+            str(library),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 64
+    assert "library and build receipt paths must be disjoint" in completed.stderr
+    assert not library.exists()
+
+
+def test_environment_builder_rejects_receipt_nested_in_library_before_writing(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "library"
+    missing_source = tmp_path / "missing-parent" / "source"
+    receipt = library / "nested" / ".." / "build-receipt.json"
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/build_saver_r_environment.sh"),
+            str(library),
+            str(missing_source),
+            str(receipt),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 64
+    assert "library and build receipt paths must be disjoint" in completed.stderr
+    assert not library.exists()
+
+
+def test_environment_builder_rejects_library_nested_under_receipt_path(
+    tmp_path: Path,
+) -> None:
+    receipt = tmp_path / "receipt-path"
+    library = receipt / "library"
+    missing_source = tmp_path / "missing-parent" / "source"
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/build_saver_r_environment.sh"),
+            str(library),
+            str(missing_source),
+            str(receipt),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 64
+    assert "library and build receipt paths must be disjoint" in completed.stderr
+    assert not receipt.exists()
+
+
+def test_environment_builder_allows_canonical_sibling_receipt(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "library"
+    missing_source = tmp_path / "missing-parent" / "source"
+    receipt = tmp_path / "library.build-receipt.json"
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/build_saver_r_environment.sh"),
+            str(library),
+            str(missing_source),
+            str(receipt),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert "library and build receipt paths must be disjoint" not in completed.stderr
+    assert not library.exists()
+    assert not receipt.exists()
+
+
+def test_conditional_revision_commands_render_inside_ordered_step() -> None:
+    lines = (
+        (ROOT / "docs/development-selection-workflow.md")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    start = next(
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("13. Complete a revision stage")
+    )
+    end = next(
+        index
+        for index, line in enumerate(lines[start + 1 :], start=start + 1)
+        if line.startswith("14. Complete the fixed external-reference")
+    )
+    continuation = lines[start + 1 : end]
+
+    assert all(not line or line.startswith("    ") for line in continuation)
+    nested = "\n".join(
+        line[4:] if line.startswith("    ") else line for line in continuation
+    )
+    fences = tuple(line for line in nested.splitlines() if line.startswith("```"))
+    assert fences == ("```text", "```", "```text", "```")
+    assert nested.index("run_v28_revision_competition.py") < nested.index(
+        "run_v29_revision_competition.py"
+    )

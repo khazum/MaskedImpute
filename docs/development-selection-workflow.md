@@ -37,13 +37,13 @@ The release operator must complete these steps in order:
     receipt requests that exact revision. An activated `v28` stage requires the
     entire following sequence:
 
-   ```text
-   python scripts/run_v28_revision_competition.py [--environment METHOD=EXECUTABLE ...]
-   python scripts/build_v28_revision_selection_input.py
-   python scripts/run_development_downstream_evidence.py
-   python scripts/promote_development_selection_input.py
-   python scripts/select_v28_revision_candidate.py
-   ```
+    ```text
+    python scripts/run_v28_revision_competition.py [--environment METHOD=EXECUTABLE ...]
+    python scripts/build_v28_revision_selection_input.py
+    python scripts/run_development_downstream_evidence.py
+    python scripts/promote_development_selection_input.py
+    python scripts/select_v28_revision_candidate.py
+    ```
 
     A subsequent exact `v29` activation requires:
 

@@ -1976,10 +1976,13 @@ any tracked change:
 
 | ID | Severity | Summary | Disposition |
 |---|---|---|---|
-| F-094 | Important | `scripts/finalize_development_authority.py --help` ignored the help request and entered development-artifact validation; expected authority failures also escaped as a traceback rather than the CLI's structured failure result. | Closed test-first with an argument parser that runs before the action and a bounded expected-error translation to exit status 2. The action still exposes no caller-controlled scientific or path options. |
-| F-095 | Important | `scripts/simulators/run_sergio.py --help` treated help as invalid positional arity and exited 1 on the required CLI discovery boundary. | Closed test-first with a side-effect-free help branch. The three positional execution arguments and simulation behavior are unchanged. |
-| F-096 | Important | `scripts/build_saver_r_environment.sh` refused to replace an existing library but could overwrite an existing caller-named build receipt. | Closed test-first by rejecting an existing receipt with the same non-overwrite exit status used for an existing library, before any build or source inspection begins. |
-| F-097 | Important | `docs/development-selection-workflow.md` omitted the score-preparation and authority-finalization prerequisites, the downstream step required before base promotion, the build/downstream/promotion/selection sequence for both conditional revisions, the external-reference prerequisite, and post-final analysis order. | Closed against the production CLI contracts. The document now gives the complete guarded order, distinguishes operator locators from scientific choices, and states that lower-level state/subsystem commands do not replace the release sequence. |
+| F-094 | Important | `scripts/finalize_development_authority.py --help` ignored the help request and entered development-artifact validation; expected authority failures also escaped as a traceback rather than the CLI's structured failure result. | Independently accepted unchanged. The parser consumes help before the action and translates the bounded expected error to status 2 without adding scientific or path options. |
+| F-095 | Important | `scripts/simulators/run_sergio.py --help` treated help as invalid positional arity and exited 1 on the required CLI discovery boundary. | Independently accepted unchanged. Help remains side-effect-free and the three-positional execution contract is unchanged. |
+| F-096 | Important | `scripts/build_saver_r_environment.sh` refused to replace an existing library but could overwrite an existing caller-named build receipt. | The original overwrite defect remains closed. Independent review found adjacent destination-relationship and validation-order gaps, tracked separately as F-098 and F-099. |
+| F-097 | Important | `docs/development-selection-workflow.md` omitted the score-preparation and authority-finalization prerequisites, the downstream step required before base promotion, the build/downstream/promotion/selection sequence for both conditional revisions, the external-reference prerequisite, and post-final analysis order. | The corrected command content and ordering were independently accepted. Independent review found a CommonMark nesting defect in the conditional revision block, tracked separately as F-100. |
+| F-098 | Important | The SAVER environment builder accepted equal or ancestor-related normalized library and receipt destinations. Parent creation could turn the library destination into a container, or the final receipt write could follow a successful library move into the same path, producing a false success or a partial non-retryable outcome. | Closed test-first by rejecting equality and either ancestor relationship before source resolution, parent creation, or build work. The canonical sibling receipt remains valid, and every rejected case leaves both destinations absent. |
+| F-099 | Minor | Source normalization preceded the existing-receipt refusal, so an invalid source parent could mask the documented non-overwrite status. | Closed test-first by normalizing and checking the receipt before source normalization. An existing receipt now always returns status 73 at this boundary and remains byte-for-byte unchanged. |
+| F-100 | Minor | The first conditional revision fence used a three-space continuation under ordered item 13, so CommonMark rendered the v28 and v29 material outside the intended list item. | Closed with four-space item continuation indentation and a structural regression that verifies both fenced blocks remain children of ordered step 13 in v28-before-v29 order. |
 
 The focused RED invocation reported:
 
@@ -2031,3 +2034,55 @@ The exact four-file Task 7 suite then reported:
 Production, tests, and operator documentation remained frozen throughout that
 run. Only this terminal evidence and the matching Task 7 report were updated
 afterward.
+
+### Task 7 independent-review correction
+
+The first independent review accepted the F-094 and F-095 corrections and the
+scientific command content added for F-097. It found one important
+environment-builder destination defect and two minor validation/documentation
+defects, recorded as F-098 through F-100 above.
+
+Focused regressions first reported:
+
+```text
+4 failed, 1 passed in 0.11s
+```
+
+The failures covered the existing-receipt ordering, equal destinations, a
+normalized receipt nested below the library, and the malformed ordered-list
+structure. The canonical sibling receipt control passed. A separate converse
+ancestor regression then reported:
+
+```text
+1 failed in 0.07s
+```
+
+After the bounded corrections and formatting, the consolidated focused set
+reported:
+
+```text
+7 passed in 0.10s
+```
+
+The complete repository-hygiene and comparator-workflow owners reported:
+
+```text
+168 passed in 234.25s (0:03:54)
+```
+
+Active CLI help, shell and R parsing, study JSON parsing, archive and submodule
+boundaries, Ruff formatting and lint, scoped Python compilation, and
+`git diff --check` passed before the exact suite. The exact four-file Task 7
+suite then reported:
+
+```text
+230 passed, 1 skipped in 1020.79s (0:17:00)
+```
+
+Production, tests, and operator documentation remained frozen throughout that
+run. The same static and structural gates passed again after this terminal
+evidence was recorded.
+
+The corrections do not change scientific dependencies, selected methods,
+configurations, dataset populations, seeds, estimands, revision allowances,
+archive contents, or claim permissions. No scientific workload ran.
