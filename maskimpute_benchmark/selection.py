@@ -2202,7 +2202,8 @@ def _load_selection_authority(
         else ()
     )
     if (
-        panel["schema_version"] != 1
+        type(panel["schema_version"]) is not int
+        or panel["schema_version"] != 1
         or panel["role"] != "development_only"
         or panel["namespace"] != development["namespace"]
         or mechanisms != ("symsim", "sergio", "sparsim", "semisynthetic")
@@ -2357,7 +2358,7 @@ def _load_selection_authority(
         },
         "selection contract",
     )
-    if contract["schema_version"] != 1:
+    if type(contract["schema_version"]) is not int or contract["schema_version"] != 1:
         raise SelectionAuthorityError("selection contract schema_version must equal 1")
     candidate_method_id = contract["candidate_method_id"]
     candidate_method = method_rows.get(candidate_method_id)
@@ -2528,7 +2529,11 @@ def _load_selection_authority(
             ),
         },
     }
-    if payloads["study/calibration_contract.json"] != expected_calibration_contract:
+    if (
+        type(payloads["study/calibration_contract.json"].get("schema_version"))
+        is not int
+        or payloads["study/calibration_contract.json"] != expected_calibration_contract
+    ):
         raise SelectionAuthorityError("calibration retention contract is invalid")
     comparator_reference_payload = _exact_authority_mapping(
         contract["comparator_tuning"],
@@ -2753,7 +2758,8 @@ def _load_selection_authority(
         "ablation registry",
     )
     if (
-        ablations["schema_version"] != 1
+        type(ablations["schema_version"]) is not int
+        or ablations["schema_version"] != 1
         or ablations["model_seeds"] != list(model_seeds)
         or ablations["parameter_budget"] != "exact_nominal_match"
         or ablations["optimizer_budget"] != "shared_frozen_candidate_budget"
@@ -2824,7 +2830,7 @@ def _load_selection_authority(
         },
         "development search ledger",
     )
-    if ledger["schema_version"] != 1:
+    if type(ledger["schema_version"]) is not int or ledger["schema_version"] != 1:
         raise SelectionAuthorityError("development search schema_version must equal 1")
     ledger_authority = _exact_authority_mapping(
         ledger["authority"],

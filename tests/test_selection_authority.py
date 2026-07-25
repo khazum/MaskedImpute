@@ -1600,6 +1600,41 @@ def test_selection_authority_carries_direct_comparator_reference() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "study/development_panel.json",
+        "study/selection_contract.json",
+        "study/calibration_contract.json",
+        "study/ablations.json",
+        "study/development_search.json",
+    ),
+)
+def test_selection_owned_authorities_reject_boolean_schema_versions(
+    monkeypatch: pytest.MonkeyPatch,
+    relative: str,
+) -> None:
+    import maskimpute_benchmark.selection as selection
+
+    canonical = selection._load_selection_authority(ROOT, require_clean=False)
+    assert canonical.model_seeds == (42, 43, 44)
+    original_reader = selection._read_authority_json
+
+    def mutated_reader(repository: Path, selected: str) -> dict[str, object]:
+        payload = original_reader(repository, selected)
+        if selected == relative:
+            payload = dict(payload)
+            payload["schema_version"] = True
+        return payload
+
+    monkeypatch.setattr(selection, "_read_authority_json", mutated_reader)
+    with pytest.raises(
+        selection.SelectionAuthorityError,
+        match="schema|panel|calibration|ablation",
+    ):
+        selection._load_selection_authority(ROOT, require_clean=False)
+
+
 def test_direct_selected_projection_rejects_duplicate_or_drifted_authority_rows() -> (
     None
 ):

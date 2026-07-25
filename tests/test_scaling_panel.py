@@ -481,6 +481,94 @@ def test_public_scaling_execution_rejects_incomplete_fixed_population(
         )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "model_seed",
+        "run_ids",
+        "output_scale",
+        "resource_ceilings",
+        "measurement_provenance",
+        "accuracy_schedule",
+        "contract_policy",
+        "seed_policy",
+    ),
+)
+def test_public_scaling_execution_rejects_coherent_fixed_authority_drift(
+    mutation: str,
+) -> None:
+    import maskimpute_benchmark.scaling as scaling
+    from maskimpute_benchmark.protocol import load_protocol
+
+    plan = _plan()
+    contract = scaling.load_scaling_contract(REPOSITORY / "study/scaling_panel.json")
+    registry, configurations = _configurations()
+    authority = scaling.ScalingExecutionAuthority(
+        repository=REPOSITORY,
+        contract=contract,
+        protocol=load_protocol(REPOSITORY / "study/protocol.json"),
+        frozen_method={},
+        registry=registry,
+        runner_authority=object(),
+        environments=object(),
+        plan=plan,
+    )
+    assert tuple(value.method_id for value in configurations) == contract.method_ids
+    scaling._require_complete_scaling_execution_population(authority)
+
+    entries = plan.entries
+    changed_contract = contract
+    if mutation == "model_seed":
+        changed_contract = replace(contract, model_seed=77)
+        entries = tuple(
+            replace(entry, model_seed=77) if entry.model_seed is not None else entry
+            for entry in entries
+        )
+    elif mutation == "run_ids":
+        entries = tuple(
+            replace(entry, run_id=f"forged-{entry.ordinal}") for entry in entries
+        )
+    elif mutation == "output_scale":
+        entries = tuple(
+            replace(entry, native_output_scale="forged_scale") for entry in entries
+        )
+    elif mutation == "resource_ceilings":
+        entries = tuple(
+            replace(
+                entry,
+                timeout_seconds=entry.timeout_seconds + 1,
+                max_rss_bytes=entry.max_rss_bytes + 1,
+                max_gpu_bytes=entry.max_gpu_bytes + 1,
+            )
+            for entry in entries
+        )
+    elif mutation == "measurement_provenance":
+        entries = tuple(
+            replace(
+                entry,
+                rss_measurement="forged_rss_measurement",
+                gpu_measurement="forged_gpu_measurement",
+            )
+            for entry in entries
+        )
+    elif mutation == "accuracy_schedule":
+        changed_contract = replace(contract, accuracy_cell_counts=(10_000,))
+    elif mutation == "contract_policy":
+        changed_contract = replace(contract, role="forged_scaling_role")
+    else:
+        changed_contract = replace(
+            contract,
+            seed_algorithm="forged_seed_policy",
+            seed_master=contract.seed_master + 1,
+        )
+    changed = replace(plan, entries=entries)
+
+    with pytest.raises(scaling.ScalingContractError, match="plan|population"):
+        scaling._require_complete_scaling_execution_population(
+            replace(authority, contract=changed_contract, plan=changed)
+        )
+
+
 def test_scaling_plan_uses_exact_frozen_comparator_payloads() -> None:
     from maskimpute_benchmark.direct_values import direct_equal
     from maskimpute_benchmark.runner import direct_bound_comparator_value

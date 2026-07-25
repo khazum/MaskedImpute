@@ -5389,10 +5389,12 @@ def _validate_frozen_execution_for_evaluation(
                 raise FinalRunnerContractError(
                     "terminal final failure lacks a reason code"
                 )
+            require_bound_metric_evidence(completed=False)
             if any(
                 metric.get("status") != status
                 or metric.get("reason") != reason
                 or metric.get("value") is not None
+                or type(metric.get("n")) is not int
                 or metric.get("n") != 0
                 for metric in metrics
             ):
@@ -5400,7 +5402,7 @@ def _validate_frozen_execution_for_evaluation(
                     "terminal final failure lacks complete reason-coded metric rows"
                 )
 
-        def require_completed_run_metric_evidence() -> None:
+        def require_bound_metric_evidence(*, completed: bool) -> None:
             direct_comparator = (
                 plan_entry.run.comparator_configuration is not None
                 or plan_entry.run.comparator_nonexecution_identity is not None
@@ -5484,6 +5486,8 @@ def _validate_frozen_execution_for_evaluation(
                     raise FinalRunnerContractError(
                         "completed final metric denominator is invalid"
                     )
+                if not completed:
+                    continue
                 if value is None:
                     if (
                         status != "unavailable"
@@ -5513,7 +5517,7 @@ def _validate_frozen_execution_for_evaluation(
                     raise FinalRunnerContractError(
                         "completed final execution has a failure reason"
                     )
-                require_completed_run_metric_evidence()
+                require_bound_metric_evidence(completed=True)
                 completed += 1
             elif status in {"failed", "timeout", "resource_exceeded", "unavailable"}:
                 require_reason_coded_metrics(str(status), run.get("reason"))
@@ -5609,8 +5613,26 @@ def _require_complete_publication_plan_population(
             configuration.comparator_configuration,
             configuration.comparator_nonexecution_identity,
         )
+        expected_reason = _FIXED_FINAL_NON_RUN_REASON_BY_METHOD.get(
+            configuration.method_id
+        )
+        expected_action = (
+            "not_applicable"
+            if (
+                expected_reason is not None
+                or configuration.comparator_nonexecution_identity is not None
+            )
+            else "execute"
+        )
+        if (
+            configuration.comparator_nonexecution_identity is not None
+            and expected_reason is None
+        ):
+            expected_reason = _TECHNICAL_UNAVAILABLE_REASON
         if (
             sum(value is not None for value in choices) != 1
+            or configuration.action != expected_action
+            or configuration.reason != expected_reason
             or (
                 configuration.legacy_configuration is not None
                 and type(configuration.legacy_configuration)

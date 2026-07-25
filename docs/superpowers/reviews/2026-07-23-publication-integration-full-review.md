@@ -1915,3 +1915,49 @@ recorded afterward.
 These corrections do not alter selected methods, the fixed scaling sizes or
 methods, final datasets, seed policies, revision allowances, estimands,
 execution behavior, or claim permissions. No scientific workload ran.
+
+### Task 6 v6 independent-review correction
+
+The next independent review found four remaining important validation gaps.
+The preceding v5 completion statement applied only to F-086 through F-089 and
+was not final Task 6 acceptance.
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-090 | Important | A coherent change to the observed control's configuration and all forty final rows could replace execution with a technical non-run. | Closed test-first by independently deriving each canonical method disposition and reason at the public final-population gate. The established 1,480 executable and 280 non-run rows are unchanged. |
+| F-091 | Important | Executable failures and planned non-runs accepted five-field metric rows without complete method, dataset, seed, or configuration bindings, and accepted Boolean false as denominator zero. | Closed test-first by applying the established full row schema and plan bindings to every terminal state, requiring canonical metric order and exact built-in integer denominators. |
+| F-092 | Important | The fixed public scaling gate trusted mutable typed values for its model seed, run labels, output scale, resource ceilings, measurement provenance, and schedule policy. | Closed test-first by sharing the existing fixed entry builder between planning and public validation, rebuilding tracked contract and registry values, and requiring exact permitted contract and entry fields. Generic serialization and synthetic checkpoints are unchanged. |
+| F-093 | Important | Five selection-owned source schema versions admitted Boolean true as integer one. | Closed test-first with exact built-in integer checks for the development panel, selection contract, calibration contract, ablation registry, and development-search ledger. Evaluation-manifest behavior is unchanged. |
+
+The focused RED run reported:
+
+```text
+26 failed in 115.63s (0:01:55)
+```
+
+After the bounded corrections, the formatted focused set reported:
+
+```text
+26 passed in 113.30s (0:01:53)
+```
+
+The complete changed-owner suites reported:
+
+```text
+355 passed in 3176.50s (0:52:56)
+```
+
+Ruff formatting and lint, scoped byte compilation, and `git diff --check`
+passed before the exact acceptance run. The exact sanitized fifteen-file Task
+6 suite then reported:
+
+```text
+972 passed in 6387.77s (1:46:27)
+```
+
+Production, tests, and documentation remained frozen throughout that run.
+Post-suite static gates also passed.
+
+These corrections do not alter selected methods, fixed final or scaling
+populations, seed policies, revision allowances, estimands, execution
+behavior, or claim permissions. No scientific workload ran.

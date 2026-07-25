@@ -1412,6 +1412,40 @@ def test_publication_evaluation_accepts_complete_canonical_typed_population(
     assert observed == {"status": "validated-control"}
 
 
+def test_publication_population_rejects_coherent_observed_nonrun_disposition() -> None:
+    from dataclasses import replace
+
+    from maskimpute_benchmark import final_runner
+
+    original = _complete_publication_final_plan()
+    changed_configuration = replace(
+        original.configurations[0],
+        action="not_applicable",
+        reason="technical_unavailable_development_attempts",
+    )
+    changed_entries = tuple(
+        replace(
+            entry,
+            action="not_applicable",
+            reason="technical_unavailable_development_attempts",
+        )
+        if entry.run.method_id == "observed"
+        else entry
+        for entry in original.entries
+    )
+    changed = replace(
+        original,
+        configurations=(changed_configuration, *original.configurations[1:]),
+        entries=changed_entries,
+    )
+
+    with pytest.raises(
+        final_runner.FinalRunnerContractError,
+        match="plan|population",
+    ):
+        final_runner._require_complete_publication_plan_population(changed)
+
+
 @pytest.mark.parametrize(
     ("scope", "replacement"),
     (
@@ -4710,6 +4744,84 @@ def test_final_evaluation_rejects_incomplete_completed_metric_evidence() -> None
         accepted.append(mutation)
 
     assert accepted == []
+
+
+@pytest.mark.parametrize("terminal_scope", ("executable_failure", "planned_nonrun"))
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "minimal_fields",
+        "method",
+        "dataset",
+        "seed",
+        "configuration",
+        "boolean_denominator",
+    ),
+)
+def test_final_evaluation_rejects_unbound_terminal_metric_rows(
+    terminal_scope: str,
+    mutation: str,
+) -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        _validate_frozen_execution_for_evaluation,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    entry = (
+        full.entries[0]
+        if terminal_scope == "executable_failure"
+        else next(value for value in full.entries if value.action == "not_applicable")
+    )
+    attempt = _unavailable_attempt(entry)
+    record = json.loads(
+        json.dumps(
+            {
+                "run": asdict(attempt.run),
+                "metrics": [metric.to_dict() for metric in attempt.metrics],
+                "execution_request": None,
+            }
+        )
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="0" * 64,
+    )
+    control = _validate_frozen_execution_for_evaluation(plan, (record,))
+    assert control["planned_run_count"] == 1
+
+    if mutation == "minimal_fields":
+        record["metrics"] = [
+            {
+                name: metric[name]
+                for name in ("metric", "status", "reason", "value", "n")
+            }
+            for metric in record["metrics"]
+        ]
+    else:
+        field, value = {
+            "method": ("method", "forged-method"),
+            "dataset": ("dataset_id", "forged-dataset"),
+            "seed": ("model_seed", 999),
+            "configuration": ("configuration_id", "forged-configuration"),
+            "boolean_denominator": ("n", False),
+        }[mutation]
+        record["metrics"][0][field] = value
+
+    with pytest.raises(FinalRunnerContractError, match="metric|terminal"):
+        _validate_frozen_execution_for_evaluation(plan, (record,))
 
 
 def test_load_prepared_final_panel_revalidates_and_pairs_in_manifest_order(

@@ -1275,6 +1275,66 @@ def _expected_scaling_dataset_authority(
     }
 
 
+def _build_scaling_plan_entries(
+    contract: ScalingContract,
+    registry: MethodRegistry,
+    configurations: Sequence[FrozenPlanMethodAuthority],
+) -> tuple[ScalingPlanEntry, ...]:
+    """Build the fixed schedule shared by planning and public validation."""
+
+    values = tuple(configurations)
+    entries: list[ScalingPlanEntry] = []
+    ordinal = 0
+    by_method = {value.method_id: value for value in values}
+    for cells in contract.cell_counts:
+        for method_id in contract.method_ids:
+            ordinal += 1
+            spec = registry.by_id(method_id)
+            configuration = by_method[method_id]
+            legacy = configuration.legacy_configuration
+            comparator = configuration.comparator_configuration
+            seed = contract.model_seed if spec.stochastic else None
+            seed_token = "deterministic" if seed is None else f"seed-{seed}"
+            identity_token = (
+                configuration.configuration_id
+                if comparator is not None
+                else str(legacy.configuration_sha256)[:12]
+            )
+            entries.append(
+                ScalingPlanEntry(
+                    ordinal=ordinal,
+                    run_id=(
+                        f"scaling-{method_id}-{cells}-{seed_token}-{identity_token}"
+                    ),
+                    cells=cells,
+                    genes=contract.genes,
+                    method_id=method_id,
+                    model_seed=seed,
+                    configuration_id=configuration.configuration_id,
+                    configuration_sha256=(
+                        None if legacy is None else legacy.configuration_sha256
+                    ),
+                    configuration_kind=configuration.kind,
+                    requires_count_score=configuration.requires_count_score,
+                    requires_calibration=configuration.requires_calibration,
+                    comparator_configuration=comparator,
+                    comparator_nonexecution_identity=None,
+                    accuracy_enabled=cells in contract.accuracy_cell_counts,
+                    native_output_scale=spec.output_scale,
+                    timeout_seconds=spec.resources.timeout_seconds,
+                    max_rss_bytes=int(spec.resources.max_rss_gib * 1024**3),
+                    max_gpu_bytes=int(spec.resources.max_gpu_gib * 1024**3),
+                    rss_measurement="linux_proc_process_tree_rss",
+                    gpu_measurement=(
+                        "nvidia_smi_process_tree_used_memory"
+                        if spec.resources.gpu_required
+                        else "not_applicable_cpu_only_method"
+                    ),
+                )
+            )
+    return tuple(entries)
+
+
 def build_scaling_plan(
     contract: ScalingContract,
     registry: MethodRegistry,
@@ -1365,55 +1425,7 @@ def build_scaling_plan(
             implementation_source_sha256, "implementation source checksum"
         ),
     }
-    entries: list[ScalingPlanEntry] = []
-    ordinal = 0
-    by_method = {value.method_id: value for value in values}
-    for cells in contract.cell_counts:
-        for method_id in contract.method_ids:
-            ordinal += 1
-            spec = registry.by_id(method_id)
-            configuration = by_method[method_id]
-            legacy = configuration.legacy_configuration
-            comparator = configuration.comparator_configuration
-            seed = contract.model_seed if spec.stochastic else None
-            seed_token = "deterministic" if seed is None else f"seed-{seed}"
-            identity_token = (
-                configuration.configuration_id
-                if comparator is not None
-                else str(legacy.configuration_sha256)[:12]
-            )
-            entries.append(
-                ScalingPlanEntry(
-                    ordinal=ordinal,
-                    run_id=(
-                        f"scaling-{method_id}-{cells}-{seed_token}-{identity_token}"
-                    ),
-                    cells=cells,
-                    genes=contract.genes,
-                    method_id=method_id,
-                    model_seed=seed,
-                    configuration_id=configuration.configuration_id,
-                    configuration_sha256=(
-                        None if legacy is None else legacy.configuration_sha256
-                    ),
-                    configuration_kind=configuration.kind,
-                    requires_count_score=configuration.requires_count_score,
-                    requires_calibration=configuration.requires_calibration,
-                    comparator_configuration=comparator,
-                    comparator_nonexecution_identity=None,
-                    accuracy_enabled=cells in contract.accuracy_cell_counts,
-                    native_output_scale=spec.output_scale,
-                    timeout_seconds=spec.resources.timeout_seconds,
-                    max_rss_bytes=int(spec.resources.max_rss_gib * 1024**3),
-                    max_gpu_bytes=int(spec.resources.max_gpu_gib * 1024**3),
-                    rss_measurement="linux_proc_process_tree_rss",
-                    gpu_measurement=(
-                        "nvidia_smi_process_tree_used_memory"
-                        if spec.resources.gpu_required
-                        else "not_applicable_cpu_only_method"
-                    ),
-                )
-            )
+    entries = _build_scaling_plan_entries(contract, registry, values)
     body = {
         "schema_version": 1,
         "input_hashes": input_hashes,
@@ -4148,12 +4160,48 @@ def _require_complete_scaling_execution_population(
 
     contract = authority.contract
     plan = authority.plan
+    try:
+        expected_contract = load_scaling_contract(
+            authority.repository / "study/scaling_panel.json"
+        )
+        expected_registry = load_method_registry(
+            authority.repository / "study/methods.json"
+        )
+        expected_entries = _build_scaling_plan_entries(
+            expected_contract,
+            expected_registry,
+            plan.configurations,
+        )
+    except (AttributeError, KeyError, OSError, TypeError, ValueError) as error:
+        raise ScalingContractError(
+            "public scaling execution plan population is incomplete"
+        ) from error
+    contract_fields = (
+        "schema_version",
+        "role",
+        "mechanism",
+        "technical_view",
+        "cell_counts",
+        "accuracy_cell_counts",
+        "accuracy_metrics",
+        "excluded_metric_families",
+        "genes",
+        "method_ids",
+        "model_seed",
+        "seed_algorithm",
+        "seed_master",
+        "artifact_policy",
+    )
     if (
         type(contract) is not ScalingContract
-        or contract.cell_counts != _CELL_COUNTS
-        or contract.method_ids != _METHOD_IDS
-        or type(contract.genes) is not int
-        or contract.genes != 500
+        or any(
+            type(getattr(contract, name)) is not type(getattr(expected_contract, name))
+            or not direct_equal(
+                getattr(contract, name),
+                getattr(expected_contract, name),
+            )
+            for name in contract_fields
+        )
         or type(plan) is not ScalingPlan
         or len(plan.entries) != len(_CELL_COUNTS) * len(_METHOD_IDS)
         or len(plan.configurations) != len(_METHOD_IDS)
@@ -4167,46 +4215,34 @@ def _require_complete_scaling_execution_population(
         raise ScalingContractError(
             "public scaling execution plan population is incomplete"
         )
-    configuration_by_method = {
-        configuration.method_id: configuration for configuration in plan.configurations
-    }
-    expected_population = tuple(
-        (cells, method_id) for cells in _CELL_COUNTS for method_id in _METHOD_IDS
+    entry_fields = (
+        "ordinal",
+        "run_id",
+        "cells",
+        "genes",
+        "method_id",
+        "model_seed",
+        "configuration_id",
+        "configuration_kind",
+        "requires_count_score",
+        "requires_calibration",
+        "accuracy_enabled",
+        "native_output_scale",
+        "timeout_seconds",
+        "max_rss_bytes",
+        "max_gpu_bytes",
+        "rss_measurement",
+        "gpu_measurement",
     )
-    for ordinal, (entry, expected) in enumerate(
-        zip(plan.entries, expected_population, strict=True),
-        start=1,
-    ):
-        expected_cells, expected_method = expected
+    for entry, expected in zip(plan.entries, expected_entries, strict=True):
         if type(entry) is not ScalingPlanEntry:
             raise ScalingContractError(
                 "public scaling execution plan population is incomplete"
             )
-        configuration = configuration_by_method[expected_method]
-        try:
-            spec = authority.registry.by_id(expected_method)
-        except (AttributeError, KeyError) as error:
-            raise ScalingContractError(
-                "public scaling execution method population is incomplete"
-            ) from error
-        expected_seed = contract.model_seed if spec.stochastic else None
-        if (
-            type(entry.ordinal) is not int
-            or entry.ordinal != ordinal
-            or type(entry.cells) is not int
-            or entry.cells != expected_cells
-            or entry.method_id != expected_method
-            or type(entry.genes) is not int
-            or entry.genes != contract.genes
-            or entry.model_seed != expected_seed
-            or entry.configuration_id != configuration.configuration_id
-            or entry.configuration_kind != configuration.kind
-            or type(entry.requires_count_score) is not bool
-            or entry.requires_count_score != configuration.requires_count_score
-            or type(entry.requires_calibration) is not bool
-            or entry.requires_calibration != configuration.requires_calibration
-            or type(entry.accuracy_enabled) is not bool
-            or not entry.accuracy_enabled
+        if any(
+            type(getattr(entry, name)) is not type(getattr(expected, name))
+            or not direct_equal(getattr(entry, name), getattr(expected, name))
+            for name in entry_fields
         ):
             raise ScalingContractError(
                 "public scaling execution plan population is incomplete"
