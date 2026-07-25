@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -162,3 +166,93 @@ def test_repository_presence_check_includes_ignored_direct_checkpoint_intent(
         ".checkpoint.json.transaction.json"
     )
     assert expected in checked
+
+
+ACTIVE_PYTHON_CLIS = tuple(
+    sorted((ROOT / "scripts").glob("*.py"))
+    + sorted((ROOT / "scripts/simulators").glob("*.py"))
+)
+
+
+@pytest.mark.parametrize(
+    "script",
+    ACTIVE_PYTHON_CLIS,
+    ids=lambda path: path.relative_to(ROOT).as_posix(),
+)
+def test_active_python_cli_help_exits_successfully_without_running_work(
+    script: Path,
+) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "usage:" in completed.stdout.lower()
+
+
+def _load_python_script(relative_path: str, module_name: str):
+    specification = importlib.util.spec_from_file_location(
+        module_name, ROOT / relative_path
+    )
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+def test_finalization_cli_returns_structured_nonzero_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from maskimpute_benchmark.selection import SelectionAuthorityError
+
+    script = _load_python_script(
+        "scripts/finalize_development_authority.py",
+        "task7_finalize_development_authority",
+    )
+
+    def fail_finalization() -> None:
+        raise SelectionAuthorityError("development authority is not ready")
+
+    monkeypatch.setattr(
+        script,
+        "finalize_development_artifact_bindings",
+        fail_finalization,
+    )
+
+    assert script.main([]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {"error": "development authority is not ready"}
+
+
+def test_environment_builder_refuses_to_replace_existing_receipt(
+    tmp_path: Path,
+) -> None:
+    library = tmp_path / "library"
+    source = tmp_path / "source"
+    source.mkdir()
+    receipt = tmp_path / "build-receipt.json"
+    receipt.write_text("existing receipt\n", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts/build_saver_r_environment.sh"),
+            str(library),
+            str(source),
+            str(receipt),
+        ],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 73
+    assert "refusing to replace existing build receipt" in completed.stderr
+    assert receipt.read_text(encoding="utf-8") == "existing receipt\n"

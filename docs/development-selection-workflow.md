@@ -9,39 +9,76 @@ records the required order; it does not authorize a scientific execution.
 The release operator must complete these steps in order:
 
 1. Implement and independently review the separate calibration amendment.
-2. Run the fixed 34-configuration smoke:
+2. Generate the fixed development panel:
+   `python scripts/generate_study_datasets.py --namespace dev`.
+3. Prepare the development count scores and retained calibration:
+   `python scripts/prepare_development_scores.py`.
+4. Validate both prepared artifacts and bind them into the tracked development
+   authority:
+   `python scripts/finalize_development_authority.py`.
+5. Commit and independently review `study/development_search.json` together
+   with the prepared score and calibration artifacts. Later selection commands
+   require this committed clean state.
+6. Run the fixed 34-configuration smoke:
    `python scripts/run_comparator_tuning_smoke.py`.
-3. Run the complete development denominator:
+7. Run the complete development denominator:
    `python scripts/run_development_competition.py`.
-4. Select one development-only configuration per eligible comparator:
+8. Select one development-only configuration per eligible comparator:
    `python scripts/select_comparator_configurations.py`.
-5. Build the fixed development-selection input:
+9. Build the fixed base development-selection input:
    `python scripts/build_development_selection_input.py`.
-6. Promote the complete development-selection input:
+10. Run the fixed base downstream evidence:
+    `python scripts/run_development_downstream_evidence.py`.
+11. Promote the base input only after that downstream evidence completes:
    `python scripts/promote_development_selection_input.py`.
-7. Select the base development candidate:
+12. Select the base development candidate:
    `python scripts/select_development_candidate.py`.
-8. Execute a fixed revision command only when the preceding immutable
-   activation receipt requests that exact revision:
+13. Complete a revision stage only when the preceding immutable activation
+    receipt requests that exact revision. An activated `v28` stage requires the
+    entire following sequence:
 
    ```text
    python scripts/run_v28_revision_competition.py [--environment METHOD=EXECUTABLE ...]
-   python scripts/run_v29_revision_competition.py [--environment METHOD=EXECUTABLE ...]
+   python scripts/build_v28_revision_selection_input.py
+   python scripts/run_development_downstream_evidence.py
+   python scripts/promote_development_selection_input.py
+   python scripts/select_v28_revision_candidate.py
    ```
 
-   The first command is permitted only for an exact `v28` activation. The
-   second is permitted only after the exact completed v28 chain emits a `v29`
-   activation. Each command permits only the optional, repeatable
-   `--environment METHOD=EXECUTABLE` adapter binding shown by its `--help`;
-   there are no stage, input, report, configuration, receipt, or output-path
-   options.
-9. Prepare the publication-round receipt:
+    A subsequent exact `v29` activation requires:
+
+    ```text
+    python scripts/run_v29_revision_competition.py [--environment METHOD=EXECUTABLE ...]
+    python scripts/build_v29_revision_selection_input.py
+    python scripts/run_development_downstream_evidence.py
+    python scripts/promote_development_selection_input.py
+    python scripts/select_v29_revision_candidate.py
+    ```
+
+    The revision runners permit only the optional, repeatable
+    `--environment METHOD=EXECUTABLE` adapter binding shown by `--help`. The
+    builders, downstream runner, promoter, and selectors resolve their fixed
+    stage paths; none accepts a stage, input, report, configuration, receipt,
+    or output-path override.
+14. Complete the fixed external-reference development track before publication
+    preparation:
+
+    ```bash
+    python scripts/run_external_reference_development.py \
+      --environment "d3impute=$D3IMPUTE_PYTHON" \
+      --environment "sctsi=$SCTSI_RSCRIPT" \
+      --sctsi-library "$SCTSI_LIBRARY"
+    ```
+
+    These three values are release-operator locators for the separately fixed
+    environments, not scientific overrides.
+15. Prepare the publication-round receipt:
    `python scripts/freeze_publication_round.py prepare`.
-10. Commit and independently review `study/frozen_method.json` together with
+16. Commit and independently review `study/frozen_method.json` together with
     every authority to which it is bound.
-11. Freeze the newly opened round:
+17. Freeze the newly opened round:
     `python scripts/freeze_publication_round.py freeze "$ROUND_DIR"`.
-12. Execute the frozen final round:
+18. Execute the frozen final round:
 
     ```bash
     python scripts/run_frozen_final.py "$ROUND_DIR" \
@@ -49,10 +86,24 @@ The release operator must complete these steps in order:
       --simulator-r-environment "$SIMULATOR_R_ENVIRONMENT"
     ```
 
+19. Complete the analysis and downstream safety products from the evaluated
+    round, with null-DE following the downstream stage:
+
+    ```bash
+    python scripts/generate_final_analysis.py "$ROUND_DIR"
+    python scripts/run_final_downstream_evidence.py --round-dir "$ROUND_DIR"
+    python scripts/run_final_null_de.py --round-dir "$ROUND_DIR"
+    ```
+
 `ROUND_DIR`, `SIMULATOR_ASSETS_ROOT`, and `SIMULATOR_R_ENVIRONMENT` are
 release-operator paths, not scientific overrides. The operator sets them to
 the newly opened frozen round and the separately pinned external simulator
 assets and environment, then retains the resulting receipts.
+
+The frozen-final entry point owns the fixed scaling substage and its evaluation
+transition. Lower-level state and subsystem commands such as `studyctl.py`,
+`generate_study_datasets.py --namespace final`, and `run_scaling_panel.py` do
+not replace this guarded release sequence.
 
 ## Comparator development evidence
 

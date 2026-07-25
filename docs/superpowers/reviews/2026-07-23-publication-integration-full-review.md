@@ -1961,3 +1961,73 @@ Post-suite static gates also passed.
 These corrections do not alter selected methods, fixed final or scaling
 populations, seed policies, revision allowances, estimands, execution
 behavior, or claim permissions. No scientific workload ran.
+
+## Task 7: CLI, study-document, and migration audit
+
+The audit covered every active Python, shell, and native simulator entry point;
+all tracked study JSON and method-attempt documents; the development operator
+workflow; the 6,034-path deletion surface; the preserved historical boundary;
+and repository submodule state. The exact four-file baseline completed before
+any tracked change:
+
+```text
+193 passed, 1 skipped in 989.46s (0:16:29)
+```
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-094 | Important | `scripts/finalize_development_authority.py --help` ignored the help request and entered development-artifact validation; expected authority failures also escaped as a traceback rather than the CLI's structured failure result. | Closed test-first with an argument parser that runs before the action and a bounded expected-error translation to exit status 2. The action still exposes no caller-controlled scientific or path options. |
+| F-095 | Important | `scripts/simulators/run_sergio.py --help` treated help as invalid positional arity and exited 1 on the required CLI discovery boundary. | Closed test-first with a side-effect-free help branch. The three positional execution arguments and simulation behavior are unchanged. |
+| F-096 | Important | `scripts/build_saver_r_environment.sh` refused to replace an existing library but could overwrite an existing caller-named build receipt. | Closed test-first by rejecting an existing receipt with the same non-overwrite exit status used for an existing library, before any build or source inspection begins. |
+| F-097 | Important | `docs/development-selection-workflow.md` omitted the score-preparation and authority-finalization prerequisites, the downstream step required before base promotion, the build/downstream/promotion/selection sequence for both conditional revisions, the external-reference prerequisite, and post-final analysis order. | Closed against the production CLI contracts. The document now gives the complete guarded order, distinguishes operator locators from scientific choices, and states that lower-level state/subsystem commands do not replace the release sequence. |
+
+The focused RED invocation reported:
+
+```text
+4 failed, 27 passed in 27.51s
+```
+
+After the minimal corrections, the same focused set reported:
+
+```text
+31 passed in 26.04s
+```
+
+The complete selection, SERGIO-adapter, and repository-hygiene owner set then
+reported:
+
+```text
+197 passed, 1 skipped in 304.50s (0:05:04)
+```
+
+Study registry, protocol, workflow-order, and generic study-CLI compatibility
+checks reported:
+
+```text
+73 passed, 1 skipped in 3.40s
+```
+
+Every active Python CLI subsequently returned successful help without
+scientific execution. Shell and R scripts parsed, all 17 study and
+method-attempt JSON documents parsed, `.gitmodules` remained absent, and no
+tracked gitlink or active submodule remained. The historical tree retains 1,056
+tracked files behind its explicit non-runtime boundary. Active matches from the
+deleted-path reference scan were either current method names, review/design
+evidence, or repository-hygiene ignore sentinels; no active import or runtime
+consumer targets a deleted root.
+
+Ruff formatting and lint, scoped Python compilation, shell syntax, R parsing,
+and `git diff --check` passed before the final exact Task 7 suite. No real
+scientific workload ran, no archived material was rewritten or restored, and
+no selected method, configuration, dataset population, seed policy, estimand,
+revision allowance, or claim permission changed.
+
+The exact four-file Task 7 suite then reported:
+
+```text
+224 passed, 1 skipped in 998.65s (0:16:38)
+```
+
+Production, tests, and operator documentation remained frozen throughout that
+run. Only this terminal evidence and the matching Task 7 report were updated
+afterward.

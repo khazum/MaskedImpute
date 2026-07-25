@@ -25,6 +25,10 @@ if [[ -e "$library_dir" ]]; then
   echo "refusing to replace existing SAVER library: $library_dir" >&2
   exit 73
 fi
+if [[ -e "$build_receipt" ]]; then
+  echo "refusing to replace existing build receipt: $build_receipt" >&2
+  exit 73
+fi
 
 for command in awk base64 curl git jq R realpath Rscript sha256sum; do
   command -v "$command" >/dev/null || {

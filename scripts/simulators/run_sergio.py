@@ -659,10 +659,12 @@ def _run(config: dict[str, object], binding: dict[str, object]) -> None:
 
 
 def main(arguments: list[str]) -> int:
+    usage = "run_sergio.py CONFIG_JSON EXPLICIT_CHECKOUT OUTPUT_DIRECTORY"
+    if arguments in (["--help"], ["-h"]):
+        print(f"usage: {usage}")
+        return 0
     if len(arguments) != 3:
-        raise SystemExit(
-            "usage: run_sergio.py CONFIG_JSON EXPLICIT_CHECKOUT OUTPUT_DIRECTORY"
-        )
+        raise SystemExit(f"usage: {usage}")
     config_path = Path(arguments[0]).absolute()
     checkout = Path(arguments[1]).absolute()
     output_dir = Path(arguments[2]).absolute()
