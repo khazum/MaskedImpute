@@ -1849,3 +1849,69 @@ exact sanitized fifteen-file Task 6 suite then reported:
 No production, test, or documentation file changed during that authoritative
 run. Only this terminal evidence and the matching correction report were
 recorded afterward.
+
+### Task 6 v5 independent-review correction
+
+The next independent review of Task 6 at `a3b1374` found four remaining
+important validation gaps. The preceding v4 completion statement applied only
+to F-082 through F-085 and did not constitute final Task 6 acceptance.
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-086 | Important | Final evaluation accepted completed runs whose metric rows contained only the canonical metric names, without the established identity, status, value, denominator, and reason evidence. | Closed test-first by requiring the complete legacy or direct metric field set, exact plan-bound identity, exact integer denominators, finite float values, and consistent completed or reason-coded unavailable rows. |
+| F-087 | Important | Public scaling execution accepted a coherent three-size, 15-entry plan because its only entry validation used the deliberately generic lower-level plan serializer. | Closed test-first at the public executor with the fixed four-size by five-method population, exact typed authorities, canonical size-method order, sequential ordinals, established seed policy, and configuration bindings. Generic lower-level fixture compatibility is unchanged. |
+| F-088 | Important | A checkpoint labeled completed could serialize with a positive planned count but no complete record population. | Closed test-first by requiring every completed checkpoint to contain exactly its planned record count. Running-prefix behavior and valid synthetic replay fixtures with complete records are unchanged. |
+| F-089 | Important | `direct_equal` accepted derived `FrozenDirectList` wrappers even though the direct freeze and encoding boundaries reject them. | Closed test-first by applying the shared exact frozen-list wrapper validation to both equality operands while preserving canonical frozen-list/list comparison behavior. |
+
+The focused RED evidence showed all six malformed completed-metric variants
+were accepted, all three incomplete completed checkpoints serialized, all
+four malformed public scaling populations reached execution-stage
+materialization, and both derived frozen-list operand positions compared
+without rejection. After the bounded owning corrections, the consolidated
+metric test and the nine scaling, checkpoint, and direct-list cases were
+green.
+
+The complete changed-owner suites reported:
+
+```text
+269 passed in 3362.21s (0:56:02)
+```
+
+The first exact fifteen-file run exposed an integration overconstraint in the
+generic checkpoint serializer:
+
+```text
+3 failed, 943 passed in 6500.93s (1:48:20)
+```
+
+All three failures used established downstream replay fixtures whose completed
+synthetic checkpoint had its full planned record count but no dataset receipts.
+Production dataset completeness is owned by the fixed public executor and real
+result store, while the generic serializer historically supports these
+complete-record synthetic fixtures. A focused compatibility regression first
+failed in `2.30s`. The serializer was then narrowed to preserve empty dataset
+fixtures while retaining the exact completed record-count invariant. The three
+failed downstream nodes passed in `2.07s`, the zero- and partial-record
+completed mutations remained rejected, and the complete affected owners
+reported:
+
+```text
+243 passed in 2173.21s (0:36:13)
+```
+
+Fresh Ruff formatting and lint, scoped byte compilation, and
+`git diff --check` all exited zero from the final production/test state. The
+exact sanitized fifteen-file Task 6 acceptance suite was then repeated and
+reported:
+
+```text
+946 passed in 6472.26s (1:47:52)
+```
+
+No production, test, or documentation file changed during that authoritative
+run. Only this terminal evidence and the matching correction report were
+recorded afterward.
+
+These corrections do not alter selected methods, the fixed scaling sizes or
+methods, final datasets, seed policies, revision allowances, estimands,
+execution behavior, or claim permissions. No scientific workload ran.

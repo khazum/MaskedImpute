@@ -5400,6 +5400,112 @@ def _validate_frozen_execution_for_evaluation(
                     "terminal final failure lacks complete reason-coded metric rows"
                 )
 
+        def require_completed_run_metric_evidence() -> None:
+            direct_comparator = (
+                plan_entry.run.comparator_configuration is not None
+                or plan_entry.run.comparator_nonexecution_identity is not None
+            )
+            expected_fields = {
+                "mechanism",
+                "biological_id",
+                "technical_view",
+                "dataset_id",
+                "method",
+                "model_seed",
+                "configuration_id",
+                "metric",
+                "value",
+                "n",
+                "status",
+                "reason",
+            }
+            if direct_comparator:
+                expected_fields.update(
+                    {
+                        "comparator_configuration",
+                        "comparator_nonexecution_identity",
+                    }
+                )
+            else:
+                expected_fields.add("configuration_sha256")
+            expected_identity = {
+                "mechanism": plan_entry.run.mechanism,
+                "biological_id": plan_entry.run.biological_id,
+                "technical_view": plan_entry.run.technical_view,
+                "dataset_id": plan_entry.run.dataset_id,
+                "method": plan_entry.run.method_id,
+                "model_seed": plan_entry.run.model_seed,
+                "configuration_id": plan_entry.run.configuration_id,
+            }
+            for metric in metrics:
+                assert isinstance(metric, Mapping)
+                if set(metric) != expected_fields or any(
+                    not direct_equal(metric.get(name), expected)
+                    for name, expected in expected_identity.items()
+                ):
+                    raise FinalRunnerContractError(
+                        "completed final metric evidence schema is invalid"
+                    )
+                if direct_comparator:
+                    try:
+                        direct_identity_matches = direct_equal(
+                            metric.get("comparator_configuration"),
+                            (
+                                None
+                                if plan_entry.run.comparator_configuration is None
+                                else direct_bound_comparator_value(
+                                    plan_entry.run.comparator_configuration
+                                )
+                            ),
+                        ) and direct_equal(
+                            metric.get("comparator_nonexecution_identity"),
+                            plan_entry.run.comparator_nonexecution_identity,
+                        )
+                    except ValueError as error:
+                        raise FinalRunnerContractError(
+                            "completed final metric direct identity is invalid"
+                        ) from error
+                    if not direct_identity_matches:
+                        raise FinalRunnerContractError(
+                            "completed final metric direct identity differs"
+                        )
+                elif (
+                    metric.get("configuration_sha256")
+                    != plan_entry.run.configuration_sha256
+                ):
+                    raise FinalRunnerContractError(
+                        "completed final metric configuration differs"
+                    )
+                value = metric.get("value")
+                denominator = metric.get("n")
+                status = metric.get("status")
+                reason = metric.get("reason")
+                if type(denominator) is not int or denominator < 0:
+                    raise FinalRunnerContractError(
+                        "completed final metric denominator is invalid"
+                    )
+                if value is None:
+                    if (
+                        status != "unavailable"
+                        or type(status) is not str
+                        or not isinstance(reason, str)
+                        or not reason
+                    ):
+                        raise FinalRunnerContractError(
+                            "unavailable final metric evidence lacks a reason"
+                        )
+                elif (
+                    type(value) is not float
+                    or not np.isfinite(value)
+                    or value < 0.0
+                    or status != "completed"
+                    or type(status) is not str
+                    or reason is not None
+                ):
+                    raise FinalRunnerContractError(
+                        "completed final metric evidence is invalid"
+                    )
+
         if plan_entry.action == "execute":
             status = run.get("status")
             if status == "completed":
@@ -5407,6 +5513,7 @@ def _validate_frozen_execution_for_evaluation(
                     raise FinalRunnerContractError(
                         "completed final execution has a failure reason"
                     )
+                require_completed_run_metric_evidence()
                 completed += 1
             elif status in {"failed", "timeout", "resource_exceeded", "unavailable"}:
                 require_reason_coded_metrics(str(status), run.get("reason"))

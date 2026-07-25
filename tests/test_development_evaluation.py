@@ -1075,6 +1075,21 @@ def test_direct_equal_preserves_valid_frozen_object_comparisons() -> None:
     )
 
 
+@pytest.mark.parametrize("side", ("left", "right"))
+def test_direct_equal_rejects_derived_frozen_list_operands(side: str) -> None:
+    from maskimpute_benchmark.direct_values import FrozenDirectList, direct_equal
+
+    class DerivedFrozenDirectList(FrozenDirectList):
+        pass
+
+    invalid = DerivedFrozenDirectList((1, "two"))
+    valid = FrozenDirectList((1, "two"))
+    operands = (invalid, valid) if side == "left" else (valid, invalid)
+
+    with pytest.raises(ValueError, match="list|structure"):
+        direct_equal(*operands)
+
+
 @pytest.mark.parametrize("value", (10**400, -(10**400)))
 def test_endpoint_unit_translates_unrepresentable_integer_values(value: int) -> None:
     from maskimpute_benchmark.development_evaluation import EndpointUnit

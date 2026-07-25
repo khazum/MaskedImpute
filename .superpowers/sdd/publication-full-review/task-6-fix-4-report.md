@@ -125,3 +125,9 @@ afterward.
 F-082 through F-085 are closed at the owning public population, direct-value,
 score-evidence, and numeric coercion boundaries. The exact Task 6 acceptance
 suite is green from the final production/test state.
+
+## Subsequent review status
+
+The status above was scoped to F-082 through F-085. It did not constitute
+final Task 6 acceptance. A later independent review identified F-086 through
+F-089, which are tracked in the v5 correction report and full-review ledger.

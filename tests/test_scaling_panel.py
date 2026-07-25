@@ -368,6 +368,119 @@ def test_scaling_checkpoint_loader_rejects_boolean_planned_run_count(
         ScalingResultStore(tmp_path, plan).load()
 
 
+@pytest.mark.parametrize(
+    ("planned_run_count", "datasets", "records"),
+    (
+        (20, (), ()),
+        (20, ({"cells": 10_000},), ({"run": {}},)),
+    ),
+    ids=("empty-completed", "partial-completed"),
+)
+def test_scaling_checkpoint_payload_rejects_incomplete_completed_population(
+    monkeypatch: pytest.MonkeyPatch,
+    planned_run_count: int,
+    datasets: tuple[dict[str, object], ...],
+    records: tuple[dict[str, object], ...],
+) -> None:
+    import maskimpute_benchmark.scaling as scaling
+
+    monkeypatch.setattr(scaling, "canonical_sha256", lambda _value: "fixture-binding")
+    checkpoint = scaling.ScalingCheckpoint(
+        schema_version=1,
+        plan_sha256="fixture-plan",
+        input_hashes={},
+        planned_run_count=planned_run_count,
+        status="completed",
+        datasets=datasets,
+        records=records,
+        checkpoint_sha256="fixture-binding",
+    )
+
+    with pytest.raises(scaling.ScalingContractError, match="checkpoint|completed"):
+        scaling.scaling_checkpoint_payload(checkpoint)
+
+
+def test_scaling_checkpoint_payload_preserves_completed_fixture_without_datasets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import maskimpute_benchmark.scaling as scaling
+
+    monkeypatch.setattr(scaling, "canonical_sha256", lambda _value: "fixture-binding")
+    checkpoint = scaling.ScalingCheckpoint(
+        schema_version=1,
+        plan_sha256="fixture-plan",
+        input_hashes={},
+        planned_run_count=1,
+        status="completed",
+        datasets=(),
+        records=({"run": {}},),
+        checkpoint_sha256="fixture-binding",
+    )
+
+    payload = scaling.scaling_checkpoint_payload(checkpoint)
+
+    assert payload["status"] == "completed"
+    assert payload["planned_run_count"] == len(payload["records"]) == 1
+    assert payload["datasets"] == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing_size", "missing_method", "noncanonical_order", "noncanonical_ordinal"),
+)
+def test_public_scaling_execution_rejects_incomplete_fixed_population(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    import maskimpute_benchmark.scaling as scaling
+    from maskimpute_benchmark.protocol import load_protocol
+
+    plan = _plan()
+    if mutation == "missing_size":
+        entries = plan.entries[:15]
+    elif mutation == "missing_method":
+        entries = tuple(
+            replace(entry, ordinal=ordinal)
+            for ordinal, entry in enumerate(
+                (entry for entry in plan.entries if entry.method_id != "magic"),
+                start=1,
+            )
+        )
+    elif mutation == "noncanonical_order":
+        entries = (plan.entries[1], plan.entries[0], *plan.entries[2:])
+    else:
+        entries = (replace(plan.entries[0], ordinal=2), *plan.entries[1:])
+    changed = replace(plan, entries=entries)
+    contract = scaling.load_scaling_contract(REPOSITORY / "study/scaling_panel.json")
+    registry, configurations = _configurations()
+    authority = scaling.ScalingExecutionAuthority(
+        repository=REPOSITORY,
+        contract=contract,
+        protocol=load_protocol(REPOSITORY / "study/protocol.json"),
+        frozen_method={},
+        registry=registry,
+        runner_authority=object(),
+        environments=object(),
+        plan=plan,
+    )
+    assert tuple(value.method_id for value in configurations) == contract.method_ids
+    scaling._require_complete_scaling_execution_population(authority)
+    authority = replace(authority, plan=changed)
+    monkeypatch.setattr(scaling, "scaling_plan_payload", lambda _plan: {})
+
+    def must_not_materialize(*_args, **_kwargs):
+        raise AssertionError("incomplete scaling population reached execution")
+
+    with pytest.raises(scaling.ScalingContractError, match="plan|population"):
+        scaling.execute_scaling_plan(
+            authority,
+            tmp_path,
+            simulator=must_not_materialize,
+            executor=lambda *_args: None,
+        )
+
+
 def test_scaling_plan_uses_exact_frozen_comparator_payloads() -> None:
     from maskimpute_benchmark.direct_values import direct_equal
     from maskimpute_benchmark.runner import direct_bound_comparator_value

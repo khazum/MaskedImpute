@@ -4643,6 +4643,75 @@ def test_final_evaluation_accepts_completed_execution_and_exact_nonrun() -> None
     assert validation["not_applicable_count"] == 1
 
 
+def test_final_evaluation_rejects_incomplete_completed_metric_evidence() -> None:
+    from maskimpute_benchmark.final_runner import (
+        FinalRunnerContractError,
+        _validate_frozen_execution_for_evaluation,
+        build_final_execution_plan,
+    )
+
+    registry = _registry()
+    full = build_final_execution_plan(
+        _receipt(registry),
+        registry,
+        _bindings(),
+        execution_claim_sha256="7" * 64,
+        execution_environment_sha256="8" * 64,
+        execution_authority_sha256="9" * 64,
+    )
+    entry = full.entries[0]
+    attempt = _completed_attempt(entry)
+    canonical_record = json.loads(
+        json.dumps(
+            {
+                "run": asdict(attempt.run),
+                "metrics": [metric.to_dict() for metric in attempt.metrics],
+                "execution_request": None,
+            }
+        )
+    )
+    plan = full.__class__(
+        schema_version=1,
+        input_hashes=full.input_hashes,
+        entries=(entry,),
+        configurations=full.configurations,
+        plan_sha256="0" * 64,
+    )
+    accepted: list[str] = []
+    for mutation in (
+        "names_only",
+        "missing_status",
+        "boolean_value",
+        "boolean_denominator",
+        "unavailable_without_reason",
+        "completed_with_reason",
+    ):
+        record = json.loads(json.dumps(canonical_record))
+        if mutation == "names_only":
+            record["metrics"] = [
+                {"metric": metric["metric"]} for metric in record["metrics"]
+            ]
+        else:
+            metric = record["metrics"][0]
+            if mutation == "missing_status":
+                metric.pop("status")
+            elif mutation == "boolean_value":
+                metric.update(value=True, status="completed", reason=None)
+            elif mutation == "boolean_denominator":
+                metric["n"] = True
+            elif mutation == "unavailable_without_reason":
+                metric.update(value=None, status="unavailable", reason=None)
+            else:
+                metric.update(value=0.0, status="completed", reason="no_entries")
+        try:
+            _validate_frozen_execution_for_evaluation(plan, (record,))
+        except FinalRunnerContractError:
+            continue
+        accepted.append(mutation)
+
+    assert accepted == []
+
+
 def test_load_prepared_final_panel_revalidates_and_pairs_in_manifest_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

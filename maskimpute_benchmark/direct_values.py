@@ -16,6 +16,12 @@ class FrozenDirectObject(tuple[tuple[str, object], ...]):
     """A frozen nested JSON object."""
 
 
+def _validated_frozen_list(value: FrozenDirectList) -> tuple[object, ...]:
+    if type(value) is not FrozenDirectList:
+        raise ValueError("frozen direct list structure is invalid")
+    return tuple(value)
+
+
 def _validated_frozen_object(
     value: FrozenDirectObject,
 ) -> tuple[tuple[str, object], ...]:
@@ -39,9 +45,9 @@ def freeze_direct_value(value: object) -> object:
             for key, nested in _validated_frozen_object(value)
         )
     if isinstance(value, FrozenDirectList):
-        if type(value) is not FrozenDirectList:
-            raise ValueError("frozen direct list structure is invalid")
-        return FrozenDirectList(freeze_direct_value(nested) for nested in value)
+        return FrozenDirectList(
+            freeze_direct_value(nested) for nested in _validated_frozen_list(value)
+        )
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
             raise ValueError("direct value keys must be strings")
@@ -104,9 +110,7 @@ def _thaw_direct_value(value: object) -> object:
             for key, nested in _validated_frozen_object(value)
         }
     if isinstance(value, FrozenDirectList):
-        if type(value) is not FrozenDirectList:
-            raise ValueError("frozen direct list structure is invalid")
-        return [_thaw_direct_value(item) for item in value]
+        return [_thaw_direct_value(item) for item in _validated_frozen_list(value)]
     if isinstance(value, Mapping):
         if not all(isinstance(key, str) for key in value):
             raise ValueError("direct value keys must be strings")
@@ -140,9 +144,7 @@ def direct_json_value(value: object, *, payload: bool = False) -> object:
             for key, nested in _validated_frozen_object(value)
         }
     if isinstance(value, FrozenDirectList):
-        if type(value) is not FrozenDirectList:
-            raise ValueError("frozen direct list structure is invalid")
-        return [direct_json_value(item) for item in value]
+        return [direct_json_value(item) for item in _validated_frozen_list(value)]
     if isinstance(value, tuple):
         return [direct_json_value(item) for item in value]
     if isinstance(value, Mapping):
@@ -187,13 +189,22 @@ def direct_equal(left: object, right: object) -> bool:
             direct_equal(left_object[key], right_object[key]) for key in left_object
         )
     if isinstance(left, FrozenDirectList) or isinstance(right, FrozenDirectList):
-        if not (isinstance(left, FrozenDirectList) or type(left) is list) or not (
-            isinstance(right, FrozenDirectList) or type(right) is list
-        ):
+        left_list = (
+            _validated_frozen_list(left) if isinstance(left, FrozenDirectList) else left
+        )
+        right_list = (
+            _validated_frozen_list(right)
+            if isinstance(right, FrozenDirectList)
+            else right
+        )
+        if type(left_list) not in {tuple, list} or type(right_list) not in {
+            tuple,
+            list,
+        }:
             return False
-        return len(left) == len(right) and all(
+        return len(left_list) == len(right_list) and all(
             direct_equal(first, second)
-            for first, second in zip(left, right, strict=True)
+            for first, second in zip(left_list, right_list, strict=True)
         )
     if isinstance(left, Mapping) or isinstance(right, Mapping):
         if not isinstance(left, Mapping) or not isinstance(right, Mapping):

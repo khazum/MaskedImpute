@@ -403,7 +403,12 @@ def scaling_checkpoint_payload(checkpoint: ScalingCheckpoint) -> dict[str, objec
         or checkpoint.schema_version != 1
         or type(checkpoint.planned_run_count) is not int
         or checkpoint.planned_run_count <= 0
+        or checkpoint.status not in {"running", "completed"}
         or len(checkpoint.records) > checkpoint.planned_run_count
+        or (
+            checkpoint.status == "completed"
+            and len(checkpoint.records) != checkpoint.planned_run_count
+        )
     ):
         raise ScalingContractError("scaling checkpoint authority is invalid")
     body: dict[str, object] = {
@@ -4136,6 +4141,78 @@ def _evaluate_scaling_outcome(
     )
 
 
+def _require_complete_scaling_execution_population(
+    authority: ScalingExecutionAuthority,
+) -> None:
+    """Require the fixed four-size by five-method public execution population."""
+
+    contract = authority.contract
+    plan = authority.plan
+    if (
+        type(contract) is not ScalingContract
+        or contract.cell_counts != _CELL_COUNTS
+        or contract.method_ids != _METHOD_IDS
+        or type(contract.genes) is not int
+        or contract.genes != 500
+        or type(plan) is not ScalingPlan
+        or len(plan.entries) != len(_CELL_COUNTS) * len(_METHOD_IDS)
+        or len(plan.configurations) != len(_METHOD_IDS)
+        or any(
+            type(configuration) is not FrozenPlanMethodAuthority
+            for configuration in plan.configurations
+        )
+        or tuple(configuration.method_id for configuration in plan.configurations)
+        != _METHOD_IDS
+    ):
+        raise ScalingContractError(
+            "public scaling execution plan population is incomplete"
+        )
+    configuration_by_method = {
+        configuration.method_id: configuration for configuration in plan.configurations
+    }
+    expected_population = tuple(
+        (cells, method_id) for cells in _CELL_COUNTS for method_id in _METHOD_IDS
+    )
+    for ordinal, (entry, expected) in enumerate(
+        zip(plan.entries, expected_population, strict=True),
+        start=1,
+    ):
+        expected_cells, expected_method = expected
+        if type(entry) is not ScalingPlanEntry:
+            raise ScalingContractError(
+                "public scaling execution plan population is incomplete"
+            )
+        configuration = configuration_by_method[expected_method]
+        try:
+            spec = authority.registry.by_id(expected_method)
+        except (AttributeError, KeyError) as error:
+            raise ScalingContractError(
+                "public scaling execution method population is incomplete"
+            ) from error
+        expected_seed = contract.model_seed if spec.stochastic else None
+        if (
+            type(entry.ordinal) is not int
+            or entry.ordinal != ordinal
+            or type(entry.cells) is not int
+            or entry.cells != expected_cells
+            or entry.method_id != expected_method
+            or type(entry.genes) is not int
+            or entry.genes != contract.genes
+            or entry.model_seed != expected_seed
+            or entry.configuration_id != configuration.configuration_id
+            or entry.configuration_kind != configuration.kind
+            or type(entry.requires_count_score) is not bool
+            or entry.requires_count_score != configuration.requires_count_score
+            or type(entry.requires_calibration) is not bool
+            or entry.requires_calibration != configuration.requires_calibration
+            or type(entry.accuracy_enabled) is not bool
+            or not entry.accuracy_enabled
+        ):
+            raise ScalingContractError(
+                "public scaling execution plan population is incomplete"
+            )
+
+
 def execute_scaling_plan(
     authority: ScalingExecutionAuthority,
     output_dir: Path,
@@ -4153,6 +4230,7 @@ def execute_scaling_plan(
     if on_checkpoint_published is not None and not callable(on_checkpoint_published):
         raise TypeError("on_checkpoint_published must be callable")
     scaling_plan_payload(authority.plan)
+    _require_complete_scaling_execution_population(authority)
 
     def publish_checkpoint() -> None:
         if on_checkpoint_published is not None:
