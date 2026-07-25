@@ -2310,3 +2310,66 @@ Focused Ruff lint and formatting checks and `git diff --check` also passed.
 The correction does not change any accepted scientific dependency,
 configuration, population, estimand, selection rule, seed policy, or claim
 permission. No scientific workload ran.
+
+## Task 10: Candidate-head verification and disposition
+
+The corrected candidate head is
+`730fcdc860d3d22b85ce8e04a704b472c254d2ff`; the complete review range is
+`391efcb3bf1b1b07a2bb159fade049528fad149b..730fcdc860d3d22b85ce8e04a704b472c254d2ff`.
+The independent 40-commit range review retained zero Critical, zero Important,
+and one Minor finding, F-112. After its test-first correction, an independent
+focused re-review accepted F-112 with zero Critical, Important, or Minor
+findings. The final ledger therefore contains F-001 through F-112 exactly once,
+and every F-series finding is closed or terminates in a later closed
+superseding finding. No repository Critical, Important, or Minor finding
+remains open.
+
+The supported isolated verification environment uses Python 3.12.7, within the
+declared Python 3.10-or-newer range, with NumPy 2.2.6, pandas 2.3.3, anndata
+0.11.4, pytest 8.4.2, and CPU Torch 2.4.1. This closes the O-001 release-
+environment recheck for the exercised supported environment; it does not claim
+coverage of every supported Python/platform combination or CUDA hardware.
+O-002 through O-004 remain closed environmental diagnoses rather than
+repository defects.
+
+Candidate-head static verification reported:
+
+```text
+Ruff 0.14.4 lint: all checks passed
+Ruff 0.14.4 format: 164 files already formatted
+scoped Python compilation: exit 0
+main-to-head whitespace check: exit 0
+repository hygiene: 59 passed in 26.31s
+```
+
+The complete repository test suite then ran once in one process with default
+pytest flags:
+
+```text
+3127 passed, 52 skipped in 9456.57s (2:37:36)
+```
+
+The command exited zero. The 52 skips are the suite's declared
+dependency/platform-conditioned exclusions; no test selection expression,
+failure deselection, retry, or extra pytest flag was used. Production, tests,
+documentation, and manuscript sources remained frozen throughout the run.
+
+A clean `pdflatex`, `bibtex`, `pdflatex`, `pdflatex` manuscript build exited
+zero. The final PDF contained 14 nonzero A4 pages. The final log and
+bibliography-log scan found no unresolved citation, unresolved reference,
+fatal error, or emergency stop. Generated manuscript and Python/pytest cache
+products were removed afterward.
+
+Infrastructure correctness does not establish empirical competitiveness,
+scientific validity of unexecuted analyses, or Genome Biology submission
+readiness. Submission remains blocked on the authorized frozen scientific
+workflows and resulting real evidence; same-dataset state-of-the-art,
+known-truth, and real-data utility results; final figures, tables, supplement,
+and numerical claims; author names, affiliations, correspondence and
+contribution approval; funding, ethics/consent, conflicts, acknowledgements,
+and the author-approved LLM disclosure; public data and source locations,
+accessions, an OSI-compliant project license, the static-archive decision and
+any resulting citation; publisher-asset redistribution clearance; and final
+human authorization. No scientific result, person, institution, license,
+accession, repository location, archive citation, or authorization was
+fabricated, and no scientific workload ran during this review.
