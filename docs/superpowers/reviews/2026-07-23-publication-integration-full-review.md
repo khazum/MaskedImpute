@@ -2086,3 +2086,51 @@ evidence was recorded.
 The corrections do not change scientific dependencies, selected methods,
 configurations, dataset populations, seeds, estimands, revision allowances,
 archive contents, or claim permissions. No scientific workload ran.
+
+### Task 7 second independent-review correction
+
+The final Task 7 review retained two nonblocking minor findings. Both were real
+reproducibility and state-isolation defects and are now closed without changing
+the accepted F-094 through F-100 dispositions.
+
+| ID | Severity | Summary | Disposition |
+|---|---|---|---|
+| F-101 | Minor | Importing three active command modules unconditionally set `sys.dont_write_bytecode` to true and changed later in-process behavior. | Closed test-first. Module imports now preserve either initial state. Direct entry points still enable the setting before production imports, while every public `main(argv)` and direct entry-point exit restores the caller's prior state in `finally`. |
+| F-102 | Minor | The literal Task 7 shell syntax command returned status 127 when its glob classes were empty and did not parse every expanded path independently. | Closed test-first. The plan now discovers null-delimited regular shell files and parses each separately, succeeds with no discovered scripts, and propagates a malformed optional-script failure. |
+
+The focused RED run reported:
+
+```text
+7 failed, 3 passed, 43 deselected in 0.73s
+```
+
+After the bounded corrections, focused GREEN and the post-format rerun
+reported:
+
+```text
+10 passed, 43 deselected in 0.84s
+10 passed, 43 deselected in 0.80s
+```
+
+The complete affected owners reported:
+
+```text
+293 passed, 1 skipped in 2124.57s (0:35:24)
+```
+
+All 29 active Python help paths, the active shell script, both R drivers, all
+17 study JSON documents, the 1,056-file archive boundary, migration and
+submodule checks, Ruff formatting and lint over 164 Python files, scoped
+compilation, and `git diff --check` passed before the exact suite.
+
+The exact four-file Task 7 suite then reported:
+
+```text
+240 passed, 1 skipped in 1002.41s (0:16:42)
+```
+
+Production, tests, and the Task 7 plan remained frozen throughout both complete
+runs. These corrections do not change scientific dependencies, selected
+methods, configurations, dataset populations, seeds, estimands, revision
+allowances, archive contents, or claim permissions. No real scientific
+workload ran. Independent acceptance is not claimed.

@@ -847,7 +847,9 @@ Run:
 for path in scripts/*.py scripts/simulators/*.py; do
   python "$path" --help >/dev/null
 done
-bash -n scripts/*.sh scripts/simulators/*.sh
+while IFS= read -r -d '' path; do
+  bash -n "$path" || exit
+done < <(find scripts scripts/simulators -maxdepth 1 -type f -name '*.sh' -print0)
 ```
 
 Expected: all Python CLIs expose help without scientific execution and all shell

@@ -10,7 +10,9 @@ import sys
 from typing import Sequence
 
 
-sys.dont_write_bytecode = True
+_ENTRYPOINT_DONT_WRITE_BYTECODE = sys.dont_write_bytecode
+if __name__ == "__main__":
+    sys.dont_write_bytecode = True
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +50,7 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     try:
         result = arguments.action(arguments)
@@ -59,5 +61,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    previous_state = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        return _main(argv)
+    finally:
+        sys.dont_write_bytecode = previous_state
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    finally:
+        sys.dont_write_bytecode = _ENTRYPOINT_DONT_WRITE_BYTECODE

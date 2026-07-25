@@ -204,6 +204,171 @@ def _load_python_script(relative_path: str, module_name: str):
     return module
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "scripts/run_external_reference_development.py",
+        "scripts/freeze_publication_round.py",
+        "scripts/studyctl.py",
+    ),
+)
+@pytest.mark.parametrize("initial_state", (False, True))
+def test_cli_import_preserves_process_bytecode_state(
+    relative_path: str,
+    initial_state: bool,
+) -> None:
+    previous_state = sys.dont_write_bytecode
+    sys.dont_write_bytecode = initial_state
+    try:
+        _load_python_script(
+            relative_path,
+            "task7_import_isolation_"
+            + relative_path.replace("/", "_").replace(".", "_")
+            + f"_{initial_state}",
+        )
+        assert sys.dont_write_bytecode is initial_state
+    finally:
+        sys.dont_write_bytecode = previous_state
+
+
+def test_external_reference_cli_restores_bytecode_state_after_in_process_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_python_script(
+        "scripts/run_external_reference_development.py",
+        "task7_external_reference_bytecode_scope",
+    )
+    observed: list[bool] = []
+
+    def stop_before_work(*_args, **_kwargs):
+        observed.append(sys.dont_write_bytecode)
+        raise script.ExternalReferenceDevelopmentError("expected test stop")
+
+    monkeypatch.setattr(
+        script,
+        "run_external_reference_development",
+        stop_before_work,
+    )
+    previous_state = sys.dont_write_bytecode
+    sys.dont_write_bytecode = False
+    try:
+        status = script.main(
+            [
+                "--environment",
+                "d3impute=/tmp/d3impute",
+                "--environment",
+                "sctsi=/tmp/sctsi",
+                "--sctsi-library",
+                "/tmp/sctsi-library",
+            ]
+        )
+        assert observed == [True]
+        assert status == 2
+        assert sys.dont_write_bytecode is False
+    finally:
+        sys.dont_write_bytecode = previous_state
+
+
+def test_publication_freeze_cli_restores_bytecode_state_after_in_process_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_python_script(
+        "scripts/freeze_publication_round.py",
+        "task7_publication_freeze_bytecode_scope",
+    )
+    observed: list[bool] = []
+
+    def prepare(_repository: Path) -> dict[str, str]:
+        observed.append(sys.dont_write_bytecode)
+        return {"state": "prepared"}
+
+    monkeypatch.setattr(script, "prepare_frozen_method", prepare)
+    previous_state = sys.dont_write_bytecode
+    sys.dont_write_bytecode = False
+    try:
+        assert script.main(["prepare"]) == 0
+        assert observed == [True]
+        assert sys.dont_write_bytecode is False
+    finally:
+        sys.dont_write_bytecode = previous_state
+
+
+def test_study_cli_restores_bytecode_state_after_in_process_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = _load_python_script(
+        "scripts/studyctl.py",
+        "task7_studyctl_bytecode_scope",
+    )
+    observed: list[bool] = []
+
+    def supersede(_round_dir: Path, _reason: str) -> dict[str, str]:
+        observed.append(sys.dont_write_bytecode)
+        return {"state": "superseded"}
+
+    monkeypatch.setattr(script, "supersede_round", supersede)
+    previous_state = sys.dont_write_bytecode
+    sys.dont_write_bytecode = False
+    try:
+        assert script.main(["supersede", "/tmp/round", "test reason"]) == 0
+        assert observed == [True]
+        assert sys.dont_write_bytecode is False
+    finally:
+        sys.dont_write_bytecode = previous_state
+
+
+def test_task7_documented_shell_syntax_check_discovers_each_existing_script(
+    tmp_path: Path,
+) -> None:
+    plan = (
+        ROOT / "docs/superpowers/plans/"
+        "2026-07-23-publication-integration-full-review.md"
+    ).read_text(encoding="utf-8")
+    task = plan.split(
+        "### Task 7: Audit CLIs, study documents, and branch migration integrity",
+        maxsplit=1,
+    )[1]
+    step = task.split("### Task 8:", maxsplit=1)[0]
+    command_block = step.split("```bash\n", maxsplit=1)[1].split("\n```", maxsplit=1)[0]
+    shell_command = command_block.split("done\n", maxsplit=1)[1].strip()
+
+    scripts = tmp_path / "scripts"
+    simulators = scripts / "simulators"
+    simulators.mkdir(parents=True)
+
+    empty = subprocess.run(
+        ["bash", "-c", shell_command],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert empty.returncode == 0, empty.stderr
+
+    (scripts / "valid.sh").write_text("#!/usr/bin/env bash\ntrue\n", encoding="utf-8")
+    valid = subprocess.run(
+        ["bash", "-c", shell_command],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert valid.returncode == 0, valid.stderr
+
+    (simulators / "invalid.sh").write_text(
+        "#!/usr/bin/env bash\nif\n",
+        encoding="utf-8",
+    )
+    invalid = subprocess.run(
+        ["bash", "-c", shell_command],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert invalid.returncode != 0
+
+
 def test_finalization_cli_returns_structured_nonzero_failure(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
