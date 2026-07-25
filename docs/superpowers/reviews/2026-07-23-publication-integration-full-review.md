@@ -2224,3 +2224,48 @@ authorization. No scientific result, human metadata, license, identifier, or
 authorization was fabricated. No real scientific workload ran, and no
 estimand, population, selection rule, method configuration, seed policy, or
 claim permission changed. Independent acceptance is not claimed.
+
+## Task 9: Cross-cutting and test-order review
+
+The exact 52-file combined focused suite from Tasks 2 through 8 ran in one
+pytest process, in the prescribed order, with default pytest flags and the
+supported sanitized interpreter:
+
+```text
+3125 passed, 52 skipped in 9436.35s (2:37:16)
+```
+
+The command exited zero. Production, tests, and documentation remained frozen
+throughout the run. No unexpected failure, collection error, warning summary,
+or test-order defect occurred, so no failure minimization, new RED regression,
+production patch, owner-adjacency rerun, or corrective combined-suite rerun was
+required.
+
+The finding ledger contains F-001 through F-111 exactly once, without a gap or
+duplicate. All are fixed or terminate in a later fixed superseding finding:
+the F-006/F-007/F-010 chain terminates in F-011; the numerical refinement
+chains terminate by F-065; F-094/F-095 corrected behavior was independently
+accepted unchanged; F-096/F-097 terminate through F-098/F-099/F-100; F-106
+terminates in F-111; and F-108 terminates in F-110. No F-series finding is
+assigned `not reproducible with evidence`, `human/scientific blocker`, or
+`minor excluded by standing scope`, and no Critical or Important finding is
+open.
+
+The separate human and scientific submission blockers remain explicit and
+unchanged. O-002 through O-004 remain evidence-backed environmental
+observations; O-001 remains the existing Minor release-environment recheck
+assigned to Task 10. No real scientific workload ran, no scientific or human
+content was fabricated, and no estimand, population, selection rule,
+configuration, seed policy, provenance, legacy compatibility, or claim
+permission changed. The standing exclusions were honored. Independent
+acceptance is not claimed.
+
+A focused post-suite state-isolation gate passed 13 tests covering CLI
+bytecode-state restoration, final/development environment isolation including
+libc-only loader state, and caller RNG restoration. Ruff 0.14.4 reported all
+164 files formatted and all checks passing. Scoped Python compilation and
+`git diff --check` exited zero. The supported pytest interpreter's attempted
+Ruff module invocation stopped before analysis because that environment does
+not contain Ruff; rerunning the same checks with the already installed Ruff
+0.14.4 executable produced the recorded clean results. This was tool placement,
+not a repository finding.
