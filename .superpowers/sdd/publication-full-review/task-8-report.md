@@ -33,10 +33,12 @@ provide double spacing and line numbering, and page numbering is explicit.
 | F-103 | Important | The title page silently omitted author names, institutional addresses, email addresses, and the corresponding-author designation. Although the README described those fields as absent, the rendered draft did not show the blocking omission. | Closed without inventing people or institutions. The title page now renders explicit red author-input blockers for the approved author list and order, affiliation mapping, all author emails, and corresponding author. |
 | F-104 | Important | The abstract said all analyses were already generated, and the external-reference Results prose said development evidence was reported, although no scientific workload or frozen analysis exists. | Closed. The 62-word draft abstract describes the prespecified benchmark, requests the sealed result and scope-qualified conclusion, and explicitly states that the draft makes no empirical advance claim. External-reference evidence is future tense. |
 | F-105 | Important | The compact checklist marked the state-of-the-art advancement exercise and final abstract constraint complete even though results and final abstract wording are unavailable. This could be read as satisfying the Methodology acceptance criteria prematurely. | Closed. Structural facts remain checked, while clear-advance, same-dataset, known-truth, real-data, and final-abstract evidence remain explicit unchecked blockers. |
-| F-106 | Minor | The manuscript lacked the Abbreviations section named by the project venue contract and used several abbreviations without expansion at first use. | Closed. Terms are expanded at first use and a consistent Abbreviations section now precedes Declarations. |
+| F-106 | Minor | The manuscript lacked the Abbreviations section named by the project venue contract and used several abbreviations without expansion at first use. | Partially closed in the initial correction: an Abbreviations section was added and the identified prose terms were expanded, but the first rendered `IQR` remained unexpanded and absent from the section. The residual defect is tracked as F-111. |
 | F-107 | Minor | Both checklists retained excluded template-integrity validation gates, and the paper README pointed readers to the compact instance. | Closed as explicitly required by Task 8. The two active gates and the stale README reference were removed. Ordinary template provenance, differing upstream notices, source-license separation, and publisher-redistribution caveats remain. No replacement integrity mechanism was added. |
-| F-108 | Minor | The checklists and manuscript phrased a static DOI-issuing deposition as mandatory, while the current Methodology instructions recommend it. | Closed. The public source repository and OSI-compliant license remain mandatory; static deposition is accurately labeled a recommendation requiring an author decision, and any created archive must remain internally consistent and citable. |
+| F-108 | Minor | The checklists and manuscript phrased a static DOI-issuing deposition as mandatory, while the current Methodology instructions recommend it. | Partially closed in the initial correction: the recommendation and author decision were stated, but unconditional archive-identifier inputs remained in the declaration and checklists. The residual defect is tracked as F-110. |
 | F-109 | Minor | The DCA bibliography record used a malformed TeX accent escape for Gökcen Eraslan. | Closed with the conventional BibTeX escape. All twelve cited DOI, title, year, and venue records matched registry metadata, and all citations resolve in the built manuscript. |
+| F-110 | Minor | The manuscript declaration, compact author-input checklist, and full availability checklist still required a static software archive or its identifier regardless of the authors' deposition decision. | Closed test-first. Public source and data access and an OSI-compliant license remain unconditional. Static deposition is conditional on the author decision; if an archive is created, its persistent identifier, citation, and consistency with the manuscript release remain fail-closed. |
+| F-111 | Minor | The first rendered use of `IQR` occurred in a pending Results marker without expansion, while the Abbreviations section omitted it and the compact checklist claimed first-use consistency. | Closed test-first. The marker now expands interquartile range (IQR) at first use, and the alphabetized Abbreviations section includes its canonical expansion. |
 
 The paper README now documents the exact
 `pdflatex`/`bibtex`/`pdflatex`/`pdflatex` build sequence used in review.
@@ -67,22 +69,35 @@ contracts reported:
 7 passed, 175 deselected in 2.01s
 ```
 
+Follow-up review exposed F-110 and F-111. Their two focused regression tests
+first reported:
+
+```text
+2 failed in 0.09s
+```
+
+After the bounded corrections, the same two tests reported:
+
+```text
+2 passed in 0.03s
+```
+
 The complete repository-hygiene owner reported:
 
 ```text
-57 passed in 26.75s
+59 passed in 26.11s
 ```
 
 The existing manuscript/comparator documentation subset reported:
 
 ```text
-3 passed, 122 deselected in 1.99s
+3 passed in 2.16s
 ```
 
 The active obsolete-term checks reported:
 
 ```text
-2 passed in 0.79s
+2 passed in 0.80s
 ```
 
 ## Build and static evidence
@@ -96,11 +111,12 @@ pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
 pdflatex -interaction=nonstopmode -halt-on-error manuscript.tex
 ```
 
-Every command exited zero. The final PDF contained 13 A4 pages. Log scans found
+Every command exited zero. The final PDF contained 14 A4 pages. Log scans found
 no unresolved citation, unresolved reference, fatal error, emergency stop, or
 overfull box. Extracted text showed the visible title-page blockers, abstract,
-keywords, ordered main sections, Abbreviations, Declarations, all seven
-declaration subheadings, and References.
+keywords, ordered main sections, the first-use interquartile range (IQR)
+expansion, the canonical IQR abbreviation entry, Declarations, the conditional
+static-archive input, all seven declaration subheadings, and References.
 
 Ruff 0.14.4 reported all 164 Python files formatted and all checks passing.
 Scoped Python compilation and `git diff --check` exited zero. Generated

@@ -106,8 +106,8 @@ Keep all seven required headings. When a heading is not relevant, retain it and 
 - [ ] The repository contains the exact source and in-house analysis scripts used for the manuscript, or any permitted supplementary-script location is stated explicitly.
 - [ ] MaskImpute has an identified OSI-compliant source-code license, and the repository and manuscript state the same license.
 - [ ] The authors have acted on the journal's recommendation to create a static archived release, or have recorded a decision not to do so; if created, the release has a DOI or other unique identifier, is cited, and is bound to the reported tag or commit.
-- [ ] The availability statement gives the project name, project home page, archived release, supported operating systems, programming language, other requirements, license, and any use restriction.
-- [ ] Public source, archive, environment locks, container, commands, accession ledger, raw long-form results, machine-readable tables, and smoke workflow identify one internally consistent release.
+- [ ] The availability statement gives the project name, project home page, supported operating systems, programming language, other requirements, license, and any use restriction; if the authors create a static archived release, the availability statement gives its persistent identifier and citation.
+- [ ] Public source, environment locks, container, commands, accession ledger, raw long-form results, machine-readable tables, and smoke workflow identify one internally consistent release; if a static archived release is created, it identifies that same release.
 - [ ] Supporting data are not hosted only on a personal or departmental website.
 
 ## 6. Minimum Standards of Reporting

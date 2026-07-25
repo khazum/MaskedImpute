@@ -2147,10 +2147,12 @@ of empirical competitiveness.
 | F-103 | Important | The rendered title page silently omitted all required author, affiliation, email, and corresponding-author metadata instead of making the blocking omission visible. | Closed with explicit red author-input blockers in the title-page commands. No person or institution was invented. |
 | F-104 | Important | The abstract and external-reference Results prose described unexecuted analyses or evidence as complete. | Closed with a 62-word placeholder-bearing abstract that makes no empirical advance claim and future-tense external-reference evidence. |
 | F-105 | Important | The compact checklist marked the state-of-the-art advancement exercise and final abstract constraint complete despite unavailable results and final wording. | Closed by separating checked structural facts from unchecked clear-advance, same-dataset, known-truth, real-data, and final-abstract evidence requirements. |
-| F-106 | Minor | The manuscript lacked the project-required Abbreviations section and did not expand several terms at first use. | Closed with first-use expansions and a consistent Abbreviations section before Declarations. |
+| F-106 | Minor | The manuscript lacked the project-required Abbreviations section and did not expand several terms at first use. | Partially closed by the initial correction: the section and identified prose expansions were added, but the first rendered `IQR` remained unexpanded and absent from the section. The residual defect is tracked as F-111. |
 | F-107 | Minor | Both submission checklists retained excluded template-integrity validation gates, and the paper README referenced the compact instance. | Closed as explicitly required. The active gates and stale README reference were removed while ordinary template provenance, upstream notices, licensing separation, and publisher-redistribution caveats remain. No replacement integrity mechanism was added. |
-| F-108 | Minor | Static DOI-issuing deposition was phrased as mandatory although the current Methodology instructions recommend it. | Closed by retaining the public repository and OSI-license requirements while accurately making static deposition an author decision and recommendation. |
+| F-108 | Minor | Static DOI-issuing deposition was phrased as mandatory although the current Methodology instructions recommend it. | Partially closed by the initial correction: the recommendation and author decision were stated, but unconditional archive-identifier inputs remained in the declaration and checklists. The residual defect is tracked as F-110. |
 | F-109 | Minor | One author name in the DCA BibTeX entry used a malformed TeX accent escape. | Closed. All twelve cited DOI, title, year, and venue records matched registry metadata and the final bibliography resolved. |
+| F-110 | Minor | The manuscript declaration, compact author-input checklist, and full availability checklist still required a static software archive or identifier regardless of the authors' deposition decision. | Closed test-first. Public source and data access and the OSI-license requirement remain unconditional. Static deposition is conditional on the author decision; any created archive must have a persistent identifier and citation and identify the manuscript release. |
+| F-111 | Minor | The first rendered use of `IQR` remained unexpanded in a pending Results marker, while the Abbreviations section omitted it and the compact checklist claimed compliance. | Closed test-first by expanding interquartile range (IQR) at first rendered use and adding its canonical expansion to the Abbreviations section. |
 
 Focused venue-contract RED reported:
 
@@ -2170,30 +2172,43 @@ The new checks plus the existing manuscript contracts then reported:
 7 passed, 175 deselected in 2.01s
 ```
 
+Follow-up F-110/F-111 focused RED reported:
+
+```text
+2 failed in 0.09s
+```
+
+The same focused tests then reported:
+
+```text
+2 passed in 0.03s
+```
+
 The complete repository-hygiene owner reported:
 
 ```text
-57 passed in 26.75s
+59 passed in 26.11s
 ```
 
 Existing manuscript/comparator documentation checks reported:
 
 ```text
-3 passed, 122 deselected in 1.99s
+3 passed in 2.16s
 ```
 
 The obsolete-term checks reported:
 
 ```text
-2 passed in 0.79s
+2 passed in 0.80s
 ```
 
 A clean `pdflatex`, `bibtex`, `pdflatex`, `pdflatex` build exited zero. The
-final PDF had 13 A4 pages; build-log inspection found no unresolved citation,
+final PDF had 14 A4 pages; build-log inspection found no unresolved citation,
 unresolved reference, fatal error, emergency stop, or overfull box. Extracted
 text showed the visible title-page blockers, 62-word unstructured abstract, six
-keywords, required main order, Abbreviations, all seven Declarations, and
-References.
+keywords, required main order, the first-use interquartile range (IQR)
+expansion, the canonical IQR abbreviation entry, the conditional static-archive
+input, all seven Declarations, and References.
 
 Ruff formatting and lint passed across all 164 Python files, scoped Python
 compilation and `git diff --check` exited zero, and generated manuscript and

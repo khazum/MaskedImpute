@@ -75,8 +75,9 @@ is a sealed-evidence draft, not a submission-ready article.
 - [ ] Acknowledgements.
 - [ ] Author-approved generative-AI disclosure.
 - [ ] An accepted OSI SPDX license for the in-tree project.
-- [ ] Public repository/release URL, archival DOI, and data accessions or
-  reviewer links.
+- [ ] Public source repository URL, data accessions or reviewer links, and, if
+  the authors create the recommended static software archive, its persistent
+  identifier.
 - [ ] Preprint decision and details, if applicable.
 
 ## Package validation

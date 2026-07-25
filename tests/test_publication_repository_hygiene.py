@@ -292,6 +292,57 @@ def test_genome_biology_checklists_leave_evidence_dependent_criteria_open() -> N
     assert "**Guidance verified:** 23 July 2026" in full
 
 
+def test_static_software_archive_inputs_are_conditional_on_author_choice() -> None:
+    manuscript = (ROOT / "paper/manuscript.tex").read_text(encoding="utf-8")
+    compact = (ROOT / "paper/submission_checklist.md").read_text(encoding="utf-8")
+    full = (ROOT / "docs/genome-biology-submission-checklist.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        r"\PendingAuthor{provide public source and data URLs, accessions, and "
+        "reviewer links; if the authors create the recommended static software "
+        "archive, provide its DOI or other persistent identifier}"
+    ) in manuscript
+    assert (
+        "- [ ] Public source repository URL, data accessions or reviewer links, "
+        "and, if the authors create the recommended static software archive, "
+        "its persistent identifier."
+    ) in " ".join(compact.split())
+    assert (
+        "if the authors create a static archived release, the availability "
+        "statement gives its persistent identifier"
+    ) in " ".join(full.split())
+    assert (
+        "if a static archived release is created, it identifies that same release"
+    ) in " ".join(full.split())
+
+    assert "provide public URLs, accessions, reviewer links, and archive DOI" not in (
+        manuscript
+    )
+    assert "Public repository/release URL, archival DOI" not in compact
+    assert "project home page, archived release, supported operating systems" not in (
+        full
+    )
+    assert "Public source, archive, environment locks" not in full
+
+
+def test_iqr_is_expanded_at_first_rendered_use_and_listed_as_an_abbreviation() -> None:
+    manuscript = (ROOT / "paper/manuscript.tex").read_text(encoding="utf-8")
+
+    first_iqr = manuscript.index("IQR")
+    expansion = "interquartile range (IQR)"
+    assert manuscript[first_iqr - len("interquartile range (") : first_iqr + 4] == (
+        expansion
+    )
+
+    abbreviations_start = manuscript.index(r"\section*{Abbreviations}")
+    declarations_start = manuscript.index(r"\section*{Declarations}")
+    abbreviations = manuscript[abbreviations_start:declarations_start]
+    assert "IQR, interquartile range" in abbreviations
+    assert "median/IQR" not in manuscript
+
+
 ACTIVE_PYTHON_CLIS = tuple(
     sorted((ROOT / "scripts").glob("*.py"))
     + sorted((ROOT / "scripts/simulators").glob("*.py"))
